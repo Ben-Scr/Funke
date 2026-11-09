@@ -1,5 +1,7 @@
 #include "pch.hpp"
+#include <sstream>
 #include "Scripting/ScriptSystem.hpp"
+#include "Scripting/ScriptProcessTask.hpp"
 #include "Scripting/ScriptEngine.hpp"
 #include "Scripting/ManagedScriptCompiler.hpp"
 #include "Scripting/ScriptCoreArtifact.hpp"
@@ -10,10 +12,10 @@
 #include "Scene/SceneManager.hpp"
 #include "Scene/ComponentRegistry.hpp"
 #include "Components/Tags.hpp"
-#if FUNKE_WITH_2D
+#if FUNKE_WITH_PHYSICS2D
 #include "Physics/Collision2D.hpp"
 #endif
-#if FUNKE_WITH_3D
+#if FUNKE_WITH_PHYSICS3D
 #include "Physics3D/PhysicsWorld3D.hpp"
 #endif
 #include "Core/Log.hpp"
@@ -52,28 +54,6 @@ namespace Funke {
 
 	NativeScriptHost& ScriptSystem::GetNativeHost() { return m_NativeHost; }
 
-	struct ScriptSystemProcessTaskState {
-		std::mutex Mutex;
-		std::optional<Process::Result> Result;
-		std::atomic<bool> Completed{ false };
-		std::atomic<bool> Abandoned{ false };
-		std::chrono::steady_clock::time_point StartedAt{ std::chrono::steady_clock::now() };
-
-		std::thread Worker;
-
-		~ScriptSystemProcessTaskState() {
-			if (!Worker.joinable()) {
-				return;
-			}
-			if (Completed.load(std::memory_order_acquire)) {
-				// Worker function has already returned; just reap the thread.
-				Worker.join();
-			} else {
-				Abandoned.store(true, std::memory_order_release);
-				Worker.detach();
-			}
-		}
-	};
 
 	namespace {
 		using ProcessTaskState = ScriptSystemProcessTaskState;
@@ -754,59 +734,8 @@ namespace Funke {
 			return task && !task->Completed.load(std::memory_order_acquire);
 		}
 
-		std::shared_ptr<ProcessTaskState> LaunchTask(std::function<Process::Result()> work)
-		{
-			auto task = std::make_shared<ProcessTaskState>();
-			task->StartedAt = std::chrono::steady_clock::now();
-
-			// Capture by weak_ptr so abandoning during shutdown doesn't stall on the worker.
-			std::weak_ptr<ProcessTaskState> weakTask = task;
-			task->Worker = std::thread([weakTask, work = std::move(work)]() mutable {
-				FUNKE_PROFILE_THREAD_NAME("ScriptProcess");
-				Process::Result result{};
-				try {
-					result = work();
-				}
-				catch (const std::exception& e) {
-					result.ExitCode = -1;
-					result.Output = e.what();
-				}
-				catch (...) {
-					result.ExitCode = -1;
-					result.Output = "Unknown exception while running background rebuild task.";
-				}
-
-				if (auto state = weakTask.lock()) {
-					if (!state->Abandoned.load(std::memory_order_acquire)) {
-						std::scoped_lock lock(state->Mutex);
-						state->Result = std::move(result);
-					}
-					state->Completed.store(true, std::memory_order_release);
-				}
-			});
-
-			return task;
-		}
-
-		bool TryTakeTaskResult(std::shared_ptr<ProcessTaskState>& task, Process::Result& outResult)
-		{
-			if (!task || !task->Completed.load(std::memory_order_acquire)) {
-				return false;
-			}
-
-			if (task->Abandoned.load(std::memory_order_acquire)) {
-				task.reset();
-				return false;
-			}
-
-			{
-				std::scoped_lock lock(task->Mutex);
-				outResult = task->Result.value_or(Process::Result{});
-			}
-
-			task.reset();
-			return true;
-		}
+		using ScriptProcessTasks::LaunchTask;
+		using ScriptProcessTasks::TryTakeTaskResult;
 
 		bool NativeBuildNeedsConfigure(const std::filesystem::path& nativeProjectDirectory, const std::filesystem::path& buildDirectory)
 		{
@@ -898,21 +827,9 @@ namespace Funke {
 			return it != scripts.end() ? &(*it) : nullptr;
 		}
 
-		// MUST run after GCHandle is set but before InvokeAwake/InvokeStart so OnAwake/OnStart see inspector-assigned values.
-		// Read the live managed instance's current field values back into
-		// PendingFieldValues so they survive a managed-assembly reload. Without
-		// this, recompile resets editor-set fields to type-defaults: the values
-		// live only on the instance after ApplyPendingFieldValues applied (and
-		// erased) them, and the reload destroys the instance before the new one
-		// is created. Capturing here also preserves runtime-modified fields.
+		// Edit-mode instance values are authored state; gameplay changes must not overwrite it.
 		void SnapshotManagedFieldsToPending(ScriptComponent& scriptComp, const ScriptInstance& instance) {
 			if (!instance.HasManagedInstance()) return;
-			// Only capture in EDIT mode. This exists to preserve inspector-assigned
-			// field values across an edit-mode recompile; doing it during PLAY would
-			// copy RUNTIME-mutated values into the persistent PendingFieldValues, which
-			// then bake into the pre-play snapshot and survive Stop — play-mode changes
-			// must revert. (A play-mode hot-reload therefore re-applies authored values
-			// rather than preserving runtime state, which is the correct trade-off.)
 			if (Application::GetIsPlaying()) return;
 			auto& callbacks = ScriptEngine::GetCallbacks();
 			if (!callbacks.GetScriptFields) return;
@@ -958,13 +875,9 @@ namespace Funke {
 			const auto gcHandle = static_cast<int32_t>(instance.GetGCHandle());
 			const std::string prefix = className + ".";
 			std::vector<std::pair<std::string, std::string>> toApply;
-			for (auto it = scriptComp.PendingFieldValues.begin(); it != scriptComp.PendingFieldValues.end(); ) {
-				if (it->first.rfind(prefix, 0) == 0) {
-					toApply.emplace_back(it->first.substr(prefix.size()), std::move(it->second));
-					it = scriptComp.PendingFieldValues.erase(it);
-				} else {
-					++it;
-				}
+			// Retain authored values for replacement instances after a Play-mode reload.
+			for (const auto& [key, value] : scriptComp.PendingFieldValues) {
+				if (key.starts_with(prefix)) toApply.emplace_back(key.substr(prefix.size()), value);
 			}
 			for (const auto& [fieldName, value] : toApply) {
 				callbacks.SetScriptField(gcHandle, fieldName.c_str(), value.c_str());
@@ -1013,7 +926,8 @@ namespace Funke {
 							if (!instance.IsBound()) {
 								instance.Bind(entity);
 							}
-							if (!instance.HasManagedInstance() && ScriptEngine::ClassExists(instance.GetClassName()))
+							if (!instance.HasManagedInstance()) scriptComp.MigrateManagedIdentities(ScriptEngine::ResolveManagedTypeName);
+						if (!instance.HasManagedInstance() && ScriptEngine::ClassExists(instance.GetClassName()))
 							{
 								uint32_t handle = ScriptEngine::CreateScriptInstance(instance.GetClassName(), entity);
 								if (handle != 0) {
@@ -1236,6 +1150,7 @@ namespace Funke {
 						if (!instance.IsBound()) {
 							instance.Bind(entity);
 						}
+						if (!instance.HasManagedInstance()) scriptComp.MigrateManagedIdentities(ScriptEngine::ResolveManagedTypeName);
 						if (!instance.HasManagedInstance() && ScriptEngine::ClassExists(instance.GetClassName()))
 						{
 							uint32_t handle = ScriptEngine::CreateScriptInstance(instance.GetClassName(), entity);
@@ -1320,7 +1235,7 @@ namespace Funke {
 		m_ScriptDefines = defineConstants;
 		m_BuildingScriptDefines = defineConstants;
 		const std::string defineConstantsArg = "-p:DefineConstants=" + defineConstants;
-		// FunkeCodegenEnabled=false: hot-reload must not regenerate CodegenComponents.cpp — the running engine has the old C++ layout and a size mismatch would crash on next ComponentTypes<T> init.
+		// Codegen stays disabled: the running native layout cannot change during managed hot reload.
 		const char* codegenArg = "-p:FunkeCodegenEnabled=false";
 		const bool inProcess = ManagedScriptCompiler::EnsureLoaded();
 		ManagedScriptCompiler::Request compileRequest{
@@ -1337,6 +1252,7 @@ namespace Funke {
 						compiled.Evaluated ? " (project re-evaluated)" : "");
 					Process::Result result;
 					result.ExitCode = 0;
+					result.Output = compiled.Diagnostics;
 					return result;
 				}
 				if (compiled.Status == ManagedScriptCompiler::Status::Failed) {
@@ -1495,12 +1411,34 @@ namespace Funke {
 		if (!ScriptEngine::IsInitialized()) {
 			return false;
 		}
+		if (!ScriptEngine::PrepareUserAssembly()) {
+			m_ManagedRebuildError = ScriptEngine::GetLastAssemblyError();
+			return false;
+		}
+
+		if (!ScriptEngine::CaptureReloadState()) {
+			ScriptEngine::DiscardPreparedAssembly();
+			m_ManagedRebuildError = "Hot reload capture failed; active instances retained.";
+			return false;
+		}
+
+		if (!ScriptEngine::PrepareResourceRelease(false)) {
+			ScriptEngine::DiscardPreparedAssembly();
+			ScriptEngine::ClearReloadState();
+			m_ManagedRebuildError = "Hot reload refused: script jobs are still running.";
+			return false;
+		}
+
+		struct ResumeScriptResources {
+			~ResumeScriptResources() { ScriptEngine::ResumeResourceScope(false); }
+		} resumeScriptResources;
 
 		// Same order as the hot-reload path in OnPreRender: without the teardown,
 		// every ScriptInstance keeps a stale non-zero GC handle after the unload, so
 		// Update() never recreates it and all managed scripts silently stop running.
 		ForEachLoadedScene([](Scene& loadedScene) { TeardownManagedScripts(loadedScene); });
 		if (!ScriptEngine::ReloadAssemblies()) {
+			ScriptEngine::ClearReloadState();
 			if (ScriptEngine::HasUserAssembly()) {
 				InitializeRegisteredGlobalSystems();
 				FNK_ERROR_TAG("ScriptSystem", "User assembly could not be reloaded; scripts continue with the previous working assembly.");
@@ -1784,7 +1722,7 @@ namespace Funke {
 		}
 	}
 
-#if FUNKE_WITH_2D
+#if FUNKE_WITH_PHYSICS2D
 	namespace {
 		enum class CollisionDispatchPhase {
 			Enter,
@@ -1869,7 +1807,7 @@ namespace Funke {
 	}
 #endif
 
-#if FUNKE_WITH_3D
+#if FUNKE_WITH_PHYSICS3D
 	void ScriptSystem::DispatchCollision3D(const Collision3D& collision, CollisionPhase3D phase)
 	{
 		Scene* scene = collision.OwningScene;
@@ -1930,6 +1868,21 @@ namespace Funke {
 		if (TryTakeTaskResult(m_RebuildTask, result))
 		{
 			m_ManagedRebuildError.clear();
+			result.Output = ManagedScriptCompiler::LimitOutput(result.Output);
+			std::istringstream compilerOutput(result.Output);
+			std::string diagnostic;
+			while (std::getline(compilerOutput, diagnostic)) {
+				if (diagnostic.empty()) continue;
+				if (diagnostic.find("warning ") != std::string::npos) {
+					FNK_WARN_TAG("ScriptCompiler", "{}", diagnostic);
+				}
+				else if (!result.Succeeded()) {
+					FNK_ERROR_TAG("ScriptCompiler", "{}", diagnostic);
+				}
+				else {
+					FNK_INFO_TAG("ScriptCompiler", "{}", diagnostic);
+				}
+			}
 			if (result.Succeeded())
 			{
 				const std::filesystem::path outputPath = Path::FromUtf8(m_ManagedBuildOutputPath);
@@ -1945,21 +1898,42 @@ namespace Funke {
 				{
 					const std::filesystem::path canonicalOutput = std::filesystem::canonical(outputPath, outputEc);
 					m_UserAssemblyPath = Path::ToUtf8(outputEc ? outputPath : canonicalOutput);
-					ForEachLoadedScene([this](Scene& loadedScene) { TeardownManagedScripts(loadedScene); });
-					if (ScriptEngine::LoadUserAssembly(m_UserAssemblyPath)) {
-						InitializeRegisteredGlobalSystems();
-						// Managed reload can invalidate cached component layouts.
-						PrefabTemplateCache::Get().InvalidateAll();
-						if (Application::IsEditor()) WriteScriptDefinesStamp(m_UserAssemblyPath, m_BuildingScriptDefines);
-						FNK_INFO_TAG("ScriptSystem", "C# scripts rebuilt and reloaded from '{}'", m_UserAssemblyPath);
+					if (!ScriptEngine::PrepareUserAssembly(m_UserAssemblyPath)) {
+						m_ManagedRebuildError = "C# build succeeded, but hot reload was refused: " + ScriptEngine::GetLastAssemblyError();
+						FNK_ERROR_TAG("ScriptSystem", "{}", m_ManagedRebuildError);
+					}
+					else if (!ScriptEngine::CaptureReloadState()) {
+						ScriptEngine::DiscardPreparedAssembly();
+						m_ManagedRebuildError = "Hot reload capture failed; active instances retained.";
+						FNK_ERROR_TAG("ScriptSystem", "{}", m_ManagedRebuildError);
+					}
+					else if (!ScriptEngine::PrepareResourceRelease(false)) {
+						ScriptEngine::DiscardPreparedAssembly();
+						ScriptEngine::ClearReloadState();
+						m_ManagedRebuildError = "Hot reload refused: script jobs are still running.";
+						FNK_ERROR_TAG("ScriptSystem", "{}", m_ManagedRebuildError);
 					}
 					else {
-						m_ManagedRebuildError = "C# build succeeded, but the rebuilt assembly could not be loaded.";
-						if (ScriptEngine::HasUserAssembly()) {
+						struct ResumeScriptResources {
+							~ResumeScriptResources() { ScriptEngine::ResumeResourceScope(false); }
+						} resumeScriptResources;
+						ForEachLoadedScene([this](Scene& loadedScene) { TeardownManagedScripts(loadedScene); });
+						if (ScriptEngine::LoadUserAssembly(m_UserAssemblyPath)) {
 							InitializeRegisteredGlobalSystems();
-							m_ManagedRebuildError += " Scripts continue with the previous working assembly.";
+							// Managed reload can invalidate cached component layouts.
+							PrefabTemplateCache::Get().InvalidateAll();
+							if (Application::IsEditor()) WriteScriptDefinesStamp(m_UserAssemblyPath, m_BuildingScriptDefines);
+							FNK_INFO_TAG("ScriptSystem", "C# scripts rebuilt and reloaded from '{}'", m_UserAssemblyPath);
 						}
-						FNK_ERROR_TAG("ScriptSystem", "{}", m_ManagedRebuildError);
+						else {
+							ScriptEngine::ClearReloadState();
+							m_ManagedRebuildError = "C# assembly exchange failed after teardown; running instances were restarted or are unavailable.";
+							if (ScriptEngine::HasUserAssembly()) {
+								InitializeRegisteredGlobalSystems();
+								m_ManagedRebuildError += " Scripts continue with the previous working assembly.";
+							}
+							FNK_ERROR_TAG("ScriptSystem", "{}", m_ManagedRebuildError);
+						}
 					}
 				}
 			}
@@ -1967,9 +1941,6 @@ namespace Funke {
 			{
 				m_ManagedRebuildError = result.Output.empty() ? "C# build failed; see the log" : result.Output;
 				FNK_ERROR_TAG("ScriptSystem", "C# build failed (exit code {})", result.ExitCode);
-				if (!result.Output.empty()) {
-					FNK_ERROR_TAG("ScriptSystem", "Compiler output:\n{}", result.Output);
-				}
 			}
 			++m_CompletedRebuildCount;
 

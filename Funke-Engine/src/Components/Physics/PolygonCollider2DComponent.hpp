@@ -16,6 +16,8 @@ namespace Funke {
 	// points, that collides on the left of the walking direction, i.e. on top of a line drawn left to right.
 	class FUNKE_API PolygonCollider2DComponent : public Collider2D {
 		friend class PhysicsSystem2D;
+		friend class Scene;
+		friend class PhysicsScene2D;
 	public:
 		// Box2D limit for a single convex piece.
 		static constexpr int k_MaxVertices = 8;
@@ -65,6 +67,7 @@ namespace Funke {
 		bool IsEdge() const { return m_Edge; }
 
 		void SyncWithTransform(const Scene& scene);
+		void RestoreShapeFromState(Scene& scene);
 		void UpdatePolygon(const Scene& scene) { SyncWithTransform(scene); }
 
 		void Destroy() override;

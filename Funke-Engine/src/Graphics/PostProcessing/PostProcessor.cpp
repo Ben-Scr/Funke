@@ -40,8 +40,9 @@ namespace Funke {
 			glm::vec4 SunDirection{0.0f}, SunRadiance{0.0f}, ShadowParams{0.0f}, Flags{0.0f};
             glm::mat4 InverseRelativeViewProjection{1.0f};
             glm::vec4 WorldOrigin{0.0f};
+            glm::vec4 RelativeCameraPosition{0.0f};
 		};
-		static_assert(sizeof(PostSceneUniforms) == 208);
+		static_assert(sizeof(PostSceneUniforms) == 224);
 
 		constexpr int k_MaxBlurHalfKernel = 16;
 		struct BlurUniforms {
@@ -1464,6 +1465,7 @@ namespace Funke {
 					uniforms.LightViewProjection = scene->LightViewProjection;
                     uniforms.InverseRelativeViewProjection = glm::inverse(scene->Projection * scene->View);
                     uniforms.WorldOrigin = glm::vec4(scene->WorldOrigin, 0.0f);
+                    uniforms.RelativeCameraPosition = glm::vec4(scene->Position, 0.0f);
 					uniforms.SunDirection = scene->SunDirection;
 					uniforms.SunRadiance = scene->SunRadiance;
 					uniforms.ShadowParams = scene->ShadowParams;

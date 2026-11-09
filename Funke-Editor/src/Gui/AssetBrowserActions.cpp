@@ -553,8 +553,15 @@ namespace Funke {
 
 	std::string AssetBrowser::UndoRedoAssets(bool redo) {
 		if (redo ? !CanRedoAssets() : !CanUndoAssets()) return {};
+		std::string label;
 		try {
-			const auto label = redo ? m_FileHistory.Redo() : m_FileHistory.Undo();
+			label = redo ? m_FileHistory.Redo() : m_FileHistory.Undo();
+		}
+		catch (const std::exception& error) {
+			FNK_ERROR_TAG("AssetUndo", "{}", error.what());
+			throw;
+		}
+		try {
 			m_NeedsRefresh = true;
 			m_ClearHistoryThumbnails = true;
 			while (!std::filesystem::exists(Path::FromUtf8(m_CurrentDirectory)) && m_CurrentDirectory != m_RootDirectory) {
@@ -563,12 +570,11 @@ namespace Funke {
 			}
 			ClearAssetSelection();
 			EditorScriptDiscovery::MarkDirty();
-			return label;
 		}
 		catch (const std::exception& error) {
-			FNK_ERROR_TAG("AssetUndo", "{}", error.what());
-			return {};
+			FNK_ERROR_TAG("AssetUndo", "{} applied, browser refresh failed: {}", label, error.what());
 		}
+		return label;
 	}
 
 	void AssetBrowser::BeginRename(const std::string& path, const std::string& currentName) {
@@ -1083,7 +1089,8 @@ namespace Funke {
 				UpdateLoadedSceneNameAfterRename(oldStem, newStem);
 				edit->Validate = [oldStem, newStem, oldPath, requestedPath](bool redo) {
 					if (SceneStemExists(redo ? newStem : oldStem, redo ? oldPath : requestedPath)) {
-						throw std::runtime_error("Another scene already uses the restored name");
+						throw std::runtime_error("Another scene already uses the name '" + (redo ? newStem : oldStem)
+							+ "' required by " + Path::ToUtf8(redo ? requestedPath : oldPath));
 					}
 				};
 				edit->Applied = [oldStem, newStem](bool redo) {

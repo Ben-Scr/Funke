@@ -2,6 +2,9 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Reflection;
+using System.Linq;
+using System.Reflection.Metadata;
+using System.Reflection.PortableExecutable;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Loader;
@@ -131,6 +134,61 @@ internal class ScriptAssemblyLoadContext : AssemblyLoadContext
 
 internal static class ScriptInstanceManager
 {
+    private static AssemblyLoadContext? s_PreparedContext;
+    private static Assembly? s_PreparedAssembly;
+    private static string? s_PreparedPath;
+    private static string s_PreparedCatalog = "[]";
+    private static string s_ProjectCatalog = "[]";
+
+    internal static void DiscardPreparedAssembly()
+    {
+        AssemblyLoadContext? context = s_PreparedContext;
+        s_PreparedContext = null;
+        s_PreparedAssembly = null;
+        s_PreparedPath = null;
+        s_PreparedCatalog = "[]";
+        if (context?.IsCollectible == true) context.Unload();
+    }
+
+    internal static void PrepareUserAssemblyPath(string path)
+    {
+        DiscardPreparedAssembly();
+        string fullPath = System.IO.Path.GetFullPath(path);
+        ValidateCoreBinary(System.IO.Path.Combine(System.IO.Path.GetDirectoryName(fullPath)!, "Funke-ScriptCore.dll"));
+        if (!string.IsNullOrEmpty(s_CoreAssembly!.Location)) ValidateCoreBinary(s_CoreAssembly.Location);
+        if (!ScriptAssemblyLoadContext.Collectible) return;
+        var context = new ScriptAssemblyLoadContext(s_CoreAssembly, fullPath);
+        try
+        {
+            using var assemblyStream = new System.IO.MemoryStream(System.IO.File.ReadAllBytes(fullPath));
+            using var symbolsStream = ReadUserAssemblySymbols(fullPath);
+            Assembly assembly = context.LoadFromStream(assemblyStream, symbolsStream);
+            ValidateUserAssemblyTypes(assembly);
+            Funke.Components.ComponentTypes.ValidateAssembly(assembly);
+            s_PreparedCatalog = PackageScriptRegistry.BuildProjectTypesJson(assembly, symbolsStream);
+            s_PreparedContext = context;
+            s_PreparedAssembly = assembly;
+            s_PreparedPath = fullPath;
+        }
+        catch
+        {
+            context.Unload();
+            throw;
+        }
+    }
+
+    private static void ValidateCoreBinary(string path)
+    {
+        if (!System.IO.File.Exists(path)) return;
+        using var stream = System.IO.File.OpenRead(path);
+        using var reader = new PEReader(stream);
+        MetadataReader metadata = reader.GetMetadataReader();
+        Guid moduleId = metadata.GetGuid(metadata.GetModuleDefinition().Mvid);
+        if (moduleId != s_CoreAssembly!.ManifestModule.ModuleVersionId)
+            throw new InvalidOperationException($"Funke-ScriptCore changed on disk at '{path}'; the running process still uses the previous core/bindings. " +
+                Funke.Components.ComponentTypes.RebuildWorkflow);
+    }
+
     // [UnmanagedCallersOnly] entry points may be dispatched from worker threads; ConcurrentDictionary keeps all ops safe.
     private static readonly ConcurrentDictionary<int, ScriptInstanceData> s_Instances = new();
     // (entityID, Type) -> handle secondary index for O(1) per-frame GetComponent<TScript> lookups.
@@ -166,6 +224,73 @@ internal static class ScriptInstanceManager
         }
     }
     private static readonly ConcurrentDictionary<string, ScriptClassInfo?> s_ClassCache = new();
+    private static readonly ConcurrentDictionary<string, string> s_InspectorStatusCache = new();
+    private static MethodInfo[] s_PlayResetMethods = Array.Empty<MethodInfo>();
+
+    internal static MethodInfo[] CollectPlayResetMethods(Assembly assembly)
+        => assembly.GetTypes().SelectMany(t => t.GetMethods(BindingFlags.Public | BindingFlags.NonPublic
+                | BindingFlags.Static | BindingFlags.Instance | BindingFlags.DeclaredOnly))
+            .Where(m => m.IsDefined(typeof(ResetOnPlayAttribute), false))
+            .OrderBy(m => m.DeclaringType!.FullName, StringComparer.Ordinal).ThenBy(m => m.Name, StringComparer.Ordinal).ToArray();
+
+    internal static void RunPlayResetMethods(MethodInfo[] methods)
+    {
+        foreach (var method in methods) {
+            if (!method.IsStatic || method.ContainsGenericParameters || method.ReturnType != typeof(void)
+                || method.GetParameters().Length != 0 || method.IsDefined(typeof(AsyncStateMachineAttribute), false))
+                throw new InvalidOperationException($"Invalid ResetOnPlay method {method.DeclaringType!.FullName}.{method.Name}: requires static synchronous parameterless void.");
+        }
+        foreach (var method in methods) {
+            try { method.Invoke(null, null); }
+            catch (Exception ex) { throw new InvalidOperationException($"ResetOnPlay failed: {method.DeclaringType!.FullName}.{method.Name}", ex.InnerException ?? ex); }
+        }
+    }
+
+    internal static void ResetRegisteredPlayState() => RunPlayResetMethods(s_PlayResetMethods);
+
+    private static readonly Dictionary<(ulong Scene, ulong Entity, string Type), string> s_ReloadStates = new();
+    internal static void ClearReloadState()
+    {
+        s_ReloadStates.Clear();
+        foreach (var pair in s_Instances.ToArray()) {
+            var data = pair.Value;
+            data.ReloadState = null;
+            s_Instances[pair.Key] = data;
+        }
+    }
+
+    internal static void CaptureReloadState()
+    {
+        ClearReloadState();
+        try {
+            foreach (var data in SnapshotInstances()) {
+                if (data.Instance is not IHotReloadState participant) continue;
+                var entity = data.Instance.Entity;
+                var key = (InternalCalls.Entity_GetOwningSceneId(entity.ID), entity.ID, TypeIdentity(data.Instance.GetType()));
+                var state = new ReloadState();
+                participant.CaptureReloadState(state);
+                if (!s_ReloadStates.TryAdd(key, state.Serialize()))
+                    throw new InvalidOperationException($"Duplicate reload identity {key}.");
+            }
+        }
+        catch { ClearReloadState(); throw; }
+    }
+
+    private static void RestoreReloadState(int handle, EntityScript instance)
+    {
+        if (!s_Instances.TryGetValue(handle, out var data) || !ReferenceEquals(instance, data.Instance)
+            || data.ReloadState == null) return;
+        string json = data.ReloadState;
+        data.ReloadState = null;
+        s_Instances[handle] = data;
+        try {
+            var state = new ReloadState(json);
+            ((IHotReloadState)instance).RestoreReloadState(state);
+            if (state.UnreadKeys.Length != 0)
+                Log.Warn($"Incomplete hot reload restore for {TypeIdentity(instance.GetType())}: unread or incompatible values: {state.UnreadKeys}");
+        }
+        catch (Exception ex) { Log.Error($"Incomplete hot reload restore for {TypeIdentity(instance.GetType())}: {ex.Message}"); }
+    }
 
     private struct ScriptInstanceData
     {
@@ -176,6 +301,7 @@ internal static class ScriptInstanceManager
         public int CallbackMask;
         public bool HasStarted;
         public bool HasAwoken;
+        public string? ReloadState;
     }
 
     private static readonly ConcurrentDictionary<int, byte> s_SceneSystemAwoken = new();
@@ -249,7 +375,7 @@ internal static class ScriptInstanceManager
         {
             return data.Instance;
         }
-        return GetScriptInstance(entityID, type.Name);
+        return GetScriptInstance(entityID, TypeIdentity(type));
     }
 
     internal static EntityScript? GetScriptInstance(ulong entityID, string className)
@@ -265,42 +391,11 @@ internal static class ScriptInstanceManager
             return cachedData.Instance;
         }
 
-        // Iterate in place: a snapshot copied every live instance on each miss (e.g. TryGetComponent in collision handlers).
-        foreach (var pair in s_Instances)
-        {
-            EntityScript instance = pair.Value.Instance;
-            if (instance.Entity == null || instance.Entity.ID != entityID)
-                continue;
-
-            Type type = instance.GetType();
-            if (string.Equals(type.Name, className, StringComparison.Ordinal)
-                || string.Equals(type.FullName, className, StringComparison.Ordinal))
-            {
-                return instance;
-            }
-        }
-
         return null;
     }
 
-    private static ScriptClassInfo? ResolveClassByName(string className)
-    {
-        if (s_ClassCache.TryGetValue(className, out ScriptClassInfo? info) && info != null && info.IsScript)
-            return info;
-        // Scan all cache entries by short name to handle the typeof(T).Name
-        // case (e.g. "TutorialScript") when the cache key was "MyNs.TutorialScript".
-        foreach (var kv in s_ClassCache)
-        {
-            ScriptClassInfo? candidate = kv.Value;
-            if (candidate == null || !candidate.IsScript) continue;
-            if (string.Equals(candidate.Type.Name, className, StringComparison.Ordinal)
-                || string.Equals(candidate.Type.FullName, className, StringComparison.Ordinal))
-            {
-                return candidate;
-            }
-        }
-        return null;
-    }
+    private static ScriptClassInfo? ResolveClassByName(string className) => GetOrCacheClass(className);
+
 
     private static void DispatchToScripts(Action<EntityScript> invoke, string eventName)
     {
@@ -535,6 +630,8 @@ internal static class ScriptInstanceManager
 
     private static void UnloadCurrentUserAssemblyContext()
     {
+        Funke.Texture.CleanupRuntimeTextures(playOnly: false);
+        s_PlayResetMethods = Array.Empty<MethodInfo>();
         ScriptExceptionLog.Flush();
         if (s_UserLoadContext == null)
             return;
@@ -596,12 +693,15 @@ internal static class ScriptInstanceManager
         }
     }
 
-    // Called after the editor reloads the pre-play snapshot; GlobalSystem subscriptions are preserved because they survive play mode.
+    // Called after Play teardown and before activating restored scenes; GlobalSystem subscriptions survive.
     [UnmanagedCallersOnly]
     public static void OnPlayModeExited()
     {
         try
         {
+            Funke.Texture.CleanupRuntimeTextures(playOnly: true);
+            Funke.Jobs.ScriptResourceScope.EndPlay();
+            ClearReloadState();
             SceneManager.CancelPendingLoads();
             AssetManager.CancelPendingLoads();
             ScriptExceptionLog.Flush();
@@ -828,10 +928,22 @@ internal static class ScriptInstanceManager
             string className = Marshal.PtrToStringUTF8((IntPtr)classNamePtr)!;
             var classInfo = GetOrCacheClass(className);
             if (classInfo == null || !classInfo.IsScript) return 0;
+            if (s_InstancesByType.ContainsKey((entityID, classInfo.Type))) {
+                Log.Warn($"Duplicate attachment resolves to {TypeIdentity(classInfo.Type)} on entity {entityID}; keeping existing instance and saved values.");
+                return 0;
+            }
 
             var instance = (EntityScript)Activator.CreateInstance(classInfo.Type)!;
             instance._SetEntityID(entityID);
 
+            string? reloadState = null;
+            if (s_ReloadStates.Count != 0) {
+                var key = (InternalCalls.Entity_GetOwningSceneId(entityID), entityID, TypeIdentity(classInfo.Type));
+                if (s_ReloadStates.Remove(key, out var saved)) {
+                    if (instance is IHotReloadState) reloadState = saved;
+                    else Log.Warn($"Hot reload state skipped for {key}: type no longer implements IHotReloadState.");
+                }
+            }
             int handle = Interlocked.Increment(ref s_NextHandle);
             s_Instances[handle] = new ScriptInstanceData
             {
@@ -840,7 +952,8 @@ internal static class ScriptInstanceManager
                 UpdateAction = BindLifecycleMethod(instance, classInfo.UpdateMethod),
                 CallbackMask = classInfo.CallbackMask,
                 HasStarted = false,
-                HasAwoken = false
+                HasAwoken = false,
+                ReloadState = reloadState
             };
             s_InstancesByType[(entityID, classInfo.Type)] = handle;
 
@@ -892,6 +1005,7 @@ internal static class ScriptInstanceManager
             data.Instance.OnStart();
             data.StartAction?.Invoke();
             MarkLifecycleFlag(handle, data.Instance, started: true);
+            RestoreReloadState(handle, data.Instance);
         }
         catch (TargetInvocationException ex) { ScriptExceptionLog.Report("OnStart()", ex.InnerException); }
         catch (Exception ex) { ScriptExceptionLog.Report("OnStart()", ex); }
@@ -1228,6 +1342,7 @@ internal static class ScriptInstanceManager
     [UnmanagedCallersOnly]
     public static unsafe int CreateGlobalSystemInstance(byte* classNamePtr)
     {
+        using var resourceScope = Funke.Jobs.ScriptResourceScope.EnterGeneration();
         try
         {
             string className = PtrToString(classNamePtr);
@@ -1249,6 +1364,7 @@ internal static class ScriptInstanceManager
     [UnmanagedCallersOnly]
     public static void DestroyGlobalSystemInstance(int handle)
     {
+        using var resourceScope = Funke.Jobs.ScriptResourceScope.EnterGeneration();
         try
         {
             if (s_GlobalSystems.TryRemove(handle, out var system))
@@ -1260,6 +1376,7 @@ internal static class ScriptInstanceManager
     [UnmanagedCallersOnly]
     public static void InvokeGlobalSystemInitialize(int handle)
     {
+        using var resourceScope = Funke.Jobs.ScriptResourceScope.EnterGeneration();
         if (!s_GlobalSystems.TryGetValue(handle, out var system)) return;
         try { system.OnInitialize(); }
         catch (Exception ex) { ScriptExceptionLog.Report("GlobalSystem.OnInitialize()", ex); }
@@ -1268,6 +1385,7 @@ internal static class ScriptInstanceManager
     [UnmanagedCallersOnly]
     public static void InvokeGlobalSystemUpdate(int handle)
     {
+        using var resourceScope = Funke.Jobs.ScriptResourceScope.EnterGeneration();
         if (!s_GlobalSystems.TryGetValue(handle, out var system)) return;
         try { system.OnUpdate(); }
         catch (Exception ex) { ScriptExceptionLog.Report("GlobalSystem.OnUpdate()", ex); }
@@ -1276,6 +1394,7 @@ internal static class ScriptInstanceManager
     [UnmanagedCallersOnly]
     public static void InvokeGlobalSystemFixedUpdate(int handle)
     {
+        using var resourceScope = Funke.Jobs.ScriptResourceScope.EnterGeneration();
         if (!s_GlobalSystems.TryGetValue(handle, out var system)) return;
         try { system.OnFixedUpdate(); }
         catch (TargetInvocationException ex) { ScriptExceptionLog.Report("GlobalSystem.OnFixedUpdate()", ex.InnerException); }
@@ -1285,6 +1404,7 @@ internal static class ScriptInstanceManager
     [UnmanagedCallersOnly]
     public static void InvokeGlobalSystemEnable(int handle)
     {
+        using var resourceScope = Funke.Jobs.ScriptResourceScope.EnterGeneration();
         if (!s_GlobalSystems.TryGetValue(handle, out var system)) return;
         try { system.OnEnable(); }
         catch (Exception ex) { ScriptExceptionLog.Report("GlobalSystem.OnEnable()", ex); }
@@ -1293,6 +1413,7 @@ internal static class ScriptInstanceManager
     [UnmanagedCallersOnly]
     public static void InvokeGlobalSystemDisable(int handle)
     {
+        using var resourceScope = Funke.Jobs.ScriptResourceScope.EnterGeneration();
         if (!s_GlobalSystems.TryGetValue(handle, out var system)) return;
         try { system.OnDisable(); }
         catch (Exception ex) { ScriptExceptionLog.Report("GlobalSystem.OnDisable()", ex); }
@@ -1421,7 +1542,7 @@ internal static class ScriptInstanceManager
 
                     if (!first) sb.Append(',');
                     first = false;
-                    sb.Append("{\"type\":\"").Append(EscapeJson(type.Name))
+                    sb.Append("{\"type\":\"").Append(EscapeJson(TypeIdentity(type)))
                       .Append("\",\"menu\":\"").Append(EscapeJson(menu)).Append("\"}");
                 }
             }
@@ -1458,20 +1579,31 @@ internal static class ScriptInstanceManager
         {
             string fullPath = System.IO.Path.GetFullPath(path);
             Assembly candidateAssembly;
+            string candidateCatalog;
             if (ScriptAssemblyLoadContext.Collectible)
             {
-                candidateContext = new ScriptAssemblyLoadContext(s_CoreAssembly!, fullPath);
-                using var assemblyStream = new System.IO.MemoryStream(System.IO.File.ReadAllBytes(fullPath));
-                using var symbolsStream = ReadUserAssemblySymbols(fullPath);
-                candidateAssembly = candidateContext.LoadFromStream(assemblyStream, symbolsStream);
-                ValidateUserAssemblyTypes(candidateAssembly);
+                if (s_PreparedPath != fullPath) PrepareUserAssemblyPath(fullPath);
+                candidateContext = s_PreparedContext!;
+                candidateAssembly = s_PreparedAssembly!;
+                candidateCatalog = s_PreparedCatalog;
+                s_PreparedCatalog = "[]";
+                s_PreparedContext = null;
+                s_PreparedAssembly = null;
+                s_PreparedPath = null;
             }
             else
             {
                 ScriptAssemblyLoadContext.ProbeFromDefaultContext(fullPath);
                 candidateAssembly = AssemblyLoadContext.Default.LoadFromAssemblyPath(fullPath);
                 candidateContext = AssemblyLoadContext.Default;
+                ValidateUserAssemblyTypes(candidateAssembly);
+                Funke.Components.ComponentTypes.ValidateAssembly(candidateAssembly);
+                using var symbols = ReadUserAssemblySymbols(fullPath);
+                candidateCatalog = PackageScriptRegistry.BuildProjectTypesJson(candidateAssembly, symbols);
             }
+
+            if (!Funke.Jobs.ScriptResourceScope.Drain(false))
+                throw new InvalidOperationException("Assembly reload refused while script jobs are running.");
 
             // Keep the working context and its registrations until the replacement's metadata resolves.
             if (s_UserLoadContext != null)
@@ -1487,15 +1619,20 @@ internal static class ScriptInstanceManager
                 s_GlobalSystems.Clear();
                 s_DataAssets.Clear();
                 s_ClassCache.Clear();
+                s_InspectorStatusCache.Clear();
                 UnloadCurrentUserAssemblyContext();
             }
             WarnIfUnloadedContextLeaked();
 
             s_ClassCache.Clear();
+            s_InspectorStatusCache.Clear();
 
             s_UserAssemblyDirectory = System.IO.Path.GetDirectoryName(fullPath);
             s_UserLoadContext = candidateContext;
             s_UserAssembly = candidateAssembly;
+            Funke.Jobs.ScriptResourceScope.NextGeneration();
+
+            s_PlayResetMethods = CollectPlayResetMethods(candidateAssembly);
             candidateContext = null;
 
             Log.Info($"User assembly loaded: {path}");
@@ -1504,12 +1641,19 @@ internal static class ScriptInstanceManager
             EditorWindowRegistry.Clear();
             DevCommandRegistry.Clear();
             PackageScriptRegistry.Clear();
+            s_ProjectCatalog = candidateCatalog;
+            foreach (var key in s_ReloadStates.Keys.ToArray()) {
+                if (FindType(key.Type) != null) continue;
+                Log.Warn($"Hot reload state skipped for removed or ambiguous type {key.Type} on entity {key.Entity}.");
+                s_ReloadStates.Remove(key);
+            }
             return 1;
         }
         catch (Exception ex)
         {
             Log.Error($"Failed to load user assembly: {ex.Message}");
             bool retained = previousRetained && s_UserAssembly != null;
+            if (!retained) { s_ProjectCatalog = "[]"; ClearReloadState(); }
             if (retained)
                 Log.Warn("The previous working user assembly is still loaded.");
             return retained ? -1 : 0;
@@ -1554,6 +1698,12 @@ internal static class ScriptInstanceManager
     {
         try
         {
+            if (!Funke.Jobs.ScriptResourceScope.Drain(false))
+                throw new InvalidOperationException("Assembly unload refused while script jobs are running.");
+            ClearReloadState();
+            s_ProjectCatalog = "[]";
+            s_PlayResetMethods = Array.Empty<MethodInfo>();
+            DiscardPreparedAssembly();
             // Drop dynamic component registrations BEFORE the ALC unloads so
             // captured DynamicComponentStorage pointers in native callbacks
             // don't outlive the storage that owns them.
@@ -1567,6 +1717,7 @@ internal static class ScriptInstanceManager
             s_GlobalSystems.Clear();
             s_DataAssets.Clear();
             s_ClassCache.Clear();
+            s_InspectorStatusCache.Clear();
             ReleaseFieldJsonBuffer();
 
             UnloadCurrentUserAssemblyContext();
@@ -1717,8 +1868,10 @@ internal static class ScriptInstanceManager
     // == null). The first must be skipped so stale/malformed posts don't clobber
     // data; the second is an explicit "Clear" and must write null. Disambiguate by
     // input: an empty string targeting a reference type is a clear.
-    private static bool TryResolveInspectorWrite(Type memberType, string valueStr, out object? value)
+    private static bool TryResolveInspectorWrite(Type memberType, string valueStr, out object? value, object? current = null)
     {
+        if (TryGetStructuredCollection(memberType, out _, out _))
+            return TryParseStructuredCollection(memberType, valueStr, current, out value);
         value = ParseFieldValue(memberType, valueStr);
         if (value != null) return true;
         return valueStr.Length == 0 && !memberType.IsValueType;
@@ -1743,7 +1896,7 @@ internal static class ScriptInstanceManager
         var field = type.GetField(fieldName, k_Flags);
         if (field != null)
         {
-            if (TryResolveInspectorWrite(field.FieldType, valueStr, out object? parsed))
+            if (TryResolveInspectorWrite(field.FieldType, valueStr, out object? parsed, TryGetStructuredCollection(field.FieldType, out _, out _) ? field.GetValue(instance) : null))
                 field.SetValue(instance, parsed);
             return;
         }
@@ -1755,7 +1908,7 @@ internal static class ScriptInstanceManager
         if (!property.CanWrite || property.SetMethod == null || !property.SetMethod.IsPublic)
             return;
 
-        if (!TryResolveInspectorWrite(property.PropertyType, valueStr, out object? parsedProp))
+        if (!TryResolveInspectorWrite(property.PropertyType, valueStr, out object? parsedProp, TryGetStructuredCollection(property.PropertyType, out _, out _) ? property.GetValue(instance) : null))
             return;
 
         try
@@ -1806,7 +1959,7 @@ internal static class ScriptInstanceManager
 
         MemberInfo? leaf = GetPathMember(chain[^1].GetType(), segs[^1], k_Flags);
         if (leaf == null) return;
-        if (!TryResolveInspectorWrite(PathMemberType(leaf), valueStr, out object? parsed))
+        if (!TryResolveInspectorWrite(PathMemberType(leaf), valueStr, out object? parsed, TryGetStructuredCollection(PathMemberType(leaf), out _, out _) ? GetPathMemberValue(leaf, chain[^1]) : null))
             return;
         if (!TrySetPathMember(leaf, chain[^1], parsed)) return;
 
@@ -1870,6 +2023,137 @@ internal static class ScriptInstanceManager
         return null;
     }
 
+    private static bool IsCollectionScalar(Type t) => t.IsEnum || t == typeof(string) || t == typeof(bool)
+        || t == typeof(byte) || t == typeof(sbyte) || t == typeof(short) || t == typeof(ushort)
+        || t == typeof(int) || t == typeof(uint) || t == typeof(long) || t == typeof(ulong)
+        || t == typeof(float) || t == typeof(double);
+
+    private static bool TryGetStructuredCollection(Type t, out string kind, out Type leaf)
+    {
+        kind = "";
+        leaf = typeof(void);
+        if (t.IsGenericType && t.GetGenericTypeDefinition() == typeof(Dictionary<,>))
+        {
+            var args = t.GetGenericArguments();
+            if (args[0] != typeof(string) || !IsCollectionScalar(args[1])) return false;
+            kind = "dictionary";
+            leaf = args[1];
+            return true;
+        }
+        if (GetListElementType(t) is not Type inner || GetListElementType(inner) is not Type scalar
+            || t.IsArray != inner.IsArray || !IsCollectionScalar(scalar)) return false;
+        kind = "nestedList";
+        leaf = scalar;
+        return true;
+    }
+
+    private static bool HasOrdinalComparer(Type t, object? value)
+    {
+        if (value == null) return true;
+        object? comparer = t.GetProperty("Comparer")!.GetValue(value);
+        return ReferenceEquals(comparer, EqualityComparer<string>.Default) || ReferenceEquals(comparer, StringComparer.Ordinal);
+    }
+
+    private static string FormatStructuredCollection(Type t, object? value, string kind, Type leaf)
+    {
+        var envelope = new Dictionary<string, object?> { ["version"] = 1, ["kind"] = kind, ["leaf"] = MapFieldType(leaf) };
+        if (kind == "dictionary")
+        {
+            envelope["comparer"] = HasOrdinalComparer(t, value) ? "ordinal" : "unsupported";
+            if (value is System.Collections.IDictionary dictionary)
+            {
+                var entries = new List<object?[]>();
+                foreach (string key in dictionary.Keys.Cast<string>().OrderBy(k => k, Comparer<string>.Create((a, b) =>
+                    System.Text.Encoding.UTF8.GetBytes(a).AsSpan().SequenceCompareTo(System.Text.Encoding.UTF8.GetBytes(b)))))
+                    entries.Add(new object?[] { key, dictionary[key] == null ? null : FormatFieldValue(leaf, dictionary[key]) });
+                envelope["items"] = entries;
+            }
+            else envelope["items"] = null;
+        }
+        else
+        {
+            var rows = value == null ? null : new List<object?>();
+            if (value is System.Collections.IEnumerable outer)
+                foreach (object? row in outer)
+                    rows!.Add(row == null ? null : ((System.Collections.IEnumerable)row).Cast<object?>()
+                        .Select(item => item == null ? null : FormatFieldValue(leaf, item)).ToArray());
+            envelope["items"] = rows;
+        }
+        return System.Text.Json.JsonSerializer.Serialize(envelope);
+    }
+
+    private static object? ParseCollectionScalar(Type leaf, System.Text.Json.JsonElement element)
+    {
+        if (element.ValueKind == System.Text.Json.JsonValueKind.Null && leaf == typeof(string)) return null;
+        if (element.ValueKind != System.Text.Json.JsonValueKind.String) throw new FormatException("Expected a scalar string.");
+        string text = element.GetString()!;
+        if (leaf == typeof(bool) && text is not ("true" or "false" or "True" or "False" or "1" or "0"))
+            throw new FormatException("Invalid Boolean value.");
+        return ParseFieldValue(leaf, text) ?? throw new FormatException($"Invalid {leaf.Name} value.");
+    }
+
+    private static object MakeCollection(Type type, Type itemType, List<object?> values)
+    {
+        if (type.IsArray)
+        {
+            Array result = Array.CreateInstance(itemType, values.Count);
+            for (int i = 0; i < values.Count; ++i) result.SetValue(values[i], i);
+            return result;
+        }
+        var list = (System.Collections.IList)Activator.CreateInstance(type)!;
+        foreach (object? value in values) list.Add(value);
+        return list;
+    }
+
+    private static bool TryParseStructuredCollection(Type t, string text, object? current, out object? result)
+    {
+        result = null;
+        if (!TryGetStructuredCollection(t, out string kind, out Type leaf)) return false;
+        try
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(text);
+            var root = document.RootElement;
+            if (root.GetProperty("version").GetInt32() != 1 || root.GetProperty("kind").GetString() != kind
+                || root.GetProperty("leaf").GetString() != MapFieldType(leaf)) throw new FormatException("Collection schema mismatch.");
+            if (kind == "dictionary" && (root.GetProperty("comparer").GetString() != "ordinal" || !HasOrdinalComparer(t, current)))
+                throw new FormatException("Only the default or StringComparer.Ordinal dictionary comparer is supported.");
+            var items = root.GetProperty("items");
+            if (items.ValueKind == System.Text.Json.JsonValueKind.Null) return true;
+            if (items.ValueKind != System.Text.Json.JsonValueKind.Array) throw new FormatException("Expected collection items.");
+            if (kind == "dictionary")
+            {
+                var dictionary = (System.Collections.IDictionary)Activator.CreateInstance(t)!;
+                foreach (var entry in items.EnumerateArray())
+                {
+                    if (entry.ValueKind != System.Text.Json.JsonValueKind.Array || entry.GetArrayLength() != 2
+                        || entry[0].ValueKind != System.Text.Json.JsonValueKind.String) throw new FormatException("Dictionary keys must be non-null strings.");
+                    string key = entry[0].GetString()!;
+                    if (dictionary.Contains(key)) throw new FormatException($"Duplicate dictionary key '{key}'.");
+                    dictionary.Add(key, ParseCollectionScalar(leaf, entry[1]));
+                }
+                result = dictionary;
+            }
+            else
+            {
+                Type inner = GetListElementType(t)!;
+                var rows = new List<object?>();
+                foreach (var row in items.EnumerateArray())
+                {
+                    if (row.ValueKind == System.Text.Json.JsonValueKind.Null) { rows.Add(null); continue; }
+                    if (row.ValueKind != System.Text.Json.JsonValueKind.Array) throw new FormatException("Expected an inner list or null.");
+                    rows.Add(MakeCollection(inner, leaf, row.EnumerateArray().Select(item => ParseCollectionScalar(leaf, item)).ToList()));
+                }
+                result = MakeCollection(t, inner, rows);
+            }
+            return true;
+        }
+        catch (Exception ex) when (ex is System.Text.Json.JsonException or FormatException or InvalidOperationException or KeyNotFoundException or ArgumentException or OverflowException)
+        {
+            Log.Warn($"Collection edit rejected for {t}: {ex.Message}");
+            return false;
+        }
+    }
+
     // Base declaring types whose members are skipped when reflecting an object-
     // list element's inline fields (engine plumbing, not the user's data).
     private static readonly Type[] s_ObjectListBaseSkip =
@@ -1893,7 +2177,7 @@ internal static class ScriptInstanceManager
             if (!m.CanWrite) continue;
             if (GetListElementType(m.ValueType) != null) continue;  // no list/array sub-fields (v1)
             string tag = MapFieldType(m.ValueType);
-            if (tag == "unsupported" || tag == "graph") continue;   // leaf scalar/ref/enum/component/dataasset only
+            if (tag is "unsupported" or "graph" or "dictionary" or "nestedList") continue;
             result.Add(m);
         }
         return result;
@@ -1928,6 +2212,7 @@ internal static class ScriptInstanceManager
         // native struct) forwards to ECS storage, so it can't hold data by value —
         // it stays a reference list. This must win over IsObjectListable.
         if (tag.StartsWith("component:", StringComparison.Ordinal)) return tag;
+        if (tag is "dictionary" or "nestedList") return null;
         if (tag != "unsupported" && tag != "graph") return tag;   // leaf scalar/ref/enum/dataasset
         // Plain data class/struct or a user-defined (non-native) managed component
         // data class -> inline object list.
@@ -1937,6 +2222,7 @@ internal static class ScriptInstanceManager
 
     private static string MapFieldType(Type t)
     {
+        if (TryGetStructuredCollection(t, out string collectionKind, out _)) return collectionKind;
         // Primitve types
         if (t == typeof(float)) return "float";
         if (t == typeof(double)) return "double";
@@ -1980,7 +2266,7 @@ internal static class ScriptInstanceManager
 
         // A DataAsset subclass reference serializes as its asset GUID; the subtype name rides the code so the editor picker can filter to it.
         if (t.IsSubclassOf(typeof(DataAsset)))
-            return "dataasset:" + t.Name;
+            return "dataasset:" + TypeIdentity(t);
 
         if (t.IsSubclassOf(typeof(Component)))
         {
@@ -2004,6 +2290,7 @@ internal static class ScriptInstanceManager
 
     private static string FormatFieldValue(Type t, object? val)
     {
+        if (TryGetStructuredCollection(t, out string kind, out Type leaf)) return FormatStructuredCollection(t, val, kind, leaf);
         if (val == null) return "";
 
         //INFO(Ben-Scr): This may causes bugs when sharing projects across different locales
@@ -2109,7 +2396,7 @@ internal static class ScriptInstanceManager
             if (comp?.Entity == null || comp.Entity == Entity.Invalid) return "";
             string typeName = Entity.TryGetNativeComponentName(t, out string? nativeName)
                 ? nativeName!
-                : t.Name;
+                : TypeIdentity(t);
             return comp.Entity.ID.ToString(ic) + ":" + typeName;
         }
 
@@ -2175,11 +2462,14 @@ internal static class ScriptInstanceManager
             return true;
         }
 
-        return string.Equals(componentType.Name, serializedTypeName, StringComparison.Ordinal);
+        return string.Equals(TypeIdentity(componentType), serializedTypeName, StringComparison.Ordinal)
+            || FindType(serializedTypeName) == componentType;
     }
 
     private static object? ParseFieldValue(Type t, string s)
     {
+        if (TryGetStructuredCollection(t, out _, out _))
+            return TryParseStructuredCollection(t, s, null, out object? collection) ? collection : null;
         var ic = System.Globalization.CultureInfo.InvariantCulture;
         try
         {
@@ -2680,7 +2970,9 @@ internal static class ScriptInstanceManager
 
         // List<T> / T[]: emit the element wire type (and enum options for
         // List<enum>) so the editor's list drawer picks the per-row widget.
-        if (GetListElementType(member.ValueType) is Type listElem)
+        Type? metadataElement = TryGetStructuredCollection(member.ValueType, out _, out Type scalar)
+            ? scalar : GetListElementType(member.ValueType);
+        if (metadataElement is Type listElem)
         {
             string itemTag = MapListItemType(listElem) ?? "";
             sb.Append(",\"itemType\":\"").Append(EscapeJson(itemTag)).Append('"');
@@ -2743,6 +3035,37 @@ internal static class ScriptInstanceManager
     }
 
     private const int k_MaxNestingDepth = 4;
+
+    internal static string DescribeInspectorType(Type? type)
+    {
+        var warnings = new List<object>();
+        void Visit(Type owner, string prefix, int depth, bool listItem)
+        {
+            foreach (var member in CollectEditorMembers(owner)) {
+                if (member.DeclaringType != null && Array.IndexOf(s_ObjectListBaseSkip, member.DeclaringType) >= 0) continue;
+                if (!IsMemberEditorVisible(member)) continue;
+                string path = prefix + member.Name;
+                Type valueType = member.ValueType;
+                string tag = MapFieldType(valueType);
+                string? reason = null;
+                if (listItem && (!member.CanWrite || GetListElementType(valueType) != null || tag is "unsupported" or "graph" or "dictionary"))
+                    reason = "Object-list elements support writable scalar/reference members only.";
+                else if (tag == "unsupported") {
+                    if (depth < k_MaxNestingDepth && IsInspectableNestedType(valueType)) {
+                        Visit(valueType, path + ".", depth + 1, false);
+                        continue;
+                    }
+                    reason = depth >= k_MaxNestingDepth ? "Inspector nesting limit reached." :
+                        "Unsupported field type. Collections support two list levels or Dictionary<string, scalar>; object graphs, deeper levels and other keys or values are not editable.";
+                }
+                else if (GetListElementType(valueType) is Type element && MapListItemType(element) == "object")
+                    Visit(element, path + "[].", depth + 1, true);
+                if (reason != null) warnings.Add(new { path, type = valueType.ToString(), reason });
+            }
+        }
+        if (type != null) Visit(type, "", 0, false);
+        return System.Text.Json.JsonSerializer.Serialize(new { exists = type != null, warnings });
+    }
 
     // Emits one editor member. A directly-supported type (see MapFieldType)
     // becomes a single field record; a plain user struct/class is flattened
@@ -2856,6 +3179,14 @@ internal static class ScriptInstanceManager
         try
         {
             string className = Marshal.PtrToStringUTF8((IntPtr)classNamePtr) ?? "";
+            if (className == "catalog:") return NullTerminated(s_ProjectCatalog);
+            if (className.StartsWith("identity:", StringComparison.Ordinal)) {
+                Type? resolved = GetOrCacheClass(className[9..])?.Type;
+                return NullTerminated(resolved == null || resolved.Assembly != s_UserAssembly ? "" : TypeIdentity(resolved));
+            }
+            if (className.StartsWith("status:", StringComparison.Ordinal))
+                return NullTerminated(s_InspectorStatusCache.GetOrAdd(className[7..],
+                    name => DescribeInspectorType(GetOrCacheClass(name)?.Type)));
             bool metadataOnly = className.StartsWith("schema:", StringComparison.Ordinal);
             if (metadataOnly) className = className[7..];
             var classInfo = GetOrCacheClass(className);
@@ -3123,7 +3454,7 @@ internal static class ScriptInstanceManager
         EntityScript instance = data.Instance;
         string methodName = PtrToString(methodNamePtr);
 
-        var info = GetOrCacheClass(instance.GetType().Name);
+        var info = GetOrCacheClass(TypeIdentity(instance.GetType()));
         if (info == null) return 0;
 
         EnsureInvokableMethods(info);
@@ -3222,25 +3553,49 @@ internal static class ScriptInstanceManager
         return info;
     }
 
+    internal static bool IsUnambiguousScriptName(string name, Type expected)
+    {
+        Type? found = null;
+        var assemblies = PackageAssemblies().Prepend(expected.Assembly)
+            .Concat(new[] { s_UserAssembly, s_CoreAssembly }.OfType<Assembly>()).Distinct();
+        foreach (Assembly assembly in assemblies)
+        {
+            foreach (Type candidate in EditorWindowRegistry.LoadableTypes(assembly))
+            {
+                if (candidate.Name != name || !typeof(EntityScript).IsAssignableFrom(candidate)) continue;
+                if (found != null && found != candidate) return false;
+                found = candidate;
+            }
+        }
+        return found == expected;
+    }
+
+    internal static string TypeIdentity(Type type) =>
+        type.Assembly.GetName().Name?.StartsWith("Pkg.", StringComparison.Ordinal) == true
+            ? PackageScriptRegistry.StoredName(type, type.IsSubclassOf(typeof(Component)) && !type.IsSubclassOf(typeof(EntityScript)) ? "component" : "script")
+            : "type:" + type.FullName;
+
+    internal static Type? ResolveTypeIdentity(string name, IEnumerable<Assembly> assemblies)
+    {
+        bool canonical = name.StartsWith("type:", StringComparison.Ordinal);
+        string requested = canonical ? name[5..] : name;
+        Type[] matches = assemblies.Distinct().SelectMany(EditorWindowRegistry.LoadableTypes)
+            .Where(t => t.FullName == requested || (!canonical && (t.Name == requested
+                || t.FullName == "Funke." + requested || t.FullName == "Funke.Components." + requested)))
+            .Distinct().ToArray();
+        if (matches.Length == 1) return matches[0];
+        if (matches.Length > 1)
+            Log.Warn($"[ScriptLoader] Ambiguous type '{name}': {string.Join(", ", matches.Select(t => t.Assembly.GetName().Name + ":" + t.FullName))}. Select an explicit type; saved data is retained.");
+        return null;
+    }
+
     private static Type? FindType(string className)
     {
-        if (s_UserAssembly != null)
-        {
-            var type = s_UserAssembly.GetType($"Funke.{className}")
-                    ?? s_UserAssembly.GetType($"Funke.Components.{className}")
-                    ?? s_UserAssembly.GetType(className);
-            if (type != null) return type;
-        }
-
-        if (s_CoreAssembly != null)
-        {
-            var type = s_CoreAssembly.GetType($"Funke.{className}")
-                    ?? s_CoreAssembly.GetType($"Funke.Components.{className}")
-                    ?? s_CoreAssembly.GetType(className);
-            if (type != null) return type;
-        }
-
-        return FindPackageType(className);
+        var assemblies = new List<Assembly>();
+        if (s_UserAssembly != null) assemblies.Add(s_UserAssembly);
+        if (s_CoreAssembly != null) assemblies.Add(s_CoreAssembly);
+        assemblies.AddRange(PackageAssemblies());
+        return ResolveTypeIdentity(className, assemblies);
     }
 
     // Scripts shipped in packages (Pkg.*.dll): by full name, or by class name when only one package type has it.

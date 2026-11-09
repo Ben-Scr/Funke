@@ -65,6 +65,7 @@ internal static class DynamicComponentRegistrar
 
     private static bool TryRegisterStruct(Type type)
     {
+        if (ComponentTypes.IsNativeMirror(type)) return true;
         // Layout-sequential required so the C++ side can treat the component
         // bytes as a flat blittable struct that mirrors C#'s field layout.
         // C# doesn't auto-enforce sequential on value types — we do.
@@ -86,7 +87,7 @@ internal static class DynamicComponentRegistrar
             return false;
         }
 
-        string displayName = type.Name;
+        string displayName = "type:" + type.FullName;
         string subcategory = "Native Components (C#)";
         uint   categoryCode = 0u; // 0 = Component (Tag is reserved for engine-internal)
 

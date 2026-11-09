@@ -453,6 +453,8 @@ namespace Funke {
 		return g_RuntimeUuidToHandle.find(uuid) != g_RuntimeUuidToHandle.end();
 	}
 
+	size_t TextureManager::GetRuntimeTextureCount() { return g_RuntimeUuidToHandle.size(); }
+
 	uint64_t TextureManager::CreateRuntimeTexture(int width, int height, const uint8_t* rgba,
 		Filter filter, Wrap u, Wrap v)
 	{
@@ -477,18 +479,25 @@ namespace Funke {
 			s_FreeIndices.push(idx);
 			return 0;
 		}
-		slot.Name = "<runtime>";
-		slot.SamplerFilter = filter;
-		slot.WrapU = u;
-		slot.WrapV = v;
 		slot.IsValid = true;
-		EnsureCanonicalKeyCapacity(s_Textures.size());
-		g_CanonicalKeys[idx].clear();  // never path-matched
-
-		const uint64_t uuid = g_NextRuntimeUuid++;
 		const TextureHandle handle{ idx, slot.Generation };
-		g_RuntimeUuidToHandle[uuid] = handle;
-		g_RuntimeIndexToUuid[idx] = uuid;
+		const uint64_t uuid = g_NextRuntimeUuid++;
+		try {
+			slot.Name = "<runtime>";
+			slot.SamplerFilter = filter;
+			slot.WrapU = u;
+			slot.WrapV = v;
+			EnsureCanonicalKeyCapacity(s_Textures.size());
+			g_CanonicalKeys[idx].clear();
+			g_RuntimeUuidToHandle.emplace(uuid, handle);
+			g_RuntimeIndexToUuid.emplace(idx, uuid);
+		}
+		catch (...) {
+			g_RuntimeUuidToHandle.erase(uuid);
+			g_RuntimeIndexToUuid.erase(idx);
+			UnloadTexture(handle);
+			throw;
+		}
 		return uuid;
 	}
 

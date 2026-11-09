@@ -1,6 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Reflection;
+using System.Reflection.Metadata;
+using System.Reflection.Metadata.Ecma335;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 
@@ -12,6 +15,49 @@ namespace Funke.Interop;
 /// </summary>
 internal static class PackageScriptRegistry
 {
+    internal static string BuildProjectTypesJson(Assembly assembly, System.IO.Stream? symbols)
+    {
+        var entries = new List<object>();
+        MetadataReaderProvider? provider = null;
+        try {
+            if (symbols != null) {
+                symbols.Position = 0;
+                try { provider = MetadataReaderProvider.FromPortablePdbStream(symbols, MetadataStreamOptions.LeaveOpen); }
+                catch (BadImageFormatException) { }
+            }
+            var reader = provider?.GetMetadataReader();
+            foreach (Type type in assembly.GetTypes().OrderBy(t => t.FullName, StringComparer.Ordinal)) {
+                if (!type.IsVisible || type.IsAbstract || type.ContainsGenericParameters
+                    || (!type.IsValueType && type.GetConstructor(Type.EmptyTypes) == null)) continue;
+                string? kind = type.IsSubclassOf(typeof(EntityScript)) ? "script"
+                    : type.IsSubclassOf(typeof(SceneSystem)) ? "sceneSystem"
+                    : type.IsSubclassOf(typeof(GlobalSystem)) ? "globalSystem"
+                    : type.IsSubclassOf(typeof(DataAsset)) ? "dataAsset"
+                    : type.IsValueType && typeof(Funke.Components.IComponent).IsAssignableFrom(type) ? "nativeComponent"
+                    : type.IsSubclassOf(typeof(Component)) ? "component" : null;
+                if (kind == null) continue;
+                var paths = new SortedSet<string>(StringComparer.Ordinal);
+                if (reader != null) {
+                    const BindingFlags flags = BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
+                    foreach (MethodBase method in type.GetMethods(flags).Cast<MethodBase>().Concat(type.GetConstructors(flags))) {
+                        int row = method.MetadataToken & 0x00ffffff;
+                        if (row > reader.MethodDebugInformation.Count) continue;
+                        var debug = reader.GetMethodDebugInformation(MetadataTokens.MethodDebugInformationHandle(row));
+                        foreach (var point in debug.GetSequencePoints()) {
+                            if (point.IsHidden) continue;
+                            var document = point.Document.IsNil ? debug.Document : point.Document;
+                            if (!document.IsNil) paths.Add(reader.GetString(reader.GetDocument(document).Name));
+                        }
+                    }
+                }
+                string nativeName = kind == "nativeComponent" ? Funke.Components.ComponentTypes.ResolveNativeName(type, 0, out _, metadataOnly: true) ?? "type:" + type.FullName : "";
+                entries.Add(new { name = "type:" + type.FullName, displayName = type.FullName, kind,
+                    path = paths.FirstOrDefault() ?? "", nativeName });
+            }
+            return System.Text.Json.JsonSerializer.Serialize(entries);
+        }
+        finally { provider?.Dispose(); }
+    }
     private static string? s_Json;
 
     // Test seam: replaces the package assembly scan.

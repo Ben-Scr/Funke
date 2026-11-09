@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <utility>
 #include <vector>
 
@@ -89,7 +90,7 @@ namespace Funke {
 
 		EventId Subscribe(Callback callback) {
 			const EventId id(++m_NextId.value);
-			m_Listeners.push_back({ id, std::move(callback), true });
+			m_Listeners.push_back({ id, std::make_shared<Callback>(std::move(callback)), true });
 			return id;
 		}
 
@@ -146,10 +147,11 @@ namespace Funke {
 
 	private:
 		friend class Application;
+		friend struct EventBusTestAccess;
 
 		struct Entry {
 			EventId Id;
-			Callback Listener;
+			std::shared_ptr<Callback> Listener;
 			bool Active = true;
 		};
 
@@ -166,9 +168,9 @@ namespace Funke {
 						continue;
 					}
 
-					// Copy before invoke: a listener that calls Subscribe() can reallocate m_Listeners, dangling a reference.
-					Callback listener = m_Listeners[i].Listener;
-					listener(event);
+					// Keep the callable alive across subscription changes and nested dispatch.
+					auto listener = m_Listeners[i].Listener;
+					(*listener)(event);
 				}
 			}
 			catch (...) {

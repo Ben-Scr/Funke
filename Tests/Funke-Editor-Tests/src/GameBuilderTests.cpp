@@ -143,15 +143,21 @@ TEST_CASE("Installed export uses an available module variant and rejects a damag
 	WriteInstalledRuntime(full);
 	WriteInstalledRuntime(reduced);
 	installation.Runtimes = { { "Release", full } };
-	installation.RuntimeVariants = { { "2d", { { "Release", reduced } } } };
-	const auto variant = GameBuilder::SelectInstalledRuntime(installation, FunkeProject::BuildProfile::Release, "2d");
+	installation.RuntimeVariants = { { "v2-2d", { { "Release", reduced } } } };
+	const auto variant = GameBuilder::SelectInstalledRuntime(installation, FunkeProject::BuildProfile::Release, "v2-2d");
 	CHECK(variant.Directory == reduced);
-	CHECK(variant.Variant == "2d");
-	const auto available = GameBuilder::SelectInstalledRuntime(installation, FunkeProject::BuildProfile::Release, "3d");
+	CHECK(variant.Variant == "v2-2d");
+	const auto available = GameBuilder::SelectInstalledRuntime(installation, FunkeProject::BuildProfile::Release, "v2-3d");
 	CHECK(available.Directory == full);
 	CHECK(available.Variant.empty());
+	const auto exact = GameBuilder::SelectInstalledRuntime(installation, FunkeProject::BuildProfile::Release, "v2-3d", true);
+	CHECK_FALSE(exact.Succeeded());
+	CHECK(exact.Error.find("Exact module export unavailable") != std::string::npos);
+	installation.RuntimeVariants["2d"] = { { "Release", reduced } };
+	CHECK_FALSE(GameBuilder::SelectInstalledRuntime(installation, FunkeProject::BuildProfile::Release,
+		"v2-2d-physics2d", true).Succeeded());
 	std::filesystem::remove(reduced / "Funke-ScriptCore.dll");
-	const auto damaged = GameBuilder::SelectInstalledRuntime(installation, FunkeProject::BuildProfile::Release, "2d");
+	const auto damaged = GameBuilder::SelectInstalledRuntime(installation, FunkeProject::BuildProfile::Release, "v2-2d");
 	CHECK_FALSE(damaged.Succeeded());
 	CHECK(damaged.Error.find("Funke-ScriptCore.dll") != std::string::npos);
 }

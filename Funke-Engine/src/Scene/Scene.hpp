@@ -372,6 +372,7 @@ namespace Funke {
 		bool IsSceneSystemEnabled(const std::string& className) const;
 		bool SetSceneSystemEnabled(const std::string& className, bool enabled);
 		void StartManagedSceneSystemsForPlayMode();
+		void ResetManagedSceneSystemsForReload();
 
 		uint32_t GetSceneSystemHandle(const std::string& className) const;
 		void SetSceneSystemFieldValue(const std::string& className, const std::string& fieldName, const std::string& value);
@@ -443,6 +444,7 @@ namespace Funke {
 		void SetSceneId(UUID id) { m_SceneId = id; }
 
 	private:
+		friend class PhysicsScene2D;
 		Scene(const std::string& name, const SceneDefinition* definition, bool IsPersistent);
 
 		// Transform2D while Funke.2D is active, else Transform3D while Funke.3D is, else none.
@@ -451,16 +453,6 @@ namespace Funke {
 		void OnTransform2DComponentDestroy(entt::registry& registry, EntityHandle entity);
 		void OnSpriteRendererComponentConstruct(entt::registry& registry, EntityHandle entity);
 		void OnSpriteRendererComponentDestroy(entt::registry& registry, EntityHandle entity);
-		void OnRigidBody2DComponentConstruct(entt::registry& registry, EntityHandle entity);
-		void OnRigidBody2DComponentDestroy(entt::registry& registry, EntityHandle entity);
-		void OnBoxCollider2DComponentConstruct(entt::registry& registry, EntityHandle entity);
-		void OnBoxCollider2DComponentDestroy(entt::registry& registry, EntityHandle entity);
-		void OnCircleCollider2DComponentConstruct(entt::registry& registry, EntityHandle entity);
-		void OnCircleCollider2DComponentDestroy(entt::registry& registry, EntityHandle entity);
-		void OnPolygonCollider2DComponentConstruct(entt::registry& registry, EntityHandle entity);
-		void OnPolygonCollider2DComponentDestroy(entt::registry& registry, EntityHandle entity);
-		template <typename TJoint>
-		void OnJoint2DComponentDestroy(entt::registry& registry, EntityHandle entity);
 		void OnAudioSourceComponentDestroy(entt::registry& registry, EntityHandle entity);
 		void OnScriptComponentDestroy(entt::registry& registry, EntityHandle entity);
 

@@ -34,6 +34,7 @@ try
         "nuget-versions" => await NuGetVersions(args),
         "github-index" => await GitHubIndex(args),
         "github-download" => await GitHubDownload(args),
+        "thumbnail-download" => await ThumbnailDownload(args),
         "unzip" => Unzip(args),
         "zip" => Zip(args),
         "registry-fetch" => await RegistryFetch(args),
@@ -143,6 +144,34 @@ async Task<int> GitHubIndex(string[] args)
 // `http` client has a 15 s timeout that would kill any non-trivial
 // download. Errors propagate as exceptions and are reported by the
 // outer try/catch.
+
+async Task<int> ThumbnailDownload(string[] args)
+{
+    if (args.Length != 3 || !Uri.TryCreate(args[1], UriKind.Absolute, out var uri)
+        || (uri.Scheme != "https" && uri.Scheme != "http")) return Error("Invalid thumbnail URL.");
+    const int limit = 8 * 1024 * 1024;
+    using var cancel = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+    using var response = await http.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, cancel.Token);
+    response.EnsureSuccessStatusCode();
+    if (response.Content.Headers.ContentLength > limit) return Error("Thumbnail exceeds 8 MiB.");
+    bool success = false;
+    try
+    {
+        await using var input = await response.Content.ReadAsStreamAsync(cancel.Token);
+        await using var output = File.Create(args[2]);
+        var buffer = new byte[16384];
+        int total = 0, read;
+        while ((read = await input.ReadAsync(buffer, cancel.Token)) != 0)
+        {
+            total += read;
+            if (total > limit) return Error("Thumbnail exceeds 8 MiB.");
+            await output.WriteAsync(buffer.AsMemory(0, read), cancel.Token);
+        }
+        success = true;
+        return 0;
+    }
+    finally { if (!success) File.Delete(args[2]); }
+}
 
 async Task<int> GitHubDownload(string[] args)
 {

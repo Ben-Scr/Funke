@@ -16,6 +16,12 @@ MANIFEST = "FunkeSDK.json"
 SCRIPT_CORE_FILES = ("Funke-ScriptCore.dll", "Funke-ScriptCore.deps.json", "Funke-ScriptCore.runtimeconfig.json")
 HEADER_SUFFIXES = {".h", ".hpp", ".hh", ".hxx", ".inl", ".ipp", ".tpp", ".inc"}
 NATIVE_ROOTS = {"Funke-Engine", "External", "bin"}
+RUNTIME_VARIANTS = {
+    "2d", "3d", "nomodules",
+    "v2-nomodules", "v2-2d", "v2-3d", "v2-2d-3d",
+    "v2-2d-physics2d", "v2-3d-physics3d",
+    "v2-2d-3d-physics2d", "v2-2d-3d-physics3d",
+}
 PLATFORMS = {
     "windows": ("Funke-Runtime.exe", "Funke-Engine.dll", "SDL3.dll", "nethost.dll"),
     "linux": ("Funke-Runtime", "libFunke-Engine.so", "libSDL3.so.0", "libwebgpu_dawn.so"),
@@ -121,7 +127,7 @@ def validate_sdk(sdk: Path, *, require_runtimes: bool = True, require_binary: bo
     if not isinstance(variants, dict):
         raise ValueError("Invalid SDK runtimeVariants")
     for variant, configurations in variants.items():
-        if not re.fullmatch(r"[A-Za-z0-9_-]+", variant) or not isinstance(configurations, dict):
+        if variant not in RUNTIME_VARIANTS or not isinstance(configurations, dict):
             raise ValueError("Invalid SDK runtime variant")
         for configuration, relative in configurations.items():
             if configuration not in ("Development", "Release", "Debug"):

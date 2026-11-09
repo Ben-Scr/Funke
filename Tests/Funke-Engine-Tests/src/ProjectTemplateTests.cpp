@@ -70,6 +70,24 @@ TEST_CASE("Template placeholders expand to the project name and a C# identifier"
 	CHECK(ProjectTemplates::MakeIdentifier("3D Racer") == "_3D_Racer");
 }
 
+TEST_CASE("A template with an explicit empty module list creates a project without world modules") {
+	const auto parent = MakeTempDirectory("funke-empty-modules-");
+	const auto directory = parent / "Template";
+	std::filesystem::create_directories(directory / "Assets" / "Scenes");
+	REQUIRE(SceneSerializerStorage::WriteRootToFile(Path::ToUtf8(directory / "Assets" / "Scenes" / "SampleScene.scene"),
+		FunkeProject::BuildStarterScene("SampleScene"), SceneSerializationFormat::Json));
+	REQUIRE(File::WriteAllText(Path::ToUtf8(directory / "template.json"),
+		R"({"id":"Test.Empty","displayName":"Empty","moduleRequirementsVersion":2,"modules":[]})"));
+	ProjectTemplate projectTemplate;
+	std::string error;
+	REQUIRE_MESSAGE(ProjectTemplates::TryLoad(Path::ToUtf8(directory), projectTemplate, &error), error);
+	CHECK(projectTemplate.HasModuleSelection);
+	CHECK(projectTemplate.Modules.empty());
+	const auto created = FunkeProject::Create("Empty", Path::ToUtf8(parent / "Projects"), "Empty", &projectTemplate);
+	CHECK(FunkeProject::Load(created.RootDirectory).Modules.empty());
+	std::filesystem::remove_all(parent);
+}
+
 // FUNKE_TEST_KEEP_TEMPLATE_DIR=<dir> keeps one project per template there (<dir>/<template id>) for manual or Run.ps1 checks.
 TEST_CASE("Every template creates a project whose startup scene only uses registered components") {
 	ComponentRegistry registry;
@@ -242,13 +260,14 @@ TEST_CASE("User templates can be edited, refreshed from their source project and
 	std::filesystem::remove_all(workDirectory, ec);
 }
 
-TEST_CASE("Projects without a modules field load as 2D") {
+TEST_CASE("Legacy projects without a modules field retain dimensions and physics") {
 	const std::filesystem::path parent = MakeTempDirectory("funke-legacy-modules-");
 	FunkeProject project = FunkeProject::Create("LegacyGame", Path::ToUtf8(parent));
 
 	Json::Value root = Json::Parse(File::ReadAllText(project.ProjectFilePath));
 	REQUIRE(root.IsObject());
 	std::erase_if(root.GetObject(), [](const auto& member) { return member.first == "modules"; });
+	*root.FindMember("projectFormatVersion") = Json::Value(1);
 	REQUIRE(File::WriteAllText(project.ProjectFilePath, Json::Stringify(root, true)));
 
 	const FunkeProject loaded = FunkeProject::Load(project.RootDirectory);

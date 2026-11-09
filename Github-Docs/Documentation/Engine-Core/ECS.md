@@ -220,13 +220,58 @@ Choose playback execution with `ecb.Playback(EntityCommandBufferPlaybackMode.Par
 
 | Mode | Behavior |
 |------|----------|
-| `Automatic` | Default. Selects native parallel playback for sufficiently large supported batches. |
+| `Automatic` | Default (`Auto` in C++). Ordered below 512; eligible batches use staged inline execution from 512 and may use workers from 8192. Size is `max(recorded creations, commands)`. |
 | `Sequential` | Uses the ordered serial playback path. Useful when comparing performance. |
 | `Parallel` | Requests the supported native parallel path. Unsupported batches still fall back; small kernels or unavailable workers may execute inline. |
 
 The staged native path supports creation and eligible additions/removals of `NativeTransform2D` and `NativeSpriteRenderer`, plus destruction of entities containing only supported components. UUID candidate generation, component initialization, and disjoint payload moves/destruction can run on workers. Entity-handle allocation, storage bookkeeping, identity-index commits, and lifecycle callbacks remain serial on the main thread.
 
 Batches requiring prefab loading, hierarchy or script lifecycle handling, custom component logic, extra callbacks, or ordering between mixed operations use the ordered path. Playback is synchronous in every mode. Finish all jobs that access the scene before playback; native parallel playback does not make direct entity/component structural calls thread-safe.
+
+#### Playback capability matrix
+
+Eligibility is checked for the entire batch before staged mutation. A single ineligible command selects ordered playback for the whole batch. `Parallel` requests the staged path even below the automatic threshold; it does not promise worker execution.
+
+| Operation / component | Staged eligibility | Ordered fallback reason |
+|---|---|---|
+| Create bare runtime entities | No component commands; no external signals on entity, metadata or UUID storage | `creation_signals` |
+| Create with default or byte-payload `Transform2D` / `SpriteRenderer` | Only local targets; each entity/component pair once; default and payload adds may coexist | `duplicate_component`, `mixed_targets` |
+| Add default or byte-payload `Transform2D` / `SpriteRenderer` to live entities | Component absent, target valid, no component conflicts; Transform2D target has neither hierarchy nor Rigidbody2D | `component_already_present`, `stale_target`, `component_conflict`, `transform_lifecycle` |
+| Remove `Transform2D` / `SpriteRenderer` from live entities | Component present; each entity/component pair once; trusted managed invalidation | `component_missing`, `duplicate_component`, `component_invalidation_callback` |
+| Destroy live entities | Unique valid targets containing only entity metadata, UUID, Transform2D and SpriteRenderer; eligible signals and lifecycle/invalidation state | `duplicate_target`, `stale_target`, `destroy_lifecycle_or_storage` |
+| Add/remove any other component, including dynamic/custom types | Ordered; staged component construction/removal is certified only for the two types above | `uncertified_component` |
+| Set component (reserved wire opcode), enable/disable | Ordered | `unsupported_operation` |
+| Instantiate prefab | Ordered; existing prefab validation and hydration still apply | `prefab_loading` |
+| Add/remove/destroy mixed in one batch; destruction of newly created entities | Ordered, preserving recorded command order | `mixed_operations` |
+| Creation combined with live-target commands | Ordered | `mixed_targets` |
+| Native C++ value/configure overloads | Ordered typed construction, even for an otherwise supported component | `native_custom_command` |
+| Native default add/remove without a registered wire operation | Ordered typed fallback | `native_component_not_serializable` |
+
+Both staged component types must retain their native type/storage identity, native `has` operation, no dynamic storage, no `onAdd` callback and no declared dependencies. Default adds additionally certify `defaultEmplace` and `add`; payload adds certify `emplaceFromBytes` and its byte size; removes certify `remove`. Overrides fail with `uncertified_component`. Extra construct/update/destroy signal listeners fail with `component_signals`; the engine's known Transform2D/SpriteRenderer hooks remain supported. A declared conflict between the two component batches produces `batch_component_conflict`. Destroy's combined guard also excludes tags, hierarchy, physics, scripts and dynamic components on the targets, reentrant destruction, and untrusted invalidation callbacks. Unsupported storage on unrelated entities does not itself prevent a destroy batch.
+
+#### Diagnosing selection
+
+Set `FUNKE_ECB_PARALLEL_DIAGNOSTICS=1` **before starting the process**. The existing `[EcbParallel]` core log now reports numeric `mode` (`0` automatic, `1` sequential, `2` parallel), `path`, and `reason`. Ordered selection reports the first rejected eligibility check, with zero-based `command` and `type_id` when available; `command=4294967295` means a batch-wide decision. It is a selection diagnostic, not an error or a list of every possible fallback reason.
+
+- `path=ordered`: reasons include the matrix above, `sequential_requested`, and `auto_below_threshold`. Internal guards also identify `worker_caller`, `target_out_of_range`, `unknown_component`, `component_module_unavailable` or `component_registry_unavailable`. Public native playback rejects a worker caller before this planner; normal wire preflight rejects invalid/unavailable components before selection.
+- `path=staged execution=workers reason=none`: at least one worker actually processed items. `worker_items`, `worker_pool_tasks`, `worker_mask` and `max_active` remain available; they do not imply that every phase ran concurrently.
+- `path=staged execution=inline`: reasons are `auto_inline_threshold`, `workers_unavailable`, `below_kernel_grain`, `serial_kernels`, `dispatch_unavailable`, or `caller_completed_work` (jobs were submitted but the caller claimed all items). Linear kernels use grain 2048; creation/destruction also have pool tasks with grain 1. `FUNKE_ECB_SERIAL_KERNELS=1` deliberately disables workers while retaining the staged algorithm.
+
+For example, a 512-entity bare creation with automatic mode reports `mode=0 path=staged execution=inline reason=auto_inline_threshold`. A batch creating 512 Transform2D entities then adding Transform2D again to local entity 0 reports `mode=2 path=ordered reason=duplicate_component` in parallel mode. Both cases are exercised by `EcbParallelPlaybackTests.cpp`. Run the existing suite with diagnostics enabled to assert the log fields as well as scene results:
+
+```powershell
+$env:FUNKE_ECB_PARALLEL_DIAGNOSTICS = '1'
+$env:FUNKE_ECB_SERIAL_KERNELS = '0'
+scripts/dev/Test.ps1 -Suite Engine -Config Release -Filter '*ECB*' -NoBuild
+```
+
+Use `-NoBuild` only after the engine and engine-test targets have been built. Core diagnostics go to stdout and the engine log file, not the editor Console. Preflight failures return before path selection; staged completion statistics are emitted only after successful execution.
+
+#### Return values and failures
+
+All modes return recorded creation count, including roots subsequently destroyed in that batch; those output slots are `0` in C# and `entt::null` in C++. Mutation-only and empty batches return `0`. UUID values vary between runs; equality means equivalent component values, entity validity and counts, output-slot ordering, and unique resolvable identities. Default adds retain existing values, byte-payload adds replace them, missing removals and stale live targets are skipped, and dependent commands preserve order through fallback.
+
+The shared wire backend validates mode, buffer shape, output capacity, components and payload sizes before scene mutation, independent of mode. It returns negative error codes (for example `-1` malformed payload, `-3` insufficient output, `-4` unavailable component, `-7` execution exception, `-9` invalid mode); the managed API turns backend errors into `InvalidOperationException` and validates invalid enum values itself with `ArgumentOutOfRangeException`. Execution exceptions are not a transaction guarantee: earlier mutations may remain. Native typed/custom fallback preserves its C++ exception behavior; scene/thread misuse also throws. Changing playback mode does not change these boundaries.
 
 ### Recording from parallel jobs
 
@@ -318,3 +363,9 @@ Native commands use stable pages of 256 commands (16 KiB per allocated page); ca
 - [Scripting](../Scripting/Scripting.md) — writing C# logic over entities and components.
 - [Writing Packages](../Packages/Writing-Packages.md) — adding your own components.
 - [Job System](Job-System.md) — processing many entities in parallel.
+
+### Native component conflicts
+
+`Entity::AddComponent<T>`, `Scene::AddComponent<T>` and `ComponentUtils::AddComponent<T>` check the registered component conflicts before insertion. Adding a second, different 2D collider throws `FunkeException(InvalidArgument)` without allocating a body or shape or removing the existing collider. Adding the same component again still returns the existing component. A rigidbody and a single collider are supported in either insertion order.
+
+Native entity command buffers use the same metadata: default additions follow the existing playback rejection/reporting contract; conflicting configured/value additions throw before constructing the component or invoking the configuration callback. Components larger than the buffer's inline payload limit require a configure callback. Direct `entt::registry::emplace` is a lower-level operation and bypasses these API checks; callers using it must uphold the component invariants themselves.

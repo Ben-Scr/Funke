@@ -1,8 +1,10 @@
 #include <pch.hpp>
 #include "Gui/EditorUI.hpp"
+#include "Gui/EditorKeyboard.hpp"
 
 #include "Gui/EditorIcons.hpp"
 #include "Gui/EditorTheme.hpp"
+#include "Gui/GlassBackdrop.hpp"
 #include "Gui/ImGuiUtils.hpp"
 
 #include <Gui/Icons.hpp>
@@ -205,6 +207,7 @@ namespace Funke::EditorUI {
 	bool Button(const char* label, ButtonVariant variant, const ImVec2& size) {
 		PushButtonColors(variant);
 		const bool clicked = ImGui::Button(label, size);
+		GlassBackdrop::DrawLastItemSurface();
 		PopButtonColors(variant);
 		return clicked;
 	}
@@ -272,6 +275,7 @@ namespace Funke::EditorUI {
 				clicked = ImGui::Button(id, ImVec2(side, side));
 			}
 		}
+		GlassBackdrop::DrawLastItemSurface();
 		if (toggleFill) ImGui::PopStyleColor(2);
 
 		if (tooltip) Tooltip(tooltip);
@@ -285,6 +289,7 @@ namespace Funke::EditorUI {
 			ImGui::PushStyleColor(ImGuiCol_ButtonHovered, WithAlpha(fill, std::min(1.0f, fill.w + 0.10f)));
 		}
 		const bool clicked = ImGui::Button(label);
+		GlassBackdrop::DrawLastItemSurface();
 		if (active) ImGui::PopStyleColor(2);
 		if (tooltip) Tooltip(tooltip);
 		return clicked;
@@ -323,6 +328,7 @@ namespace Funke::EditorUI {
 		ImGui::SetNextItemWidth(std::max(1.0f, fullW - inset - style.FramePadding.x));
 		const bool changed = ImGui::InputTextWithHint("##search", hint, buffer, bufferSize);
 		const bool active = ImGui::IsItemActive();
+		GlassBackdrop::DrawLastItemSurface();
 		ImGui::PopStyleVar();
 		ImGui::PopStyleColor(3);
 		ImGui::PopID();
@@ -347,6 +353,17 @@ namespace Funke::EditorUI {
 			return true;
 		}
 		return false;
+	}
+
+	bool SliderFloat(const char* label, float* value, float minimum, float maximum, const char* format, ImGuiSliderFlags flags) {
+		return EditorKeyboard::SliderFloat(label, value, minimum, maximum, format, flags);
+	}
+	bool SliderInt(const char* label, int* value, int minimum, int maximum, const char* format, ImGuiSliderFlags flags) {
+		return EditorKeyboard::SliderInt(label, value, minimum, maximum, format, flags);
+	}
+	void EndCombo() { EditorKeyboard::EndCombo(); }
+	bool BeginCombo(const char* label, const char* preview, ImGuiComboFlags flags) {
+		return EditorKeyboard::BeginCombo(label, preview, flags);
 	}
 
 	bool CompactSlider(const char* label, float* value, float minimum, float maximum, float step,
@@ -382,7 +399,7 @@ namespace Funke::EditorUI {
 			ImGui::PushStyleColor(color, ImVec4(0, 0, 0, 0));
 		}
 		// Keep ImGui's drag and navigation behavior while drawing the rail separately.
-		if (ImGui::SliderFloat("##slider", value, minimum, maximum, "%.0f",
+		if (EditorUI::SliderFloat("##slider", value, minimum, maximum, "%.0f",
 			ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_NoInput)) {
 			*value = std::round(*value);
 		}
@@ -521,13 +538,21 @@ namespace Funke::EditorUI {
 		return pressed;
 	}
 
-	bool BeginTabBar(const char* id, ImGuiTabBarFlags flags) {
+	bool BeginTabBar(const char* id, ImGuiTabBarFlags flags, bool tabListPopup) {
 		const float font = ImGui::GetFontSize();
 		if ((flags & ImGuiTabBarFlags_FittingPolicyMask_) == 0) flags |= ImGuiTabBarFlags_FittingPolicyScroll;
-		flags |= ImGuiTabBarFlags_DrawSelectedOverline | ImGuiTabBarFlags_TabListPopupButton;
-		ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(std::round(font * 0.85f), font * (19.0f / 30.0f)));
+		flags |= ImGuiTabBarFlags_DrawSelectedOverline;
+		if (tabListPopup) flags |= ImGuiTabBarFlags_TabListPopupButton;
+		ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(std::round(font * 0.8f), std::round(font * 0.35f)));
 		const bool open = ImGui::BeginTabBar(id, flags);
 		ImGui::PopStyleVar();
+		if (open) {
+			const ImRect rect = GImGui->CurrentTabBar->BarRect;
+			ImDrawList* drawList = ImGui::GetWindowDrawList();
+			const float rounding = ImGui::GetStyle().TabRounding;
+			drawList->AddRectFilled(rect.Min, rect.Max, ImGui::GetColorU32(ImGuiCol_FrameBg), rounding);
+			drawList->AddRect(rect.Min, rect.Max, ImGui::GetColorU32(ImGuiCol_Border), rounding);
+		}
 		return open;
 	}
 
@@ -542,7 +567,12 @@ namespace Funke::EditorUI {
 		ImGuiTabBar* bar = GImGui->CurrentTabBar;
 		// Native size/overflow calculations still read live padding despite the tab bar's cached label padding.
 		ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, bar ? bar->FramePadding : ImGui::GetStyle().FramePadding);
+		ImGui::PushStyleColor(ImGuiCol_Tab, ImVec4(0, 0, 0, 0));
+		ImGui::PushStyleColor(ImGuiCol_TabSelected, ImGui::GetStyleColorVec4(ImGuiCol_FrameBgHovered));
+		ImGui::PushStyleColor(ImGuiCol_TabHovered, WithAlpha(ImGui::GetStyleColorVec4(ImGuiCol_FrameBgHovered),
+			ImGui::GetStyleColorVec4(ImGuiCol_FrameBgHovered).w * 0.6f));
 		const bool visible = ImGui::BeginTabItem(label, open, flags);
+		ImGui::PopStyleColor(3);
 		ImGui::PopStyleVar();
 		return visible;
 	}

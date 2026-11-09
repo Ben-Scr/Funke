@@ -652,6 +652,17 @@ namespace Funke {
 		RebuildAndRefreshMass(scene, "SetSensor");
 	}
 
+	void PolygonCollider2DComponent::RestoreShapeFromState(Scene& scene) {
+		if (!IsValid()) return;
+		RebuildAndRefreshMass(scene, "RestoreShapeFromState");
+		SetFriction(m_Friction);
+		SetBounciness(m_Bounciness);
+		SetDensity(m_Density);
+		SetLayer(m_Layer);
+		SetRegisterContacts(m_RegisterContacts);
+		SetSensor(m_Sensor, scene);
+	}
+
 	void PolygonCollider2DComponent::SyncWithTransform(const Scene& scene) {
 		const Transform2DComponent* tr = TryGetTransform(scene, m_EntityHandle, "SyncWithTransform");
 		if (!tr) return;

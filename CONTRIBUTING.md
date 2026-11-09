@@ -24,6 +24,10 @@ Rerun `scripts/dawn/SetupDawn.bat` or `scripts/dawn/SetupDawn.sh` after an inter
 
 CI validates Dawn's `funke-artifacts.json`, required headers and libraries. Source files and Git metadata are intentionally absent from artifact caches. Invalid restored caches are preserved beside `External/dawn` before rebuilding; Windows caches must contain both Debug and Release libraries. Linux coverage uses atomic counters for the threaded engine and retains separate build, test, capture and report logs.
 
+ASan/UBSan (including leak detection) and coverage run in separate `linux-instrumentation` matrix jobs, independently of the Editor/installer jobs and of each other. Instrumented outputs use the existing `-sanitized` and `-coverage` directories; only the validated Dawn dependency cache is shared. Each job retains its source/submodule identity, tool versions and logs. Coverage also retains raw/filtered LCOV, HTML and `coverage-summary.json`, with line/function counts and exclusions. Empty, unexecuted and third-party-only coverage fails validation. This measures the native Engine test workload, not C#, real GPU execution or whole-product coverage. A measured baseline and an agreed regression tolerance are still required before enabling a coverage percentage gate.
+
+`ci-evidence` lists every job result, including skipped, cancelled and missing checks. All checks selected by the workflow's platform inputs must succeed; tag publication also requires both instrumentation jobs. A core-only rerun is explicitly narrower and cannot publish a release.
+
 ## Pull requests
 
 - Keep each pull request to one change, and describe how you tested it.

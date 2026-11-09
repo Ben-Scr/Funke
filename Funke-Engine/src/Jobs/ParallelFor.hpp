@@ -65,13 +65,21 @@ namespace Funke {
 		auto fnPtr = std::make_shared<std::decay_t<F>>(std::forward<F>(fn));
 		auto block = JobInternal::CreateBlock(static_cast<int>(numChunks));
 
-		for (size_t c = 0; c < numChunks; ++c) {
-			const size_t lo = begin + c * grainSize;
-			const size_t hi = (lo + grainSize < end) ? (lo + grainSize) : end;
-
-			JobInternal::Enqueue(block, [fnPtr, lo, hi]() {
-				Detail::InvokeParallelChunk(*fnPtr, lo, hi);
-			});
+		size_t submitted = 0;
+		try {
+			for (; submitted < numChunks; ++submitted) {
+				const size_t lo = begin + submitted * grainSize;
+				const size_t hi = (lo + grainSize < end) ? (lo + grainSize) : end;
+				JobInternal::Enqueue(block, [fnPtr, lo, hi]() {
+					Detail::InvokeParallelChunk(*fnPtr, lo, hi);
+				});
+			}
+		}
+		catch (...) {
+			// Accepted partitions still own the caller's captures until they finish.
+			for (; submitted < numChunks; ++submitted) JobInternal::NotifyOne(block);
+			Job::Wait(JobHandle(block));
+			throw;
 		}
 
 		return JobHandle(std::move(block));

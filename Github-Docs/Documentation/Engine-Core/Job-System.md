@@ -42,6 +42,13 @@ Job.ScheduleParallelFor(count, i =>
 
 `Complete()` blocks until the work is done. You can also keep the `JobHandle` and check `IsComplete`, or wait later — which lets the main thread do other things while workers run.
 
+Completed typed jobs automatically release their native registration, managed context handle and payload after all partitions finish. Polling `IsComplete` or discarding the handle does not require a later `Complete()` for cleanup. A retained handle owns only its completion result; copied handles, late `Complete()`, `await`, `AsTask()`, `IsFaulted` and `Exception` keep observing the same result. Use `ObserveFaults()` when a discarded job's failures should be logged.
+
+Play jobs belong to the current Play session. Jobs scheduled from `GlobalSystem` callbacks belong to the script assembly generation and survive Play Stop. Nested Funke jobs inherit their parent scope, including the Action and dependency paths. Stop and reload close the relevant scope to new submissions and drain accepted work before destroying scene or script state. The main-thread continuation queue remains active during the drain. If work is still pending after five seconds, Stop/reload is refused and the scope is reopened; resources remain alive. Application shutdown waits until the work finishes rather than destroying resources underneath it.
+
+These guarantees cover work submitted through `Funke.Jobs`. User-created threads, independent `Task.Run` work and `async void` callbacks require their own cancellation and lifetime management. Job actions are synchronous callbacks: do not pass an `async` lambda to the Action overload. Live handles intentionally retaining a user exception can also keep that assembly alive until the handles are dropped.
+
+
 ### A struct job (the fast path)
 
 For hot code, write the job as a `struct` so there are no per-item allocations:
@@ -124,6 +131,8 @@ Completion also guarantees that the job's callable and its owned captures have b
 Alongside the job system, the engine sets up **Frame Arenas** — fast scratch memory for short-lived, per-frame data. The "frame" arena is wiped automatically at the end of each frame, so you can grab temporary space cheaply without worrying about freeing it.
 
 Frame Arenas are **main-thread only** and not thread-safe — a worker thread must use its own local storage instead. They're an internal performance tool more than a everyday-scripting feature, but it's worth knowing why they exist.
+
+In Debug, `Initialize()` binds the global arenas to the calling thread. Calls from another thread throw a diagnostic exception; allocation/reset through a previously retained `Arena&` logs the same ownership violation and leaves the arena unchanged. Independent local arenas have no thread binding. `Shutdown()` clears the binding, so a later lifecycle can initialize on a different thread. Before initialization and after shutdown, the arenas remain empty. Lifecycle transitions still require workers to be joined; these checks do not make shared allocation thread-safe. Release and Dist omit the ownership fields and checks.
 
 ---
 

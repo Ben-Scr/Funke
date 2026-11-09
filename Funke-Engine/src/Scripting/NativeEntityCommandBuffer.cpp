@@ -6,6 +6,7 @@
 #include "Scene/SceneExecutionContext.hpp"
 #include "Scene/SceneManager.hpp"
 #include "Scripting/EntityCommandBufferWire.hpp"
+#include "Scripting/EntityCommandBufferParallel.hpp"
 #include "Scripting/ScriptBindings.hpp"
 #include "Serialization/SceneSerializer.hpp"
 
@@ -173,7 +174,9 @@ namespace Funke {
 			return result;
 		};
 		bool canUseWire = components != nullptr;
+		const char* orderedReason = components ? "native_component_not_serializable" : "component_registry_unavailable";
 		for (const auto* buffer : buffers) canUseWire &= !buffer->m_HasCustomCommands;
+		if (components && !canUseWire) orderedReason = "native_custom_command";
 		if (canUseWire) {
 			const uint64_t maximumBytes = sizeof(EcbHeader) + total * sizeof(uint32_t) + commandCount * 20;
 			if (maximumBytes > INT_MAX) return kEcbErrorTruncated;
@@ -227,6 +230,8 @@ namespace Funke {
 			if (result < 0) { handles.clear(); return result; }
 		}
 		else {
+			EcbReportOrderedPlayback(static_cast<int>(mode), static_cast<size_t>(total), static_cast<size_t>(commandCount),
+				mode == EntityCommandBufferPlaybackMode::Sequential ? "sequential_requested" : orderedReason);
 			using Traits = entt::entt_traits<EntityHandle>;
 			if (scene.GetEntityCount() + total > Traits::entity_mask) return kEcbErrorEntityCapExceeded;
 			scene.ReserveForLoadRuntime(static_cast<size_t>(total), {});

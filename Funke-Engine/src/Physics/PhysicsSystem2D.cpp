@@ -18,6 +18,7 @@
 #include "Scene/SceneManager.hpp"
 #include "Scene/Scene.hpp"
 #include "Scripting/ScriptSystem.hpp"
+#include "Systems/TransformHierarchySystem.hpp"
 
 
 namespace Funke {
@@ -60,6 +61,32 @@ namespace Funke {
 
 	bool PhysicsSystem2D::IsTransformOwnedByPhysics(const entt::registry& registry, EntityHandle entity) {
 		return registry.all_of<Rigidbody2DComponent>(entity) || OwnedByExtension(registry, entity);
+	}
+
+	void PhysicsSystem2D::RegisterTransformAdapter(Scene& scene) {
+		Transform2DExternalAdapter adapter;
+		adapter.GetState = [](const entt::registry& registry, EntityHandle entity) {
+			return Transform2DExternalState{
+				IsTransformOwnedByPhysics(registry, entity),
+				registry.any_of<BoxCollider2DComponent, CircleCollider2DComponent, PolygonCollider2DComponent>(entity)
+			};
+		};
+		adapter.CollectDrivenRoots = [](entt::registry& registry, std::vector<EntityHandle>& roots) {
+			auto rigidbodyView = registry.view<Rigidbody2DComponent, HierarchyComponent, Transform2DComponent>(entt::exclude<DisabledTag>);
+			for (auto entity : rigidbodyView) {
+				if (!registry.get<HierarchyComponent>(entity).Children.empty()) roots.push_back(entity);
+			}
+			for (const PhysicsExtension2D& extension : GetExtensions()) {
+				const auto* bodies = extension.BodyComponent != 0 ? registry.storage(extension.BodyComponent) : nullptr;
+				if (!bodies) continue;
+				for (const EntityHandle entity : *bodies) {
+					if (registry.all_of<DisabledTag>(entity) || !registry.all_of<Transform2DComponent>(entity)) continue;
+					const HierarchyComponent* hierarchy = registry.try_get<HierarchyComponent>(entity);
+					if (hierarchy && !hierarchy->Children.empty()) roots.push_back(entity);
+				}
+			}
+		};
+		scene.GetRegistry().ctx().insert_or_assign(adapter);
 	}
 
 	void PhysicsSystem2D::ComposeWorldFromLocal(entt::registry& registry, EntityHandle entity, Transform2DComponent& tf) {

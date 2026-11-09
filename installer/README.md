@@ -1,5 +1,7 @@
 # Desktop installers
 
+As of 3 November 2026, [Releases](https://github.com/Ben-Scr/Funke/releases) has no public engine release. The names below describe build outputs, not currently available public downloads. [Build from source](../README.md#getting-started), or use a temporary test artifact from a successful [CI run](https://github.com/Ben-Scr/Funke/actions/workflows/ci.yml) if available to your GitHub account.
+
 The installers contain the Launcher, Editor, CLI, game runtimes, templates and binary EngineSDK. Ordinary C# projects do not require this repository or a native compiler. The .NET 10 SDK is required for project creation and scripting; Windows setup bundles it, while Linux and macOS document and check the prerequisite separately.
 
 | Platform | Artifact | Build instructions |

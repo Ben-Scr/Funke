@@ -117,7 +117,8 @@ def build(request: BuildRequest) -> Path:
     if platform.system() != "Darwin":
         raise BuilderError("iOS builds need a Mac with Xcode.")
     request.output_dir.mkdir(parents=True, exist_ok=True)
-    work = platform_cache("iOS", "work", hashlib.sha256(str(request.project_root.resolve()).encode()).hexdigest()[:10])
+    work = platform_cache("iOS", "work", hashlib.sha256(str(request.project_root.resolve()).encode()).hexdigest()[:10],
+                          request.configuration + "-" + request.modules_key)
     set_log_file(work / "build.log")
 
     ninja = find_ninja()
@@ -156,6 +157,9 @@ def build(request: BuildRequest) -> Path:
                     or f"com.{_sanitize(request.company or 'funke')}.{_sanitize(request.project_name)}")
     team = str(request.options.get("developmentTeam") or "")
     project_dir = request.output_dir / f"{re.sub(r'[^A-Za-z0-9._-]', '_', request.app_name)}-Xcode"
+    project_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(request.content_dir, project_dir / "Content", dirs_exist_ok=True)
+    shutil.copytree(managed, project_dir / "Managed", dirs_exist_ok=True)
     cmake = find_cmake(request.engine_root)
     native_packages = prepare_native_packages(request, work / "native-packages", symbol_table=True)
     args = [
@@ -168,8 +172,9 @@ def build(request: BuildRequest) -> Path:
         f"-DFUNKE_SDL3_DIR={sdl3.as_posix()}",
         f"-DFUNKE_DAWN_LIBRARY={dawn.library.as_posix()}",
         "-DFUNKE_DAWN_INCLUDE_DIRS=" + ";".join(p.as_posix() for p in dawn.include_dirs),
-        f"-DFUNKE_CONTENT_DIR={request.content_dir.as_posix()}",
-        f"-DFUNKE_MANAGED_DIR={managed.as_posix()}",
+        "-DCMAKE_SUPPRESS_REGENERATION=ON",
+        "-DFUNKE_CONTENT_DIR=$(PROJECT_DIR)/Content",
+        "-DFUNKE_MANAGED_DIR=$(PROJECT_DIR)/Managed",
         f"-DFUNKE_BUNDLE_ID={bundle_id}",
         f"-DFUNKE_APP_NAME={request.app_name}",
         f"-DFUNKE_EXECUTABLE_NAME={re.sub(r'[^A-Za-z0-9_]', '', request.project_name) or 'FunkeGame'}",

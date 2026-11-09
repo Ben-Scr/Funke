@@ -7,6 +7,10 @@
 #include "Components/Graphics/MeshRendererComponent.hpp"
 #include "Components/General/Transform2DComponent.hpp"
 #include "Components/General/Transform3DComponent.hpp"
+#include "Components/Physics/BoxCollider2DComponent.hpp"
+#include "Components/Physics/CircleCollider2DComponent.hpp"
+#include "Components/Physics/PolygonCollider2DComponent.hpp"
+#include "Physics/PhysicsSystem2D.hpp"
 #include "Graphics/MeshAsset.hpp"
 #include "Scene/Entity.hpp"
 #include "Scene/Scene.hpp"
@@ -27,6 +31,116 @@
 #include <vector>
 
 using namespace Funke;
+
+namespace {
+	template<typename T>
+	void ConfigureHydrationCollider(Scene& scene, const char* name, float x) {
+		auto entity = scene.CreateEntity(name);
+		entity.GetComponent<Transform2DComponent>().SetPosition({ x, 0 });
+		entity.AddComponent<Rigidbody2DComponent>().SetBodyType(BodyType::Dynamic);
+		auto& collider = entity.AddComponent<T>();
+		collider.SetCenter({ 0.25f, 0.5f }, scene);
+		collider.SetFriction(0.7f);
+		collider.SetBounciness(0.6f);
+		collider.SetDensity(3.0f);
+		collider.SetLayer(8);
+		collider.SetCollisionMask(16);
+		collider.SetGroupIndex(-7);
+		collider.SetRegisterContacts(true);
+		collider.SetSensor(true, scene);
+		CHECK_FALSE(collider.IsValid());
+	}
+
+	template<typename T>
+	void CheckHydrationCollider(Scene& scene) {
+		for (auto&& [entity, collider] : scene.GetRegistry().view<T>().each()) {
+			REQUIRE(collider.IsValid());
+			CHECK(collider.IsSensor());
+			CHECK(collider.CanRegisterContacts());
+			CHECK(collider.GetFriction() == doctest::Approx(0.7f));
+			CHECK(collider.GetBounciness() == doctest::Approx(0.6f));
+			CHECK(collider.GetDensity() == doctest::Approx(3.0f));
+			CHECK(collider.GetLayer() == 8);
+			CHECK(collider.GetCollisionMask() == 16);
+			CHECK(collider.GetGroupIndex() == -7);
+			CHECK(collider.GetCenter().x == doctest::Approx(0.25f));
+			CHECK(collider.GetCenter().y == doctest::Approx(0.5f));
+			CHECK(scene.GetComponent<Rigidbody2DComponent>(entity).GetMass() > 0);
+		}
+	}
+
+	class ColliderHydrationApplication final : public Application {
+	public:
+		ColliderHydrationApplication(std::string path, int mode) : m_Path(std::move(path)), m_Mode(mode) {}
+		ApplicationConfig GetConfiguration() const override {
+			auto config = ApplicationConfig::Headless();
+			config.EnablePhysics2D = true;
+			config.EnableAudio = false;
+			config.EnableScripting = false;
+			config.EnablePackageHost = false;
+			config.JobSystemWorkerCount = 1;
+			return config;
+		}
+		void ConfigureScenes() override {
+			SceneManager::RegisterScene("Hydration sentinel").WithoutDefaultCamera2D().SetAsStartupScene();
+			SceneManager::RegisterScene("Collider hydration").WithoutDefaultCamera2D().OnLoadFromFile(m_Path);
+		}
+		void Start() override {
+			m_Started = std::chrono::steady_clock::now();
+			if (m_Mode == 0) Complete(SceneManager::TryLoadScene("Collider hydration"));
+			else if (m_Mode == 1) SceneManager::LoadSceneAsync("Collider hydration", false,
+				[this](uint64_t, const SceneLoadResult& result) { Complete(result); });
+			else SceneManager::PreloadSceneAsync("Collider hydration", [this](uint64_t id, const SceneLoadResult& result) {
+				REQUIRE(result.Succeeded());
+				CHECK_FALSE(SceneManager::IsSceneLoaded("Collider hydration"));
+				CHECK(PhysicsSystem2D::GetMainPhysicsWorld().GetResourceCounts().bodyCount == 0);
+				CHECK(SceneManager::ActivatePreloadedScene(id, false,
+					[this](uint64_t, const SceneLoadResult& activated) { Complete(activated); }));
+			});
+		}
+		void Update() override {
+			if (Completed || std::chrono::steady_clock::now() - m_Started > std::chrono::seconds(10)) Application::Quit();
+		}
+		bool Completed = false;
+	private:
+		void Complete(const SceneLoadResult& result) {
+			REQUIRE(result.Succeeded());
+			auto scene = result.LoadedScene.lock();
+			REQUIRE(scene);
+			CHECK(scene->GetEntityCount() == 3);
+			for (int step = 0; step < 2; ++step) {
+				CheckHydrationCollider<BoxCollider2DComponent>(*scene);
+				CheckHydrationCollider<CircleCollider2DComponent>(*scene);
+				CheckHydrationCollider<PolygonCollider2DComponent>(*scene);
+				PhysicsSystem2D physics;
+				physics.FixedUpdate(1.0f / 60.0f);
+			}
+			for (float x : {0.0f, 10.0f, 20.0f}) for (bool filtered : {false, true}) {
+				auto visitor = scene->CreateEntity(filtered ? "Filtered visitor" : "Allowed visitor");
+				visitor.GetComponent<Transform2DComponent>().SetPosition({x + 0.25f, 0.5f});
+				auto& collider = visitor.AddComponent<BoxCollider2DComponent>();
+				collider.SetLayer(filtered ? 32 : 16);
+				collider.SetCollisionMask(8);
+				collider.SetRegisterContacts(true);
+				collider.OnCollisionEnter([this, filtered](const Collision2D& collision) {
+					CHECK(collision.isTrigger);
+					if (filtered) ++m_FilteredContacts;
+					else ++m_AllowedContacts;
+				});
+			}
+			PhysicsSystem2D physics;
+			physics.FixedUpdate(1.0f / 60.0f);
+			CHECK(m_AllowedContacts == 3);
+			CHECK(m_FilteredContacts == 0);
+			Completed = true;
+		}
+		std::string m_Path;
+		int m_Mode;
+		int m_AllowedContacts = 0;
+		int m_FilteredContacts = 0;
+		std::chrono::steady_clock::time_point m_Started;
+	};
+}
 
 namespace {
 
@@ -518,4 +632,20 @@ TEST_CASE("Deferred editor startup yields and preserves scene order and failed-f
 	CHECK(app.ActiveName == (failed ? "Untitled" : k_TargetName));
 	CHECK(app.ActiveEntities == (failed ? 1 : 2));
 	if (deferred) CHECK(app.Frames > 2);
+}
+
+TEST_CASE("Backlog collider state survives synchronous asynchronous and preload activation") {
+	int mode = 0;
+	SUBCASE("synchronous") {}
+	SUBCASE("asynchronous") { mode = 1; }
+	SUBCASE("preload") { mode = 2; }
+	SceneFileFixture file;
+	auto source = Scene::CreateDetachedScene("Collider hydration");
+	ConfigureHydrationCollider<BoxCollider2DComponent>(*source, "Box", 0);
+	ConfigureHydrationCollider<CircleCollider2DComponent>(*source, "Circle", 10);
+	ConfigureHydrationCollider<PolygonCollider2DComponent>(*source, "Polygon", 20);
+	REQUIRE(SceneSerializer::SaveToFile(*source, file.Path.string(), SceneSerializationFormat::Json));
+	ColliderHydrationApplication app(file.Path.string(), mode);
+	CHECK(app.Run() == 0);
+	CHECK(app.Completed);
 }

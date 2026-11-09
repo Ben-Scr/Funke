@@ -7,6 +7,7 @@ import contextlib
 import functools
 import http.server
 import io
+import json
 import tempfile
 import threading
 import unittest
@@ -23,6 +24,65 @@ except ImportError:
 
 
 class PlatformExportSmokeTests(unittest.TestCase):
+    def test_artifact_digest_covers_web_resources_and_is_location_independent(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            first = root / "first"
+            second = root / "second"
+            for folder in (first, second):
+                folder.mkdir()
+                (folder / "index.html").write_text("game", encoding="utf-8")
+                (folder / "game.wasm").write_bytes(b"wasm fixture")
+            args = argparse.Namespace(platform="web", entry=first / "index.html", output=root / "evidence")
+            original = smoke.artifact_identity(args)
+            args.entry = second / "index.html"
+            self.assertEqual(original["sha256"], smoke.artifact_identity(args)["sha256"])
+            (second / "game.wasm").write_bytes(b"different build")
+            self.assertNotEqual(original["sha256"], smoke.artifact_identity(args)["sha256"])
+            args.output = second / "evidence"
+            with self.assertRaisesRegex(ValueError, "outside"):
+                smoke.artifact_identity(args)
+
+    def test_missing_runtime_tool_records_blocked_without_claiming_build_or_device_pass(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            apk = root / "game.apk"
+            apk.write_bytes(b"dummy compiler output")
+            output = root / "evidence"
+            with patch.object(smoke, "require_tool", side_effect=smoke.UnavailableToolError("No adb")), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(1, smoke.main(["--output", str(output), "--expect-log", "SCRIPT_OK",
+                    "--expect-pixel", "0,0,0,0,0", "android", "--apk", str(apk),
+                    "--serial", "missing", "--package", "dev.funke.test"]))
+            result = json.loads((output / "result.json").read_text(encoding="utf-8"))
+            self.assertFalse(result["passed"])
+            self.assertEqual("blocked", result["evidenceLevels"]["real_runtime"]["status"])
+            for level in ("unit_mock", "real_build", "physical_device"):
+                self.assertEqual("unverified", result["evidenceLevels"][level]["status"])
+            self.assertEqual("unverified", result["qualification"])
+            self.assertIsNone(result["sourceCommit"])
+
+    @unittest.skipIf(Image is None, "Pillow is needed for rendered-pixel assertions")
+    def test_changed_artifact_cannot_receive_runtime_pass(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            apk = root / "game.apk"
+            apk.write_bytes(b"initial build")
+            output = root / "evidence"
+
+            def changed_export(args, evidence):
+                apk.write_bytes(b"replaced build")
+                Image.new("RGB", (2, 2), (0, 0, 0)).save(evidence / "game.png")
+
+            with patch.object(smoke, "android", side_effect=changed_export), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(1, smoke.main(["--output", str(output), "--expect-log", "SCRIPT_OK",
+                    "--expect-pixel", "0,0,0,0,0", "android", "--apk", str(apk),
+                    "--serial", "fixture", "--package", "dev.funke.test"]))
+            result = json.loads((output / "result.json").read_text(encoding="utf-8"))
+            self.assertFalse(result["passed"])
+            self.assertEqual("failed", result["evidenceLevels"]["real_runtime"]["status"])
+            self.assertIn("changed", result["error"])
+
     def test_requires_all_markers_and_rejects_script_failure_even_after_success(self):
         self.assertFalse(smoke.check_log("SCRIPT_OK", ["SCRIPT_OK", "SAVE_OK"]))
         self.assertTrue(smoke.check_log("SCRIPT_OK\nSAVE_OK", ["SCRIPT_OK", "SAVE_OK"]))

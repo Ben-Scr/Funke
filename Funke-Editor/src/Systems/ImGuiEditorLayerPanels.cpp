@@ -4,6 +4,7 @@
 #include "Systems/ImGuiEditorLayer.hpp"
 
 #include <imgui.h>
+#include <imgui_internal.h>
 
 #include "Assets/AssetRegistry.hpp"
 #include "Build/GameBuilder.hpp"
@@ -358,24 +359,34 @@ namespace Funke {
 			return EditorUI::Tone::Error;
 		}
 
-		// Level filter toggle followed by its entry count; the count is clickable too so the hit target isn't just the icon.
 		void LogLevelToggle(const char* id, const char* iconName, const char* label, int count, bool& shown, Log::Level level) {
 			char tooltip[64];
 			std::snprintf(tooltip, sizeof(tooltip), "%s %s (%d)", shown ? "Hide" : "Show", label, count);
-			if (EditorUI::IconButton(id, iconName, tooltip, shown, true)) {
-				shown = !shown;
-			}
-			ImGui::SameLine(0.0f, 3.0f);
-			ImGui::AlignTextToFramePadding();
-			// Info counts stay body-coloured like info rows; a hidden or empty level reads as disabled.
-			const ImVec4 countColor = (!shown || count == 0) ? ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled)
-				: (level <= Log::Level::Info ? ImGui::GetStyleColorVec4(ImGuiCol_Text) : EditorUI::ToneColor(GetLogLevelTone(level)));
-			if (count > 999) ImGui::TextColored(countColor, "999+");
-			else ImGui::TextColored(countColor, "%d", count);
-			if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
+			const std::string countText = count > 999 ? "999+" : std::to_string(count);
+			const ImGuiStyle& style = ImGui::GetStyle();
+			const float iconSize = ImGui::GetFontSize();
+			const float height = ImGui::GetFrameHeight();
+			const ImVec2 pos = ImGui::GetCursorScreenPos();
+			const float width = iconSize + style.ItemInnerSpacing.x + ImGui::CalcTextSize(countText.c_str()).x + style.FramePadding.x * 2.0f;
+			if (EditorUI::Button(id, shown ? EditorUI::ButtonVariant::Default : EditorUI::ButtonVariant::Ghost, ImVec2(width, height))) {
 				shown = !shown;
 			}
 			EditorUI::Tooltip(tooltip);
+			ImDrawList* drawList = ImGui::GetWindowDrawList();
+			const ImVec2 iconPos(pos.x + style.FramePadding.x, pos.y + (height - iconSize) * 0.5f);
+			const uint64_t icon = EditorIcons::Get(iconName, static_cast<int>(iconSize));
+			if (icon) {
+				drawList->AddImage(static_cast<ImTextureID>(static_cast<intptr_t>(icon)), iconPos,
+					ImVec2(iconPos.x + iconSize, iconPos.y + iconSize), ImVec2(0, 1), ImVec2(1, 0),
+					ImGui::GetColorU32(ImVec4(1, 1, 1, shown ? 1.0f : 0.35f)));
+			}
+			else {
+				drawList->AddText(iconPos, ImGui::GetColorU32(GetLogLevelColor(level)), level <= Log::Level::Info ? "i" : "!");
+			}
+			const ImVec4 countColor = (!shown || count == 0) ? ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled)
+				: (level <= Log::Level::Info ? ImGui::GetStyleColorVec4(ImGuiCol_Text) : EditorUI::ToneColor(GetLogLevelTone(level)));
+			drawList->AddText(ImVec2(iconPos.x + iconSize + style.ItemInnerSpacing.x, iconPos.y),
+				ImGui::GetColorU32(countColor), countText.c_str());
 		}
 
 		// SectionVisible fails closed for sections missing from this index.
@@ -515,7 +526,7 @@ namespace Funke {
 		bool SettingsSliderFloat(const char* label, float* value, float minimum, float maximum,
 			const char* format, ImGuiSliderFlags flags = ImGuiSliderFlags_None) {
 			EditorUI::BeginSettingsRow(label);
-			const bool changed = ImGui::SliderFloat("##Value", value, minimum, maximum, format, flags);
+			const bool changed = EditorUI::SliderFloat("##Value", value, minimum, maximum, format, flags);
 			EditorUI::EndSettingsRow();
 			return changed;
 		}
@@ -523,7 +534,7 @@ namespace Funke {
 		bool SettingsSliderInt(const char* label, int* value, int minimum, int maximum,
 			const char* format, ImGuiSliderFlags flags = ImGuiSliderFlags_None) {
 			EditorUI::BeginSettingsRow(label);
-			const bool changed = ImGui::SliderInt("##Value", value, minimum, maximum, format, flags);
+			const bool changed = EditorUI::SliderInt("##Value", value, minimum, maximum, format, flags);
 			EditorUI::EndSettingsRow();
 			return changed;
 		}
@@ -555,8 +566,7 @@ namespace Funke {
 		const float fontSize = ImGui::GetFontSize();
 		const float frameHeight = ImGui::GetFrameHeight();
 		const float gap = style.ItemSpacing.x;
-		const float followWidth = std::round(std::round(frameHeight * 0.62f) * 1.8f)
-			+ style.ItemInnerSpacing.x + ImGui::CalcTextSize("Auto-scroll").x;
+		const float followWidth = ImGui::CalcTextSize("Auto-scroll").x + style.FramePadding.x * 2.0f;
 		const ImVec4 muted = ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled);
 		const ImVec4 bodyColor = ImGui::GetStyleColorVec4(ImGuiCol_Text);
 		int infoCount = 0, warnCount = 0, errorCount = 0;
@@ -579,7 +589,7 @@ namespace Funke {
 		bool copyVisible = false;
 		EditorUI::BeginToolbar("##LogToolbar");
 		const float toolbarWidth = ImGui::GetContentRegionAvail().x;
-		const float levelsWidth = frameHeight * 3.0f + 9.0f + countWidth(infoCount)
+		const float levelsWidth = (fontSize + style.ItemInnerSpacing.x + style.FramePadding.x * 2.0f) * 3.0f + countWidth(infoCount)
 			+ countWidth(warnCount) + countWidth(errorCount) + gap * 3.0f;
 		const float actionsWidth = ImGui::CalcTextSize("Collapse").x + style.FramePadding.x * 2.0f
 			+ frameHeight + gap * 3.0f + 7.0f;
@@ -608,10 +618,10 @@ namespace Funke {
 		}
 		if (showFollow) {
 			ImGui::SameLine();
-			if (ImGuiUtils::Switch("Auto-scroll##LogToolbar", &m_LogAutoScroll)) {
+			if (EditorUI::ToggleButton("Auto-scroll##LogToolbar", m_LogAutoScroll, "Follow new messages")) {
+				m_LogAutoScroll = !m_LogAutoScroll;
 				scrollToEnd = m_LogAutoScroll;
 			}
-			EditorUI::Tooltip("Follow new messages");
 		}
 		if (showActions) {
 			ImGui::SameLine();
@@ -635,7 +645,9 @@ namespace Funke {
 			if (ImGui::MenuItem("Clear messages")) ClearLogEntries();
 			ImGui::EndPopup();
 		}
+		ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0, 0, 0, 0));
 		EditorUI::EndToolbar();
+		ImGui::PopStyleColor();
 
 		const std::string filterLower = ToLowerAscii(s_LogFilter);
 		auto passesFilters = [&](const LogEntry& entry) {
@@ -651,7 +663,8 @@ namespace Funke {
 			if (s_LogCollapse && !rows.empty()) {
 				VisibleLogRow& previous = rows.back();
 				const LogEntry& previousEntry = m_LogEntries[previous.Index];
-				if (entry.Level == previousEntry.Level && entry.Message == previousEntry.Message) {
+				if (entry.Level == previousEntry.Level && entry.Message == previousEntry.Message
+					&& entry.SourceIdentity == previousEntry.SourceIdentity && entry.SourceLine == previousEntry.SourceLine) {
 					previous.LastIndex = i;
 					++previous.Count;
 					continue;
@@ -662,20 +675,26 @@ namespace Funke {
 
 		const bool hasSelection = m_SelectedLogIndex >= 0 && m_SelectedLogIndex < static_cast<int>(m_LogEntries.size())
 			&& passesFilters(m_LogEntries[m_SelectedLogIndex]);
-		const float availableHeight = ImGui::GetContentRegionAvail().y;
+		const float footerHeight = ImGui::GetContentRegionAvail().y > frameHeight * 4.0f ? ImGui::GetTextLineHeightWithSpacing() : 0.0f;
+		const float availableHeight = ImGui::GetContentRegionAvail().y - footerHeight;
 		const float separatorHeight = std::max(style.SeparatorSize, 1.0f);
 		const float detailHeight = hasSelection && availableHeight > frameHeight * 6.0f
-			? (m_LogDetailsExpanded ? std::min(fontSize * 8.0f, availableHeight * 0.42f) : frameHeight + style.ItemSpacing.y + separatorHeight)
+			? (m_LogDetailsExpanded ? std::min(fontSize * 7.0f, availableHeight * 0.38f) : frameHeight + style.ItemSpacing.y + separatorHeight)
 			: 0.0f;
 		const float listHeight = std::max(1.0f, availableHeight
 			- (detailHeight > 0.0f ? detailHeight + style.ItemSpacing.y : 0.0f));
 		const float listWidth = ImGui::GetContentRegionAvail().x;
 		const bool showTime = listWidth >= fontSize * 24.0f;
 		const bool showSource = listWidth >= fontSize * 34.0f;
-		const ImGuiTableFlags tableFlags = ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg
+		const ImGuiTableFlags tableFlags = ImGuiTableFlags_ScrollY
 			| ImGuiTableFlags_Resizable | ImGuiTableFlags_NoSavedSettings | ImGuiTableFlags_SizingStretchProp;
 		ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(fontSize * 0.4f, fontSize * 0.35f));
-		ImGui::PushStyleColor(ImGuiCol_Header, EditorTheme::Colors::RowSelection());
+		ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0, 0, 0, 0));
+		ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0, 0, 0, 0));
+		ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(0, 0, 0, 0));
+		ImGui::PushStyleColor(ImGuiCol_TableHeaderBg, ImVec4(0, 0, 0, 0));
+		ImGui::PushStyleColor(ImGuiCol_TableBorderLight, ImVec4(0, 0, 0, 0));
+		ImGui::PushStyleColor(ImGuiCol_TableBorderStrong, ImVec4(0, 0, 0, 0));
 		if (ImGui::BeginTable("##LogEntries", 4, tableFlags, ImVec2(0.0f, listHeight))) {
 			ImGui::TableSetupColumn("##Severity", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoResize, fontSize * 1.5f);
 			ImGui::TableSetupColumn("Time", ImGuiTableColumnFlags_WidthFixed | (showTime ? 0 : ImGuiTableColumnFlags_Disabled), fontSize * 5.0f);
@@ -716,21 +735,58 @@ namespace Funke {
 						}
 					}
 					if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) m_SelectedLogIndex = row.Index;
+					const bool hovered = ImGui::IsItemHovered(ImGuiHoveredFlags_NoNavOverride);
+					const bool focused = ImGui::IsItemFocused();
+					const bool rowSelected = m_SelectedLogIndex >= row.Index && m_SelectedLogIndex <= row.LastIndex;
+					if (rowSelected || hovered || focused) {
+						const ImGuiTable* table = ImGui::GetCurrentTable();
+						const float inset = std::max(1.0f, fontSize * 0.1f);
+						const ImVec2 min(table->WorkRect.Min.x + inset, rowStart.y - style.CellPadding.y + inset);
+						const ImVec2 max(table->WorkRect.Max.x - inset, rowStart.y + fontSize + style.CellPadding.y - inset);
+						ImGui::TablePushBackgroundChannel();
+						ImDrawList* drawList = ImGui::GetWindowDrawList();
+						const ImVec4 fill = rowSelected ? EditorTheme::Colors::RowSelection(ImGui::IsItemActive())
+							: ImGui::GetStyleColorVec4(ImGuiCol_FrameBgHovered);
+						drawList->AddRectFilled(min, max, ImGui::GetColorU32(fill), style.FrameRounding);
+						if (rowSelected) {
+							const float markerWidth = std::max(1.0f, fontSize * 0.13f);
+							drawList->AddRectFilled(ImVec2(min.x, rowStart.y), ImVec2(min.x + markerWidth, rowStart.y + fontSize),
+								ImGui::GetColorU32(EditorTheme::Colors::Highlight()), markerWidth * 0.5f);
+						}
+						if (focused) drawList->AddRect(min, max, ImGui::GetColorU32(ImGuiCol_NavCursor), style.FrameRounding);
+						ImGui::TablePopBackgroundChannel();
+					}
 					if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-						ImGui::BeginTooltip();
-						ImGui::PushTextWrapPos(fontSize * 40.0f);
-						ImGui::TextUnformatted(entry.Message.c_str());
-						ImGui::PopTextWrapPos();
-						ImGui::EndTooltip();
+						const ImVec2 workSize = ImGui::GetWindowViewport()->WorkSize;
+						const float tooltipWidth = std::max(1.0f, std::min(fontSize * 40.0f, workSize.x * 0.8f) - style.WindowPadding.x * 2.0f);
+						const float tooltipHeight = std::max(1.0f, std::min(fontSize * 16.0f, workSize.y * 0.6f) - style.WindowPadding.y * 2.0f);
+						const ImVec2 textSize = ImGui::CalcTextSize(entry.Message.c_str(), nullptr, false, tooltipWidth);
+						const bool clipped = textSize.y > tooltipHeight;
+						if (ImGui::BeginTooltip()) {
+							if (clipped) {
+								const char* hint = "Preview truncated. Click the message for full details.";
+								const float hintHeight = ImGui::CalcTextSize(hint, nullptr, false, tooltipWidth).y;
+								const float previewHeight = std::max(1.0f, tooltipHeight - hintHeight - style.ItemSpacing.y);
+								ImGui::BeginChild("##LogTooltipPreview", ImVec2(tooltipWidth, previewHeight), ImGuiChildFlags_None,
+									ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+								ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + tooltipWidth);
+								ImGui::TextUnformatted(entry.Message.c_str());
+								ImGui::PopTextWrapPos();
+								ImGui::EndChild();
+								ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + tooltipWidth);
+								ImGui::TextDisabled("%s", hint);
+								ImGui::PopTextWrapPos();
+							}
+							else {
+								ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + tooltipWidth);
+								ImGui::TextUnformatted(entry.Message.c_str());
+								ImGui::PopTextWrapPos();
+							}
+							ImGui::EndTooltip();
+						}
 					}
 					ImGui::SetCursorScreenPos(ImVec2(rowStart.x + iconOffset, rowStart.y));
 					DrawLogSeverity(entry.Level);
-					if (selected) {
-						ImGui::GetWindowDrawList()->AddRectFilled(
-							ImVec2(rowStart.x - style.CellPadding.x, rowStart.y - style.CellPadding.y),
-							ImVec2(rowStart.x - style.CellPadding.x + std::max(2.0f, fontSize * 0.13f), rowStart.y + fontSize + style.CellPadding.y),
-							ImGui::GetColorU32(EditorTheme::Colors::Highlight()));
-					}
 					if (ImGui::TableSetColumnIndex(1)) DrawLogCell(entry.Timestamp, ImGui::GetContentRegionAvail().x, muted);
 					if (ImGui::TableSetColumnIndex(2)) DrawLogCell(parts.Source, ImGui::GetContentRegionAvail().x, muted);
 					ImGui::TableSetColumnIndex(3);
@@ -760,23 +816,38 @@ namespace Funke {
 			}
 			ImGui::EndTable();
 		}
-		ImGui::PopStyleColor();
+		ImGui::PopStyleColor(6);
 		ImGui::PopStyleVar();
 
 		if (detailHeight > 0.0f && m_SelectedLogIndex >= 0) {
 			LogEntry& selected = m_LogEntries[m_SelectedLogIndex];
+			const LogMessageParts parts = SplitLogMessage(selected.Message);
+			ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
 			ImGui::BeginChild("##LogDetails", ImVec2(0.0f, detailHeight), ImGuiChildFlags_None);
+			ImGui::PopStyleColor();
 			ImGui::Separator();
 			const float right = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
-			if (ImGui::ArrowButton("##ExpandLogDetails", m_LogDetailsExpanded ? ImGuiDir_Down : ImGuiDir_Right)) {
-				m_LogDetailsExpanded = !m_LogDetailsExpanded;
-			}
-			EditorUI::Tooltip(m_LogDetailsExpanded ? "Collapse message details" : "Expand message details");
-			ImGui::SameLine();
-			ImGui::AlignTextToFramePadding();
-			ImGui::TextUnformatted("Message details");
 			const bool hasSource = !selected.SourceFilePath.empty();
 			const float detailActionsWidth = frameHeight * (hasSource ? 3.0f : 2.0f) + gap * (hasSource ? 2.0f : 1.0f);
+			ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+			if (EditorUI::IconButton("##ExpandLogDetails", GetLogLevelIconName(selected.Level),
+				m_LogDetailsExpanded ? "Collapse message details" : "Expand message details", true, true)) {
+				m_LogDetailsExpanded = !m_LogDetailsExpanded;
+			}
+			ImGui::SameLine();
+			ImGui::SetCursorPosY(ImGui::GetCursorPosY() + style.FramePadding.y);
+			const float headingWidth = std::max(0.0f, right - detailActionsWidth - gap - ImGui::GetCursorPosX());
+			const float timeWidth = ImGui::CalcTextSize(selected.Timestamp.c_str()).x;
+			const bool showDetailTime = headingWidth > timeWidth + fontSize * 5.0f;
+			const std::string_view sourceLabel = parts.Source.empty() ? std::string_view("Message") : parts.Source;
+			const float sourceWidth = std::min(ImGui::CalcTextSize(sourceLabel.data(), sourceLabel.data() + sourceLabel.size()).x,
+				std::max(0.0f, headingWidth - (showDetailTime ? timeWidth + gap : 0.0f)));
+			DrawLogCell(sourceLabel, sourceWidth, bodyColor);
+			ImGui::Dummy(ImVec2(sourceWidth, fontSize));
+			if (showDetailTime) {
+				ImGui::SameLine();
+				ImGui::TextColored(muted, "%s", selected.Timestamp.c_str());
+			}
 			ImGui::SameLine(std::max(ImGui::GetCursorPosX(), right - detailActionsWidth));
 			if (hasSource) {
 				if (EditorUI::IconButton("##OpenLogSource", "link", "Open source file")) {
@@ -787,15 +858,17 @@ namespace Funke {
 			if (EditorUI::IconButton("##CopyLogDetails", "copy", "Copy message")) copyEntry(selected);
 			ImGui::SameLine();
 			const bool closeDetails = EditorUI::IconButton("##CloseLogDetails", "clear", "Close message details");
+			ImGui::PopStyleColor();
 			if (m_LogDetailsExpanded) {
-				DrawLogSeverity(selected.Level);
-				ImGui::SameLine();
-				ImGui::TextColored(muted, "%s", selected.Timestamp.c_str());
+				if (hasSource) {
+					DrawLogCell(selected.SourceLinkText, ImGui::GetContentRegionAvail().x, muted);
+					ImGui::Dummy(ImVec2(0.0f, fontSize));
+				}
 				ImGui::PushID(m_SelectedLogIndex);
 				ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0, 0, 0, 0));
 				ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
 				ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0.0f, style.FramePadding.y));
-				ImGui::InputTextMultiline("##MessageText", selected.Message.data(), selected.Message.size() + 1,
+				ImGui::InputTextMultiline("##MessageText", selected.Message.data() + selected.Message.size() - parts.Body.size(), parts.Body.size() + 1,
 					ImVec2(-1.0f, std::max(frameHeight, ImGui::GetContentRegionAvail().y)),
 					ImGuiInputTextFlags_ReadOnly | ImGuiInputTextFlags_WordWrap);
 				ImGui::PopStyleVar(2);
@@ -804,6 +877,15 @@ namespace Funke {
 			}
 			ImGui::EndChild();
 			if (closeDetails) m_SelectedLogIndex = -1;
+		}
+		if (footerHeight > 0.0f) {
+			int visibleCount = 0;
+			for (const VisibleLogRow& row : rows) visibleCount += row.Count;
+			ImGui::TextColored(muted, "%d messages", visibleCount);
+			if (s_LogCollapse) {
+				ImGui::SameLine();
+				ImGui::TextColored(muted, " / %d rows", static_cast<int>(rows.size()));
+			}
 		}
 
 		if (copyVisible) {
@@ -1397,7 +1479,7 @@ namespace Funke {
 				ImGui::GetContentRegionAvail().x - manageW - style.ItemInnerSpacing.x - k_CardPad));
 			const char* previewLabel = project->ActiveBuildProfileName.empty()
 				? "<none>" : project->ActiveBuildProfileName.c_str();
-			if (ImGui::BeginCombo("##ActiveBuildProfile", previewLabel)) {
+			if (EditorUI::BeginCombo("##ActiveBuildProfile", previewLabel)) {
 				if (ImGui::Selectable("<none>", project->ActiveBuildProfileName.empty())) {
 					if (!project->ActiveBuildProfileName.empty()) {
 						project->ActiveBuildProfileName.clear();
@@ -1413,7 +1495,7 @@ namespace Funke {
 						}
 					}
 				}
-				ImGui::EndCombo();
+				EditorUI::EndCombo();
 			}
 			ImGui::SameLine(0.0f, style.ItemInnerSpacing.x);
 			if (ImGui::Button("Manage…")) {
@@ -1462,7 +1544,7 @@ namespace Funke {
 			const FunkeProject::BuildProfile shownConfiguration = profileSetsConfiguration
 				? *active->Configuration : project->ActiveBuildProfile;
 			ImGui::BeginDisabled(profileSetsConfiguration);
-			if (ImGui::BeginCombo("##BuildConfiguration", FunkeProject::BuildProfileToString(shownConfiguration))) {
+			if (EditorUI::BeginCombo("##BuildConfiguration", FunkeProject::BuildProfileToString(shownConfiguration))) {
 				for (const FunkeProject::BuildProfile configuration : k_Configurations) {
 					if (ImGui::Selectable(FunkeProject::BuildProfileToString(configuration), configuration == shownConfiguration)
 						&& configuration != project->ActiveBuildProfile) {
@@ -1473,7 +1555,7 @@ namespace Funke {
 						project->Save();
 					}
 				}
-				ImGui::EndCombo();
+				EditorUI::EndCombo();
 			}
 			ImGui::EndDisabled();
 			if (profileSetsConfiguration) {
@@ -1768,7 +1850,7 @@ namespace Funke {
 			ImGui::BeginDisabled(visibleCount == 0);
 			const char* preview = visibleCount > 0
 				? k_Categories[static_cast<int>(m_SelectedSettingsCategory)].Label : "No matches";
-			if (ImGui::BeginCombo("##SettingsCategory", preview)) {
+			if (EditorUI::BeginCombo("##SettingsCategory", preview)) {
 				for (int n = 0; n < visibleCount; ++n) {
 					const int i = visibleCategories[n];
 					const bool selected = static_cast<int>(m_SelectedSettingsCategory) == i;
@@ -1777,7 +1859,7 @@ namespace Funke {
 					}
 					if (selected) ImGui::SetItemDefaultFocus();
 				}
-				ImGui::EndCombo();
+				EditorUI::EndCombo();
 			}
 			ImGui::EndDisabled();
 			ImGui::Spacing();
@@ -1898,7 +1980,7 @@ namespace Funke {
 					}
 				}
 				EditorUI::BeginSettingsRow("Fullscreen Mode");
-				if (ImGui::BeginCombo("##Value", currentLabel)) {
+				if (EditorUI::BeginCombo("##Value", currentLabel)) {
 					for (const auto& opt : k_FullscreenModeOptions) {
 						const bool selected = (opt.Mode == project.BuildFullscreenMode);
 						if (ImGui::Selectable(opt.Label, selected)) {
@@ -1907,7 +1989,7 @@ namespace Funke {
 						}
 						if (selected) ImGui::SetItemDefaultFocus();
 					}
-					ImGui::EndCombo();
+					EditorUI::EndCombo();
 				}
 				EditorUI::EndSettingsRow();
 				if (!fullscreenEnabled) ImGui::EndDisabled();
@@ -1949,7 +2031,7 @@ namespace Funke {
 				ImGui::Spacing();
 				int aspectIndex = AspectRatioPresetIndexFromLabel(project.BuildAspect);
 				EditorUI::BeginSettingsRow("Aspect Ratio");
-				if (ImGui::BeginCombo("##Value", k_AspectRatioPresets[aspectIndex].Label)) {
+				if (EditorUI::BeginCombo("##Value", k_AspectRatioPresets[aspectIndex].Label)) {
 					for (int i = 0; i < static_cast<int>(k_AspectRatioPresets.size()); ++i) {
 						const bool selected = (i == aspectIndex);
 						if (ImGui::Selectable(k_AspectRatioPresets[i].Label, selected)) {
@@ -1958,7 +2040,7 @@ namespace Funke {
 						}
 						if (selected) ImGui::SetItemDefaultFocus();
 					}
-					ImGui::EndCombo();
+					EditorUI::EndCombo();
 				}
 				EditorUI::EndSettingsRow();
 				EditorUI::Tooltip(
@@ -1994,7 +2076,7 @@ namespace Funke {
 					if (option.Value == project.MobileOrientation) currentLabel = option.Label;
 				}
 				EditorUI::BeginSettingsRow("Orientation");
-				if (ImGui::BeginCombo("##Value", currentLabel)) {
+				if (EditorUI::BeginCombo("##Value", currentLabel)) {
 					for (const auto& option : k_OrientationOptions) {
 						const bool selected = option.Value == project.MobileOrientation;
 						if (ImGui::Selectable(option.Label, selected)) {
@@ -2003,7 +2085,7 @@ namespace Funke {
 						}
 						if (selected) ImGui::SetItemDefaultFocus();
 					}
-					ImGui::EndCombo();
+					EditorUI::EndCombo();
 				}
 				EditorUI::EndSettingsRow();
 				EditorUI::Tooltip(
@@ -2038,7 +2120,7 @@ namespace Funke {
 					if (option.Value == project.UIScaling) currentScaleLabel = option.Label;
 				}
 				EditorUI::BeginSettingsRow("Scale Mode##UIRef");
-				if (ImGui::BeginCombo("##Value", currentScaleLabel)) {
+				if (EditorUI::BeginCombo("##Value", currentScaleLabel)) {
 					for (const auto& option : k_ScaleModeOptions) {
 						const bool selected = option.Value == project.UIScaling;
 						if (ImGui::Selectable(option.Label, selected)) {
@@ -2047,7 +2129,7 @@ namespace Funke {
 						}
 						if (selected) ImGui::SetItemDefaultFocus();
 					}
-					ImGui::EndCombo();
+					EditorUI::EndCombo();
 				}
 				EditorUI::EndSettingsRow();
 				EditorUI::Tooltip(
@@ -2078,7 +2160,7 @@ namespace Funke {
 		if (SettingsSection section{"Render Backend", filterLower, RenderBackendLabel(project.ActiveRenderBackend)}; section) {
 
 			EditorUI::BeginSettingsRow("Rendering API");
-			if (ImGui::BeginCombo("##Value", RenderBackendLabel(project.ActiveRenderBackend))) {
+			if (EditorUI::BeginCombo("##Value", RenderBackendLabel(project.ActiveRenderBackend))) {
 				for (const RenderBackendOption& option : k_RenderBackendOptions) {
 					const bool selected = option.Backend == project.ActiveRenderBackend;
 					const bool supported = IsRenderBackendSupportedOnHost(option.Backend);
@@ -2096,7 +2178,7 @@ namespace Funke {
 						ImGui::SetItemDefaultFocus();
 					}
 				}
-				ImGui::EndCombo();
+				EditorUI::EndCombo();
 			}
 			EditorUI::EndSettingsRow();
 			EditorUI::Tooltip(
@@ -2785,7 +2867,7 @@ namespace Funke {
 				}
 			}
 			ImGui::TextUnformatted(("Enabled: " + (enabled.empty() ? std::string("none (UI only)") : enabled)).c_str());
-			ImGui::TextDisabled("Add or remove Funke.2D and Funke.3D in the Package Manager.");
+			ImGui::TextDisabled("Select 2D, 3D and their optional physics modules in the Package Manager.");
 			if (ImGui::Button("Open Package Manager")) {
 				OpenPanel("Package Manager", m_ShowPackageManager);
 			}

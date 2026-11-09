@@ -50,7 +50,8 @@ def isolated_environment(root: Path) -> dict[str, str]:
 def verify_applications(payload: Path, harness: Path, directory: Path, environment: dict[str, str]) -> None:
     helper = harness / "application_smoke_test.py"
     for executable, options in (("Funke-Launcher", []), ("Funke-Editor", ["--editor-project"])):
-        print(checked([sys.executable, str(helper), "--binary", str(payload / executable), *options],
+        print(checked([sys.executable, str(helper), "--binary", str(payload / executable),
+                       "--working-directory", str(directory), *options],
                       directory, environment=environment).strip())
 
 

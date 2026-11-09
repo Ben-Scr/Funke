@@ -31,6 +31,10 @@ namespace Funke {
 		const Vec2 center = this->GetCenter();
 		b2Circle circle{ b2Vec2{ center.x, center.y }, ComputeWorldRadius(*tr, radius) };
 		b2Shape_SetCircle(m_ShapeId, &circle);
+		b2Body_ApplyMassFromShapes(m_BodyId);
+		if (scene.HasComponent<Rigidbody2DComponent>(m_EntityHandle)) {
+			const_cast<Rigidbody2DComponent&>(scene.GetComponent<Rigidbody2DComponent>(m_EntityHandle)).ApplyMassFromState();
+		}
 		m_LastAppliedScale = tr->Scale;
 		m_LastAppliedLocalRadius = m_LocalRadius;
 	}
@@ -102,6 +106,10 @@ namespace Funke {
 		const Vec2 center = this->GetCenter();
 		b2Circle circle{ b2Vec2{ center.x, center.y }, ComputeWorldRadius(*tr, m_LocalRadius) };
 		b2Shape_SetCircle(m_ShapeId, &circle);
+		b2Body_ApplyMassFromShapes(m_BodyId);
+		if (scene.HasComponent<Rigidbody2DComponent>(m_EntityHandle)) {
+			const_cast<Rigidbody2DComponent&>(scene.GetComponent<Rigidbody2DComponent>(m_EntityHandle)).ApplyMassFromState();
+		}
 		m_LastAppliedScale = tr->Scale;
 		m_LastAppliedLocalRadius = m_LocalRadius;
 	}
@@ -114,6 +122,10 @@ namespace Funke {
 
 		b2Circle circle{ b2Vec2{ center.x, center.y }, ComputeWorldRadius(*tr, m_LocalRadius) };
 		b2Shape_SetCircle(m_ShapeId, &circle);
+		b2Body_ApplyMassFromShapes(m_BodyId);
+		if (scene.HasComponent<Rigidbody2DComponent>(m_EntityHandle)) {
+			const_cast<Rigidbody2DComponent&>(scene.GetComponent<Rigidbody2DComponent>(m_EntityHandle)).ApplyMassFromState();
+		}
 		m_LastAppliedScale = tr->Scale;
 		m_LastAppliedLocalRadius = m_LocalRadius;
 	}

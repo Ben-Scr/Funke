@@ -7,12 +7,14 @@
 #include <imgui.h>
 
 #ifdef FUNKE_PROFILER_ENABLED
+#include "Profiling/GpuTimer.hpp"
 #include "Profiling/Profiler.hpp"
 #include "Project/FunkeProject.hpp"
 #include "Project/ProjectManager.hpp"
 
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
 #endif
 
 namespace Funke {
@@ -104,6 +106,25 @@ namespace Funke {
 						{ "Triangles",        "Triangles Count",        "" },
 						{ "Vertices",         "Vertices Count",         "" },
 						{ "Rendered Sprites", "Rendered Sprites Count", "" },
+					}
+				},
+				{
+					"GPU",
+					{
+						{ "GPU", "Sprite Pass GPU Time", "ms" },
+					}
+				},
+				{
+					"Renderer 3D (CPU)",
+					{
+						{ "Renderer3D.RenderScene", "Render Scene", "ms" },
+						{ "Renderer3D.Cull", "Culling", "ms" },
+						{ "Renderer3D.SkinningPose", "Skinning Pose", "ms" },
+						{ "Renderer3D.SkinningFallback", "Skinning CPU Fallback", "ms" },
+						{ "Renderer3D.SkinningDispatch", "Skinning Dispatch", "ms" },
+						{ "Renderer3D.Shadows", "Shadows", "ms" },
+						{ "Renderer3D.Sky", "Sky", "ms" },
+						{ "Renderer3D.Particles", "Particles", "ms" },
 					}
 				},
 				{
@@ -204,8 +225,16 @@ namespace Funke {
 		// One-line label: "Display Label    Cur X UNIT    Avg Y    Min Z    Max W"
 		// Counts (no unit) format as integers; ms/MB format with one decimal.
 		const bool isCount = unit[0] == '\0';
+		const char* unavailableReason = std::strcmp(registeredName, "GPU") == 0
+			? GpuTimer::GetUnavailableReason() : nullptr;
 		char valueLabel[256];
-		if (isCount) {
+		if (unavailableReason) {
+			std::snprintf(valueLabel, sizeof(valueLabel), "%-22s  Unavailable: %s", displayLabel, unavailableReason);
+		}
+		else if (m->Count == 0) {
+			std::snprintf(valueLabel, sizeof(valueLabel), "%-22s  No samples", displayLabel);
+		}
+		else if (isCount) {
 			std::snprintf(valueLabel, sizeof(valueLabel),
 				"%-22s  Cur %.0f    Avg %.0f    Min %.0f    Max %.0f",
 				displayLabel,
@@ -222,7 +251,7 @@ namespace Funke {
 
 		// Scrolling line graph. PlotLines accepts a head offset, so we don't
 		// need to unwrap the ring buffer.
-		if (m->Count > 0) {
+		if (m->Count > 0 && !unavailableReason) {
 			ImGui::PlotLines("##graph",
 				m->Samples.data(),
 				static_cast<int>(m->Count),
@@ -296,6 +325,16 @@ namespace Funke {
 				ImGui::Indent();
 				for (const auto& mod : category.Modules) {
 					RenderModuleRowImpl(mod.RegisteredName, mod.DisplayLabel, mod.Unit);
+				}
+				if (std::strcmp(category.Header, "Memory") == 0) {
+					const auto gpuMemoryMb = GpuTimer::QueryGpuMemoryMb();
+					if (gpuMemoryMb < 0) {
+						ImGui::TextDisabled("GPU Memory              Unavailable");
+						EditorUI::Tooltip("GPU memory usage is not exposed by this graphics backend.");
+					}
+					else {
+						ImGui::Text("GPU Memory              %lld MB", gpuMemoryMb);
+					}
 				}
 				ImGui::Unindent();
 			}

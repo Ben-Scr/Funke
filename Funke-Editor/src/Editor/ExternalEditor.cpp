@@ -335,6 +335,7 @@ namespace Funke {
 			|| ext == ".lua" || ext == ".py" || ext == ".js" || ext == ".ts"
 			|| ext == ".json" || ext == ".xml" || ext == ".yaml" || ext == ".yml"
 			|| ext == ".txt" || ext == ".md" || ext == ".cfg" || ext == ".ini"
+			|| ext == ".wgsl" || ext == ".vs" || ext == ".fs" || ext == ".vert" || ext == ".frag"
 			|| ext == ".glsl" || ext == ".hlsl" || ext == ".shader";
 	}
 

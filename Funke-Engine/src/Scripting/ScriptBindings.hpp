@@ -14,6 +14,7 @@ namespace Funke {
 	class FUNKE_SCRIPTING_API ScriptBindings {
 	public:
 		static void PopulateNativeBindings(NativeBindings& bindings);
+		static int GetComponentLayoutBuffer(const char* name, char* buffer, int capacity);
 		static void PopulateAssetBindings(NativeBindings& bindings);
 		static void PumpAssetLoadCompletions();
 		static bool IsScriptInputEnabled();

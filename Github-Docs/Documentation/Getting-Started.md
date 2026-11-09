@@ -10,6 +10,8 @@ This tutorial uses built-in APIs to keep setup small. For tilemaps, install **Fu
 
 ## 1. Install the prerequisites
 
+As of 3 November 2026, there is no public engine release on [Releases](https://github.com/Ben-Scr/Funke/releases). First [build Funke from source](../../README.md#getting-started) for your platform. The build requires the native toolchain even when your game uses only C#. Successful [CI runs](https://github.com/Ben-Scr/Funke/actions/workflows/ci.yml) may offer temporary test bundles or installers; availability and GitHub access requirements differ from a public release. The installer guides below describe those artifacts when available.
+
 | You need | For | Download |
 |---|---|---|
 | Windows 10/11 x64 with a D3D12- or Vulkan-capable GPU, Linux x64 with a Vulkan driver (release baseline: Ubuntu 24.04), or macOS 15+ | running the editor | [Windows setup](Editor/Installer.md), [Linux setup](../../installer/linux/README.md), [macOS setup](../../installer/macos/README.md) |
@@ -20,7 +22,7 @@ The Launcher checks for these on start and shows a **Download** button next to a
 
 ## 2. Create a project
 
-1. Start **Funke-Launcher.exe** from the release folder.
+1. Start **Funke-Launcher.exe** from `bin/Release-windows-x86_64/Funke-Launcher` after a Windows source build. On Linux or macOS, use the Launcher path in the [platform build instructions](../../README.md#getting-started); installed test builds can use their application shortcut.
 2. Click **New Project**, choose **Empty 2D**, enter a name, pick a folder, and confirm.
 3. The Launcher creates the project, compiles its scripts once, and lists it under **Projects**. Double-click it to open the editor.
 

@@ -57,6 +57,7 @@ modified; --debug/--development/--release and the chosen profile apply to this b
 A profile's "configuration", "defines" and test switches apply unless overridden here.
 
   --project <dir>          Project root (default: the project containing the working directory)
+  --exact-modules          Require a matching runtime; fail if disabled backends would remain compiled
   --release                Release build (Dist binaries, FUNKE_BUILD_RELEASE)
   --development            Development build (default: the profile's or Build panel setting)
   --debug                  Debug build (Debug binaries + PDBs, FUNKE_BUILD_DEBUG; needs engine sources)
@@ -200,9 +201,9 @@ The scene is saved in the format it already has. Close the scene in the editor f
 editor reload it when it notices the change.)", &RunPrefab },
 
 			Command{ "package", "Add, remove and list packages and engine modules",
-R"(funke package list [--json]                packages plus the engine modules (Funke.2D, Funke.3D)
-funke package add <name | path | git-url | nuget:Id[@version] | Funke.2D | Funke.3D>
-funke package remove <name | Funke.2D | Funke.3D> [--delete]     --delete also removes Packages/<name>/
+R"(funke package list [--json]                packages plus the engine modules (Funke.2D, Funke.3D, Funke.Physics2D, Funke.Physics3D)
+funke package add <name | path | git-url | nuget:Id[@version] | Funke.2D | Funke.3D | Funke.Physics2D | Funke.Physics3D>
+funke package remove <name | Funke.2D | Funke.3D | Funke.Physics2D | Funke.Physics3D> [--delete]     --delete also removes Packages/<name>/
 funke package refresh                      Regenerate Packages/FunkePackages.props from project.json)", &RunPackage },
 
 			Command{ "setup-path", "Add this tool's folder to your user PATH",

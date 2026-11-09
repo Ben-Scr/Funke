@@ -169,7 +169,7 @@ namespace Funke::Cli {
 		return {};
 	}
 
-	FunkeProject* OpenProject(Args& args, std::string& outError) {
+	FunkeProject* OpenProject(Args& args, std::string& outError, bool performMigrations) {
 		std::filesystem::path root;
 		if (const std::optional<std::string>& explicitRoot = Options().ProjectRoot) {
 			std::filesystem::path candidate = Path::FromUtf8(*explicitRoot);
@@ -192,7 +192,7 @@ namespace Funke::Cli {
 
 		auto project = std::make_unique<FunkeProject>();
 		std::string loadError;
-		if (!FunkeProject::TryLoad(Path::ToUtf8(root), *project, &loadError)) {
+		if (!FunkeProject::TryLoad(Path::ToUtf8(root), *project, &loadError, performMigrations)) {
 			outError = "Cannot load project at " + Path::ToUtf8(root) + (loadError.empty() ? "." : ": " + loadError);
 			return nullptr;
 		}

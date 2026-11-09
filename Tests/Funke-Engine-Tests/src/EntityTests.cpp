@@ -28,6 +28,7 @@
 #include "Scripting/ScriptBindings.hpp"
 #include "Scripting/ScriptComponent.hpp"
 #include "Scripting/ScriptEngine.hpp"
+#include "Scripting/ManagedScriptCompiler.hpp"
 #include "Scripting/ScriptGlue.hpp"
 #include "Serialization/Json.hpp"
 #include "Serialization/SceneSerializer.hpp"
@@ -1302,6 +1303,58 @@ TEST_CASE("Blanket transform dirty marks propagate in scenes without hierarchy")
 	CHECK(transform.Position.y == doctest::Approx(-3.0f));
 }
 
+TEST_CASE("Transform2D hierarchy works without an external adapter")
+{
+	auto scene = Scene::CreateDetachedScene("No simulation adapter");
+	scene->GetRegistry().ctx().erase<Transform2DExternalAdapter>();
+	Entity parent = scene->CreateEntity("Parent");
+	Entity child = scene->CreateEntity("Child");
+	child.SetParent(parent);
+	parent.GetComponent<Transform2DComponent>().SetPosition({ 10.0f, 20.0f });
+	child.GetComponent<Transform2DComponent>().SetPosition({ 2.0f, 3.0f });
+	TransformHierarchySystem::Propagate(*scene);
+	CHECK(child.GetComponent<Transform2DComponent>().Position.x == doctest::Approx(12.0f));
+	CHECK(child.GetComponent<Transform2DComponent>().Position.y == doctest::Approx(23.0f));
+	CHECK_FALSE(child.GetComponent<Transform2DComponent>().IsDirty());
+	CHECK_FALSE(parent.GetComponent<Transform2DComponent>().IsDirty());
+	parent.GetComponent<Transform2DComponent>().SetPosition({ -5.0f, 4.0f });
+	TransformHierarchySystem::Propagate(*scene);
+	CHECK(child.GetComponent<Transform2DComponent>().Position.x == doctest::Approx(-3.0f));
+	CHECK(child.GetComponent<Transform2DComponent>().Position.y == doctest::Approx(7.0f));
+	CHECK(TransformHierarchySystem::GetLastPropagationStats(*scene).PhysicsRoots == 0);
+	TransformHierarchySystem::Propagate(*scene);
+	CHECK(TransformHierarchySystem::GetLastPropagationStats(*scene).TransformsVisited == 0);
+}
+
+TEST_CASE("Transform2D adapters are scene-local and preserve external dirty state")
+{
+	auto scene = Scene::CreateDetachedScene("External transform sync");
+	auto other = Scene::CreateDetachedScene("Independent hierarchy");
+	other->GetRegistry().ctx().erase<Transform2DExternalAdapter>();
+	Transform2DExternalAdapter adapter;
+	adapter.GetState = [](const entt::registry&, EntityHandle) {
+		return Transform2DExternalState{ false, true };
+	};
+	scene->GetRegistry().ctx().insert_or_assign(adapter);
+	Entity parent = scene->CreateEntity();
+	Entity child = scene->CreateEntity();
+	child.SetParent(parent);
+	Entity independent = other->CreateEntity();
+	TransformHierarchySystem::Propagate(*scene);
+	TransformHierarchySystem::Propagate(*other);
+	CHECK(child.GetComponent<Transform2DComponent>().IsDirty());
+	CHECK_FALSE(independent.GetComponent<Transform2DComponent>().IsDirty());
+	child.GetComponent<Transform2DComponent>().ClearDirty();
+	parent.GetComponent<Transform2DComponent>().SetPosition({ 7.0f, 0.0f });
+	TransformHierarchySystem::Propagate(*scene);
+	CHECK(child.GetComponent<Transform2DComponent>().Position.x == doctest::Approx(7.0f));
+	CHECK(child.GetComponent<Transform2DComponent>().IsDirty());
+	scene->GetRegistry().ctx().erase<Transform2DExternalAdapter>();
+	scene->MarkTransformDirty(entt::null);
+	TransformHierarchySystem::Propagate(*scene);
+	CHECK_FALSE(child.GetComponent<Transform2DComponent>().IsDirty());
+}
+
 TEST_CASE("Dirty transforms propagate only their own subtrees")
 {
 	auto scene = Scene::CreateDetachedScene("Dirty Subtree Scene");
@@ -1887,3 +1940,143 @@ TEST_CASE("Entity.SetParent without worldPositionStays moves synchronized Rigidb
 	CHECK(app.Run() == 0);
 }
 #endif
+
+TEST_CASE("Backlog full entity capacity rejects single and bulk creation and permits reuse") {
+	constexpr size_t capacity = entt::entt_traits<EntityHandle>::entity_mask;
+	if constexpr (capacity > 1048575) {
+		MESSAGE("Capacity regression requires an entityBits configuration of at most 20 bits");
+		return;
+	}
+	auto scene = Scene::CreateDetachedScene("Capacity regression");
+	auto sentinel = scene->CreateEntity("Identity sentinel");
+	const auto persistentId = scene->GetEntityPersistentID(sentinel.GetHandle());
+	const auto runtimeId = scene->GetRuntimeID(sentinel.GetHandle());
+	std::vector<EntityHandle> entities(capacity - 1);
+	scene->CreateEntitiesBulk(capacity - 1, entities);
+	const auto rejects = [&](auto&& create) {
+		bool rejected = false;
+		try { create(); }
+		catch (const FunkeException& error) {
+			rejected = true;
+			CHECK(error.Code() == FunkeErrorCode::OutOfRange);
+		}
+		CHECK(rejected);
+		CHECK(scene->GetEntityCount() == capacity);
+		CHECK(scene->GetRegistry().storage<EntityHandle>().free_list() == capacity);
+		EntityHandle resolved = entt::null;
+		CHECK(scene->TryResolveEntityRef(persistentId, resolved));
+		CHECK(resolved == sentinel.GetHandle());
+		CHECK(scene->TryResolveRuntimeID(runtimeId, resolved));
+		CHECK(resolved == sentinel.GetHandle());
+	};
+	rejects([&] { scene->CreateEmptyEntity(); });
+	rejects([&] { scene->CreateEntitiesBulk(1, std::span<EntityHandle>(entities).first(1)); });
+	CHECK(scene->IsValid(entities.front()));
+	scene->DestroyEntity(entities.front());
+	auto replacement = scene->CreateEmptyEntity();
+	CHECK(replacement.IsValid());
+	CHECK(replacement.GetHandle() != entities.front());
+	CHECK(scene->GetEntityCount() == capacity);
+}
+
+TEST_CASE("Managed identities migrate attachments and dotted fields together without guessing")
+{
+    ScriptComponent scripts;
+    scripts.AddScript("Player", ScriptType::Unknown);
+    scripts.AddManagedComponent("Player.Settings");
+    scripts.AddScript("Missing");
+    scripts.PendingFieldValues = {{"Player.Health", "37"}, {"Player.Nested.Timer", "2.5"},
+        {"Player.Settings.Speed", "4"}, {"Missing.Raw", "untouched"}};
+    scripts.PendingDynamicComponentValues["Stats"] = "{\"Value\":9}";
+    auto resolve = [](const std::string& name) -> std::string {
+        if (name == "Player") return "type:Game.Player";
+        if (name == "Player.Settings") return "type:Game.Settings";
+        if (name == "Stats") return "type:Game.Stats";
+        return {};
+    };
+    CHECK(scripts.MigrateManagedIdentities(resolve));
+    CHECK(scripts.HasScript("type:Game.Player"));
+    CHECK(scripts.HasManagedComponent("type:Game.Settings"));
+    CHECK(scripts.PendingFieldValues.at("type:Game.Player.Health") == "37");
+    CHECK(scripts.PendingFieldValues.at("type:Game.Player.Nested.Timer") == "2.5");
+    CHECK(scripts.PendingFieldValues.at("type:Game.Settings.Speed") == "4");
+    CHECK(scripts.PendingFieldValues.at("Missing.Raw") == "untouched");
+    CHECK(scripts.PendingDynamicComponentValues.at("type:Game.Stats") == "{\"Value\":9}");
+    CHECK_FALSE(scripts.MigrateManagedIdentities(resolve));
+
+    ScriptComponent conflict;
+    conflict.AddScript("Player");
+    conflict.PendingFieldValues = {{"Player.Health", "37"}, {"type:Game.Player.Health", "90"}};
+    CHECK_FALSE(conflict.MigrateManagedIdentities(resolve));
+    CHECK(conflict.HasScript("Player"));
+    CHECK(conflict.PendingFieldValues.size() == 2);
+    CHECK_FALSE(conflict.MigrateManagedIdentities([](const auto&) { return std::string{}; }));
+}
+
+TEST_CASE("Managed canonical and missing fields survive scene and prefab serialization")
+{
+    auto scene = Scene::CreateDetachedScene("Identity roundtrip");
+    auto entity = scene->CreateEntity("Player");
+    auto& scripts = entity.AddComponent<ScriptComponent>();
+    scripts.AddScript("Player"); scripts.AddScript("Missing"); scripts.AddScript("Missing.Nested");
+    scripts.PendingFieldValues = {{"Player.Health", "37"}, {"Player.Unsupported.Children", "raw-list"},
+        {"Missing.Raw", "data"}, {"Missing.Nested.Raw", "nested-data"}};
+    scripts.MigrateManagedIdentities([](const auto& name) { return name == "Player" ? std::string("type:Game.Player") : std::string{}; });
+    scripts.PendingFieldValues["type:Game.Player.Rows"] = R"({"version":1,"kind":"nestedList","leaf":"int","items":[null,[],["1","2"]]})";
+    scripts.PendingFieldValues["type:Game.Player.Scores"] = R"({"version":1,"kind":"dictionary","leaf":"int","comparer":"ordinal","items":[["","3"],["A","4"],["a","5"]]})";
+    const auto expected = scripts.PendingFieldValues;
+    auto& callbacks = const_cast<ManagedCallbacks&>(ScriptEngine::GetCallbacks());
+    struct RestoreCallbacks { ManagedCallbacks& Target; ManagedCallbacks Before; ~RestoreCallbacks() { Target = Before; } } restore{callbacks, callbacks};
+    callbacks.GetClassFieldDefs = [](const char* name) -> const char* {
+        return std::string(name) == "type:Game.Player" ? "[{\"name\":\"Health\",\"type\":\"int\",\"value\":\"100\"}]" : "[]";
+    };
+    auto serialized = SceneSerializer::SerializeScene(*scene);
+    const auto* missingFields = serialized.FindMember("entities")->GetArray().front().FindMember("ScriptFields")->FindMember("Missing");
+    REQUIRE(missingFields != nullptr);
+    CHECK(missingFields->GetArray().size() == 1);
+    auto loaded = Scene::CreateDetachedScene("Reloaded identity");
+    REQUIRE(SceneSerializer::DeserializeScene(*loaded, serialized));
+    auto view = loaded->GetRegistry().view<ScriptComponent>();
+    REQUIRE(view.size() == 1);
+    CHECK(view.get<ScriptComponent>(*view.begin()).PendingFieldValues == expected);
+
+    const auto path = std::filesystem::temp_directory_path() / ("FunkeIdentity-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".prefab");
+    struct RemoveFiles { std::filesystem::path Path; ~RemoveFiles() { std::error_code ec; std::filesystem::remove(Path, ec); std::filesystem::remove(Path.string() + ".meta", ec); } } cleanup{path};
+    REQUIRE(SceneSerializer::SaveEntityToFile(*scene, entity.GetHandle(), path.string()));
+    auto prefabScene = Scene::CreateDetachedScene("Prefab identity");
+    auto prefab = SceneSerializer::LoadEntityFromFile(*prefabScene, path.string());
+    REQUIRE(prefab != entt::null);
+    const auto& restored = prefabScene->GetComponent<ScriptComponent>(prefab);
+    CHECK(restored.HasScript("type:Game.Player")); CHECK(restored.HasScript("Missing"));
+    CHECK(restored.PendingFieldValues == expected);
+}
+
+TEST_CASE("Compiler output limits preserve errors ahead of warnings and count omitted lines")
+{
+    std::string output;
+    for (int i = 0; i < 205; ++i) output += "Game.cs(1,1): warning CS1030: warning " + std::to_string(i) + "\n";
+    output += "Game.cs(2,1): error CS1002: missing semicolon\n";
+    const auto limited = ManagedScriptCompiler::LimitOutput(output);
+    CHECK(limited.starts_with("Game.cs(2,1): error"));
+    CHECK(limited.find("6 additional build output lines omitted") != std::string::npos);
+    CHECK(ManagedScriptCompiler::LimitOutput(limited) == limited);
+    CHECK(ManagedScriptCompiler::LimitOutput("").empty());
+}
+
+TEST_CASE("Reload identity resolves the owning scene instead of the authored entity GUID")
+{
+    auto first = Scene::CreateDetachedScene("First reload scene");
+    auto second = Scene::CreateDetachedScene("Second reload scene");
+    NativeBindings bindings{};
+    ScriptBindings::PopulateNativeBindings(bindings);
+    REQUIRE(bindings.Entity_GetOwningSceneId != nullptr);
+    struct RestoreScene { ~RestoreScene() { ScriptEngine::SetScene(nullptr); } } restore;
+    for (auto* scene : {first.get(), second.get()}) {
+        ScriptEngine::SetScene(scene);
+        auto entity = scene->CreateEntity("Participant");
+        const auto id = scene->GetEntityPersistentID(entity.GetHandle());
+        CHECK(bindings.Entity_GetOwningSceneId(id) == static_cast<uint64_t>(scene->GetSceneId()));
+        CHECK(bindings.Entity_GetOwningSceneId(id) != bindings.Entity_GetSceneGUID(id));
+    }
+    CHECK(first->GetSceneId() != second->GetSceneId());
+}

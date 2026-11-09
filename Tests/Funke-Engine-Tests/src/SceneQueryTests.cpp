@@ -2,6 +2,8 @@
 
 #include "Components/Tags.hpp"
 #include "Core/Application.hpp"
+#include "Core/EngineModules.hpp"
+#include "Components/Physics/Rigidbody2DComponent.hpp"
 #include "Scene/ComponentRegistry.hpp"
 #include "Scene/Entity.hpp"
 #include "Scene/Scene.hpp"
@@ -155,6 +157,20 @@ namespace {
 			CHECK(std::find(ids.begin(), ids.begin() + 3, first->GetEntityPersistentID(handles[0])) == ids.begin() + 3);
 			CHECK(std::find(ids.begin(), ids.begin() + 3, first->GetEntityPersistentID(handles[3])) != ids.begin() + 3);
 			CheckedQueries = true;
+			Entity physical = first->GetEntity(handles[0]);
+			physical.AddComponent<Rigidbody2DComponent>();
+			const uint64_t physicalId = first->GetEntityPersistentID(physical.GetHandle());
+			CHECK(bindings.Entity_HasComponent(physicalId, "Rigidbody2D") == 1);
+			CHECK(bindings.Entity_GetComponentPtrReadOnly(physicalId, "Rigidbody2D") != nullptr);
+			EngineModules::Configure({ "Funke.2D" });
+			CHECK(bindings.Entity_HasComponent(physicalId, "Rigidbody2D") == 0);
+			CHECK(bindings.Entity_GetComponentPtr(physicalId, "Rigidbody2D") == nullptr);
+			CHECK(bindings.Entity_GetComponentPtrReadOnly(physicalId, "Rigidbody2D") == nullptr);
+			CHECK(query("QueryCommon", "", "Rigidbody2D", 0) == 0);
+			CHECK(query("QueryCommon|Rigidbody2D", "", "", 0) == 0);
+			CHECK(query("QueryCommon", "Rigidbody2D", "", 0) == 10000);
+			CHECK(physical.HasComponent<Rigidbody2DComponent>());
+			EngineModules::ActivateAllCompiled();
 		}
 	};
 }

@@ -6,6 +6,8 @@
 #include "Animation/AnimatorRuntime.hpp"
 #include "Animation/AnimatorStateMachine.hpp"
 #include "Components/General/AnimatorComponent.hpp"
+#include "Components/General/NameComponent.hpp"
+#include "Components/General/RectTransform2DComponent.hpp"
 #include "Components/General/Transform3DComponent.hpp"
 #include "Components/Graphics/ImageComponent.hpp"
 #include "Components/Graphics/SpriteRendererComponent.hpp"
@@ -17,8 +19,12 @@
 #include "Scripting/ScriptComponent.hpp"
 #include "Scripting/ScriptEngine.hpp"
 #include "Systems/AnimatorSystem.hpp"
+#if FUNKE_WITH_3D
+#include "Graphics/SkeletalAnimation.hpp"
+#endif
 
 #include <string>
+#include <cmath>
 #include <vector>
 
 using namespace Funke;
@@ -239,6 +245,122 @@ TEST_CASE("Animation clips round-trip through JSON") {
 	CHECK(loaded == clip);
 }
 
+TEST_CASE("Animation rotation modes round-trip and legacy clips retain multi-turn Euler") {
+	AnimationClip clip;
+	for (const RotationInterpolation mode : { RotationInterpolation::EulerMultiTurn, RotationInterpolation::ShortestAngle, RotationInterpolation::Quaternion }) {
+		AnimationTrack track;
+		track.Component = "Transform3D";
+		track.Property = "Rotation.z";
+		track.RotationMode = mode;
+		track.Curve = MakeCurve({ { 0, 0 }, { 1, 1080 } });
+		clip.Tracks.push_back(track);
+	}
+	const Json::Value json = AnimationClipToJson(clip);
+	CHECK(AnimationClipFromJson(Json::Parse(Json::Stringify(json))) == clip);
+	CHECK(json.FindMember("tracks")->GetArray()[0].FindMember("rotationMode") == nullptr);
+	for (const char* mode : { "", ",\"rotationMode\":\"future-mode\"", ",\"rotationMode\":42" }) {
+		const auto loaded = AnimationClipFromJson(Json::Parse(std::string("{\"tracks\":[{\"component\":\"Transform3D\",\"property\":\"Rotation.z\"")
+			+ mode + ",\"keys\":[{\"t\":0,\"v\":0},{\"t\":1,\"v\":1080}]}]}"));
+		REQUIRE(loaded.Tracks.size() == 1);
+		CHECK(loaded.Tracks[0].RotationMode == RotationInterpolation::EulerMultiTurn);
+		CHECK(loaded.Tracks[0].Curve.Evaluate(0.5f) == doctest::Approx(540.0f));
+	}
+}
+
+TEST_CASE("Animation shortest-angle curves cross wrap boundaries while Euler preserves full turns") {
+	const auto wrap = MakeCurve({ { 0, 350 }, { 1, 10 } });
+	CHECK(wrap.Evaluate(0.5f) == doctest::Approx(180.0f));
+	CHECK(wrap.Evaluate(0.5f, RotationInterpolation::ShortestAngle) == doctest::Approx(360.0f));
+	CHECK(wrap.Evaluate(0.25f, RotationInterpolation::ShortestAngle) == doctest::Approx(355.0f));
+	CHECK(wrap.Evaluate(1.0f, RotationInterpolation::ShortestAngle) == doctest::Approx(10.0f));
+	const auto signedWrap = MakeCurve({ { 0, -179 }, { 1, 179 } });
+	CHECK(signedWrap.Evaluate(0.5f, RotationInterpolation::ShortestAngle) == doctest::Approx(-180.0f));
+	const auto turns = MakeCurve({ { 0, -720 }, { 1, 1080 } });
+	CHECK(turns.Evaluate(0.25f) == doctest::Approx(-270.0f));
+	CHECK(turns.Evaluate(0.75f) == doctest::Approx(630.0f));
+	const auto step = MakeCurve({ { 0, 350 }, { 1, 10 } }, KeyInterpolation::Step);
+	CHECK(step.Evaluate(0.5f, RotationInterpolation::ShortestAngle) == doctest::Approx(350.0f));
+	const auto smooth = MakeCurve({ { 0, 350 }, { 1, 10 } }, KeyInterpolation::Bezier);
+	CHECK(smooth.Evaluate(0.5f, RotationInterpolation::ShortestAngle) == doctest::Approx(360.0f));
+}
+
+TEST_CASE("Animation quaternion properties normalize and slerp complete xyzw groups") {
+	std::array<AnimationTrack, 4> tracks;
+	AnimationRotationBinding binding;
+	binding.Active = true;
+	binding.Mode = RotationInterpolation::Quaternion;
+	const glm::quat from(1, 0, 0, 0);
+	const glm::quat to = glm::quat(glm::radians(glm::vec3(120, -35, 80)));
+	for (int c = 0; c < 4; ++c) {
+		tracks[c].Curve = MakeCurve({ { 0, from[c] * 2.0f }, { 1, -to[c] * 3.0f } });
+		binding.Tracks[c] = &tracks[c];
+	}
+	std::string error;
+	REQUIRE(ValidateAnimationRotation(binding, RotationProperty::Quaternion, PropertyType::Vec4, error));
+	PropertyValue base;
+	base.Type = PropertyType::Vec4;
+	base.FloatVec[3] = 1;
+	const auto sampled = EvaluateAnimationRotation(binding, RotationProperty::Quaternion, base, 0.25f);
+	const glm::quat actual(sampled.FloatVec[3], sampled.FloatVec[0], sampled.FloatVec[1], sampled.FloatVec[2]);
+	CHECK(glm::length(actual) == doctest::Approx(1.0f));
+	CHECK(std::abs(glm::dot(actual, glm::slerp(from, to, 0.25f))) == doctest::Approx(1.0f));
+	PropertyValue destination = base;
+	destination.FloatVec = { to.x, to.y, to.z, to.w };
+	const auto blended = BlendAnimationRotation(base, destination, 0.25f, RotationProperty::Quaternion, RotationInterpolation::EulerMultiTurn);
+	CHECK(std::abs(glm::dot(glm::quat(blended.FloatVec[3], blended.FloatVec[0], blended.FloatVec[1], blended.FloatVec[2]),
+		glm::slerp(from, to, 0.25f))) == doctest::Approx(1.0f));
+
+	SUBCASE("Missing quaternion channel is rejected") {
+		binding.Tracks[3] = nullptr;
+		CHECK_FALSE(ValidateAnimationRotation(binding, RotationProperty::Quaternion, PropertyType::Vec4, error));
+	}
+	SUBCASE("Quaternion mode also requires complete Euler orientation channels") {
+		for (auto& track : tracks) track.RotationMode = RotationInterpolation::Quaternion;
+		binding.Tracks[2] = nullptr;
+		binding.Tracks[3] = nullptr;
+		CHECK_FALSE(ValidateAnimationRotation(binding, RotationProperty::EulerDegrees, PropertyType::Vec3, error));
+	}
+	SUBCASE("Mismatched times are rejected") {
+		tracks[1].Curve.Keys[1].Time = 2;
+		CHECK_FALSE(ValidateAnimationRotation(binding, RotationProperty::Quaternion, PropertyType::Vec4, error));
+	}
+	SUBCASE("Bezier quaternion components are rejected") {
+		tracks[1].Curve.Keys[0].Interpolation = KeyInterpolation::Bezier;
+		CHECK_FALSE(ValidateAnimationRotation(binding, RotationProperty::Quaternion, PropertyType::Vec4, error));
+	}
+	SUBCASE("A quaternion property cannot request scalar shortest-angle interpolation") {
+		tracks[0].RotationMode = RotationInterpolation::ShortestAngle;
+		CHECK_FALSE(ValidateAnimationRotation(binding, RotationProperty::Quaternion, PropertyType::Vec4, error));
+	}
+	SUBCASE("Zero quaternions fall back to identity") {
+		for (auto& track : tracks) for (auto& key : track.Curve.Keys) key.Value = 0;
+		CHECK(EvaluateAnimationRotation(binding, RotationProperty::Quaternion, base, 0.25f).FloatVec == base.FloatVec);
+	}
+}
+
+TEST_CASE("Animator scalar rotation metadata applies shortest-angle to UI transforms") {
+	auto scene = Scene::CreateDetachedScene("ScalarRotation");
+	Entity root = scene->CreateEntity("Root");
+	root.AddComponent<RectTransform2DComponent>();
+	constexpr uint64_t k_ClipGuid = 0xA11CE0030ull;
+	AnimationClip clip;
+	AnimationTrack track;
+	track.Component = "RectTransform2D";
+	track.Property = "Rotation";
+	track.RotationMode = RotationInterpolation::ShortestAngle;
+	track.Curve = MakeCurve({ { 0, 350 }, { 1, 10 } });
+	clip.Tracks = { track };
+	AnimationClipLibrary::Set(k_ClipGuid, clip);
+	AnimatorComponent animator;
+	animator.Clip = k_ClipGuid;
+	AnimatorRuntime runtime;
+	REQUIRE(runtime.Sync(animator));
+	runtime.ApplyStatePose(*scene, root, 0, 0.5f);
+	CHECK(runtime.GetBindingErrors().empty());
+	CHECK(glm::degrees(root.GetComponent<RectTransform2DComponent>().LocalRotation) == doctest::Approx(360.0f));
+	AnimationClipLibrary::Invalidate(k_ClipGuid);
+}
+
 TEST_CASE("Animator controllers round-trip through JSON with transitions referencing states by name") {
 	const AnimatorController controller = MakeLocomotion();
 	const Json::Value json = AnimatorControllerToJson(controller);
@@ -397,11 +519,202 @@ TEST_CASE("Animator components round-trip through their registry serializer") {
 }
 
 #if FUNKE_WITH_3D
+TEST_CASE("Animator rotation crossfades and controller transitions use explicit modes") {
+	struct RotationCase {
+		RotationInterpolation Mode;
+		glm::vec3 From;
+		glm::vec3 To;
+		glm::vec3 Half;
+	};
+	const RotationCase cases[] = {
+		{ RotationInterpolation::ShortestAngle, { 350, -179, 20 }, { 10, 179, -20 }, { 360, -180, 0 } },
+		{ RotationInterpolation::EulerMultiTurn, { -720, 0, 360 }, { 1080, 1440, -720 }, { 180, 720, -180 } },
+		{ RotationInterpolation::Quaternion, { 65, -20, 170 }, { -45, 70, -160 }, {} }
+	};
+	for (const auto& test : cases) for (bool controllerTransition : { false, true }) {
+		INFO("mode=", RotationInterpolationToString(test.Mode), " controllerTransition=", controllerTransition);
+		auto scene = Scene::CreateDetachedScene("RotationCrossfade");
+		Entity root = scene->CreateEmptyEntity();
+		root.AddComponent<NameComponent>("Root");
+		root.AddComponent<Transform3DComponent>();
+		constexpr uint64_t k_FromGuid = 0xA11CE0020ull;
+		constexpr uint64_t k_ToGuid = 0xA11CE0021ull;
+		constexpr uint64_t k_ControllerGuid = 0xA11CE0022ull;
+		auto makeClip = [&](const glm::vec3& angles, RotationInterpolation mode) {
+			AnimationClip clip;
+			for (int c = 0; c < 3; ++c) {
+				AnimationTrack track;
+				track.Component = "Transform3D";
+				track.Property = std::string("Rotation.") + AnimationChannelSuffix(PropertyType::Vec3, c);
+				track.RotationMode = mode;
+				track.Curve = MakeCurve({ { 0, angles[c] } });
+				clip.Tracks.push_back(track);
+			}
+			return clip;
+		};
+		AnimationClipLibrary::Set(k_FromGuid, makeClip(test.From, RotationInterpolation::EulerMultiTurn));
+		AnimationClipLibrary::Set(k_ToGuid, makeClip(test.To, test.Mode));
+		AnimatorController controller;
+		controller.States = { { "From", k_FromGuid }, { "To", k_ToGuid } };
+		controller.Parameters = { { "Go", AnimatorParameterType::Trigger } };
+		AnimatorTransition transition;
+		transition.From = 0;
+		transition.To = 1;
+		transition.Duration = 1.0f;
+		transition.Conditions = { { "Go", AnimatorConditionMode::If } };
+		controller.Transitions = { transition };
+		AnimatorControllerLibrary::Set(k_ControllerGuid, controller);
+		AnimatorComponent animator;
+		animator.Controller = k_ControllerGuid;
+		AnimatorRuntime runtime;
+		REQUIRE(runtime.Sync(animator));
+		runtime.Apply(*scene, root);
+		REQUIRE(runtime.GetBindingErrors().empty());
+		if (controllerTransition) {
+			runtime.SetTrigger("Go");
+			runtime.Update(*scene, root, 0, false);
+		}
+		else REQUIRE(runtime.CrossFade("To", 1));
+		runtime.Update(*scene, root, 0.5f, false);
+		const auto& transform = root.GetComponent<Transform3DComponent>();
+		if (test.Mode == RotationInterpolation::Quaternion) {
+			const glm::quat a(glm::radians(test.From));
+			glm::quat b(glm::radians(test.To));
+			if (glm::dot(a, b) < 0) b = -b;
+			const glm::quat expected = glm::normalize(glm::slerp(a, b, 0.5f));
+			CHECK(std::abs(glm::dot(transform.GetLocalRotationQuat(), expected)) == doctest::Approx(1.0f));
+			CHECK(std::abs(glm::dot(glm::quat(glm::radians((test.From + test.To) * 0.5f)), expected)) < 0.99f);
+		}
+		else for (int c = 0; c < 3; ++c) CHECK(transform.Rotation[c] == doctest::Approx(test.Half[c]));
+		runtime.Update(*scene, root, 0.5f, false);
+		CHECK_FALSE(runtime.GetStateMachine().IsInTransition());
+		CHECK(std::abs(glm::dot(transform.GetLocalRotationQuat(), glm::quat(glm::radians(test.To)))) == doctest::Approx(1.0f));
+		if (test.Mode == RotationInterpolation::EulerMultiTurn)
+			for (int c = 0; c < 3; ++c) CHECK(transform.Rotation[c] == doctest::Approx(test.To[c]));
+		AnimationClipLibrary::Invalidate(k_FromGuid);
+		AnimationClipLibrary::Invalidate(k_ToGuid);
+		AnimatorControllerLibrary::Invalidate(k_ControllerGuid);
+	}
+}
+
+TEST_CASE("Animator rotation sampling preserves Euler turns and uses quaternion mixed-axis segments") {
+	auto scene = Scene::CreateDetachedScene("RotationSampling");
+	Entity root = scene->CreateEmptyEntity();
+	root.AddComponent<NameComponent>("Root");
+	root.AddComponent<Transform3DComponent>();
+	constexpr uint64_t k_ClipGuid = 0xA11CE0023ull;
+	const glm::vec3 from(65, -20, 170), to(-45, 70, -160);
+	AnimationClip clip;
+	for (int c = 0; c < 3; ++c) {
+		AnimationTrack track;
+		track.Component = "Transform3D";
+		track.Property = std::string("Rotation.") + AnimationChannelSuffix(PropertyType::Vec3, c);
+		track.RotationMode = RotationInterpolation::Quaternion;
+		track.Curve = MakeCurve({ { 0, from[c] }, { 1, to[c] } });
+		clip.Tracks.push_back(track);
+	}
+	SUBCASE("Quaternion mode samples a whole orientation") {
+		AnimationClipLibrary::Set(k_ClipGuid, clip);
+		AnimatorComponent animator;
+		animator.Clip = k_ClipGuid;
+		AnimatorRuntime runtime;
+		REQUIRE(runtime.Sync(animator));
+		runtime.ApplyStatePose(*scene, root, 0, 0.25f);
+		CHECK(runtime.GetBindingErrors().empty());
+		const glm::quat a(glm::radians(from));
+		glm::quat b(glm::radians(to));
+		if (glm::dot(a, b) < 0) b = -b;
+		CHECK(std::abs(glm::dot(root.GetComponent<Transform3DComponent>().GetLocalRotationQuat(),
+			glm::normalize(glm::slerp(a, b, 0.25f)))) == doctest::Approx(1.0f));
+	}
+	SUBCASE("Invalid quaternion group is reported without applying Euler curves") {
+		clip.Tracks[1].Curve.Keys[1].Time = 0.75f;
+		AnimationClipLibrary::Set(k_ClipGuid, clip);
+		AnimatorComponent animator;
+		animator.Clip = k_ClipGuid;
+		AnimatorRuntime runtime;
+		REQUIRE(runtime.Sync(animator));
+		runtime.ApplyStatePose(*scene, root, 0, 0.25f);
+		CHECK_FALSE(runtime.GetBindingErrors().empty());
+		CHECK((root.GetComponent<Transform3DComponent>().Rotation == glm::vec3(0)));
+	}
+	SUBCASE("Legacy Euler retains three full revolutions") {
+		clip.Tracks.resize(1);
+		clip.Tracks[0].RotationMode = RotationInterpolation::EulerMultiTurn;
+		clip.Tracks[0].Curve = MakeCurve({ { 0, 0 }, { 1, 1080 } });
+		AnimationClipLibrary::Set(k_ClipGuid, AnimationClipFromJson(AnimationClipToJson(clip)));
+		AnimatorComponent animator;
+		animator.Clip = k_ClipGuid;
+		AnimatorRuntime runtime;
+		REQUIRE(runtime.Sync(animator));
+		runtime.ApplyStatePose(*scene, root, 0, 0.5f);
+		CHECK(root.GetComponent<Transform3DComponent>().Rotation.x == doctest::Approx(540.0f));
+		runtime.ApplyStatePose(*scene, root, 0, 1.0f);
+		CHECK(root.GetComponent<Transform3DComponent>().Rotation.x == doctest::Approx(1080.0f));
+	}
+	AnimationClipLibrary::Invalidate(k_ClipGuid);
+}
+
+TEST_CASE("Animator shortest-angle fades handle missing channels and absent destination tracks") {
+	auto scene = Scene::CreateDetachedScene("PartialRotationCrossfade");
+	Entity root = scene->CreateEmptyEntity();
+	root.AddComponent<NameComponent>("Root");
+	auto& transform = root.AddComponent<Transform3DComponent>();
+	transform.Rotation = { 37, 22, 350 };
+	constexpr uint64_t k_FromGuid = 0xA11CE0024ull, k_ToGuid = 0xA11CE0025ull, k_ControllerGuid = 0xA11CE0026ull;
+	AnimationClip from, to;
+	AnimationTrack track;
+	track.Component = "Transform3D";
+	track.Property = "Rotation.z";
+	track.RotationMode = RotationInterpolation::ShortestAngle;
+	track.Curve = MakeCurve({ { 0, 350 } });
+	from.Tracks = { track };
+	track.Curve = MakeCurve({ { 0, 10 } });
+	to.Tracks = { track };
+	SUBCASE("Both states animate only z") {}
+	SUBCASE("Only the destination animates z") { from.Tracks.clear(); }
+	SUBCASE("Only the source animates z") {
+		to.Tracks.clear();
+		from.Tracks[0].Curve = track.Curve;
+	}
+	AnimationClipLibrary::Set(k_FromGuid, from);
+	AnimationClipLibrary::Set(k_ToGuid, to);
+	AnimatorController controller;
+	controller.States = { { "From", k_FromGuid }, { "To", k_ToGuid } };
+	AnimatorControllerLibrary::Set(k_ControllerGuid, controller);
+	AnimatorComponent animator;
+	animator.Controller = k_ControllerGuid;
+	AnimatorRuntime runtime;
+	REQUIRE(runtime.Sync(animator));
+	REQUIRE(runtime.CrossFade("To", 1));
+	runtime.Update(*scene, root, 0.5f, false);
+	CHECK(runtime.GetBindingErrors().empty());
+	CHECK(transform.Rotation.x == doctest::Approx(37.0f));
+	CHECK(transform.Rotation.y == doctest::Approx(22.0f));
+	CHECK(transform.Rotation.z == doctest::Approx(360.0f));
+	AnimationClipLibrary::Invalidate(k_FromGuid);
+	AnimationClipLibrary::Invalidate(k_ToGuid);
+	AnimatorControllerLibrary::Invalidate(k_ControllerGuid);
+}
+
+TEST_CASE("Animation property rotation modes leave skeletal quaternion blending unchanged") {
+	std::vector<NodePose> from(1), to(1);
+	from[0].Rotation = glm::quat(glm::radians(glm::vec3(65, -20, 170)));
+	to[0].Rotation = -glm::quat(glm::radians(glm::vec3(-45, 70, -160)));
+	const glm::quat a = from[0].Rotation;
+	glm::quat b = to[0].Rotation;
+	if (glm::dot(a, b) < 0) b = -b;
+	SkeletalAnimation::Blend(from, to, 0.5f);
+	CHECK(std::abs(glm::dot(from[0].Rotation, glm::normalize(glm::slerp(a, b, 0.5f)))) == doctest::Approx(1.0f));
+}
+
 TEST_CASE("Animator drives child transforms through the component registry and blends a crossfade") {
 	auto scene = Scene::CreateDetachedScene("AnimatorBinding");
-	Entity root = scene->CreateEntity("Root");
+	Entity root = scene->CreateEmptyEntity();
+	root.AddComponent<NameComponent>("Root");
 	root.AddComponent<Transform3DComponent>();
-	Entity arm = scene->CreateEntity("Arm");
+	Entity arm = scene->CreateEmptyEntity();
+	arm.AddComponent<NameComponent>("Arm");
 	arm.AddComponent<Transform3DComponent>();
 	arm.SetParent(root);
 

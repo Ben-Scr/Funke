@@ -11,7 +11,9 @@
 #if FUNKE_WITH_2D
 #include "Components/General/Transform2DComponent.hpp"
 #include "Components/Graphics/SpriteRendererComponent.hpp"
+#if FUNKE_WITH_PHYSICS2D
 #include "Components/Physics/Rigidbody2DComponent.hpp"
+#endif
 #endif
 #include "Core/Log.hpp"
 #include "Jobs/JobSystem.hpp"
@@ -46,13 +48,26 @@ namespace Funke {
 #endif
 	}
 
+	inline bool EcbParallelDiagnosticsEnabled() {
+		static const bool enabled = EcbEnvironmentFlag("FUNKE_ECB_PARALLEL_DIAGNOSTICS");
+		return enabled;
+	}
+
+	inline void EcbReportOrderedPlayback(int mode, size_t entities, size_t commands, const char* reason,
+		uint32_t command = UINT32_MAX, uint32_t typeId = 0) {
+		if (EcbParallelDiagnosticsEnabled()) FNK_CORE_INFO_TAG("EcbParallel",
+			"mode={} path=ordered reason={} entities={} commands={} command={} type_id={}",
+			mode, reason, entities, commands, command, typeId);
+	}
+
 	class EcbExecutor {
 	public:
 		explicit EcbExecutor(bool parallel) : m_Parallel(parallel) {
-			static const bool diagnostics = EcbEnvironmentFlag("FUNKE_ECB_PARALLEL_DIAGNOSTICS");
 			static const bool serialKernels = EcbEnvironmentFlag("FUNKE_ECB_SERIAL_KERNELS");
-			m_Diagnostics = diagnostics;
+			m_Diagnostics = EcbParallelDiagnosticsEnabled();
 			m_Parallel &= !serialKernels;
+			m_InlineReason = serialKernels ? "serial_kernels" : !parallel ? "auto_inline_threshold"
+				: !JobSystem::IsInitialized() || JobSystem::GetWorkerCount() == 0 ? "workers_unavailable" : "below_kernel_grain";
 		}
 
 		template<typename Kernel>
@@ -78,6 +93,7 @@ namespace Funke {
 			std::shared_ptr<std::atomic<size_t>> pending;
 			try { pending = std::make_shared<std::atomic<size_t>>(0); }
 			catch (...) {
+				m_InlineReason = "dispatch_unavailable";
 				for (size_t index = 0; index < count; ++index) kernel(index);
 				return;
 			}
@@ -109,8 +125,10 @@ namespace Funke {
 						pending->fetch_sub(1, std::memory_order_release);
 						pending->notify_all();
 					});
+					m_InlineReason = "caller_completed_work";
 				}
 				catch (...) {
+					m_InlineReason = "dispatch_unavailable";
 					pending->fetch_sub(1, std::memory_order_release);
 					break;
 				}
@@ -121,14 +139,17 @@ namespace Funke {
 				remaining = pending->load(std::memory_order_acquire)) pending->wait(remaining, std::memory_order_acquire);
 		}
 
-		void Report(size_t entities, size_t commands) const {
-			if (m_Diagnostics) FNK_CORE_INFO_TAG("EcbParallel", "entities={} commands={} worker_items={} worker_pool_tasks={} worker_mask={} max_active={}",
+		void Report(int mode, size_t entities, size_t commands) const {
+			if (m_Diagnostics) FNK_CORE_INFO_TAG("EcbParallel",
+				"mode={} path=staged execution={} reason={} entities={} commands={} worker_items={} worker_pool_tasks={} worker_mask={} max_active={}",
+				mode, m_WorkerItems.load() != 0 ? "workers" : "inline", m_WorkerItems.load() != 0 ? "none" : m_InlineReason,
 				entities, commands, m_WorkerItems.load(), m_WorkerPoolTasks.load(), m_WorkerMask.load(), m_MaxActive.load());
 		}
 
 	private:
 		bool m_Parallel;
 		bool m_Diagnostics;
+		const char* m_InlineReason;
 		std::atomic<size_t> m_WorkerItems{ 0 };
 		std::atomic<size_t> m_WorkerPoolTasks{ 0 };
 		std::atomic<uint64_t> m_WorkerMask{ 0 };
@@ -239,12 +260,18 @@ namespace Funke {
 	bool EcbTryParallelPlayback(Scene& scene, const EcbHeader& header, const uint8_t* cursor,
 		std::conditional_t<NativeTargets, EntityHandle, uint64_t>* output, int mode) {
 		constexpr size_t k_AutomaticMinimum = 512;
-		if (mode == 1 || JobSystem::IsCallerWorker()
-			|| (mode == 0 && std::max(header.entityCount, header.commandCount) < k_AutomaticMinimum)) return false;
+		const auto fallback = [&](const char* reason, uint32_t command = UINT32_MAX, uint32_t typeId = 0) {
+			EcbReportOrderedPlayback(mode, header.entityCount, header.commandCount, reason, command, typeId);
+			return false;
+		};
+		if (mode == 1) return fallback("sequential_requested");
+		if (JobSystem::IsCallerWorker()) return fallback("worker_caller");
+		if (mode == 0 && std::max(header.entityCount, header.commandCount) < k_AutomaticMinimum)
+			return fallback("auto_below_threshold");
 		const bool create = header.entityCount != 0;
 		if (create && (!scene.CanUseParallelEcbComponent(entt::type_hash<EntityHandle>::value())
 			|| !scene.CanUseParallelEcbComponent(entt::type_hash<EntityMetaDataComponent>::value())
-			|| !scene.CanUseParallelEcbComponent(entt::type_hash<UUIDComponent>::value()))) return false;
+			|| !scene.CanUseParallelEcbComponent(entt::type_hash<UUIDComponent>::value()))) return fallback("creation_signals");
 
 		enum class Action { None, Add, Remove, Destroy } action = Action::None;
 		using ComponentPlan = EcbParallelScratch::ComponentPlan;
@@ -283,7 +310,9 @@ namespace Funke {
 		const auto& sourceRegistry = std::as_const(scene.GetRegistry());
 #if FUNKE_WITH_2D
 		const auto* hierarchy = sourceRegistry.storage<HierarchyComponent>();
+#if FUNKE_WITH_PHYSICS2D
 		const auto* rigidbodies = sourceRegistry.storage<Rigidbody2DComponent>();
+#endif
 #endif
 		for (uint32_t command = 0; command < header.commandCount; ++command) {
 			const uint8_t opcode = cursor[0];
@@ -294,20 +323,23 @@ namespace Funke {
 			cursor = payload + payloadSize;
 			const Action next = opcode == Ecb_AddComponent || opcode == Ecb_DefaultConstructComponent ? Action::Add
 				: opcode == Ecb_RemoveComponent ? Action::Remove : opcode == Ecb_DestroyEntity ? Action::Destroy : Action::None;
-			if (next == Action::None || (action != Action::None && action != next)
-				|| (create && next != Action::Add) || (create == (entityIndex == kEcbNoName))) return false;
+			if (next == Action::None) return fallback("unsupported_operation", command, typeId);
+			if ((action != Action::None && action != next) || (create && next != Action::Add))
+				return fallback("mixed_operations", command, typeId);
+			if (create == (entityIndex == kEcbNoName)) return fallback("mixed_targets", command, typeId);
 			action = next;
 			EntityHandle handle = static_cast<EntityHandle>(entityIndex);
 			if (!create) {
-				if (!EcbResolveTarget<NativeTargets>(scene, EcbReadLE<uint64_t>(payload), handle)) return false;
+				if (!EcbResolveTarget<NativeTargets>(scene, EcbReadLE<uint64_t>(payload), handle))
+					return fallback("stale_target", command, typeId);
 				payload += sizeof(uint64_t);
 			}
 			const size_t slot = create ? entityIndex : entt::to_entity(handle);
-			if (slot >= capacity) return false;
+			if (slot >= capacity) return fallback("target_out_of_range", command, typeId);
 			uint32_t& mark = seen[slot];
 			if ((mark & ~uint32_t{ 7 }) != scratch.Stamp) mark = scratch.Stamp;
 			if (action == Action::Destroy) {
-				if (mark & 4) return false;
+				if (mark & 4) return fallback("duplicate_target", command, typeId);
 				mark |= 4;
 				if (destroyed.empty()) destroyed.reserve(maximumBatch);
 				destroyed.push_back(handle);
@@ -319,22 +351,22 @@ namespace Funke {
 			if (transforms.Info && transforms.Info->typeIdU32 == typeId) { batch = &transforms; plan = &scratch.TransformPlan; bit = 1; }
 			else if (sprites.Info && sprites.Info->typeIdU32 == typeId) { batch = &sprites; plan = &scratch.SpritePlan; bit = 2; }
 			const ComponentInfo* info = batch ? batch->Info : components.GetByTypeId(typeId);
-			if (!info) return false;
+			if (!info) return fallback("unknown_component", command, typeId);
 			const uint8_t opcodeBit = static_cast<uint8_t>(1u << opcode);
 			if (!plan || !(plan->CertifiedOpcodes & opcodeBit)) {
 #if FUNKE_WITH_2D
 				if (EcbCertifiedComponent<Transform2DComponent>(*info, opcode)) { batch = &transforms; plan = &scratch.TransformPlan; bit = 1; }
 				else if (EcbCertifiedComponent<SpriteRendererComponent>(*info, opcode)) { batch = &sprites; plan = &scratch.SpritePlan; bit = 2; }
-				else return false;
+				else return fallback("uncertified_component", command, typeId);
 #else
-				return false;
+				return fallback("component_module_unavailable", command, typeId);
 #endif
 				plan->CertifiedOpcodes |= opcodeBit;
 			}
-			if (mark & bit) return false;
+			if (mark & bit) return fallback("duplicate_component", command, typeId);
 			mark |= bit;
 			if (!batch->Info) {
-				if (!scene.CanUseParallelEcbComponent(info->storageHash)) return false;
+				if (!scene.CanUseParallelEcbComponent(info->storageHash)) return fallback("component_signals", command, typeId);
 				batch->Info = info;
 				batch->Handles.reserve(maximumBatch);
 				if (action == Action::Add) batch->Payloads.reserve(maximumBatch);
@@ -351,22 +383,30 @@ namespace Funke {
 			}
 			if (!create) {
 				const bool present = plan->Storage && plan->Storage->contains(handle);
-				if (present != (action == Action::Remove)) return false;
-				for (const auto* conflict : plan->Conflicts) if (conflict->contains(handle)) return false;
+				if (present != (action == Action::Remove))
+					return fallback(present ? "component_already_present" : "component_missing", command, typeId);
+				for (const auto* conflict : plan->Conflicts)
+					if (conflict->contains(handle)) return fallback("component_conflict", command, typeId);
 #if FUNKE_WITH_2D
 				if (action == Action::Add && bit == 1
-					&& ((hierarchy && hierarchy->contains(handle)) || (rigidbodies && rigidbodies->contains(handle)))) return false;
+					&& ((hierarchy && hierarchy->contains(handle))
+#if FUNKE_WITH_PHYSICS2D
+						|| (rigidbodies && rigidbodies->contains(handle))
+#endif
+					))
+					return fallback("transform_lifecycle", command, typeId);
 #endif
 			}
 			batch->Handles.push_back(handle);
 			if (action == Action::Add) batch->Payloads.push_back(opcode == Ecb_DefaultConstructComponent ? nullptr : payload);
 		}
-		if (action == Action::Remove && !ScriptEngine::CanBatchComponentInvalidation()) return false;
-		if (action == Action::Destroy && !scene.CanUseParallelEcbDestroy(destroyed)) return false;
+		if (action == Action::Remove && !ScriptEngine::CanBatchComponentInvalidation()) return fallback("component_invalidation_callback");
+		if (action == Action::Destroy && !scene.CanUseParallelEcbDestroy(destroyed)) return fallback("destroy_lifecycle_or_storage");
 #if FUNKE_WITH_2D
 		if (action == Action::Add && transforms.Info && sprites.Info
 			&& (std::find(transforms.Info->conflictsWith.begin(), transforms.Info->conflictsWith.end(), sprites.Info->typeId) != transforms.Info->conflictsWith.end()
-				|| std::find(sprites.Info->conflictsWith.begin(), sprites.Info->conflictsWith.end(), transforms.Info->typeId) != sprites.Info->conflictsWith.end())) return false;
+				|| std::find(sprites.Info->conflictsWith.begin(), sprites.Info->conflictsWith.end(), transforms.Info->typeId) != sprites.Info->conflictsWith.end()))
+			return fallback("batch_component_conflict");
 #endif
 		EcbExecutor execute(mode == 2 || std::max(header.entityCount, header.commandCount) >= 8192);
 		std::vector<EntityHandle> handles;
@@ -465,7 +505,7 @@ namespace Funke {
 			for (const EntityHandle handle : destroyed) scene.FinalizeParallelEcbDestroy(handle);
 		}
 		scene.MarkAllDirtyOnce();
-		execute.Report(header.entityCount, header.commandCount);
+		execute.Report(mode, header.entityCount, header.commandCount);
 		rollback.Active = false;
 		return true;
 	}

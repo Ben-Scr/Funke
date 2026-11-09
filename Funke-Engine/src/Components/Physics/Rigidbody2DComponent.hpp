@@ -108,5 +108,6 @@ namespace Funke {
 		friend class PhysicsSystem2D;
 		friend class Physics2D;
 		friend class Scene;
+		friend class PhysicsScene2D;
 	};
 }

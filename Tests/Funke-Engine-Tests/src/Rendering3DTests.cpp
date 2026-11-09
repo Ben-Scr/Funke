@@ -1,8 +1,11 @@
 #include <doctest/doctest.h>
+#include "Components/General/NameComponent.hpp"
+#include "GpuTestEvidence.hpp"
 #include <glm/gtc/matrix_transform.hpp>
 
 #include "Assets/AssetRegistry.hpp"
 #include "Components/General/Transform3DComponent.hpp"
+#include "Components/General/Transform2DComponent.hpp"
 #include "Components/General/HierarchyComponent.hpp"
 #include "Systems/Transform3DHierarchySystem.hpp"
 #include "Components/Graphics/Camera3DComponent.hpp"
@@ -11,7 +14,14 @@
 #include "Components/Graphics/PointLightComponent.hpp"
 #include "Components/Graphics/PostProcessing2DComponent.hpp"
 #include "Components/Graphics/SpotLightComponent.hpp"
+#include "Components/Graphics/SpriteRendererComponent.hpp"
+#include "Components/Graphics/ImageComponent.hpp"
+#include "Components/General/RectTransform2DComponent.hpp"
+#include "Components/UI/InteractableComponent.hpp"
+#include "Gui/GuiRenderer.hpp"
+#include "Systems/UIFocusSystem.hpp"
 #include "Core/Application.hpp"
+#include "Core/Window.hpp"
 #include "Core/GraphicsSettings.hpp"
 #include "Core/UUID.hpp"
 #include "DevTools/RunAutomation.hpp"
@@ -23,6 +33,8 @@
 #include "Graphics/PostProcessing/PostProcessor.hpp"
 #include "Graphics/RenderApi.hpp"
 #include "Graphics/Renderer3D.hpp"
+#include "Graphics/Renderer2D.hpp"
+#include "Graphics/TextureManager.hpp"
 #include "Graphics/SkyAmbient.hpp"
 #include "Project/FunkeProject.hpp"
 #include "Scene/BuiltInComponentRegistration.hpp"
@@ -142,6 +154,8 @@ namespace {
 
 		void Update() override {
 			Application::Quit();
+			AdapterValid = GpuTestEvidence::Adapter("postprocess");
+			if (!AdapterValid) return;
 			Renderer3D renderer;
 			struct RendererCleanup {
 				Renderer3D& Value;
@@ -177,8 +191,12 @@ namespace {
 			};
 			if (draw(first, false) && draw(second, true)) {
 				std::vector<uint8_t> a, b;
-				EmptyScenePreservesInputs = first.ReadPixelsRGBA8(a) && second.ReadPixelsRGBA8(b)
-					&& a == b && a.size() == 128 * 96 * 4 && a[0] > 240 && a[1] < 5;
+				first.ReadPixelsRGBA8(a);
+				second.ReadPixelsRGBA8(b);
+				const auto reference = GpuTestEvidence::Solid(128, 96, { 255, 0, 0, 255 });
+				const bool firstMatches = GpuTestEvidence::Compare("postprocess-main", 128, 96, a, reference);
+				const bool secondMatches = GpuTestEvidence::Compare("postprocess-additive", 128, 96, b, reference);
+				EmptyScenePreservesInputs = firstMatches && secondMatches && a == b;
 			}
 
 			PostProcessor processor;
@@ -195,28 +213,300 @@ namespace {
 				processor.Run(source, secondView, wgpu::TextureFormat::RGBA8Unorm, 128, 96,
 					&effects, PostProcessingQualityLevel::High, true, &green);
 				std::vector<uint8_t> a, b;
-				ConsecutiveCustomPassesRetainUniforms = first.ReadPixelsRGBA8(a) && second.ReadPixelsRGBA8(b)
-					&& a.size() == 128 * 96 * 4 && b.size() == a.size()
-					&& a[0] > 240 && a[1] < 5 && b[0] < 5 && b[1] > 240;
+				first.ReadPixelsRGBA8(a);
+				second.ReadPixelsRGBA8(b);
+				const bool firstMatches = GpuTestEvidence::Compare("postprocess-red", 128, 96, a,
+					GpuTestEvidence::Solid(128, 96, { 255, 0, 0, 255 }));
+				const bool secondMatches = GpuTestEvidence::Compare("postprocess-green", 128, 96, b,
+					GpuTestEvidence::Solid(128, 96, { 0, 255, 0, 255 }));
+				ConsecutiveCustomPassesRetainUniforms = firstMatches && secondMatches;
 			}
 			RenderApi::BindDefaultFramebuffer();
 			Completed = true;
 		}
 
 		bool Completed = false;
+		bool AdapterValid = false;
 		bool EmptyScenePreservesInputs = false;
 		bool ConsecutiveCustomPassesRetainUniforms = false;
 	private:
 		uint64_t m_Material;
 	};
+
+	class GpuBaselineApplication final : public Application {
+	public:
+		explicit GpuBaselineApplication(bool preflight, bool precision = false) : m_Preflight(preflight), m_Precision(precision) {}
+
+		ApplicationConfig GetConfiguration() const override {
+			auto config = ApplicationConfig::Minimal();
+			config.WindowSpecification = WindowSpecification(160, 120, "Funke GPU evidence", false, true, false);
+			config.EnableShaderManager = true;
+			config.SetWindowIcon = false;
+			config.RunInBackground = true;
+			config.Vsync = false;
+			return config;
+		}
+
+		void Update() override {
+			Application::Quit();
+			AdapterValid = GpuTestEvidence::Adapter(m_Preflight ? "preflight" : m_Precision ? "precision" : "basics");
+			if (!AdapterValid || m_Preflight) return;
+			Framebuffer target(64, 64);
+			if (!target.IsValid()) return;
+			auto clear = [&] {
+				RenderApi::BindFramebuffer(target);
+				RenderApi::SetViewport(0, 0, 64, 64);
+				RenderApi::SetClearColor(Color(0, 0, 1, 1));
+				RenderApi::Clear(ClearFlags::Color | ClearFlags::Depth);
+			};
+			{
+				Renderer2D renderer;
+				renderer.Initialize();
+				struct Cleanup { Renderer2D& Value; ~Cleanup() { Value.Shutdown(); } } cleanup{ renderer };
+				renderer.SetPostProcessingEnabled(false);
+				const uint8_t white[] = { 255, 255, 255, 255 };
+				const uint64_t texture = TextureManager::CreateRuntimeTexture(1, 1, white, Filter::Point);
+				if (!texture) return;
+				auto scene = Scene::CreateDetachedScene("GPU sprite baseline");
+				Entity entity = scene->CreateEmptyEntity();
+				entity.AddComponent<Transform2DComponent>();
+				auto& sprite = entity.AddComponent<SpriteRendererComponent>();
+				sprite.TextureHandle = TextureManager::LoadTextureByUUID(texture);
+				sprite.Color = Color(1, 0, 0, 1);
+				clear();
+				renderer.RenderSceneWithVP(*scene, glm::orthoRH_ZO(-1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f),
+					AABB({ -1, -1 }, { 1, 1 }));
+				std::vector<uint8_t> pixels;
+				target.ReadPixelsRGBA8(pixels);
+				auto reference = GpuTestEvidence::Solid(64, 64, { 0, 0, 255, 255 });
+				GpuTestEvidence::Rectangle(reference, 64, 16, 16, 48, 48, { 255, 0, 0, 255 });
+				SpriteCorrect = GpuTestEvidence::Compare("sprite2d", 64, 64, pixels, reference);
+				TextureManager::DestroyRuntimeTexture(texture);
+			}
+			{
+				Renderer3D renderer;
+				struct Cleanup { Renderer3D& Value; ~Cleanup() { Value.Shutdown(); } } cleanup{ renderer };
+				if (!renderer.Initialize()) return;
+				auto scene = Scene::CreateDetachedScene("GPU depth baseline");
+				Entity root = scene->CreateEmptyEntity();
+				root.AddComponent<Transform3DComponent>();
+				std::vector<Entity> cubes;
+				for (int index = 0; index < 2; ++index) {
+					Entity cube = scene->CreateEmptyEntity();
+					cubes.push_back(cube);
+					cube.SetParent(root);
+					auto& transform = cube.AddComponent<Transform3DComponent>();
+					transform.Position.z = index == 0 ? 0.0f : -1.0f;
+					transform.Scale = glm::vec3(index == 0 ? 1.0f : 1.5f);
+					auto& mesh = cube.AddComponent<MeshRendererComponent>();
+					mesh.Lit = false;
+					mesh.CastShadows = false;
+					mesh.Color = index == 0 ? Color(1, 0, 0, 1) : Color(0, 1, 0, 1);
+				}
+				Camera3DView view;
+				view.Position = { 0, 0, 5 };
+				view.View = glm::lookAtRH(view.Position, glm::vec3(0), glm::vec3(0, 1, 0));
+				view.Projection = glm::orthoRH_ZO(-1.0f, 1.0f, -1.0f, 1.0f, 0.1f, 10.0f);
+				clear();
+				renderer.RenderScene(*scene, view);
+				std::vector<uint8_t> pixels;
+				target.ReadPixelsRGBA8(pixels);
+				auto reference = GpuTestEvidence::Solid(64, 64, { 0, 0, 255, 255 });
+				GpuTestEvidence::Rectangle(reference, 64, 8, 8, 56, 56, { 0, 255, 0, 255 });
+				GpuTestEvidence::Rectangle(reference, 64, 16, 16, 48, 48, { 255, 0, 0, 255 });
+				DepthCorrect = GpuTestEvidence::Compare("depth3d", 64, 64, pixels, reference);
+				if (m_Precision) {
+					PrecisionCorrect = true;
+					for (float offset : { 1000.0f, 10000.0f, 1000000.0f, 10000000.0f }) {
+						root.GetComponent<Transform3DComponent>().Position.x = offset;
+						for (int frame = 0; frame < 3; ++frame) {
+							const float movement = frame * 0.0002f;
+							for (Entity cube : cubes) cube.GetComponent<Transform3DComponent>().Position.x = movement;
+							Transform3DHierarchySystem::Propagate(*scene);
+							view.Position.x = offset;
+							view.PositionRemainder.x = movement;
+							clear();
+							renderer.RenderScene(*scene, view);
+							target.ReadPixelsRGBA8(pixels);
+							const std::string name = "precision-" + std::to_string(static_cast<int>(offset)) + "-" + std::to_string(frame);
+							PrecisionCorrect &= GpuTestEvidence::Compare(name.c_str(), 64, 64, pixels, reference);
+						}
+					}
+				}
+			}
+			RenderApi::BindDefaultFramebuffer();
+			Completed = true;
+		}
+
+		bool AdapterValid = false;
+		bool Completed = false;
+		bool SpriteCorrect = false;
+		bool DepthCorrect = false;
+		bool PrecisionCorrect = false;
+	private:
+		bool m_Preflight;
+		bool m_Precision;
+	};
+
+	class GpuSpriteWindowApplication final : public Application {
+	public:
+		ApplicationConfig GetConfiguration() const override {
+			auto config = ApplicationConfig::Minimal();
+			config.WindowSpecification = WindowSpecification(160, 120, "Sprite window evidence", false, true, false);
+			config.EnableShaderManager = true;
+			config.SetWindowIcon = false;
+			config.RunInBackground = true;
+			config.Vsync = false;
+			return config;
+		}
+
+		static void SetLimit(const std::string& value) {
+#ifdef FNK_PLATFORM_WINDOWS
+			_putenv_s("FUNKE_TEST_SPRITE_BUFFER_INSTANCES", value.c_str());
+#else
+			if (value.empty()) unsetenv("FUNKE_TEST_SPRITE_BUFFER_INSTANCES");
+			else setenv("FUNKE_TEST_SPRITE_BUFFER_INSTANCES", value.c_str(), 1);
+#endif
+		}
+
+		void Update() override {
+			Application::Quit();
+			if (!GpuTestEvidence::Adapter("windows")) return;
+			struct EnvironmentScope {
+				std::string Previous = GpuTestEvidence::Environment("FUNKE_TEST_SPRITE_BUFFER_INSTANCES");
+				~EnvironmentScope() { SetLimit(Previous); }
+			} environment;
+			Framebuffer target(64, 64);
+			if (!target.IsValid()) return;
+			Renderer2D renderer;
+			renderer.Initialize();
+			struct RendererScope { Renderer2D& Value; ~RendererScope() { Value.Shutdown(); } } cleanup{ renderer };
+			renderer.SetPostProcessingEnabled(false);
+			const uint8_t white[] = { 255, 255, 255, 255 };
+			const uint8_t maskPixels[] = { 255, 255, 255, 255, 255, 255, 255, 0 };
+			const uint64_t texture = TextureManager::CreateRuntimeTexture(1, 1, white, Filter::Point);
+			const uint64_t mask = TextureManager::CreateRuntimeTexture(2, 1, maskPixels, Filter::Point);
+			if (!texture || !mask) return;
+			const auto handle = TextureManager::LoadTextureByUUID(texture);
+			const auto maskHandle = TextureManager::LoadTextureByUUID(mask);
+			std::vector<Instance44> instances;
+			for (int i = 0; i < 7; ++i) {
+				auto& instance = instances.emplace_back(Vec2{ 0, 0 }, Vec2{ 1, 1 }, 0.0f,
+					i % 2 ? Color(0, 1, 0, 0.5f) : Color(1, 0, 0, 0.5f), handle, static_cast<short>(i), 0);
+				instance.HasTextureMask = i % 3 != 0;
+				instance.MaskTextureHandle = maskHandle;
+				instance.MaskRectMin = { -0.5f, -0.5f };
+				instance.MaskRectMax = { 0.5f, 0.5f };
+			}
+			const uint32_t token = Renderer2D::RegisterInstanceContributor(
+				[&](const Scene&, const AABB&, std::vector<Instance44>& out) { out.insert(out.end(), instances.begin(), instances.end()); });
+			struct ContributorScope { uint32_t Token; ~ContributorScope() { Renderer2D::UnregisterInstanceContributor(Token); } } contribution{ token };
+			auto scene = Scene::CreateDetachedScene("Sprite window limits");
+			auto capture = [&](const char* limit, std::vector<uint8_t>& pixels) {
+				SetLimit(limit);
+				RenderApi::BindFramebuffer(target);
+				RenderApi::SetViewport(0, 0, 64, 64);
+				RenderApi::SetClearColor(Color(0, 0, 1, 1));
+				RenderApi::Clear(ClearFlags::Color | ClearFlags::Depth);
+				const auto before = renderer.GetRenderedInstancesTotal();
+				renderer.RenderSceneWithVP(*scene, glm::orthoRH_ZO(-1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f), AABB({ -1, -1 }, { 1, 1 }));
+				target.ReadPixelsRGBA8(pixels);
+				return renderer.GetRenderedInstancesTotal() == before + 7 && renderer.GetRenderedInstancesCount() == 7 && pixels.size() == 64 * 64 * 4;
+			};
+			std::vector<uint8_t> reference, two, one;
+			const bool captured = capture("", reference) && capture("2", two) && capture("1", one);
+			if (captured) {
+				const size_t left = (32 * 64 + 24) * 4, right = (32 * 64 + 40) * 4;
+				const bool visible = reference[left] > 100 && reference[left + 2] < 100 && reference[left] != reference[right];
+				const bool twoMatches = GpuTestEvidence::Compare("sprite-windows-two", 64, 64, two, reference);
+				const bool oneMatches = GpuTestEvidence::Compare("sprite-windows-one", 64, 64, one, reference);
+				Passed = visible && twoMatches && oneMatches;
+			}
+			{
+				Window::SetUIRegion(0, 0, 64, 64);
+				GuiRenderer gui;
+				gui.Initialize();
+				struct GuiScope { GuiRenderer& Value; ~GuiScope() { Value.Shutdown(); Window::ClearUIRegion(); } } uiCleanup{ gui };
+				auto uiScene = Scene::CreateDetachedScene("Focus draw order");
+				Entity back = uiScene->CreateEmptyEntity(), front = uiScene->CreateEmptyEntity();
+				for (Entity entity : { back, front }) {
+					entity.AddComponent<RectTransform2DComponent>().SizeDelta = { 32, 32 };
+					entity.AddComponent<ImageComponent>().TextureHandle = handle;
+				}
+				back.GetComponent<ImageComponent>().Color = Color(0, 1, 0, 1);
+				back.GetComponent<ImageComponent>().SortingOrder = 20;
+				front.GetComponent<ImageComponent>().Color = Color(1, 0, 0, 1);
+				front.GetComponent<ImageComponent>().SortingOrder = 10;
+				front.AddComponent<InteractableComponent>().Focusable = true;
+				back.AddComponent<InteractableComponent>().Focusable = true;
+				RenderApi::BindFramebuffer(target);
+				RenderApi::SetViewport(0, 0, 64, 64);
+				RenderApi::SetClearColor(Color(0, 0, 1, 1));
+				RenderApi::Clear(ClearFlags::Color | ClearFlags::Depth);
+				gui.RenderScene(*uiScene, false);
+				std::vector<uint8_t> pixels;
+				target.ReadPixelsRGBA8(pixels);
+				auto expected = GpuTestEvidence::Solid(64, 64, { 0, 0, 255, 255 });
+				GpuTestEvidence::Rectangle(expected, 64, 16, 16, 48, 48, { 0, 255, 0, 255 });
+				Passed &= GpuTestEvidence::Compare("ui-focus-order", 64, 64, pixels, expected);
+				Passed &= UIFocusSystem::PickFocusable(*uiScene, { 0, 0 }) == back.GetHandle();
+			}
+			TextureManager::DestroyRuntimeTexture(mask);
+			TextureManager::DestroyRuntimeTexture(texture);
+			RenderApi::BindDefaultFramebuffer();
+		}
+		bool Passed = false;
+	};
+
+	int RunGpuBaseline(Application& application) {
+		struct Cleanup {
+			~Cleanup() { Application::SetCommandLineArgs(0, nullptr); RunAutomation::Reset(); }
+		} cleanup;
+		RunAutomation::Options options;
+		options.Background = true;
+		RunAutomation::Configure(options);
+		char executable[] = "Funke-GPU-Test", background[] = "--background";
+		char* arguments[] = { executable, background };
+		Application::SetCommandLineArgs(2, arguments);
+		return application.Run();
+	}
 }
 
-TEST_CASE("GPU custom post processing preserves empty additive scenes and consecutive uniform uploads") {
-	const char* enabled = std::getenv("FUNKE_TEST_RENDER_GPU");
-	if (!enabled || std::string(enabled) != "1") {
-		MESSAGE("Set FUNKE_TEST_RENDER_GPU=1 for the background WebGPU regression test.");
-		return;
-	}
+TEST_CASE("GPU adapter preflight" * doctest::skip(!GpuTestEvidence::Requested())) {
+	REQUIRE(GpuTestEvidence::Environment("FUNKE_TEST_RENDER_GPU") == "1");
+	GpuBaselineApplication application(true);
+	CHECK(RunGpuBaseline(application) == 0);
+	CHECK(application.AdapterValid);
+}
+
+TEST_CASE("GPU fixed sprite and mesh depth readbacks" * doctest::skip(!GpuTestEvidence::Requested())) {
+	REQUIRE(GpuTestEvidence::Environment("FUNKE_TEST_RENDER_GPU") == "1");
+	GpuBaselineApplication application(false);
+	CHECK(RunGpuBaseline(application) == 0);
+	CHECK(application.AdapterValid);
+	CHECK(application.Completed);
+	CHECK(application.SpriteCorrect);
+	CHECK(application.DepthCorrect);
+}
+
+TEST_CASE("GPU sprite buffer windows preserve alpha masks and all instances" * doctest::skip(!GpuTestEvidence::Requested())) {
+	GpuSpriteWindowApplication application;
+	CHECK(RunGpuBaseline(application) == 0);
+	CHECK(application.Passed);
+}
+
+TEST_CASE("GPU large-coordinate hierarchy preserves small relative motion" * doctest::skip(!GpuTestEvidence::Requested())) {
+	GpuBaselineApplication application(false, true);
+	CHECK(RunGpuBaseline(application) == 0);
+	CHECK(application.AdapterValid);
+	CHECK(application.Completed);
+	CHECK(application.DepthCorrect);
+	CHECK(application.PrecisionCorrect);
+}
+
+TEST_CASE("GPU custom post processing preserves empty additive scenes and consecutive uniform uploads"
+	* doctest::skip(!GpuTestEvidence::Requested())) {
+	REQUIRE(GpuTestEvidence::Environment("FUNKE_TEST_RENDER_GPU") == "1");
 	TempDirectory files("FunkePostProcessRegression_");
 	const uint64_t shaderId = UUID(), materialId = UUID();
 	const std::string shader = Path::ToUtf8(files.Root / "probe.wgsl");
@@ -244,6 +534,7 @@ fn surface(in: SurfaceInput) -> SurfaceOutput {
 	Application::SetCommandLineArgs(2, arguments);
 	PostProcessRegressionApplication application(materialId);
 	CHECK(application.Run() == 0);
+	CHECK(application.AdapterValid);
 	CHECK(application.Completed);
 	CHECK(application.EmptyScenePreservesInputs);
 	CHECK(application.ConsecutiveCustomPassesRetainUniforms);
@@ -795,14 +1086,15 @@ TEST_CASE("3D light, material and sky fields round-trip through the component re
 
 		Entity target = scene->CreateEmptyEntity();
 		target.AddComponent<PointLightComponent>();
-		target.AddComponent<SpotLightComponent>();
+		Entity spotTarget = scene->CreateEmptyEntity();
+		spotTarget.AddComponent<SpotLightComponent>();
 		RoundTrip(*pointInfo, source, target);
-		RoundTrip(*spotInfo, spotSource, target);
+		RoundTrip(*spotInfo, spotSource, spotTarget);
 		CHECK(target.GetComponent<PointLightComponent>().Intensity == doctest::Approx(12.0f));
 		CHECK(target.GetComponent<PointLightComponent>().Range == doctest::Approx(3.5f));
-		CHECK(target.GetComponent<SpotLightComponent>().InnerAngle == doctest::Approx(5.0f));
-		CHECK(target.GetComponent<SpotLightComponent>().OuterAngle == doctest::Approx(40.0f));
-		CHECK(target.GetComponent<SpotLightComponent>().Color.b == doctest::Approx(0.3f));
+		CHECK(spotTarget.GetComponent<SpotLightComponent>().InnerAngle == doctest::Approx(5.0f));
+		CHECK(spotTarget.GetComponent<SpotLightComponent>().OuterAngle == doctest::Approx(40.0f));
+		CHECK(spotTarget.GetComponent<SpotLightComponent>().Color.b == doctest::Approx(0.3f));
 
 		pointInfo->deserialize(target, Json::Parse("{}"));
 		CHECK(target.GetComponent<PointLightComponent>().Range == doctest::Approx(PointLightComponent{}.Range));
@@ -962,11 +1254,13 @@ TEST_CASE("Ambient From Skybox keeps the camera colors when the material gives n
 	const ComponentInfo* info = registry.FindBySerializedName("Camera3D");
 	REQUIRE(info);
 	auto scene = Scene::CreateDetachedScene("AmbientFromSkybox");
-	Entity src = scene->CreateEntity("Src");
+	Entity src = scene->CreateEmptyEntity();
+	src.AddComponent<NameComponent>("Src");
 	src.AddComponent<Camera3DComponent>() = camera;
 	const Json::Value json = info->serialize(src);
 	CHECK(json.FindMember("ambientFromSkybox"));
-	Entity dst = scene->CreateEntity("Dst");
+	Entity dst = scene->CreateEmptyEntity();
+	dst.AddComponent<NameComponent>("Dst");
 	dst.AddComponent<Camera3DComponent>();
 	info->deserialize(dst, json);
 	CHECK(dst.GetComponent<Camera3DComponent>().AmbientFromSkybox);

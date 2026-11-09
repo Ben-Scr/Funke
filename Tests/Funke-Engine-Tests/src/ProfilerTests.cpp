@@ -149,6 +149,31 @@ TEST_CASE("Profiler — unregistered module names are ignored, not asserted") {
 	CHECK(Profiler::Find("NotARealModule") == nullptr);
 }
 
+TEST_CASE("Profiler Renderer3D scopes record samples across reinitialization") {
+	const char* names[] = {
+		"Renderer3D.RenderScene", "Renderer3D.Cull", "Renderer3D.SkinningPose",
+		"Renderer3D.SkinningFallback", "Renderer3D.SkinningDispatch",
+		"Renderer3D.Shadows", "Renderer3D.Sky", "Renderer3D.Particles"
+	};
+	for (int cycle = 0; cycle < 2; ++cycle) {
+		ResetProfiler();
+		const size_t moduleCount = Profiler::AllModules().size();
+		for (const char* name : names) {
+			CAPTURE(name);
+			const ProfilerModule* module = Profiler::Find(name);
+			REQUIRE(module != nullptr);
+			CHECK(module->Count == 0);
+			CHECK(Profiler::Register(name) == module);
+			Profiler::PushSample(name, 2.5f);
+			CHECK(module->Count == 1);
+			CHECK(module->CurrentValue == doctest::Approx(2.5f));
+		}
+		CHECK(Profiler::AllModules().size() == moduleCount);
+		Profiler::Shutdown();
+		for (const char* name : names) CHECK(Profiler::Find(name) == nullptr);
+	}
+}
+
 TEST_CASE("Profiler — SetTrackingSpan reshapes ring buffer and clears state") {
 	ResetProfiler();
 

@@ -42,10 +42,13 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <charconv>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <memory_resource>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -788,18 +791,28 @@ namespace Funke {
 			return true;
 		}
 
-		bool EnsureInstanceBuffer(wgpu::Device device, uint32_t neededInstances) {
-			if (g_InstanceBufferCapacity >= neededInstances && g_InstanceBuffer) return true;
+		uint32_t InstanceWindowLimit() {
+			uint64_t limit = std::min<uint64_t>(WebGPUBackend::GetMaxBufferSize() / sizeof(SpriteInstance), UINT32_MAX);
+			if (const char* text = std::getenv("FUNKE_TEST_SPRITE_BUFFER_INSTANCES")) {
+				uint64_t requested = 0;
+				const char* end = text + std::strlen(text);
+				const auto parsed = std::from_chars(text, end, requested);
+				if (parsed.ec == std::errc{} && parsed.ptr == end && requested != 0) limit = std::min(limit, requested);
+			}
+			return static_cast<uint32_t>(limit);
+		}
+
+		bool EnsureInstanceBuffer(wgpu::Device device, uint32_t neededInstances, uint32_t maxInstances) {
+			if (g_InstanceBufferCapacity >= neededInstances && g_InstanceBufferCapacity <= maxInstances && g_InstanceBuffer) return true;
 
 			// Over maxBufferSize Dawn returns an error buffer (never null); caching it as the capacity would
 			// blank all sprites permanently. Refuse instead, and never grow past the limit.
-			const uint64_t maxInstances = WebGPUBackend::GetMaxBufferSize() / sizeof(SpriteInstance);
 			if (neededInstances > maxInstances) {
 				static bool s_LoggedOverLimit = false;
 				if (!s_LoggedOverLimit) {
 					s_LoggedOverLimit = true;
 					FNK_CORE_ERROR_TAG("Renderer2D",
-						"{} visible sprites exceed the GPU buffer limit ({} instances); skipping the sprite pass",
+						"Sprite window of {} instances exceeds the GPU buffer limit ({})",
 						neededInstances, maxInstances);
 				}
 				return false;
@@ -1046,9 +1059,6 @@ namespace Funke {
 #endif
 	}
 
-	void Renderer2D::RenderScene(Scene& /*scene*/) {
-	}
-
 	void Renderer2D::RenderSceneWithVP(Scene& scene,
 		const glm::mat4& vp, const AABB& viewportAABB)
 	{
@@ -1177,9 +1187,10 @@ namespace Funke {
 		// Sprite pass — only when there are sprites to draw. When n == 0
 		// with PP enabled we fall through to the PostProcessor below so
 		// effects still apply to the cleared intermediate background.
-		bool instancesUploaded = false;
+		const size_t windowLimit = InstanceWindowLimit();
+		size_t uploadedBegin = n, uploadedEnd = n;
 		bool spritePassFailed = false;
-		auto renderSprites = [&](size_t firstInstance, size_t endInstance) {
+		auto renderSpriteWindow = [&](size_t firstInstance, size_t endInstance) {
 			if (firstInstance == endInstance) return;
 			auto target = WebGPUBackend::BeginRenderToCurrentTarget();
 			if (!target.Valid) {
@@ -1211,7 +1222,7 @@ namespace Funke {
 				return;
 			}
 
-			if (!instancesUploaded) {
+			if (firstInstance < uploadedBegin || endInstance > uploadedEnd) {
 				FUNKE_PROFILE_SCOPE("Renderer2D.Upload");
 				if (g_InstanceSubmitSerial == WebGPUBackend::GetFrameSubmitSerial()) WebGPUBackend::FlushCommands();
 				if (!EnsureUniformBuffer(device)) {
@@ -1220,18 +1231,22 @@ namespace Funke {
 				}
 				queue.WriteBuffer(g_UniformBuffer, 0, glm::value_ptr(vp), 64);
 
-				if (!EnsureInstanceBuffer(device, static_cast<uint32_t>(n))) {
+				const size_t windowBegin = firstInstance / windowLimit * windowLimit;
+				const size_t windowEnd = windowBegin + std::min(windowLimit, n - windowBegin);
+				const size_t windowCount = windowEnd - windowBegin;
+				if (!EnsureInstanceBuffer(device, static_cast<uint32_t>(windowCount), static_cast<uint32_t>(windowLimit))) {
 					abortSpritePass();
 					return;
 				}
-				g_GpuInstanceScratch.resize(n);
-				for (size_t k = 0; k < n; ++k) {
-					WebGPUSpriteResources::EncodeInstance44(g_InstancesScratch[k], g_GpuInstanceScratch[k]);
+				g_GpuInstanceScratch.resize(windowCount);
+				for (size_t k = 0; k < windowCount; ++k) {
+					WebGPUSpriteResources::EncodeInstance44(g_InstancesScratch[windowBegin + k], g_GpuInstanceScratch[k]);
 				}
 				queue.WriteBuffer(g_InstanceBuffer, 0,
 					g_GpuInstanceScratch.data(),
-					n * sizeof(SpriteInstance));
-				instancesUploaded = true;
+					windowCount * sizeof(SpriteInstance));
+				uploadedBegin = windowBegin;
+				uploadedEnd = windowEnd;
 			}
 
 			wgpu::CommandEncoder encoder = WebGPUBackend::GetFrameEncoder();
@@ -1306,12 +1321,21 @@ namespace Funke {
 			};
 			const std::uint32_t indexCount = WebGPUSpriteResources::GetQuadIndexCount(pipelineMode);
 			// Wireframe debug view keeps the standard pipeline for every sprite.
-			const bool anyCustom = !wireframePass && g_CustomSprites && std::any_of(g_InstancesScratch.begin(),
-				g_InstancesScratch.begin() + static_cast<std::ptrdiff_t>(n), [](const Instance44& instance) { return instance.Material != 0; });
+			const bool anyCustom = !wireframePass && g_CustomSprites && std::any_of(
+				g_InstancesScratch.begin() + static_cast<std::ptrdiff_t>(firstInstance),
+				g_InstancesScratch.begin() + static_cast<std::ptrdiff_t>(endInstance), [](const Instance44& instance) { return instance.Material != 0; });
 			if (anyCustom) {
 				g_CustomSprites->WriteGlobals(CustomMaterialBindings::MakeGlobals(glm::mat4(1.0f), vp, glm::vec3(0.0f), target.Width, target.Height));
 			}
 
+			static const bool cacheMaterials = [] {
+				const char* disabled = std::getenv("FUNKE_DISABLE_SPRITE_PASS_CACHE");
+				return !disabled || std::strcmp(disabled, "1") != 0;
+			}();
+			// Materials cannot mutate inside this pass; discard resolved GPU state before the next view or frame.
+			std::array<std::byte, 4096> materialScratch;
+			std::pmr::monotonic_buffer_resource materialMemory(materialScratch.data(), materialScratch.size());
+			std::pmr::unordered_map<uint64_t, CustomSpriteDrawer::Draw> resolvedMaterials{ &materialMemory };
 			size_t i = firstInstance;
 			while (i < endInstance) {
 				const TextureHandle runHandle = resolveHandle(g_TexturesScratch[i]);
@@ -1334,9 +1358,17 @@ namespace Funke {
 					i = runEnd;
 					continue;
 				}
-				const CustomSpriteDrawer::Draw custom = anyCustom
-					? g_CustomSprites->Resolve(runMaterial, ShaderTarget::Sprite2D, target.ColorFormat, target.HasDepth)
-					: CustomSpriteDrawer::Draw{};
+				CustomSpriteDrawer::Draw custom;
+				if (runMaterial != 0) {
+					if (cacheMaterials && (i != firstInstance || runEnd != endInstance)) {
+						auto [resolved, inserted] = resolvedMaterials.try_emplace(runMaterial);
+						if (inserted) resolved->second = g_CustomSprites->Resolve(
+							runMaterial, ShaderTarget::Sprite2D, target.ColorFormat, target.HasDepth);
+						custom = resolved->second;
+					} else {
+						custom = g_CustomSprites->Resolve(runMaterial, ShaderTarget::Sprite2D, target.ColorFormat, target.HasDepth);
+					}
+				}
 				wgpu::RenderPipeline runPipeline = custom.Pipeline ? custom.Pipeline : pipeline;
 				if (runPipeline.Get() != boundPipeline.Get()) {
 					pass.SetPipeline(runPipeline);
@@ -1348,7 +1380,7 @@ namespace Funke {
 					/*instanceCount=*/count,
 					/*firstIndex=*/0,
 					/*baseVertex=*/0,
-					/*firstInstance=*/static_cast<uint32_t>(i));
+					/*firstInstance=*/static_cast<uint32_t>(i - uploadedBegin));
 				++m_DrawCallsCount;
 				// The editor's wireframe overlay redraws the same sprites as lines.
 				if (!wireframePass) m_RenderedInstancesTotal += count;
@@ -1367,7 +1399,15 @@ namespace Funke {
 		};
 
 		for (const SceneDraw& draw : sceneDraws) {
-			renderSprites(draw.Begin, draw.End);
+			if (windowLimit == 0 && draw.Begin != draw.End) {
+				FNK_CORE_ERROR_TAG("Renderer2D", "GPU buffer limit cannot hold one sprite instance");
+				spritePassFailed = true;
+			}
+			for (size_t begin = draw.Begin; begin < draw.End && !spritePassFailed;) {
+				const size_t count = std::min(windowLimit - begin % windowLimit, draw.End - begin);
+				renderSpriteWindow(begin, begin + count);
+				begin += count;
+			}
 			if (spritePassFailed) {
 				if (usePostProcess) WebGPUBackend::RestoreBoundTarget(callerSnap);
 				finishTiming();

@@ -15,6 +15,7 @@ namespace FunkeScriptCoreTests;
 public sealed unsafe class EntityCommandBufferTests : IDisposable
 {
     private readonly NativeBindingsStruct m_Previous = NativeCallbacks.Bindings;
+    private readonly delegate* unmanaged<byte*, byte*, int, int> m_PreviousLayout = ComponentTypes.NativeLayoutQuery;
     private static byte[] s_Wire = Array.Empty<byte>();
     private static int s_Playbacks;
     private static int s_PlaybackMode;
@@ -43,6 +44,7 @@ public sealed unsafe class EntityCommandBufferTests : IDisposable
         bindings.Ecb_Playback = &Playback;
         bindings.Ecb_PlaybackWithMode = &PlaybackWithMode;
         NativeCallbacks.Bindings = bindings;
+        ComponentTypes.NativeLayoutQuery = &DynamicLayout;
         s_Wire = Array.Empty<byte>();
         s_Playbacks = 0;
         s_PlaybackMode = -1;
@@ -50,7 +52,23 @@ public sealed unsafe class EntityCommandBufferTests : IDisposable
         s_PlaybackError = 0;
     }
 
-    public void Dispose() => NativeCallbacks.Bindings = m_Previous;
+    public void Dispose()
+    {
+        NativeCallbacks.Bindings = m_Previous;
+        ComponentTypes.NativeLayoutQuery = m_PreviousLayout;
+    }
+
+    [UnmanagedCallersOnly]
+    private static int DynamicLayout(byte* name, byte* output, int capacity)
+    {
+        ReadOnlySpan<byte> json = "{\"version\":1,\"dynamic\":true}"u8;
+        if (output != null && capacity > json.Length)
+        {
+            json.CopyTo(new Span<byte>(output, json.Length));
+            output[json.Length] = 0;
+        }
+        return json.Length;
+    }
 
     [UnmanagedCallersOnly]
     private static int ComponentSize(byte* name)

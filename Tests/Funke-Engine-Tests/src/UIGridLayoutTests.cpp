@@ -2,6 +2,8 @@
 
 #include "Components/General/RectTransform2DComponent.hpp"
 #include "Components/UI/GridLayoutGroupComponent.hpp"
+#include "Components/UI/HorizontalLayoutGroupComponent.hpp"
+#include "Components/UI/VerticalLayoutGroupComponent.hpp"
 #include "Core/Window.hpp"
 #include "Scene/Entity.hpp"
 #include "Scene/EntityHelper.hpp"
@@ -87,5 +89,79 @@ TEST_CASE("Grid Layout Group aligns the occupied cells like Unity") {
 		const auto& first = items[0].GetComponent<RectTransform2DComponent>();
 		const auto& last = items[2].GetComponent<RectTransform2DComponent>();
 		CHECK((first.ResolvedMin.x + last.ResolvedMax.x) * 0.5f == doctest::Approx(Center(gridRect).x));
+	}
+}
+
+TEST_CASE("Backlog child scale stays stable across layout invalidations") {
+	SurfaceScope surface;
+	for (bool vertical : {false, true}) for (float scale : {0.5f, 2.0f}) {
+		auto scene = Scene::CreateDetachedScene("Scaled layout");
+		auto parent = vertical ? EntityHelper::CreateUIVerticalLayout(*scene) : EntityHelper::CreateUIHorizontalLayout(*scene);
+		auto child = EntityHelper::CreateUIPanel(*scene);
+		child.SetParent(parent);
+		parent.GetComponent<RectTransform2DComponent>().SizeDelta = {500,500};
+		auto& rect = child.GetComponent<RectTransform2DComponent>();
+		rect.SizeDelta = {100,100};
+		rect.LocalScale = {scale,scale};
+		if (vertical) {
+			auto& layout = parent.GetComponent<VerticalLayoutGroupComponent>();
+			layout.ControlChildHeight = true;
+			layout.ChildForceExpandHeight = false;
+			layout.UseChildScaleHeight = true;
+		} else {
+			auto& layout = parent.GetComponent<HorizontalLayoutGroupComponent>();
+			layout.ControlChildWidth = true;
+			layout.ChildForceExpandWidth = false;
+			layout.UseChildScaleWidth = true;
+		}
+		for (int i = 0; i < 4; ++i) {
+			Window::SetUIRegion(0,0,1920+i*10,1080+i*10);
+			ComputeUILayout(*scene);
+			CHECK((vertical ? rect.SizeDelta.y : rect.SizeDelta.x) == doctest::Approx(100));
+			const Vec2 size = rect.ResolvedMax - rect.ResolvedMin;
+			CHECK((vertical ? size.y : size.x) == doctest::Approx(100*scale));
+		}
+	}
+}
+
+TEST_CASE("Backlog layout combinations preserve spacing alignment and authored dimensions") {
+	SurfaceScope surface;
+	for (bool vertical : {false, true}) for (float scale : {0.5f, 2.0f})
+	for (bool control : {false, true}) for (bool expand : {false, true}) for (bool useScale : {false, true}) {
+		auto scene = Scene::CreateDetachedScene("Layout matrix");
+		auto parent = vertical ? EntityHelper::CreateUIVerticalLayout(*scene) : EntityHelper::CreateUIHorizontalLayout(*scene);
+		auto first = EntityHelper::CreateUIPanel(*scene);
+		auto second = EntityHelper::CreateUIPanel(*scene);
+		first.SetParent(parent);
+		second.SetParent(parent);
+		parent.GetComponent<RectTransform2DComponent>().SizeDelta = {500, 500};
+		for (auto child : {first, second}) {
+			child.GetComponent<RectTransform2DComponent>().SizeDelta = {100, 100};
+			child.GetComponent<RectTransform2DComponent>().LocalScale = {scale, scale};
+		}
+		const auto setup = [&](auto& layout) {
+			layout.ControlChildWidth = layout.ControlChildHeight = control;
+			layout.ChildForceExpandWidth = layout.ChildForceExpandHeight = expand;
+			layout.UseChildScaleWidth = layout.UseChildScaleHeight = useScale;
+			layout.Spacing = 7;
+			layout.PaddingLeft = layout.PaddingRight = layout.PaddingTop = layout.PaddingBottom = 0;
+			layout.ChildAlignment = UIAlignment::MiddleCenter;
+		};
+		if (vertical) setup(parent.GetComponent<VerticalLayoutGroupComponent>());
+		else setup(parent.GetComponent<HorizontalLayoutGroupComponent>());
+		for (int iteration = 0; iteration < 4; ++iteration) {
+			Window::SetUIRegion(0, 0, 800 + iteration * 20, 600 + iteration * 10);
+			ComputeUILayout(*scene);
+			const auto& a = first.GetComponent<RectTransform2DComponent>();
+			const auto& b = second.GetComponent<RectTransform2DComponent>();
+			const int axis = vertical ? 1 : 0;
+			const float expected = control && expand ? 246.5f / (useScale ? scale : 1) : 100;
+			CHECK(a.SizeDelta[axis] == doctest::Approx(expected));
+			CHECK(b.SizeDelta[axis] == doctest::Approx(expected));
+			if (useScale) {
+				CHECK((vertical ? a.ResolvedMin.y - b.ResolvedMax.y : b.ResolvedMin.x - a.ResolvedMax.x) == doctest::Approx(7));
+				CHECK((Center(a)[axis] + Center(b)[axis]) * 0.5f == doctest::Approx(Center(parent.GetComponent<RectTransform2DComponent>())[axis]));
+			}
+		}
 	}
 }

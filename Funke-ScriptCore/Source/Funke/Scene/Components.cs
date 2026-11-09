@@ -16,6 +16,12 @@ public class NameComponent : Component
 
 public class Transform2D : Component
 {
+    /// <summary>Read/write position relative to the parent; alias of LocalTransform.</summary>
+    public Vector2 LocalPosition { get => LocalTransform; set => LocalTransform = value; }
+
+    /// <summary>Read/write world position; alias of Position. Unlike Transform3D.WorldPosition, this has a setter.</summary>
+    public Vector2 WorldPosition { get => Position; set => Position = value; }
+
     public Vector2 Position
     {
         get

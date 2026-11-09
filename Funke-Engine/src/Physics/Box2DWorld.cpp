@@ -192,8 +192,17 @@ namespace Funke {
 		}
 
 
-		b2Body_SetTransform(bodyId, b2Vec2(transform.Position.x, transform.Position.y), transform.GetB2Rotation());
 		return shapeId;
+	}
+
+	bool Box2DWorld::OwnsBody(b2BodyId bodyId, const Scene& scene, EntityHandle entity) const {
+		if (!b2Body_IsValid(bodyId)) return false;
+		const auto found = m_BodyBindings.find(b2StoreBodyId(bodyId));
+		return found != m_BodyBindings.end() && found->second.OwningScene == &scene && found->second.Entity == entity;
+	}
+
+	b2Counters Box2DWorld::GetResourceCounts() const {
+		return b2World_IsValid(m_WorldId) ? b2World_GetCounters(m_WorldId) : b2Counters{};
 	}
 
 	CollisionBodyRef Box2DWorld::ResolveShape(b2ShapeId shapeId) const {

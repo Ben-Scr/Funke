@@ -24,8 +24,10 @@ namespace Funke {
 		std::string Redo(Scene& scene);
 		void Clear();
 
-		bool CanUndo() const;
-		bool CanRedo() const;
+		bool CanUndo(std::string* reason = nullptr) const;
+		bool CanRedo(std::string* reason = nullptr) const;
+		bool HasHistory() const { return m_State && (!m_State->Undo.empty() || !m_State->Redo.empty()); }
+		const std::string& GetLastError() const { return m_LastError; }
 
 	private:
 		// Oldest entries drop past this depth; per-drag/per-edit churn would
@@ -37,17 +39,20 @@ namespace Funke {
 			std::shared_ptr<EditCommand> Command;
 			std::weak_ptr<State> Partner;
 			bool Linked = false;
+			std::string PartnerName;
 		};
 		struct State {
 			std::weak_ptr<Scene> Owner;
+			std::string OwnerName;
 			std::vector<Entry> Undo;
 			std::vector<Entry> Redo;
 		};
 		friend class SceneUndoHistory;
 		void BindScene(const std::shared_ptr<Scene>& scene);
-		static bool CanApply(const std::shared_ptr<State>& state, bool redo);
+		static bool CanApply(const std::shared_ptr<State>& state, bool redo, std::string* reason);
 		std::string Apply(Scene& scene, bool redo);
 		std::shared_ptr<State> m_State = std::make_shared<State>();
+		std::string m_LastError;
 	};
 
 	class SceneUndoHistory {
@@ -55,7 +60,8 @@ namespace Funke {
 		UndoStack& ForScene(const std::shared_ptr<Scene>& scene);
 		UndoStack Take(const std::shared_ptr<Scene>& scene);
 		void Restore(const std::shared_ptr<Scene>& scene, UndoStack stack);
-		void Retain(std::span<const std::weak_ptr<Scene>> scenes);
+		std::vector<std::string> Retain(std::span<const std::weak_ptr<Scene>> scenes);
+		bool HasHistory(const Scene* scene) const;
 		void Forget(const Scene* scene);
 		void Clear();
 

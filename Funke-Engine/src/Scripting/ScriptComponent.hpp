@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <functional>
 
 namespace Funke {
 
@@ -11,7 +12,7 @@ namespace Funke {
 		std::vector<ScriptInstance> Scripts;
 		std::vector<std::string> ManagedComponents;
 
-		// Pending field values from deserialization, applied when instance binds.
+		// Authored field values, reapplied whenever an instance binds or reloads.
 		// Key: "ClassName.FieldName", Value: string representation.
 		std::unordered_map<std::string, std::string> PendingFieldValues;
 		// Raw dynamic IComponent payloads captured when scene deserialization
@@ -19,6 +20,53 @@ namespace Funke {
 		std::unordered_map<std::string, std::string> PendingDynamicComponentValues;
 
 		ScriptComponent() = default;
+
+		bool MigrateManagedIdentities(const std::function<std::string(const std::string&)>& resolve) {
+			std::vector<std::string> owners = ManagedComponents;
+			for (const auto& script : Scripts) owners.push_back(script.GetClassName());
+			for (const auto& [name, _] : PendingDynamicComponentValues) owners.push_back(name);
+			std::unordered_map<std::string, std::string> mappings;
+			auto propose = [&](const std::string& name) {
+				if (name.starts_with("type:")) return;
+				std::string canonical = resolve(name);
+				if (!canonical.empty() && canonical != name) mappings.emplace(name, std::move(canonical));
+			};
+			for (const auto& name : ManagedComponents) propose(name);
+			for (const auto& [name, _] : PendingDynamicComponentValues) propose(name);
+			for (const auto& script : Scripts) if (script.GetType() != ScriptType::Native) propose(script.GetClassName());
+			bool changed = false;
+			for (const auto& [oldName, newName] : mappings) {
+				if (HasScript(newName) || HasManagedComponent(newName)) continue;
+				bool collision = false;
+				for (const auto& other : mappings) if (other.first != oldName && other.second == newName) collision = true;
+				std::vector<std::pair<std::string, std::string>> fields;
+				const std::string prefix = oldName + ".";
+				for (const auto& [key, value] : PendingFieldValues) {
+					if (!key.starts_with(prefix)) continue;
+					bool owned = true;
+					for (const auto& owner : owners) if (owner.size() > oldName.size() && key.starts_with(owner + ".")) owned = false;
+					if (!owned) continue;
+					const std::string target = newName + key.substr(oldName.size());
+					if (PendingFieldValues.contains(target)) collision = true;
+					fields.emplace_back(key, target);
+				}
+				if (PendingDynamicComponentValues.contains(oldName) && PendingDynamicComponentValues.contains(newName)) collision = true;
+				if (collision) continue;
+				for (const auto& [oldKey, newKey] : fields) {
+					auto node = PendingFieldValues.extract(oldKey);
+					node.key() = newKey;
+					PendingFieldValues.insert(std::move(node));
+				}
+				if (auto node = PendingDynamicComponentValues.extract(oldName); !node.empty()) {
+					node.key() = newName;
+					PendingDynamicComponentValues.insert(std::move(node));
+				}
+				for (auto& script : Scripts) if (script.GetType() != ScriptType::Native && script.GetClassName() == oldName) { script.SetClassName(newName); script.SetType(ScriptType::Managed); }
+				for (auto& name : ManagedComponents) if (name == oldName) name = newName;
+				changed = true;
+			}
+			return changed;
+		}
 
 		bool AddScript(const std::string& className, ScriptType type = ScriptType::Managed) {
 			if (className.empty() || HasScript(className, type)) {

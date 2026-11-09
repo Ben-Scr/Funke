@@ -28,6 +28,7 @@ public static class Physics2D
         set => InternalCalls.Physics2D_SetGravity(value.X, value.Y);
     }
 
+    /// <summary>Finds the nearest hit. Casts, including an infinite maxDistance, are capped at 1,000,000 world units.</summary>
     public static RaycastHit2D Raycast(Vector2 origin, Vector2 direction, float maxDistance = Mathf.Infinity)
     {
         RaycastHit2D result = new();

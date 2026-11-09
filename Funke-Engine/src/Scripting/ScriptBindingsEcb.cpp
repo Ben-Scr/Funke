@@ -16,7 +16,9 @@
 #include "Components/General/HierarchyComponent.hpp"
 #if FUNKE_WITH_2D
 #include "Components/General/Transform2DComponent.hpp"
+#if FUNKE_WITH_PHYSICS2D
 #include "Components/Physics/Rigidbody2DComponent.hpp"
+#endif
 #endif
 #include "Serialization/PrefabTemplateCache.hpp"
 #include "Serialization/SceneSerializer.hpp"
@@ -312,6 +314,8 @@ namespace Funke {
 			timings.Mark(4);
 			return static_cast<int>(header.entityCount);
 		}
+		if (hasPrefabs) EcbReportOrderedPlayback(mode, header.entityCount, header.commandCount,
+			mode == 1 ? "sequential_requested" : "prefab_loading");
 
 		// Root slots [0, entityCount); prefab children [entityCount, totalEntityCount). Only roots are surfaced to managed code.
 		scene->ReserveForLoadRuntime(totalEntityCount, {});
@@ -550,8 +554,10 @@ namespace Funke {
 		{
 			entt::registry& reg = scene->GetRegistry();
 			auto* transforms = const_cast<entt::registry::storage_for_type<Transform2DComponent>*>(std::as_const(reg).storage<Transform2DComponent>());
+#if FUNKE_WITH_PHYSICS2D
 			const auto* hierarchies = std::as_const(reg).storage<HierarchyComponent>();
 			auto* rigidbodies = const_cast<entt::registry::storage_for_type<Rigidbody2DComponent>*>(std::as_const(reg).storage<Rigidbody2DComponent>());
+#endif
 			for (size_t i = 0; i < handles.size() + liveTransformWrites.size(); ++i) {
 				const EntityHandle h = i < handles.size() ? handles[i] : liveTransformWrites[i - handles.size()];
 				if (!scene->IsValid(h)) {
@@ -563,6 +569,7 @@ namespace Funke {
 				}
 				tr->BindOwner(scene, h);
 				tr->MarkDirty();
+#if FUNKE_WITH_PHYSICS2D
 				// Only roots have world == local now (child world transforms are composed later by the
 				// hierarchy pass), so only teleport their body straight to the transform.
 				const HierarchyComponent* hc = hierarchies && hierarchies->contains(h) ? &hierarchies->get(h) : nullptr;
@@ -572,6 +579,7 @@ namespace Funke {
 						rb->SetTransform(*tr);
 					}
 				}
+#endif
 			}
 		}
 #endif

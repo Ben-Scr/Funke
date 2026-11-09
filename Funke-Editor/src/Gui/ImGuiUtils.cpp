@@ -610,7 +610,7 @@ namespace Funke::ImGuiUtils {
 			AlphaKey& k = alphaKeys[s_SelIdx];
 			float a = k.Alpha;
 			ImGui::SetNextItemWidth(140.0f);
-			if (ImGui::SliderFloat("##gradAlphaEdit", &a, 0.0f, 1.0f, "A %.2f")) { k.Alpha = std::clamp(a, 0.0f, 1.0f); changed = true; }
+			if (EditorUI::SliderFloat("##gradAlphaEdit", &a, 0.0f, 1.0f, "A %.2f")) { k.Alpha = std::clamp(a, 0.0f, 1.0f); changed = true; }
 			ImGui::SameLine();
 			std::vector<float> positions; positions.reserve(alphaKeys.size());
 			for (const auto& c : alphaKeys) positions.push_back(c.Position);

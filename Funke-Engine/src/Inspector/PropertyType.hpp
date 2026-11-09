@@ -68,6 +68,8 @@ namespace Funke {
 		// Inline animation curve (C# Funke.Graph). The keys ride in StringValue as the
 		// shared ';'/',' codec; drawn with the curve editor, not a reference picker.
 		Graph,
+		NestedList,
+		Dictionary,
 	};
 
 	struct EnumOption {
@@ -118,6 +120,8 @@ namespace Funke {
 		case PropertyType::PrefabRef:    return "prefab";
 		case PropertyType::ComponentRef: return "component";
 		case PropertyType::Graph:        return "graph";
+		case PropertyType::NestedList:   return "nestedList";
+		case PropertyType::Dictionary:   return "dictionary";
 		}
 		return "none";
 	}
@@ -156,6 +160,8 @@ namespace Funke {
 		if (text == "prefab")      return PropertyType::PrefabRef;
 		if (text == "component")   return PropertyType::ComponentRef;
 		if (text == "graph")       return PropertyType::Graph;
+		if (text == "nestedList")  return PropertyType::NestedList;
+		if (text == "dictionary")  return PropertyType::Dictionary;
 		return PropertyType::None;
 	}
 

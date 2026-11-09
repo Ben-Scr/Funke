@@ -41,17 +41,14 @@ namespace Funke {
 		}
 	}
 
-	Arena::Arena(Arena&& other) noexcept
-		: m_Base(other.m_Base)
-		, m_Capacity(other.m_Capacity)
-		, m_Offset(other.m_Offset)
-	{
-		other.m_Base = nullptr;
-		other.m_Capacity = 0;
-		other.m_Offset = 0;
+	Arena::Arena(Arena&& other) noexcept {
+		*this = std::move(other);
 	}
 
 	Arena& Arena::operator=(Arena&& other) noexcept {
+#ifdef FNK_DEBUG
+		if (!CheckThreadAccess() || !other.CheckThreadAccess()) return *this;
+#endif
 		if (this == &other) {
 			return *this;
 		}
@@ -63,6 +60,10 @@ namespace Funke {
 		m_Base = other.m_Base;
 		m_Capacity = other.m_Capacity;
 		m_Offset = other.m_Offset;
+#ifdef FNK_DEBUG
+		m_OwnerThread = other.m_OwnerThread;
+		other.m_OwnerThread = {};
+#endif
 
 		other.m_Base = nullptr;
 		other.m_Capacity = 0;
@@ -72,6 +73,9 @@ namespace Funke {
 	}
 
 	void* Arena::Allocate(std::size_t size, std::size_t alignment) {
+#ifdef FNK_DEBUG
+		if (!CheckThreadAccess()) return nullptr;
+#endif
 		FNK_CORE_ASSERT(IsPowerOfTwo(alignment),
 			"Arena::Allocate alignment must be a power of two");
 
@@ -105,8 +109,19 @@ namespace Funke {
 	}
 
 	void Arena::Reset(std::size_t mark) noexcept {
+#ifdef FNK_DEBUG
+		if (!CheckThreadAccess()) return;
+#endif
 		// Clamp rather than assert: a stale Mark from before a move-assignment may exceed the new capacity.
 		m_Offset = mark < m_Capacity ? mark : m_Capacity;
 	}
+
+#ifdef FNK_DEBUG
+	bool Arena::CheckThreadAccess() const noexcept {
+		if (m_OwnerThread == std::thread::id{} || m_OwnerThread == std::this_thread::get_id()) return true;
+		FNK_CORE_ERROR_TAG("FrameArenas", "Global scratch arenas must only be accessed from their initializing thread; use a local Arena on workers.");
+		return false;
+	}
+#endif
 
 } // namespace Funke

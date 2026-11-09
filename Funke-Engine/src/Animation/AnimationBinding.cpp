@@ -17,9 +17,37 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <glm/gtc/quaternion.hpp>
 
 namespace Funke {
 	namespace {
+		glm::quat RotationQuaternion(const PropertyValue& value, RotationProperty representation) {
+			if (representation == RotationProperty::Quaternion) {
+				const auto& v = value.FloatVec;
+				const glm::quat q(v[3], v[0], v[1], v[2]);
+				const float length = glm::dot(q, q);
+				return std::isfinite(length) && length > 1.0e-12f ? glm::normalize(q) : glm::quat(1, 0, 0, 0);
+			}
+			if (value.Type == PropertyType::Vec3)
+				return glm::quat(glm::radians(glm::vec3(value.FloatVec[0], value.FloatVec[1], value.FloatVec[2])));
+			return glm::angleAxis(glm::radians(static_cast<float>(value.FloatValue)), glm::vec3(0, 0, 1));
+		}
+
+		PropertyValue QuaternionValue(const glm::quat& rotation, const PropertyValue& base, RotationProperty representation) {
+			PropertyValue value = base;
+			if (representation == RotationProperty::Quaternion) {
+				value.FloatVec = { rotation.x, rotation.y, rotation.z, rotation.w };
+			}
+			else if (base.Type == PropertyType::Vec3) {
+				const glm::vec3 euler = glm::degrees(glm::eulerAngles(rotation));
+				value.FloatVec = { euler.x, euler.y, euler.z, 0.0f };
+			}
+			else {
+				value.FloatValue = glm::degrees(2.0f * std::atan2(rotation.z, rotation.w));
+			}
+			return value;
+		}
+
 		bool EqualsIgnoreCase(std::string_view a, std::string_view b) {
 			if (a.size() != b.size()) return false;
 			for (size_t i = 0; i < a.size(); ++i) {
@@ -176,6 +204,102 @@ namespace Funke {
 		}
 	}
 
+	bool ValidateAnimationRotation(const AnimationRotationBinding& binding, RotationProperty representation,
+		PropertyType type, std::string& error) {
+		if (representation == RotationProperty::None || (representation == RotationProperty::Quaternion && type != PropertyType::Vec4)
+			|| (representation == RotationProperty::EulerDegrees && type != PropertyType::Float
+				&& type != PropertyType::Double && type != PropertyType::Vec3)) {
+			error = "rotation metadata requires Euler Float/Double/Vec3 or quaternion Vec4";
+			return false;
+		}
+		const AnimationCurve* timeline = nullptr;
+		const int channels = AnimationChannelCount(type);
+		for (int channel = 0; channel < channels; ++channel) {
+			const AnimationTrack* track = binding.Tracks[static_cast<size_t>(channel)];
+			if (!track) {
+				if (representation != RotationProperty::Quaternion && binding.Mode != RotationInterpolation::Quaternion) continue;
+				error = "Quaternion mode requires every rotation channel (Euler xyz or quaternion xyzw)";
+				return false;
+			}
+			if (track->IsDiscrete() || track->Curve.Empty()) {
+				error = "rotation channels require numeric keys";
+				return false;
+			}
+			const RotationInterpolation mode = representation == RotationProperty::Quaternion
+				&& track->RotationMode == RotationInterpolation::EulerMultiTurn ? RotationInterpolation::Quaternion : track->RotationMode;
+			if (mode != binding.Mode || (representation == RotationProperty::Quaternion && mode != RotationInterpolation::Quaternion)) {
+				error = "rotation channels must use the same mode; quaternion properties require Quaternion";
+				return false;
+			}
+			if (binding.Mode != RotationInterpolation::Quaternion) continue;
+			const auto& keys = track->Curve.Keys;
+			if (!timeline) timeline = &track->Curve;
+			if (keys.size() != timeline->Keys.size()) {
+				error = "Quaternion mode requires matching channel key times and interpolation";
+				return false;
+			}
+			for (size_t k = 0; k < keys.size(); ++k) {
+				if (keys[k].Time != timeline->Keys[k].Time || keys[k].Interpolation != timeline->Keys[k].Interpolation
+					|| keys[k].Interpolation == KeyInterpolation::Bezier) {
+					error = "Quaternion mode requires matching Linear/Step keys; Bezier tangents are Euler-only";
+					return false;
+				}
+			}
+		}
+		return true;
+	}
+
+	PropertyValue BlendAnimationRotation(const PropertyValue& from, const PropertyValue& to, float weight,
+		RotationProperty representation, RotationInterpolation mode) {
+		if (representation == RotationProperty::Quaternion || mode == RotationInterpolation::Quaternion) {
+			const glm::quat a = RotationQuaternion(from, representation);
+			glm::quat b = RotationQuaternion(to, representation);
+			if (glm::dot(a, b) < 0.0f) b = -b;
+			return QuaternionValue(glm::normalize(glm::slerp(a, b, weight)), from, representation);
+		}
+		PropertyValue value = from;
+		for (int channel = 0; channel < AnimationChannelCount(value.Type); ++channel) {
+			const float a = ReadAnimationChannel(from, channel);
+			float delta = ReadAnimationChannel(to, channel) - a;
+			if (mode == RotationInterpolation::ShortestAngle) delta = std::remainder(delta, 360.0f);
+			WriteAnimationChannel(value, channel, a + weight * delta);
+		}
+		return value;
+	}
+
+	PropertyValue EvaluateAnimationRotation(const AnimationRotationBinding& binding, RotationProperty representation,
+		const PropertyValue& base, float time) {
+		PropertyValue value = base;
+		if (binding.Mode != RotationInterpolation::Quaternion && representation != RotationProperty::Quaternion) {
+			for (int channel = 0; channel < AnimationChannelCount(base.Type); ++channel) {
+				const AnimationTrack* track = binding.Tracks[static_cast<size_t>(channel)];
+				if (track) WriteAnimationChannel(value, channel, track->Curve.Evaluate(time, binding.Mode));
+			}
+			return value;
+		}
+		const AnimationCurve* timeline = nullptr;
+		for (const AnimationTrack* track : binding.Tracks) {
+			if (track) { timeline = &track->Curve; break; }
+		}
+		if (!timeline || timeline->Empty()) return value;
+		const auto& keys = timeline->Keys;
+		const auto next = std::upper_bound(keys.begin(), keys.end(), time,
+			[](float t, const Keyframe& key) { return t < key.Time; });
+		const size_t end = next == keys.end() ? keys.size() - 1 : static_cast<size_t>(next - keys.begin());
+		const size_t start = next == keys.begin() || next == keys.end() ? end : end - 1;
+		PropertyValue to = base;
+		for (int channel = 0; channel < AnimationChannelCount(base.Type); ++channel) {
+			const AnimationTrack* track = binding.Tracks[static_cast<size_t>(channel)];
+			if (!track) continue;
+			WriteAnimationChannel(value, channel, track->Curve.Keys[start].Value);
+			WriteAnimationChannel(to, channel, track->Curve.Keys[end].Value);
+		}
+		const float span = keys[end].Time - keys[start].Time;
+		const float weight = span > 0.0f && keys[start].Interpolation != KeyInterpolation::Step
+			? std::clamp((time - keys[start].Time) / span, 0.0f, 1.0f) : 0.0f;
+		return BlendAnimationRotation(value, to, weight, representation, RotationInterpolation::Quaternion);
+	}
+
 	Entity ResolveAnimationPath(Entity root, std::string_view path) {
 		Entity current = root;
 		while (!path.empty() && current.IsValid()) {
@@ -296,6 +420,12 @@ namespace Funke {
 		if (target < 0 || target >= static_cast<int>(m_Targets.size())) return PropertyType::None;
 		const AnimationTarget& t = m_Targets[static_cast<size_t>(target)];
 		return t.TargetKind == AnimationTarget::Kind::Property ? t.Descriptor->Type : t.ScriptType;
+	}
+
+	RotationProperty AnimationTargetSet::GetRotation(int target) const {
+		if (target < 0 || target >= static_cast<int>(m_Targets.size())) return RotationProperty::None;
+		const AnimationTarget& t = m_Targets[static_cast<size_t>(target)];
+		return t.Descriptor ? t.Descriptor->Metadata.Rotation : RotationProperty::None;
 	}
 
 	bool AnimationTargetSet::Read(Scene& scene, int target, PropertyValue& outValue) {

@@ -96,6 +96,7 @@ namespace Funke {
 
 		AnimationTargetSet m_Targets;
 		std::vector<std::vector<TrackBinding>> m_Bindings;
+		std::vector<std::vector<AnimationRotationBinding>> m_RotationBindings;
 		std::vector<std::string> m_BindingErrors;
 		bool m_BindingsDirty = true;
 		uint64_t m_RegistryGeneration = 0;

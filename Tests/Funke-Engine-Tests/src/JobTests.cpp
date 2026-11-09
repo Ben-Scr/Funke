@@ -11,6 +11,9 @@
 #include <memory>
 #include <stdexcept>
 #include <vector>
+#include <thread>
+
+namespace Funke { FUNKE_API size_t GetScriptJobRegistrationCount(); }
 
 using namespace Funke;
 
@@ -241,4 +244,56 @@ TEST_CASE("An OnLog listener can log without deadlocking") {
 
 	// The nested log reaches stdout/file but is not re-dispatched to listeners.
 	CHECK(calls.load(std::memory_order_acquire) == 1);
+}
+
+TEST_CASE("Script jobs release registrations and contexts without handle access") {
+	for (int workers : { 0, 2 }) {
+		ScopedJobSystem jobs(workers);
+		NativeBindings bindings{};
+		ScriptBindings::PopulateNativeBindings(bindings);
+		const size_t baseline = GetScriptJobRegistrationCount();
+		std::atomic<int> released{ 0 };
+		for (int i = 0; i < 10000; ++i) {
+			bindings.JobSystem_Enqueue([](void*) {}, &released,
+				[](void* context) { static_cast<std::atomic<int>*>(context)->fetch_add(1); });
+		}
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+		while ((released.load() != 10000 || GetScriptJobRegistrationCount() != baseline)
+			&& std::chrono::steady_clock::now() < deadline) std::this_thread::yield();
+		CHECK(released.load() == 10000);
+		CHECK(GetScriptJobRegistrationCount() == baseline);
+	}
+}
+
+TEST_CASE("Script parallel context survives every partition and early release") {
+	ScopedJobSystem jobs(3);
+	NativeBindings bindings{};
+	ScriptBindings::PopulateNativeBindings(bindings);
+	struct State {
+		std::promise<void> Started;
+		std::shared_future<void> Resume;
+		std::atomic<int> Released{ 0 };
+		std::atomic<int> Completed{ 0 };
+	} state;
+	std::promise<void> resume;
+	state.Resume = resume.get_future().share();
+	auto started = state.Started.get_future();
+	const uint64_t handle = bindings.JobSystem_ParallelFor(0, 4, 1,
+		[](void* context, int lo, int) {
+			auto& state = *static_cast<State*>(context);
+			if (lo == 0) throw std::runtime_error("expected early partition failure");
+			if (lo == 1) { state.Started.set_value(); state.Resume.wait(); }
+			++state.Completed;
+		}, &state, [](void* context) { ++static_cast<State*>(context)->Released; });
+	const auto status = started.wait_for(std::chrono::seconds(5));
+	CHECK(state.Released.load() == 0);
+	CHECK(bindings.JobSystem_IsComplete(handle) == 0);
+	auto release = std::async(std::launch::async, [&] { bindings.JobSystem_Release(handle); });
+	resume.set_value();
+	bindings.JobSystem_Wait(handle);
+	release.get();
+	REQUIRE(status == std::future_status::ready);
+	CHECK(state.Completed.load() == 3);
+	CHECK(state.Released.load() == 1);
+	CHECK(GetScriptJobRegistrationCount() == 0);
 }

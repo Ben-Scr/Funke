@@ -1,6 +1,7 @@
 #include "pch.hpp"
 #include "Serialization/PrefabTemplateCache.hpp"
 #include "Serialization/SceneSerializer.hpp"
+#include "Serialization/SceneSerializerShared.hpp"
 
 #include "Core/Log.hpp"
 #include "Components/General/NameComponent.hpp"
@@ -8,7 +9,7 @@
 #include "Components/General/UUIDComponent.hpp"
 #include "Components/General/PrefabInstanceComponent.hpp"
 #include "Components/General/HierarchyComponent.hpp"
-#if FUNKE_WITH_2D
+#if FUNKE_WITH_PHYSICS2D
 #include "Components/Physics/Rigidbody2DComponent.hpp"
 #include "Components/Physics/BoxCollider2DComponent.hpp"
 #include "Components/Physics/CircleCollider2DComponent.hpp"
@@ -127,6 +128,7 @@ namespace Funke {
 		EntityHandle root, std::size_t fixupsAddedDuringDeserialize)
 	{
 		if (prefabGuid == 0 || root == entt::null) return;
+		if (scene.GetRegistry().ctx().contains<Detail::UnavailableModuleData>()) return;
 
 		// No SceneManager (detached/headless): skip caching so the first spawn with a live manager bakes cleanly.
 		const ComponentRegistry* componentRegistryPtr = TryGetComponentRegistry();
@@ -360,7 +362,7 @@ namespace Funke {
 			}
 		}
 
-#if FUNKE_WITH_2D
+#if FUNKE_WITH_PHYSICS2D
 		// Fast-spawn created the collider shapes with default material/geometry — CreateShape
 		// ignores the component's logical state — so push the byte-restored state (size/radius,
 		// center, friction/bounciness/layer, sensor, contact events) into the live shapes,

@@ -33,9 +33,11 @@
 #include "Systems/Transform3DHierarchySystem.hpp"
 #endif
 #include <glm/gtc/matrix_transform.hpp>
+#include <entt/container/dense_set.hpp>
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <tuple>
 #include <type_traits>
 #include <unordered_set>
@@ -236,14 +238,18 @@ namespace Funke {
 
 		// Divides by parentScale before storing so ResolveRect's multiply doesn't double-scale child dimensions.
 				void PinChildToTopLeft(RectTransform2DComponent& rect,
-			float xLeft, float yTop, float width, float height, float parentScale)
+			float xLeft, float yTop, float width, float height, float parentScale,
+			bool controlWidth = true, bool controlHeight = true, bool useScaleWidth = false, bool useScaleHeight = false)
 		{
 			const float invScale = parentScale != 0.0f ? 1.0f / parentScale : 1.0f;
 			rect.AnchorMin = Vec2{ 0.0f, 1.0f };
 			rect.AnchorMax = Vec2{ 0.0f, 1.0f };
 			rect.Pivot     = Vec2{ 0.0f, 1.0f };
 			rect.AnchoredPosition = Vec2{ xLeft * invScale, -yTop * invScale };
-			rect.SizeDelta = Vec2{ width * invScale, height * invScale };
+			const float sx = useScaleWidth ? std::abs(rect.LocalScale.x) : 1.0f;
+			const float sy = useScaleHeight ? std::abs(rect.LocalScale.y) : 1.0f;
+			if (controlWidth && sx > 1e-6f) rect.SizeDelta.x = width * invScale / sx;
+			if (controlHeight && sy > 1e-6f) rect.SizeDelta.y = height * invScale / sy;
 		}
 
 		// Rewrites child anchors/positions for one row; Padding/Spacing are scaled by parentWorldScale to match resolved frame units.
@@ -277,7 +283,7 @@ namespace Funke {
 					const auto& cr = registry.get<RectTransform2DComponent>(children[i]);
 					// UseChildScale: fold LocalScale into the natural size so
 					// a scaled-up child reserves more space along the axis.
-					const float scale = layout.UseChildScaleWidth ? cr.LocalScale.x : 1.0f;
+					const float scale = layout.UseChildScaleWidth ? std::abs(cr.LocalScale.x) : 1.0f;
 					widths[i] = cr.SizeDelta.x * scale * s;
 					sumWidth += widths[i];
 				}
@@ -297,7 +303,7 @@ namespace Funke {
 			for (int i = 0; i < n; ++i) {
 				auto& cr = registry.get<RectTransform2DComponent>(children[i]);
 				float w = widths[i];
-				const float heightScale = layout.UseChildScaleHeight ? cr.LocalScale.y : 1.0f;
+				const float heightScale = layout.UseChildScaleHeight ? std::abs(cr.LocalScale.y) : 1.0f;
 				float h = layout.ControlChildHeight ? frameHeight : cr.SizeDelta.y * heightScale * s;
 				if (layout.ControlChildHeight && layout.ChildForceExpandHeight) {
 					h = frameHeight;
@@ -306,7 +312,7 @@ namespace Funke {
 				float yTop = frameTop;
 				if (vAlign == 1)      yTop = frameTop + (frameHeight - h) * 0.5f;
 				else if (vAlign == 2) yTop = frameTop + (frameHeight - h);
-				PinChildToTopLeft(cr, xCursor, yTop, w, h, s);
+				PinChildToTopLeft(cr, xCursor, yTop, w, h, s, layout.ControlChildWidth, layout.ControlChildHeight, layout.UseChildScaleWidth, layout.UseChildScaleHeight);
 				xCursor += w + layout.Spacing * s;
 			}
 		}
@@ -339,7 +345,7 @@ namespace Funke {
 			else {
 				for (int i = 0; i < n; ++i) {
 					const auto& cr = registry.get<RectTransform2DComponent>(children[i]);
-					const float scale = layout.UseChildScaleHeight ? cr.LocalScale.y : 1.0f;
+					const float scale = layout.UseChildScaleHeight ? std::abs(cr.LocalScale.y) : 1.0f;
 					heights[i] = cr.SizeDelta.y * scale * s;
 					sumHeight += heights[i];
 				}
@@ -357,7 +363,7 @@ namespace Funke {
 			for (int i = 0; i < n; ++i) {
 				auto& cr = registry.get<RectTransform2DComponent>(children[i]);
 				float h = heights[i];
-				const float widthScale = layout.UseChildScaleWidth ? cr.LocalScale.x : 1.0f;
+				const float widthScale = layout.UseChildScaleWidth ? std::abs(cr.LocalScale.x) : 1.0f;
 				float w = layout.ControlChildWidth ? frameWidth : cr.SizeDelta.x * widthScale * s;
 				if (layout.ControlChildWidth && layout.ChildForceExpandWidth) {
 					w = frameWidth;
@@ -366,7 +372,7 @@ namespace Funke {
 				float xLeft = frameLeft;
 				if (hAlign == 1)      xLeft = frameLeft + (frameWidth - w) * 0.5f;
 				else if (hAlign == 2) xLeft = frameLeft + (frameWidth - w);
-				PinChildToTopLeft(cr, xLeft, yCursor, w, h, s);
+				PinChildToTopLeft(cr, xLeft, yCursor, w, h, s, layout.ControlChildWidth, layout.ControlChildHeight, layout.UseChildScaleWidth, layout.UseChildScaleHeight);
 				yCursor += h + layout.Spacing * s;
 			}
 		}
@@ -704,6 +710,7 @@ namespace Funke {
 			LayoutPoolSnapshot<TextRendererComponent> Text;
 			std::vector<HierarchyInput> Hierarchies;
 			std::vector<uint8_t> RectFlags;
+			entt::dense_set<EntityHandle> Visited;
 			uint64_t Revision = 0;
 			bool Settled = false;
 
@@ -734,23 +741,36 @@ namespace Funke {
 				Widths.Capture(registry);
 				Text.Capture(registry);
 				RectFlags.resize(Rects.Items.size());
-				std::unordered_set<EntityHandle> visited;
-				visited.reserve(Rects.Items.size());
 				size_t hierarchyCount = 0;
-				for (size_t i = 0; i < Rects.Items.size(); ++i) {
-					EntityHandle entity = Rects.Items[i].first;
-					RectFlags[i] = Flags(registry, entity);
-					for (int depth = 0; depth < 1024 && registry.valid(entity) && visited.insert(entity).second; ++depth) {
-						if (hierarchyCount == Hierarchies.size()) Hierarchies.emplace_back();
-						auto& input = Hierarchies[hierarchyCount++];
-						input.Entity = entity;
-						const auto* hierarchy = registry.try_get<HierarchyComponent>(entity);
-						input.HasHierarchy = hierarchy != nullptr;
-						input.Parent = hierarchy ? hierarchy->Parent : entt::null;
-						if (hierarchy) input.Children = hierarchy->Children;
-						else input.Children.clear();
-						entity = input.Parent;
+				const auto captureHierarchy = [&](auto& visited) {
+					visited.reserve(Rects.Items.size());
+					for (size_t i = 0; i < Rects.Items.size(); ++i) {
+						EntityHandle entity = Rects.Items[i].first;
+						RectFlags[i] = Flags(registry, entity);
+						for (int depth = 0; depth < 1024 && registry.valid(entity) && visited.insert(entity).second; ++depth) {
+							if (hierarchyCount == Hierarchies.size()) Hierarchies.emplace_back();
+							auto& input = Hierarchies[hierarchyCount++];
+							input.Entity = entity;
+							const auto* hierarchy = registry.try_get<HierarchyComponent>(entity);
+							input.HasHierarchy = hierarchy != nullptr;
+							input.Parent = hierarchy ? hierarchy->Parent : entt::null;
+							if (hierarchy) input.Children = hierarchy->Children;
+							else input.Children.clear();
+							entity = input.Parent;
+						}
 					}
+				};
+				static const bool reuseVisits = [] {
+					const char* reference = std::getenv("FUNKE_REFERENCE_LAYOUT_VISITS");
+					return !reference || std::string_view(reference) != "1";
+				}();
+				if (reuseVisits) {
+					Visited.clear();
+					captureHierarchy(Visited);
+				}
+				else {
+					std::unordered_set<EntityHandle> visited;
+					captureHierarchy(visited);
 				}
 				Hierarchies.resize(hierarchyCount);
 				++Revision;

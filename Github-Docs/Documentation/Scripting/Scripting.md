@@ -454,7 +454,7 @@ For heavy parallel work over many entities, combine queries with the [Job System
 
 ## Your own components
 
-Data that several scripts share belongs in a component of its own. Both kinds below are added with **Add Component** (or from code) and saved with the scene. Name the `.cs` file like the type; the editor finds them by file name.
+Data that several scripts share belongs in a component of its own. Both kinds below are added with **Add Component** (or from code) and saved with the scene. The editor discovers types from the active compiled assembly; filenames do not determine component identity. See [script identities](#script-identities-and-inspector-limits) for source navigation and multiple types per file.
 
 **Class components** derive from `Component`: Inspector-editable data with strings, references and lists, but no lifecycle (pair them with an `EntityScript` or `SceneSystem` that reads them).
 
@@ -512,23 +512,42 @@ public class SpinSystem : SceneSystem
 
 Create a native script with **Asset Browser → Create → Scripting → C++ Script**. The `.cpp` file lives in the selected `Assets/` folder. Double-click it to edit that same file in your configured external editor. Save it, wait for the native compilation indicator to finish, then attach its class with **Add Component** or drag the file onto an entity's Inspector. Press Play to run it. Compiler errors appear in the Console.
 
-A native script inherits from `NativeScript` and registers its class with `REGISTER_SCRIPT`. The creation template contains empty lifecycle callbacks:
+A native script inherits from `NativeScript` and registers its class with `REGISTER_SCRIPT`. New scripts include the gameplay umbrella and a source-local namespace directive; the generator supplies empty `Start`, `Update`, `FixedUpdate` and `OnDestroy` callbacks. For example, fill in `Update` like this (2D module):
 
 ```cpp
-#include <Scripting/NativeScript.hpp>
+#include <Funke/Scripting.hpp>
 
-class MyScript : public Funke::NativeScript {
+using namespace Funke;
+
+class MyScript : public NativeScript {
 public:
-    void Start() override {}
-    void Update() override {}
-    void FixedUpdate() override {}
-    void OnDestroy() override {}
+    void Update() override {
+        if (Input::GetKeyDown(KeyCode::Space)) Print("Jump");
+        if (GetScene() && HasComponent<Transform2DComponent>())
+            GetComponent<Transform2DComponent>().SetPosition({1.0f, 2.0f});
+    }
 };
 
 REGISTER_SCRIPT(MyScript)
 ```
 
-Call `Print("Started")` inside a native script to log an Info message to the editor Console and engine log. `Update()` and `FixedUpdate()` take no arguments. Include `<Core/Time.hpp>` and use `Funke::Time::GetDeltaTime()` or `Funke::Time::GetFixedDeltaTime()` when a callback needs its time step. Existing overrides with a `float` parameter must be updated and the native scripts recompiled.
+`Funke/Scripting.hpp` supplies `NativeScript`, field descriptors, `Input`, `KeyCode`, mouse buttons, `Time`, color/vector/math helpers, `Entity`, `Scene`, `SceneManager` and `Funke/ScriptComponents.hpp`. The component umbrella covers all built-in component headers: general metadata/transforms/animation/tags, UI, graphics, audio, 2D/3D physics, and `ScriptComponent`. It reuses `General.hpp` and `UI.hpp`; it does not revive the deprecated `Components/Components.hpp`.
+
+Availability follows the linked engine's `FUNKE_WITH_APPLICATION`, `_RENDER`, `_AUDIO`, `_PHYSICS`, `_SCRIPTING`, `_2D` and `_3D` compile definitions. UI/RectTransform and the shared `PostProcessing2DComponent` remain available without the 2D module, matching the engine's registration rules. Runtime project module activation is a separate setting. Neither umbrella enables modules or registers components. These are the original types and calls, without new wrappers, copies or dispatch.
+
+`using namespace Funke;` belongs in the script `.cpp`, after its includes. Public headers and the optional PCH never import the namespace globally. If a name conflicts with your own `Game::Input`, use `Funke::Input` or specific declarations such as `using Funke::NativeScript;`. Existing scripts need no migration: targeted includes such as `<Scripting/NativeScript.hpp>`, `<Core/Input.hpp>` and `<Components/General/Transform2DComponent.hpp>` with fully qualified types remain supported. Changing an existing script to the umbrella is optional.
+
+Specialized APIs still use explicit headers, for example `<Physics/Physics2D.hpp>`, `<Assets/AssetLoader.hpp>`, `<Audio/AudioManager.hpp>` or `<Jobs/JobSystem.hpp>`. The umbrella does not explicitly include editor UI, renderer backends or component registration code. The existing scene/registry API does bring some engine infrastructure transitively.
+
+Call `Print("Started")` inside a native script to log an Info message to the editor Console and engine log. `Update()` and `FixedUpdate()` take no arguments. `Time::GetDeltaTime()` and `Time::GetFixedDeltaTime()` are available through the umbrella. Existing overrides with a `float` parameter must be updated and the native scripts recompiled.
+
+The generated CMake target already exports a compile database with Ninja/Makefiles (`NativeScripts/build/compile_commands.json`); Visual Studio uses the generated native solution. Both source roots, `Assets/` and `NativeScripts/Source/`, share the target's includes, C++20 standard and module/ABI definitions. Reconfigure after adding files; the editor's native rebuild does this automatically. Point clangd at that build directory or use the IDE's CMake integration. Completion and definition navigation for `Input`, `KeyCode`, `SceneManager` and `Transform2DComponent` were verified with clangd and VS Code's Microsoft C/C++ extension against generated Windows build configurations. The VS Code checks also covered a new source file and switching between Debug and Release compile databases. Other IDE interfaces were not exercised.
+
+PCH is optional and defaults to off: configure with `-DFUNKE_NATIVE_USE_PCH=ON` to precompile `Funke/Scripting.hpp`, or `OFF` to disable it. Keep the explicit include in each script. Add per-file exceptions after the generated module include in your custom `CMakeLists.txt`, for example `set_source_files_properties("${CMAKE_CURRENT_LIST_DIR}/../Assets/ThirdParty.cpp" PROPERTIES SKIP_PRECOMPILE_HEADERS ON)`. Scripts with per-source SDK macros should disable PCH. No PCH is shared across targets, and the generated build does not enable Unity/Jumbo compilation.
+
+The SDK integration check is `python scripts/ci/native_scripting_test.py --sdk <EngineSDK> --test-exe <Funke-Editor-Tests> --output <fresh-test-directory>`. It compiles actual generator output, mixes old and new include styles in one library, loads/reloads it, checks fields and component mutation, and compiles full/2D/3D/no-module/core headers without PCH. Add `--benchmark` for local baseline/no-PCH/PCH timings (four translation units, initial build, one source edit, public header edit). Use a fresh output directory for initial-build measurements. This does not replace editor Play Mode, Inspector save/reopen or desktop export validation.
+
+See [native scripting verification](Native-Scripting-Verification.md) for the Editor/export procedure, recorded Windows/Linux and IDE results, evidence locations and the measurements behind the optional PCH default.
 
 Inspector fields are optional. Add members and `FNK_NATIVE_FIELDS(...)` inside the class when needed:
 
@@ -591,13 +610,114 @@ Desktop game builds compile and include the native-script library. Mobile and We
 
 ---
 
+## Component access and native references
+
+An `EntityScript` can call `HasComponent<T>()` and `TryGetComponent<T>(out T? component)` directly, alongside its existing Get/Add/Remove helpers. These protected helpers forward to the owning `Entity` and retain the `where T : Component, new()` constraint. `HasNativeComponent<T>()`, `RemoveNativeComponent<T>()` and the ref-returning `GetRefOrThrow<T>()` are also available directly, with `where T : unmanaged, IComponent`. Calls through `Entity` remain valid; the helpers add no separate component store or preliminary native lookup.
+
+`Entity.TryGetComponent`, its `EntityScript` helper, `Scene.TryGetSingleton` and `Scene.TryGetSingletonEntity` annotate their output with `[NotNullWhen(true)]`. With nullable analysis enabled, a successful branch can use the result without `!` or another null check. A false result may still contain null; the annotation does not change runtime behavior.
+
+Native refs borrow engine storage. `GetNativeComponent<T>()` and `GetNativeComponentReadOnly<T>()` return a null ref when the component is absent; check it with `Unsafe.IsNullRef` before dereferencing. `GetRefOrThrow<T>()`, `TransformRef` and `TransformRefReadOnly` instead throw `InvalidOperationException` when the required component is absent. Ordinary assignment, such as `var copy = entity.TransformRef`, copies the struct; `ref var transform = ref entity.TransformRef` writes through to live storage.
+
+A writable transform ref marks transforms for updating; `TransformRefReadOnly` and `GetNativeComponentReadOnly<T>()` avoid that write-side effect. Reacquire borrowed refs each frame and after structural changes. Do not add/remove components or create/destroy entities during a `QueryRef` iteration; record those changes in an `EntityCommandBuffer` and play it back after the borrowed scope. These are caller obligations, not automatic lifetime checks. See [ECS](../Engine-Core/ECS.md#batched-structural-changes-in-c) and the complete [native ref example](../../../Examples/CSharpScripting/NativeRefs.cs).
+
+## Explicit transforms and spawning
+
+`Entity.Transform2D` and `Entity.Transform3D` (also available directly on `EntityScript`) return the requested component or `null`. They never add a transform. Use `LocalPosition` for parent-relative coordinates. `Transform2D.WorldPosition` is writable; `Transform3D.WorldPosition` reports the last hierarchy update and is read-only.
+
+The complete [2D movement](../../../Examples/CSharpScripting/Move2D.cs), [3D movement](../../../Examples/CSharpScripting/Move3D.cs), [spawn](../../../Examples/CSharpScripting/SpawnExamples.cs), [native ref](../../../Examples/CSharpScripting/NativeRefs.cs) and [session state](../../../Examples/CSharpScripting/SessionState.cs) examples compile together with nullable checks and warnings as errors:
+
+```powershell
+dotnet build Examples/CSharpScripting/Examples.csproj -c Release
+```
+
+`Create2D`, `Create3D`, `Instantiate2D` and `Instantiate3D` accept **local** positions and rotations in **degrees**. 2D uses `Vector2` and a float angle; 3D uses `Vector3` and Euler angles. Parent assignment and local values are complete before spawned scripts receive `OnAwake`/`OnEnable`; `OnStart` remains deferred until normal startup. Without a parent, local coordinates equal world coordinates. Instantiation requires the source's matching transform and does not convert dimensions. An invalid source returns `Entity.Invalid`; an invalid parent or unsuitable transform throws and destroys any partially created clone.
+
+| Existing API | Existing meaning, retained | Recommended explicit API |
+|---|---|---|
+| `Transform` | Nullable 2D wrapper | `Transform2D` or `Transform3D` |
+| `Transform2D.LocalTransform` | Local position | `Transform2D.LocalPosition` |
+| `Transform2D.Position` | World position | `Transform2D.WorldPosition` |
+| `Transform3D.Position` | Local position | `Transform3D.LocalPosition` |
+| `Create(name, Vector3, rotation)` | 2D X/Y; rotation is passed as **radians** | `Create2D(name, Vector2, degrees)` or `Create3D(name, Vector3, EulerDegrees)` |
+| Positional `Instantiate` overloads | 2D position; rotation in **degrees**, legacy parenting behavior | `Instantiate2D/3D` with explicit local values and parent |
+
+Empty project templates remain small; examples are opt-in. For borrowed component storage, follow the [native reference contracts](#component-access-and-native-references).
+
+## Script identities and Inspector limits
+
+Project pickers use actual types from the **active compiled assembly**, including indirect inheritance, namespaces and multiple types per file. Abstract, open generic and nonconstructible classes are excluded. Failed compilation or rejected preflight keeps the active catalog. Project identities are stored as `type:<FullName>`; the prefix distinguishes them from unmarked legacy names, including global classes with no namespace. The same identities apply to generic and string-based Entity APIs, managed components, references and systems. Native built-in names and existing package catalog names keep their contracts.
+
+An unmarked name migrates only when it has one possible type. Attachment names and their prefixed field keys move together during normal scene/prefab editing and saving. Dotted namespaces and nested field paths are preserved; migration does not overwrite conflicting values already stored under the canonical name. Ambiguous legacy names (including both `Funke.Player` and global `Player`) are left unresolved with candidate diagnostics; explicitly canonical `type:Player` remains exact. Renamed or missing types keep their attachments and raw values. Resolve genuine type renames explicitly; a filename resemblance is not a migration rule. No project-wide rewrite runs.
+
+Renaming or moving a C# file leaves class text and attachments unchanged. Source navigation uses portable PDB sequence points; when a partial type has several source files, the first ordinal path is the primary source. Unknown or unavailable sources are not guessed from filenames. Rebuild after moving a file to refresh the catalog's source path; undo restores the file path through the existing asset history.
+
+Inspector scalars, supported one-dimensional arrays and `List<T>` remain editable. Two-level collections and string-key dictionaries follow the contract below. A folded warning lists unsupported visible members by field path, including omitted members such as `Items[].Children`; `[HideFromEditor]` and `[EditorIgnore]` remain silent. Missing types, an unavailable host and a valid type with no visible fields have distinct statuses. Unknown stored field values survive ordinary serialization.
+
+### Nested lists and dictionaries
+
+`List<List<T>>`, `T[][]` and `Dictionary<string, T>` support numeric primitives, booleans, strings and the existing enum representation as leaf values. This includes fields and writable properties inside ordinary nested classes or structs. Mixed array/list shapes, additional collection levels, dictionary values that are collections or objects, reference/resource leaves and collections inside object-list elements remain unsupported and retain their Inspector diagnostics.
+
+Nested lists have independent outer and inner add/remove controls and the usual list drag handles for reordering. The **Null** controls distinguish a null collection, an empty outer collection, a null inner collection and an empty inner collection. String values also distinguish null from an empty string. These values survive normal scene/prefab persistence, Undo/Redo and edit-mode recompilation. Different collections in a multi-selection require selecting one object to edit; identical collections can be edited together.
+
+Dictionary keys use case-sensitive ordinal equality: `A` and `a` are different keys. Empty and Unicode keys are valid; null keys and duplicates are rejected before replacing any value. Finish a key edit with Enter or by leaving the field. Add creates an unused key. The default comparer and `StringComparer.Ordinal` are supported. Case-insensitive, culture-sensitive and custom comparers display a read-only explanation; loading or editing does not silently replace them with the default comparer. Keys and string values containing an embedded null character retain their data but cannot be edited as text in the Inspector. Unicode glyph display depends on the editor font; missing glyphs do not change the stored strings.
+
+The new fields use a version 1 JSON envelope inside the existing script-field string value. `kind` is `nestedList` or `dictionary`, `leaf` is the existing scalar wire tag, and leaf values are invariant strings (or JSON null for null strings). `items: null` denotes a null container. Nested `items` are arrays of null or scalar arrays. Dictionary `items` are `[key, value]` pairs with `comparer: "ordinal"`, stored in UTF-8 byte order for deterministic output; ordering does not change lookup semantics. For example:
+
+```json
+{"version":1,"kind":"nestedList","leaf":"int","items":[null,[],["1","2"]]}
+{"version":1,"kind":"dictionary","leaf":"float","comparer":"ordinal","items":[["","1.25"],["speed","3.5"]]}
+```
+
+Malformed schemas, invalid scalar values and duplicate keys leave the previous collection intact and produce a diagnostic. Existing simple-list and object-list formats are unchanged; no scene-format migration or project-wide rewrite is needed. As with existing list fields, these collection widgets currently have no Editor Bridge property-edit representation.
+
 ## Hot reload
 
-C# scripts can reload **without restarting** the editor. A successful reload replaces the game assembly and recreates its managed script instances; compatible exposed fields are restored from captured values, while other object and static state is recreated. Lifecycle callbacks can run again. With **Exit Play Mode On Recompilation** enabled (the default), the editor stops Play before recompiling; disable it to reload during Play.
+C# scripts can reload **without restarting** the editor. The defaults are **Auto-recompile on file changes: on**, **Recompile before Play Mode: off**, and **Exit Play Mode on Recompilation: on**. With automatic recompilation off, use the manual compile action or enable compilation before Play. A Play request waits for an already running build; a failed build or assembly swap blocks entry and keeps its diagnostics in the Console.
 
-The replacement assembly is loaded and its type signatures checked before the working assembly is discarded. If that validation fails, the previous assembly remains available and the Console reports the failure; instance restart callbacks may still run. A first load with no working assembly requires a successful build.
+| Situation | Effect |
+|---|---|
+| Script edit in Edit mode | Auto-recompile, when enabled, replaces instances and restores compatible Inspector values. |
+| Script edit during Play, stop-on-recompile enabled | Play stops when recompilation begins; the pre-Play scene is restored. |
+| Script edit during Play, stop-on-recompile disabled | A successful reload replaces instances while Play continues. Unselected runtime field values are lost; opt-in `IHotReloadState` values are restored separately from saved Inspector values. |
+| Compiler error | No replacement is loaded. If Play already stopped for the rebuild, it stays stopped. |
+| Candidate rejected during preflight | The currently loaded assembly and still-live instances remain intact; the Console reports the validation failure. |
+| Failure after the swap boundary | The exchange failed. Keeping an assembly does not guarantee that old instances or their state survived. |
 
-The engine's *core* scripting library can't be reloaded mid-session (a .NET limitation), so changing engine-level scripting bits needs a restart — but your everyday game scripts reload freely.
+A successful exchange cancels old coroutines and recreates script instances; their normal Awake/Enable/Start lifecycle runs again (Start can be deferred to the next update). Tasks, call stacks and arbitrary resources are not resumed. Inspector values and running instance fields are different kinds of state: Edit-mode exposed values can be restored, but Play-mode runtime edits are discarded on Stop.
+
+Static game fields can survive Stop and the next Play session when the assembly was not replaced. Use `Application.PlayModeExited` for an explicit cleanup/reset hook; no automatic reset of all statics is promised. An assembly replacement creates new game static state, but does not reset every external library.
+
+Compiler errors **and warnings** include their diagnostic code and available source location in Console. Double-click a diagnostic to open its source line. The fast Roslyn path runs compiler diagnostics and source generators, but deliberately skips regular analyzers; use a full `dotnet build` for analyzer diagnostics. Each build produces its own output; old Console entries remain history until cleared. Build diagnostics are bounded to 200 lines (errors first), with an omitted-count notice for the rest.
+
+A failed Play request preserves those diagnostics, including when Play was waiting for a background build. Missing last-build details can be restored after clearing the Console; repeated Play requests do not append duplicate copies of already visible diagnostics. The usual Console clearing occurs only when Play actually starts successfully.
+
+The replacement assembly is loaded and its type signatures and native component contracts checked **before managed scene instances are torn down**. A rejected candidate leaves the working assembly and its registrations intact; the Console and rebuild status report failure. The validated assembly bytes are retained until the swap, so a file change between preflight and teardown cannot substitute an unchecked assembly. A first load with no working assembly requires a successful build. Failures after a successful preflight can still recreate instances.
+
+The engine's *core* scripting library cannot be reloaded mid-session. If the ScriptCore DLL next to the candidate or at the running core's path has a different module identity (MVID), reload is refused even when the assembly version is unchanged. Stop the editor, build Funke-Engine and Funke-ScriptCore together, deploy matching binaries, then restart.
+
+### Selected runtime state
+
+Implement `IHotReloadState` on an `EntityScript` to capture named values with `ReloadState.Set` and restore them with `TryGet<T>`. Version 1 supports `bool`, `int`, `uint`, `long`, `ulong`, `float`, `double` and `string` only. Store stable entity/scene/asset IDs explicitly as `ulong` and resolve them again in game code. Objects, wrappers, delegates, tasks, coroutines and pointers are rejected. The neutral snapshot contains strings, never old instances, `Type` objects or handles.
+
+The sequence is candidate validation → capture → normal teardown → new Awake/Enable/Start → restore → first regular update. Restore follows a delayed `OnStart`, so startup cannot overwrite restored values afterward. Use restore itself to rebuild derived data. Earlier lifecycle side effects still happen; this is not a continuation of the old call stack. Missing or type-changed keys return `false`; unread keys and restore exceptions produce an incomplete-restore diagnostic. State is matched by scene GUID, entity UUID and complete type identity. Disabled instances can wait for their startup; Stop, unload, a new capture or a failed exchange clears retained state. It never enters `PendingFieldValues`, scene/prefab files or the pre-Play snapshot. Scripts that do not opt in use ordinary reload behavior.
+
+### Registered state before Play
+
+The **Reset registered game state before Play** preference is off by default. With it enabled, `[ResetOnPlay]` methods in the loaded game assembly run immediately before each successful new Play entry, even if no `OnStart` has ever run. Each method must be static, parameterless, nongeneric, synchronous and return `void`. All signatures are validated before any method runs. Execution order is ordinal declaring full type name, then method name. An exception reports the method and aborts Play; changes made by earlier reset methods are not rolled back.
+
+Pause/resume and failed builds do not invoke these resets. Reload replaces registrations. Unregistered statics and external libraries are untouched. The [session example](../../../Examples/CSharpScripting/SessionState.cs) resets `Score`, keeps `SessionsPlayed` between sessions in the same assembly, and separately transfers selected instance state during Play reload. `Application.PlayModeExited` remains available for cleanup on exit.
+
+### Native component layouts and bindings
+
+Method changes in the game assembly remain hot reloadable. Ordinary user `IComponent` structs use dynamic native storage; their storage is recreated from the replacement schema, so field reorder/size changes can reload. Live arbitrary state is not preserved; exposed values follow the existing reload rules.
+
+A struct that mirrors a **compiled native component** has a stricter contract. Both initial load and reload compare the native mirror size and every primitive leaf's path, type, byte offset and size. Swapping two equally sized fields fails even though `sizeof` is unchanged. Native trailing fields are permitted only outside the explicitly declared mirror prefix. Transform2D and SpriteRenderer publish contracts from their compiled native members. An unsupported or missing native contract fails explicitly; a size-only match is never reported as proof of layout compatibility.
+
+Native/package/codegen registrations can supply `ComponentInfo.managedSize` and `managedFields` (`Path`, `Type`, `Offset`, `Size`). These describe the full managed prefix, including private fields and explicit padding. Derive offsets and sizes from the compiled native type; do not copy numbers from the C# file. Paths use managed field names with dotted nested paths, and leaf types use `bool`, `i8/u8`, `i16/u16`, `i32/u32`, `i64/u64`, `f32/f64`, `char`, or pointer-width `ptr/uptr`. Enums use their underlying integer type. The managed mirror must have a supported sequential or explicit unmanaged layout; the computed layout is also checked against its runtime size. A custom native name must be a `const string NativeName` for metadata-only preflight, so validation does not execute user static initialization.
+
+For an intentional native layout change, stop the editor, update the native type/contract and managed mirror together, then run the full affected project/engine build with codegen enabled (`FunkeCodegenEnabled=true`) and restart with the matching binaries. In a source checkout use `scripts/dev/Build.ps1 Engine,Editor,ScriptCore -Config Release -NoRegenCheck` after any required generation, preserving the active module/profiler configuration. Generated native component code must actually be compiled. A restart or managed-only rebuild cannot fix a mismatched native layout. This tree currently uses dynamic user components and has no active CodegenComponents generator; external codegen integrations must supply the contract. Both hot-reload compiler paths deliberately keep `FunkeCodegenEnabled=false`.
+
+The positional NativeBindings/ManagedCallbacks tables retain their existing size plus explicit layout-version handshake. Any added, removed, reordered or signature-changed slot requires matching native/managed table definitions, a coordinated layout-version bump, a build of both sides and an editor restart. Equal table sizes alone cannot detect a slot reorder; changing the version is part of that contract. Component preflight uses dedicated runtime-host entry points and does not add or reorder table slots. Package-specific native ABIs and native source files that have not been rebuilt are outside the component metadata check.
 
 ### How fast a reload is
 

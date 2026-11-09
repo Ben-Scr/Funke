@@ -46,6 +46,10 @@ namespace Funke {
 		Vec2 center = this->GetCenter();
 		b2Polygon polygon = b2MakeOffsetBox(SafeHalfExtent(tr->Scale.x * scale.x * 0.5f), SafeHalfExtent(tr->Scale.y * scale.y * 0.5f), b2Vec2(center.x, center.y), b2Rot_identity);
 		b2Shape_SetPolygon(m_ShapeId, &polygon);
+		b2Body_ApplyMassFromShapes(m_BodyId);
+		if (scene.HasComponent<Rigidbody2DComponent>(m_EntityHandle)) {
+			const_cast<Rigidbody2DComponent&>(scene.GetComponent<Rigidbody2DComponent>(m_EntityHandle)).ApplyMassFromState();
+		}
 		m_LastAppliedScale = tr->Scale;
 		m_LastAppliedLocalSize = m_LocalSize;
 	}
@@ -131,6 +135,10 @@ namespace Funke {
 			b2Vec2(center.x, center.y),
 			b2Rot_identity);
 		b2Shape_SetPolygon(m_ShapeId, &polygon);
+		b2Body_ApplyMassFromShapes(m_BodyId);
+		if (scene.HasComponent<Rigidbody2DComponent>(m_EntityHandle)) {
+			const_cast<Rigidbody2DComponent&>(scene.GetComponent<Rigidbody2DComponent>(m_EntityHandle)).ApplyMassFromState();
+		}
 		m_LastAppliedScale = tr->Scale;
 		m_LastAppliedLocalSize = m_LocalSize;
 	}
@@ -147,6 +155,10 @@ namespace Funke {
 			b2Vec2(center.x, center.y),
 			b2Rot_identity);
 		b2Shape_SetPolygon(m_ShapeId, &polygon);
+		b2Body_ApplyMassFromShapes(m_BodyId);
+		if (scene.HasComponent<Rigidbody2DComponent>(m_EntityHandle)) {
+			const_cast<Rigidbody2DComponent&>(scene.GetComponent<Rigidbody2DComponent>(m_EntityHandle)).ApplyMassFromState();
+		}
 		m_LastAppliedScale = tr->Scale;
 		m_LastAppliedLocalSize = m_LocalSize;
 	}

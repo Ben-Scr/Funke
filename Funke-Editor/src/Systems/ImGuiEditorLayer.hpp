@@ -130,6 +130,7 @@ namespace Funke {
 			std::string Message;
 			Log::Level Level;
 			std::string SourceFilePath;
+			std::string SourceIdentity;
 			std::string SourceLinkText;
 			int SourceLine = 0;
 			// Byte span within `Message` of the clickable "<path>:line N"
@@ -208,6 +209,7 @@ namespace Funke {
 		void RemoveEditorScene(const std::string& sceneName);
 		std::string MakeEditorSceneDefinitionName();
 		void BeginPlayModeRequest(Scene& scene);
+		void ReportPlayModeBuildFailure();
 		bool SaveDirtyPrefabsBeforeRun(std::string_view actionName);
 		bool ValidateUniquePersistentEntityIds(const std::vector<Scene*>& scenes,
 			std::string_view actionName) const;
@@ -270,7 +272,11 @@ namespace Funke {
 		void ProcessUndoRedoShortcuts();
 		UndoStack& GetUndoStack(Scene& scene);
 		void ClearUndoHistory();
-		void ForgetUndoHistory(const Scene* scene);
+		void ForgetUndoHistory(const Scene* scene, const std::string& reason);
+		void ShowHistoryStatus(std::string title, std::string detail);
+		void ShowDiscardedHistories(const std::vector<std::string>& scenes);
+		std::string m_HistoryStatusTitle;
+		std::string m_HistoryStatusDetail;
 		void RecordCreatedEntities(Scene& scene, std::span<const EntityHandle> created, std::string label);
 		// User-facing delete entry point: opens the confirmation dialog when
 		// enabled in preferences, otherwise deletes immediately.

@@ -3,7 +3,7 @@ using Funke.Components;
 
 namespace Funke.Native;
 
-// PREFIX VIEW: mirrors the POD bytes of C++ SpriteRendererComponent before SpriteName (verified by ComponentTypes<T> size guard). Write TextureAssetId to swap sprites — TextureHandle is set by the engine after UUID changes and MUST NOT be written by scripts.
+// Mirrors the native POD prefix through its field layout contract; TextureHandle is resolved by the engine and must not be written by scripts.
 [StructLayout(LayoutKind.Sequential)]
 public struct NativeSpriteRenderer : IComponent
 {

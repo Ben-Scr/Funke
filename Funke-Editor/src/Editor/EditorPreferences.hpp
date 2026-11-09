@@ -16,6 +16,7 @@ namespace Funke {
 		Custom,
 		// Translucent panels over the animated backdrop drawn by Gui/GlassBackdrop.
 		Glass,
+		GlassLight,
 	};
 
 	// How the Inspector renders a component's script fields. Detailed additionally
@@ -115,6 +116,8 @@ namespace Funke {
 		static bool GetAutoRecompileScripts();
 		static void SetAutoRecompileScripts(bool value);
 		static bool GetRecompileScriptsOnPlay();
+		static bool GetResetRegisteredStateOnPlay();
+		static void SetResetRegisteredStateOnPlay(bool value);
 		static void SetRecompileScriptsOnPlay(bool value);
 		static bool GetExitPlayModeOnRecompilation();
 		static void SetExitPlayModeOnRecompilation(bool value);

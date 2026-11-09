@@ -1,13 +1,13 @@
 #pragma once
 #include "Core/Export.hpp"
 #include "Collections/Vec2.hpp"
-#include "Components/General/Transform2DComponent.hpp"
-#include "Components/Graphics/SpriteRendererComponent.hpp"
 #include "Graphics/SpriteUVResolver.hpp"
 
 #include <cstdint>
 
 namespace Funke {
+	class Transform2DComponent;
+	struct SpriteRendererComponent;
 
 	// A sprite's slice geometry at unit transform scale, flips applied. Size and PivotOffset (quad centre minus
 	// pivot) are in world units for PixelsPerUnit sprites; the others are a unit quad on the entity position.

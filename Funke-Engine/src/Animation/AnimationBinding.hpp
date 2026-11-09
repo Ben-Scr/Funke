@@ -1,10 +1,13 @@
 #pragma once
 #include "Core/Export.hpp"
+#include "Animation/AnimationClip.hpp"
+#include "Inspector/PropertyMetadata.hpp"
 #include "Inspector/PropertyValue.hpp"
 #include "Scene/Entity.hpp"
 #include "Scene/EntityHandle.hpp"
 
 #include <cstdint>
+#include <array>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -30,6 +33,20 @@ namespace Funke {
 
 	FUNKE_API float ReadAnimationChannel(const PropertyValue& value, int channel);
 	FUNKE_API void WriteAnimationChannel(PropertyValue& value, int channel, float channelValue);
+
+	struct AnimationRotationBinding {
+		std::array<const AnimationTrack*, 4> Tracks{};
+		RotationInterpolation Mode = RotationInterpolation::EulerMultiTurn;
+		bool Active = false;
+	};
+
+	FUNKE_API bool ValidateAnimationRotation(const AnimationRotationBinding& binding, RotationProperty representation,
+		PropertyType type, std::string& error);
+	// Requires a successfully validated binding; missing Euler channels use the live base pose.
+	FUNKE_API PropertyValue EvaluateAnimationRotation(const AnimationRotationBinding& binding, RotationProperty representation,
+		const PropertyValue& base, float time);
+	FUNKE_API PropertyValue BlendAnimationRotation(const PropertyValue& from, const PropertyValue& to, float weight,
+		RotationProperty representation, RotationInterpolation mode);
 
 	// Child of root reached by '/'-separated entity names; root itself for an empty path; invalid if missing.
 	FUNKE_API Entity ResolveAnimationPath(Entity root, std::string_view path);
@@ -73,6 +90,7 @@ namespace Funke {
 		// Adopts an already resolved target (the editor keeps authored values this way); returns its index.
 		int Add(const AnimationTarget& target);
 		PropertyType GetType(int target) const;
+		RotationProperty GetRotation(int target) const;
 		const std::vector<AnimationTarget>& GetTargets() const { return m_Targets; }
 		void Clear() { m_Targets.clear(); }
 

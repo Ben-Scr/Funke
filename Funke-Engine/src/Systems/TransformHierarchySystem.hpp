@@ -1,9 +1,23 @@
 #pragma once
 #include "Core/Export.hpp"
 #include "Scene/SceneSystem.hpp"
+#include "Scene/EntityHandle.hpp"
+#include <entt/entity/fwd.hpp>
 #include <cstddef>
+#include <vector>
 
 namespace Funke {
+	struct Transform2DExternalState {
+		bool OwnsWorldTransform = false;
+		bool RetainsDirtyFlag = false;
+	};
+
+	// Stored per scene; an absent adapter leaves hierarchy propagation independent of simulation.
+	struct Transform2DExternalAdapter {
+		Transform2DExternalState (*GetState)(const entt::registry&, EntityHandle) = nullptr;
+		void (*CollectDrivenRoots)(entt::registry&, std::vector<EntityHandle>&) = nullptr;
+	};
+
 	struct Transform2DPropagationStats {
 		size_t TransformsVisited = 0;
 		size_t PhysicsRoots = 0;

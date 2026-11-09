@@ -203,8 +203,16 @@ namespace Funke {
 		const auto& desired = redo ? change.After : change.Before;
 		const auto snapshot = change.Storage / (redo ? "after" : "before");
 		for (size_t i = 0; i < change.Paths.size(); ++i) {
-			if (Fingerprint(change.Paths[i]) != expected[i]) throw std::runtime_error("Undo conflict: " + Path::ToUtf8(change.Paths[i]));
-			if (Fingerprint(snapshot / std::to_string(i)) != desired[i]) throw std::runtime_error("Asset undo backup is incomplete");
+			const auto current = Fingerprint(change.Paths[i]);
+			if (current != expected[i]) {
+				const char* conflict = expected[i].empty() ? "A new file or directory now occupies the path"
+					: current.empty() ? "The recorded file or directory is missing"
+					: current.front() != expected[i].front() ? "The file type has changed"
+					: "The contents changed outside this history (including metadata or directory children)";
+				throw std::runtime_error(std::string(conflict) + ": " + Path::ToUtf8(change.Paths[i]));
+			}
+			if (Fingerprint(snapshot / std::to_string(i)) != desired[i]) throw std::runtime_error("Asset undo backup is missing or changed for "
+				+ Path::ToUtf8(change.Paths[i]) + ". Backup: " + Path::ToUtf8(snapshot / std::to_string(i)));
 		}
 		const auto transaction = change.Storage / std::to_string(static_cast<uint64_t>(UUID()));
 		std::filesystem::create_directories(transaction / "stage");
@@ -220,7 +228,7 @@ namespace Funke {
 		published.reserve(change.Paths.size());
 		try {
 			for (size_t i = 0; i < change.Paths.size(); ++i) {
-				if (Fingerprint(change.Paths[i]) != expected[i]) throw std::runtime_error("Asset changed during undo");
+				if (Fingerprint(change.Paths[i]) != expected[i]) throw std::runtime_error("Asset changed while applying history: " + Path::ToUtf8(change.Paths[i]));
 				if (!expected[i].empty()) {
 					RenameExclusive(change.Paths[i], transaction / "parked" / std::to_string(i));
 					parked.push_back(i);
@@ -232,7 +240,11 @@ namespace Funke {
 					published.push_back(i);
 				}
 			}
-			if (!AssetRegistry::RestorePathsIncremental(registryPaths)) throw std::runtime_error("Asset registry identity conflict");
+			if (!AssetRegistry::RestorePathsIncremental(registryPaths)) {
+				std::string message = "Asset registry identity conflict while restoring:";
+				for (const auto& path : registryPaths) message += "\n" + path;
+				throw std::runtime_error(message);
+			}
 		}
 		catch (...) {
 			try {
@@ -242,6 +254,8 @@ namespace Funke {
 			catch (...) {
 				change.KeepRecoveryFiles = true;
 				FNK_ERROR_TAG("AssetUndo", "Recovery files retained at {}", Path::ToUtf8(transaction));
+				throw std::runtime_error("Asset history rollback could not complete. Recovery files retained at "
+					+ Path::ToUtf8(transaction) + ". Inspect and repair these files before retrying.");
 			}
 			throw;
 		}

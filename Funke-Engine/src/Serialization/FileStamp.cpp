@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <mutex>
 #include <unordered_map>
 
@@ -33,6 +34,24 @@ namespace Funke {
 			return stamp;
 		}
 		std::error_code ec;
+#ifdef FNK_PLATFORM_WINDOWS
+		// MSVC caches size and write time in one directory-entry query for ordinary files.
+		static const bool referenceReads = [] {
+			const char* value = std::getenv("FUNKE_REFERENCE_FILE_STAMP");
+			return value && std::string_view(value) == "1";
+		}();
+		if (!referenceReads) {
+			const std::filesystem::directory_entry entry(fsPath, ec);
+			if (!ec && std::filesystem::is_regular_file(entry.symlink_status(ec))) {
+				stamp.WriteTime = entry.last_write_time(ec);
+				if (ec) return FileStamp{};
+				stamp.Size = entry.file_size(ec);
+				if (ec) return FileStamp{};
+				stamp.Exists = true;
+				return stamp;
+			}
+		}
+#endif
 		stamp.WriteTime = std::filesystem::last_write_time(fsPath, ec);
 		if (ec) return FileStamp{};
 		stamp.Size = std::filesystem::file_size(fsPath, ec);

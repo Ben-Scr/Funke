@@ -246,6 +246,25 @@ TEST_CASE("Async asset shutdown joins workers without publishing stale meshes") 
 	CHECK(assets.Await(restarted).Status == AssetLoadStatus::Success);
 }
 
+TEST_CASE("Async asset restart keeps old completions and cancellations separate from new requests") {
+	AsyncAssetScope assets;
+	for (int cycle = 0; cycle < 4; ++cycle) {
+		MeshLibrary::Clear();
+		const uint64_t old = AssetLoader::LoadAsync(assets.Guid);
+		AssetLoader::Pump();
+		AssetLoader::Shutdown();
+		CHECK(AssetLoader::GetResult(old).Status == AssetLoadStatus::Cancelled);
+		AssetLoader::Initialize();
+		const uint64_t fresh = AssetLoader::LoadAsync(assets.Guid);
+		REQUIRE(fresh != old);
+		AssetLoader::Cancel(old);
+		AssetLoader::Release(old);
+		CHECK(assets.Await(fresh).Status == AssetLoadStatus::Success);
+		CHECK(MeshLibrary::FindLoaded(assets.Guid) != nullptr);
+		AssetLoader::Release(fresh);
+	}
+}
+
 TEST_CASE("Meshes loaded asynchronously retain external glTF buffer reload dependencies") {
 	AsyncAssetScope assets;
 	assets.Path = (assets.Root / "Triangle.gltf").string();

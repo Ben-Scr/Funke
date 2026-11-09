@@ -1,6 +1,8 @@
 # Install Funke on Windows
 
-Download `FunkeSetup-<version>-Windows-x64.exe` from the release and open it on Windows 10 or 11 x64. The recommended installation includes the Launcher, Editor, Windows game runtimes and project templates. You do not need Git, Visual Studio or the engine source code for ordinary C# projects. Windows on Arm is not currently supported by this installer.
+As of 3 November 2026, [Releases](https://github.com/Ben-Scr/Funke/releases) has no public engine release. Use the [Windows source build](../../../README.md#getting-started), or obtain a temporary installer artifact from a successful [CI run](https://github.com/Ben-Scr/Funke/actions/workflows/ci.yml) if available to your GitHub account. To create an installer yourself, follow [Installer development](../../../installer/README.md#build).
+
+When you have `FunkeSetup-<version>-Windows-x64.exe`, open it on Windows 10 or 11 x64. The recommended installation includes the Launcher, Editor, Windows game runtimes and project templates. An installed build does not require Git, Visual Studio or the engine source code for ordinary C# projects. Windows on Arm is not currently supported by this installer.
 
 Funke is installed for your Windows user, by default in `%LOCALAPPDATA%\Programs\Funke`. Setup offers English and German. The Microsoft .NET SDK and Visual C++ runtimes are shared system components: if they are missing or too old, setup runs their official Microsoft installers. Setup checks both x64 (engine applications) and x86 (package generator), even on 64-bit Windows. Windows can ask for administrator approval for those components. Cancelling that approval leaves the prerequisite incomplete; install it with an administrator's help and run setup again. Follow any restart request before opening Funke.
 

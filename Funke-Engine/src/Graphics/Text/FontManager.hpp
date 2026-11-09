@@ -55,7 +55,17 @@ namespace Funke {
         static int  GetAtlasMemoryBudgetMB();
         static void EnforceMemoryBudget();
 
+        // CPU source bytes are separate from atlas memory; active fonts/bakes may exceed this budget.
+        static void SetSourceMemoryBudgetBytes(size_t bytes);
+        static size_t GetSourceMemoryBudgetBytes() { return s_SourceBudgetBytes; }
+        static size_t GetSourceCacheBytes();
+        static size_t GetUnusedSourceCacheBytes();
+        static void ClearSourceCache();
+
     private:
+        friend struct FontManagerTestAccess;
+        static void EnforceSourceMemoryBudget();
+
         struct Slot {
             std::unique_ptr<Font> Font;
             uint64_t AssetUUID = 0;
@@ -107,10 +117,12 @@ namespace Funke {
         struct TtfBufferEntry {
             std::shared_ptr<const std::vector<uint8_t>> Bytes;
             std::string Path;
+            uint64_t LastAccessTick = 0;
         };
         // Keyed by asset UUID — one shared TTF copy per font file, reused by all
         // its baked sizes (the dedup that keeps N sizes from holding N file copies).
         inline static std::unordered_map<uint64_t, TtfBufferEntry> s_TtfBufferCache;
+        inline static size_t s_SourceBudgetBytes = 16 * 1024 * 1024;
     };
 
 }

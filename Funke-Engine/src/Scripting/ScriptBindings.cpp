@@ -74,6 +74,75 @@
 #include <utility>
 
 namespace Funke {
+	struct ScriptComponentLayoutAccess {
+		template <typename T>
+		static const char* PrimitiveType() {
+			if constexpr (std::is_enum_v<T>) return PrimitiveType<std::underlying_type_t<T>>();
+			else if constexpr (std::is_pointer_v<T>) return "ptr";
+			else if constexpr (std::is_same_v<T, bool>) return "bool";
+			else if constexpr (std::is_same_v<T, float>) return "f32";
+			else if constexpr (std::is_same_v<T, double>) return "f64";
+			else if constexpr (std::is_same_v<T, int8_t>) return "i8";
+			else if constexpr (std::is_same_v<T, uint8_t>) return "u8";
+			else if constexpr (std::is_same_v<T, int16_t>) return "i16";
+			else if constexpr (std::is_same_v<T, uint16_t>) return "u16";
+			else if constexpr (std::is_same_v<T, int32_t>) return "i32";
+			else if constexpr (std::is_same_v<T, uint32_t>) return "u32";
+			else if constexpr (std::is_same_v<T, int64_t>) return "i64";
+			else if constexpr (std::is_same_v<T, uint64_t> || std::is_same_v<T, UUID>) return "u64";
+			else return "unsupported";
+		}
+
+		template <typename T, typename F>
+		static void Add(std::vector<ComponentLayoutField>& fields, const T& component,
+			const F& field, const char* path) {
+			fields.push_back({ path, PrimitiveType<F>(), static_cast<size_t>(
+				reinterpret_cast<const char*>(&field) - reinterpret_cast<const char*>(&component)), sizeof(F) });
+		}
+
+		static void BuiltIn(const ComponentInfo& info, std::vector<ComponentLayoutField>& fields, size_t& size) {
+#if FUNKE_WITH_2D
+			if (info.typeId == typeid(Transform2DComponent)) {
+				const Transform2DComponent value;
+				size = sizeof(value);
+				Add(fields, value, value.Position.x, "m_Position.X");
+				Add(fields, value, value.Position.y, "m_Position.Y");
+				Add(fields, value, value.Scale.x, "m_Scale.X");
+				Add(fields, value, value.Scale.y, "m_Scale.Y");
+				Add(fields, value, value.Rotation, "m_RotationRadians");
+				Add(fields, value, value.LocalPosition.x, "m_LocalPosition.X");
+				Add(fields, value, value.LocalPosition.y, "m_LocalPosition.Y");
+				Add(fields, value, value.LocalScale.x, "m_LocalScale.X");
+				Add(fields, value, value.LocalScale.y, "m_LocalScale.Y");
+				Add(fields, value, value.LocalRotation, "m_LocalRotationRadians");
+				Add(fields, value, value.m_Dirty, "m_Dirty");
+				Add(fields, value, value.m_OwnerScene, "m_OwnerScene");
+				Add(fields, value, value.m_OwnerEntity, "m_OwnerEntity");
+			}
+			else if (info.typeId == typeid(SpriteRendererComponent)) {
+				const SpriteRendererComponent value;
+				size = static_cast<size_t>(reinterpret_cast<const char*>(&value.SpriteName) - reinterpret_cast<const char*>(&value));
+				Add(fields, value, value.SortingOrder, "SortingOrder");
+				Add(fields, value, value.SortingLayer, "SortingLayer");
+				// The managed prefix names this native padding byte explicitly.
+				fields.push_back({ "_pad", "u8", fields.back().Offset + 1, 1 });
+				Add(fields, value, value.TextureHandle.index, "TextureHandle.Index");
+				Add(fields, value, value.TextureHandle.generation, "TextureHandle.Generation");
+				Add(fields, value, value.TextureAssetId, "TextureAssetId");
+				Add(fields, value, value.Color.r, "Color.R");
+				Add(fields, value, value.Color.g, "Color.G");
+				Add(fields, value, value.Color.b, "Color.B");
+				Add(fields, value, value.Color.a, "Color.A");
+				Add(fields, value, value.FilterMode, "FilterMode");
+				Add(fields, value, value.Material, "Material");
+				Add(fields, value, value.PixelsPerUnit, "PixelsPerUnit");
+				Add(fields, value, value.FlipX, "FlipX");
+				Add(fields, value, value.FlipY, "FlipY");
+			}
+#endif
+		}
+	};
+
 	bool ScriptBindings::IsScriptInputEnabled()
 	{
 		return Application::s_Instance && Application::s_Instance->m_IsScriptInputEnabled && !DevConsole::IsOpen();
@@ -305,7 +374,10 @@ namespace Funke {
 
 	static bool HasManagedComponent(Scene& scene, EntityHandle handle, const std::string& className) {
 		if (!scene.IsValid(handle) || !scene.HasComponent<ScriptComponent>(handle)) return false;
-		return scene.GetComponent<ScriptComponent>(handle).HasManagedComponent(className);
+		auto& component = scene.GetComponent<ScriptComponent>(handle);
+		component.MigrateManagedIdentities(ScriptEngine::ResolveManagedTypeName);
+		const std::string canonical = ScriptEngine::ResolveManagedTypeName(className);
+		return component.HasManagedComponent(canonical.empty() ? className : canonical);
 	}
 
 	static bool AddManagedComponent(Scene& scene, EntityHandle handle, const std::string& className) {
@@ -314,15 +386,21 @@ namespace Funke {
 			scene.AddComponent<ScriptComponent>(handle);
 		}
 		auto& scriptComponent = scene.GetComponent<ScriptComponent>(handle);
-		if (scriptComponent.HasManagedComponent(className)) return true;
-		if (!scriptComponent.AddManagedComponent(className)) return false;
+		scriptComponent.MigrateManagedIdentities(ScriptEngine::ResolveManagedTypeName);
+		const std::string canonical = ScriptEngine::ResolveManagedTypeName(className);
+		const std::string& identity = canonical.empty() ? className : canonical;
+		if (scriptComponent.HasManagedComponent(identity)) return true;
+		if (!scriptComponent.AddManagedComponent(identity)) return false;
 		scene.MarkDirty();
 		return true;
 	}
 
 	static bool RemoveManagedComponent(Scene& scene, EntityHandle handle, const std::string& className) {
 		if (!scene.IsValid(handle) || !scene.HasComponent<ScriptComponent>(handle)) return false;
-		const bool removed = scene.GetComponent<ScriptComponent>(handle).RemoveManagedComponent(className);
+		auto& component = scene.GetComponent<ScriptComponent>(handle);
+		component.MigrateManagedIdentities(ScriptEngine::ResolveManagedTypeName);
+		const std::string canonical = ScriptEngine::ResolveManagedTypeName(className);
+		const bool removed = component.RemoveManagedComponent(canonical.empty() ? className : canonical);
 		if (removed) scene.MarkDirty();
 		return removed;
 	}
@@ -332,13 +410,15 @@ namespace Funke {
 		FNK_BINDING_TRY {
 			Scene* scene = nullptr;
 			EntityHandle handle = entt::null;
-			const std::string className = componentName ? componentName : "";
+			std::string className = componentName ? componentName : "";
+			if (const std::string canonical = ScriptEngine::ResolveManagedTypeName(className); !canonical.empty()) className = canonical;
 			if (className.empty() || !ResolveEntityReference(entityID, scene, handle)
 				|| !scene->HasComponent<ScriptComponent>(handle)) {
 				return CopyCStringToBuffer("{}", outBuffer, capacity);
 			}
 
-			const auto& scriptComponent = scene->GetComponent<ScriptComponent>(handle);
+			auto& scriptComponent = scene->GetComponent<ScriptComponent>(handle);
+			scriptComponent.MigrateManagedIdentities(ScriptEngine::ResolveManagedTypeName);
 			if (!scriptComponent.HasManagedComponent(className)) {
 				return CopyCStringToBuffer("{}", outBuffer, capacity);
 			}
@@ -429,7 +509,7 @@ namespace Funke {
 
 		bool Has(Scene& scene, EntityHandle handle, Entity entity) const {
 			if (Native && Native->has) {
-				return Native->has(entity);
+				return Native->IsModuleActive() && Native->has(entity);
 			}
 			return HasManagedComponent(scene, handle, ManagedClassName);
 		}
@@ -458,6 +538,7 @@ namespace Funke {
 		if (!ResolveEntityReference(entityID, scene, handle)) return 0;
 
 		const ComponentInfo* info = FindComponentByName(componentName);
+		if (info && !info->IsModuleActive()) return 0;
 		if (!info || !info->has) return HasManagedComponent(*scene, handle, componentName ? componentName : "") ? 1 : 0;
 		if (const auto has = info->has.RegistryCallback()) return has(scene->GetRegistry(), handle) ? 1 : 0;
 		return info->has(scene->GetEntity(handle)) ? 1 : 0;
@@ -630,7 +711,11 @@ namespace Funke {
 		if (!scene->HasComponent<ScriptComponent>(handle)) {
 			scene->AddComponent<ScriptComponent>(handle);
 		}
+		const std::string canonical = ScriptEngine::ResolveManagedTypeName(className);
+		if (!canonical.empty()) className = canonical.c_str();
+
 		auto& scriptComponent = scene->GetComponent<ScriptComponent>(handle);
+		scriptComponent.MigrateManagedIdentities(ScriptEngine::ResolveManagedTypeName);
 		if (scriptComponent.HasScript(className, ScriptType::Managed)) {
 			return 1;
 		}
@@ -675,7 +760,10 @@ namespace Funke {
 		if (!ResolveEntityReference(entityID, scene, handle)) return 0;
 		if (!className || !*className) return 0;
 		if (!scene->HasComponent<ScriptComponent>(handle)) return 0;
-		return scene->GetComponent<ScriptComponent>(handle).HasScript(className) ? 1 : 0;
+		auto& component = scene->GetComponent<ScriptComponent>(handle);
+		component.MigrateManagedIdentities(ScriptEngine::ResolveManagedTypeName);
+		const std::string canonical = ScriptEngine::ResolveManagedTypeName(className);
+		return component.HasScript(canonical.empty() ? className : canonical) ? 1 : 0;
 	}
 
 	int Funke_Entity_RemoveScript(uint64_t entityID, const char* className)
@@ -696,7 +784,11 @@ namespace Funke {
 		};
 		std::vector<PendingTeardown> teardowns;
 
+		const std::string canonical = ScriptEngine::ResolveManagedTypeName(className);
+		if (!canonical.empty()) className = canonical.c_str();
+
 		auto& scriptComponent = scene->GetComponent<ScriptComponent>(handle);
+		scriptComponent.MigrateManagedIdentities(ScriptEngine::ResolveManagedTypeName);
 		bool removedAny = false;
 		for (auto it = scriptComponent.Scripts.begin(); it != scriptComponent.Scripts.end(); ) {
 			if (it->GetClassName() == className) {
@@ -763,7 +855,7 @@ namespace Funke {
 		if (!ResolveEntityReference(entityID, scene, handle)) return nullptr;
 
 		const ComponentInfo* info = FindComponentByName(componentName);
-		if (!info || !info->getRaw) return nullptr;
+		if (!info || !info->IsModuleActive() || !info->getRaw) return nullptr;
 
 		void* raw = info->getRaw(scene->GetEntity(handle));
 		// entt::null marks the gate without adding a per-entity list entry — the hierarchy pass
@@ -780,7 +872,7 @@ namespace Funke {
 		if (!ResolveEntityReference(entityID, scene, handle)) return nullptr;
 
 		const ComponentInfo* info = FindComponentByName(componentName);
-		if (!info || !info->getRaw) return nullptr;
+		if (!info || !info->IsModuleActive() || !info->getRaw) return nullptr;
 		return info->getRaw(scene->GetEntity(handle));
 	}
 
@@ -789,6 +881,31 @@ namespace Funke {
 		const ComponentInfo* info = FindComponentByName(componentName);
 		if (!info) return 0;
 		return static_cast<int>(info->rawSize);
+	}
+
+	int ScriptBindings::GetComponentLayoutBuffer(const char* name, char* buffer, int capacity)
+	{
+		const ComponentInfo* info = name ? FindComponentByName(name) : nullptr;
+		if (!info) return CopyStringToBuffer("", buffer, capacity);
+		Json::Value contract = Json::Value::MakeObject();
+		contract.AddMember("version", 1);
+		contract.AddMember("dynamic", info->isDynamic);
+		contract.AddMember("size", static_cast<uint64_t>(info->rawSize));
+		auto fields = info->managedFields;
+		size_t managedSize = info->managedSize;
+		if (fields.empty() && !info->isDynamic) ScriptComponentLayoutAccess::BuiltIn(*info, fields, managedSize);
+		contract.AddMember("managedSize", static_cast<uint64_t>(managedSize));
+		Json::Value entries = Json::Value::MakeArray();
+		for (const auto& field : fields) {
+			Json::Value entry = Json::Value::MakeObject();
+			entry.AddMember("path", field.Path);
+			entry.AddMember("type", field.Type);
+			entry.AddMember("offset", static_cast<uint64_t>(field.Offset));
+			entry.AddMember("size", static_cast<uint64_t>(field.Size));
+			entries.Append(std::move(entry));
+		}
+		contract.AddMember("fields", std::move(entries));
+		return CopyStringToBuffer(Json::Stringify(contract), buffer, capacity);
 	}
 
 	uint64_t Funke_Entity_Clone(uint64_t sourceEntityID)
@@ -854,6 +971,14 @@ namespace Funke {
 		EntityHandle handle = entt::null;
 		if (!ResolveEntityReference(entityID, scene, handle)) return 0;
 		return static_cast<uint64_t>(scene->GetPrefabGUID(handle));
+	}
+
+	static uint64_t Funke_Entity_GetOwningSceneId(uint64_t entityID)
+	{
+		Scene* scene = nullptr;
+		EntityHandle handle = entt::null;
+		if (!ResolveEntityReference(entityID, scene, handle)) return 0;
+		return static_cast<uint64_t>(scene->GetSceneId());
 	}
 
 	// ── Scene ───────────────────────────────────────────────────────────
@@ -1318,6 +1443,7 @@ namespace Funke {
 		auto considerRequirements = [&](const std::vector<QueryComponentRequirement>& requirements) {
 			for (const auto& requirement : requirements) {
 				const ComponentInfo* info = requirement.Native;
+				if (info && !info->IsModuleActive()) return false;
 				if (!info) {
 					if (!considerStorage(registry.storage(entt::type_hash<ScriptComponent>::value()))) return false;
 				} else if (info->dynamicStorage) {
@@ -1394,7 +1520,7 @@ namespace Funke {
 		entt::registry& registry,
 		const char* names,
 		std::vector<ResolvedQueryPool>& out,
-		bool requireValue)
+		bool requireValue, bool excluded = false)
 	{
 		if (!names || names[0] == '\0') return true;
 		const std::string_view str(names);
@@ -1406,6 +1532,12 @@ namespace Funke {
 			if (!token.empty()) {
 				const ComponentInfo* info = FindComponentByName(token);
 				if (!info) return false;
+				if (!info->IsModuleActive()) {
+					if (!excluded) return false;
+					if (end == str.size()) break;
+					start = end + 1;
+					continue;
+				}
 				// Write/readonly pools need a payload pointer. Empty / tag /
 				// managed-only components can't supply one, so we reject them
 				// here exactly as the prior ParseQueryViewPools did.
@@ -1450,7 +1582,7 @@ namespace Funke {
 			if (!ResolveQueryPools(registry, writeNames,    writePools,   /*requireValue=*/true))  return 0;
 			if (!ResolveQueryPools(registry, readonlyNames, roPools,      /*requireValue=*/true))  return 0;
 			if (!ResolveQueryPools(registry, mustHaveNames, withPools,    /*requireValue=*/false)) return 0;
-			if (!ResolveQueryPools(registry, withoutNames,  withoutPools, /*requireValue=*/false)) return 0;
+			if (!ResolveQueryPools(registry, withoutNames,  withoutPools, /*requireValue=*/false, /*excluded=*/true)) return 0;
 
 			const size_t writeCount = writePools.size();
 			const size_t roCount = roPools.size();
@@ -3966,6 +4098,7 @@ namespace Funke {
 		b.Scene_PreloadByGuidAsync  = FNK_GUARDED_BINDING(Funke_Scene_PreloadByGuidAsync);
 		b.Scene_ActivatePreloaded   = FNK_GUARDED_BINDING(Funke_Scene_ActivatePreloaded);
 		b.Scene_GetLoadProgress     = FNK_GUARDED_BINDING(Funke_Scene_GetLoadProgress);
+		b.Entity_GetOwningSceneId   = FNK_GUARDED_BINDING(Funke_Entity_GetOwningSceneId);
 		b.Scene_UnloadByGuid         = FNK_GUARDED_BINDING(Funke_Scene_UnloadByGuid);
 		b.Scene_SetActiveByGuid      = FNK_GUARDED_BINDING(Funke_Scene_SetActiveByGuid);
 		b.Scene_ReloadByGuid         = FNK_GUARDED_BINDING(Funke_Scene_ReloadByGuid);

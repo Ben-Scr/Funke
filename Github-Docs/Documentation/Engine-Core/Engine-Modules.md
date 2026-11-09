@@ -1,59 +1,82 @@
 # Engine Modules
 
-Funke splits its world features into two optional engine modules. A project lists the ones it uses in `project.json`:
+World rendering and physics are separate optional modules. A project's `modules` selection activates compiled features; it cannot add code missing from the installed engine.
 
-```json
-"modules": [ "Funke.2D", "Funke.3D" ]
+| Module | Features | Requires |
+| --- | --- | --- |
+| `Funke.2D` | 2D transforms, sprites, cameras, particles, world-space text and picking | Core |
+| `Funke.3D` | 3D transforms, cameras, meshes, materials, lights and particles | Core |
+| `Funke.Physics2D` | Box2D bodies, colliders, joints, queries, events and debug drawing | `Funke.2D` |
+| `Funke.Physics3D` | Jolt bodies, colliders, queries, events and interpolation | `Funke.3D` |
+
+UI, audio, input, scripting, assets and the general fixed-update lifecycle remain available without world physics. `modules: []` selects the Application/UI runtime, not the separate minimal `core` build profile. Each dimension can be absent, present without physics, or present with physics: nine combinations in total. Selecting physics automatically includes its dimension; selecting a dimension does not enable physics.
+
+## Project selection and migration
+
+New projects use project format **2** and explicitly store `modules`. These are excerpts of `project.json`; each row describes a separate project:
+
+| Project | `projectFormatVersion` | `modules` |
+| --- | --- | --- |
+| 2D rendering | 2 | `["Funke.2D"]` |
+| 2D with physics | 2 | `["Funke.2D", "Funke.Physics2D"]` |
+| 3D rendering | 2 | `["Funke.3D"]` |
+| 3D with physics | 2 | `["Funke.3D", "Funke.Physics3D"]` |
+
+Mixed worlds can enable both dimensions and either, both or neither physics module. IDs are case-sensitive; unknown IDs and malformed lists fail validation. Built-in Empty2D and Empty3D templates start without physics.
+
+Loading an older project expands each selected dimension to include its physics. A missing legacy `modules` field becomes all four modules; an explicit empty list stays empty. Read-only loading performs the same interpretation in memory without rewriting files. The existing project migration backs up the original before saving version 2. Once migrated, removing physics is permanent until explicitly enabled again; subsequent loads do not add it back.
+
+Packages and templates independently declare `moduleRequirementsVersion = 2` (Lua) or `"moduleRequirementsVersion": 2` (JSON). Without it, or with version 1, dimensional requirements retain their legacy physics meaning, including transitive package dependencies. Version 2 separates them. An explicit empty template selection stays empty; it is not a missing recommendation. New package scaffolding writes version 2.
+
+## Editor and command line
+
+The Package Manager's **Engine Modules** section installs/removes modules. Project Settings links there. A changed selection takes effect through the existing editor reload prompt; **Later** leaves **Reload pending** and **Reload Now** available. CLI examples:
+
+```text
+funke package add Funke.Physics2D
+funke package remove Funke.Physics2D
+funke package list --json
 ```
 
-| Module | Contains |
-|---|---|
-| `Funke.2D` | Transform 2D, Sprite Renderer, Camera 2D, Particle System 2D, 2D physics (Box2D: Rigidbody 2D, colliders, `Physics2D`), world-space text on 2D entities, 2D picking |
-| `Funke.3D` | Transform 3D, Camera 3D with sky, Mesh Renderer, materials and meshes, Directional/Point/Spot lights, Particle System 3D, 3D physics (Jolt: Rigidbody 3D, colliders, `Physics3D`) |
+Enabling physics also enables its dimension. A dimension cannot be removed while its physics or an installed package requires it. Package requirements are checked before installation and loading. JSON module rows expose `enabled`, `compiled`, `status` and `message`; statuses are `enabled`, `disabled`, `not_compiled` and `unknown`.
 
-UI (Rect Transform 2D and every UI widget), text, images, Post Processing (on a Camera 2D or Camera 3D), audio, scripting, gizmos, input and assets belong to the engine core and are always available. A project may list one module, both, or none (a pure UI app).
+Add Component and world creation menus hide unavailable components. In a full editor, existing inactive physics components remain serialized and their inspector is disabled with an explanation. They create no bodies, worlds or module-owned systems. Physics binding calls return safe empty values and initialize their output buffers; generic script component queries and pointer access also treat inactive components as unavailable. Native direct registry access remains possible and is not a sandbox.
 
-## In the editor
-
-The **Package Manager** lists the modules under **Engine Modules**, next to the packages: **Install** turns a module on, **Remove** turns it off. The editor then asks in its main window whether to reload now; **Later** keeps a "Reload pending" hint with a **Reload Now** button in the status bar until the reload happens. Project Settings only shows which modules are on and links there. From the command line, `funke package add Funke.3D` / `funke package remove Funke.3D` do the same.
-
-Packages declare the modules they build on (`modules = { "Funke.2D" }` in `funke-package.lua`). Installing such a package turns those modules on as well, including the ones its dependencies need, and a module can't be removed while an installed package needs it. A package whose module is off is not loaded and the build stops with an error that names it.
-
-The editor offers only the enabled modules:
-
-- the Add Component menu and the **Create** menus (2D Entity, 3D Entity presets, Camera) list their components only while their module is on;
-- the Editor View is fixed to 2D or 3D when only one module is on, and shows the **3D** toggle only with both;
-- **Create > Material** and the **3D Rendering** graphics settings need `Funke.3D`;
-- systems and renderers of a disabled module don't run, and script calls into its API do nothing and log one error.
-
-Turning a module off never deletes data: components of a disabled module stay in scenes and prefabs, and loading such a scene logs a warning that names the module.
-
-Projects created before modules existed have no `modules` field and keep both. New projects get the modules of their template (the built-in starter is `Funke.2D`).
+**Disabled and compiled out differ for data preservation.** A full build can load and save inactive physics data, including joints, polygon paths and mesh references. If a reduced build encounters a serialized physics component whose implementation was compiled out, scene/entity serialization is refused with a diagnostic. The original asset is left intact. This conservative scene-level restriction remains until the scene is reopened in a build containing the required module; deleting the offending entity alone does not clear it.
 
 ## One world per entity
 
-Components of the 2D and 3D modules cannot be combined on one entity. Rect Transform 2D also conflicts with world renderers, cameras and physics components, but it **can coexist with either Transform 2D or Transform 3D** to define a [world-space UI canvas](World-Space-UI.md). The two world transform types remain mutually exclusive. The Add Component menu, `Entity.AddComponent`, entity command buffers and **Paste Component** enforce these conflicts (`Entity.AddComponent<T>()` returns `null` when rejected).
+2D and 3D world components remain mutually exclusive, including physics components owned by their separate modules. Rect Transform 2D conflicts with world renderers, cameras and physics but can coexist with either world transform for a [world-space UI canvas](World-Space-UI.md). Transform 2D and Transform 3D cannot coexist. Supported add/paste/command-buffer APIs enforce these rules. Legacy mixed data remains loadable with diagnostics and without creating an incompatible body.
 
-Scenes saved before this rule may still mix them. They load unchanged, the editor logs which entity combines which components, and the component of the other world stays inactive: a 2D physics body or camera on a 3D or UI entity is not created (it never adds a second transform), and 3D components on a 2D entity are ignored by the 3D renderer and physics.
+## Export and native compatibility
 
-## In a game build
+Desktop source exports select a reduced runtime when possible. Android, iOS and Web forward the same resolved selection to CMake and use module-specific caches. Shipped scene/prefab data referencing disabled modules fails export validation.
 
-Source-checkout exports can compile a runtime **without** unused modules, removing their code, shaders and third-party libraries (Box2D for `Funke.2D`, Jolt for `Funke.3D`). Installed binary distributions select a compatible prebuilt runtime instead:
+New reduced runtime IDs use the `v2-` prefix and canonical order `2d`, `3d`, `physics2d`, `physics3d`; examples are `v2-2d`, `v2-2d-physics2d`, `v2-2d-3d-physics3d` and `v2-nomodules`. All four modules use `full`. Old SDK IDs `2d`, `3d` and `nomodules` remain readable metadata, but are not selected as replacements for new configurations. In particular, old `2d`/`3d` binaries contain physics.
 
-- **Desktop source checkouts:** the build generates a runtime variant workspace (`premake/generated/variant-<modules>`) and compiles it into `bin/<config>-<system>-<arch>-<modules>`. The first build of a variant compiles the whole engine once; later builds are incremental. If variant generation is unavailable, the exporter can use the full runtime.
-- **Android, iOS, Web:** the platform package passes the modules to the engine's CMake build (`MODULES` of `funke_add_engine`); each module set gets its own build cache.
-- A project whose shipped scenes or prefabs use a component of a module it doesn't list fails the build, with every offending entity in the log.
-- Projects with native (C++) packages ship the full engine: those packages are linked against it.
-- A binary EngineSDK selects the manifest's compatible prebuilt module variant when available, otherwise its declared full runtime. Native scripts or native packages require the declared full runtime. It does not build the engine; a missing or damaged declared runtime fails the export. See [Standalone editor prerequisites](../Editor/Building-and-Shipping.md#standalone-editor-prerequisites).
+Installed SDKs only offer variants whose payloads are declared and present. Current packaging provides full runtimes by default. Missing reduced variants may fall back to the full runtime. Native scripts and native engine packages also use the full runtime because their binaries were linked against it. The exporter explicitly reports this fallback, which leaves disabled backends compiled into the binary. Use `funke build --exact-modules` to require an exact selection; incompatible fallback fails with an explanation. Build JSON includes `runtimeVariant` and `fullRuntimeFallback`.
 
-## For engine developers
+The managed `NativeBindings` field order and signatures remain unchanged. Native script ABI version 7 reflects the added scene-extension callback; rebuild native script binaries. Package engine fingerprints remain required. A full-runtime fallback makes no backend-size or simulation-speed claim.
 
-The module source lists live in [`Funke-Engine/EngineModules.json`](../../../Funke-Engine/EngineModules.json); premake and `cmake/FunkeEngine.cmake` both read it. Code in the core that touches a module guards it with `#if FUNKE_WITH_2D` / `#if FUNKE_WITH_3D` (compile time) and asks `EngineModules::IsActive(EngineModule::TwoD)` (project setting at runtime). Built-in components register inside a `ModuleRegistrationScope` so the editor can hide them. Script bindings of a module live in `Scripting/ScriptBindings2D.cpp` / `ScriptBindings3D.cpp`, and every slot they fill is listed in `Scripting/ScriptBindingModuleSlots.hpp`, which provides signature-matched stubs when the module is off.
+## Engine development and verification
 
-Build a variant by hand:
+`Funke-Engine/EngineModules.json` owns the four source lists and dependency metadata. Premake and CMake read it. Compile guards are `FUNKE_WITH_2D`, `FUNKE_WITH_3D`, `FUNKE_WITH_PHYSICS2D` and `FUNKE_WITH_PHYSICS3D`; runtime activation uses the corresponding `EngineModule` value. Physics requires its dimension in both graphs. Backend include paths, source projects and links belong to the physics selection.
+
+2D scene hooks live in `PhysicsScene2D`; the generic transform hierarchy uses a per-scene backend-free adapter registered only by active physics. Box2D retains its global world and Jolt its per-scene worlds. Fixed-step order is unchanged. Binding slot groups separately cover each module and supply signature-matched inactive stubs.
+
+To generate a rendering-only 2D Windows runtime:
 
 ```bat
-vendor\bin\premake5.exe --without-3d vs2022
+vendor\bin\premake5.exe --without-3d --without-physics2d vs2022
 ```
 
-then build `premake\generated\variant-2d\Funke-Runtime\Funke-Runtime.vcxproj`, and run it with `scripts\dev\Run.ps1 -App Runtime -Variant 2d -Project <dir>`.
+Build `premake/generated/variant-v2-2d/Funke-Runtime/Funke-Runtime.vcxproj`. CMake accepts explicit `MODULES Funke.2D` or `MODULES none` through `funke_add_engine`. Nine-way reference checks are repeatable with:
+
+```text
+python scripts/ci/physics_module_matrix.py --build
+python scripts/ci/physics_cmake_matrix.py
+```
+
+The first command builds and runs native smoke tests on desktop platforms, auditing backend project references and source selection (MSBuild on Windows, Make on Linux/macOS). Use `--variant v2-2d-3d` for the rendering-only representative selected by Linux/macOS CI. The second configures all nine CMake graphs with dependency stand-ins; it is a graph check, not a cross-platform compiler or device test. Neither test establishes a physics performance improvement.
+
+See [Physics Modules Verification](Physics-Modules-Verification.md) for executed builds, runtime checks, compatibility evidence and remaining qualification work.

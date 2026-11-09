@@ -32,6 +32,8 @@ namespace Funke {
         b2BodyId CreateBody(EntityHandle nativeEntity, Scene& scene, BodyType bodyType);
         b2ShapeId CreateShape(EntityHandle nativeEntity, Scene& scene, b2BodyId bodyId, ShapeType shapeType, bool isSensor = false);
         CollisionBodyRef ResolveShape(b2ShapeId shapeId) const;
+		bool OwnsBody(b2BodyId bodyId, const Scene& scene, EntityHandle entity) const;
+		FUNKE_API b2Counters GetResourceCounts() const;
         void UnregisterBodyBinding(b2BodyId bodyId);
 
         // Destroy every body whose binding points at `scene`, then erase the
@@ -44,7 +46,7 @@ namespace Funke {
         Vec2 GetGravity() const;
         void SetGravity(const Vec2& gravity);
 
-        CollisionDispatcher& GetDispatcher();
+        FUNKE_API CollisionDispatcher& GetDispatcher();
         b2WorldId GetWorldID() { return m_WorldId; }
 		FUNKE_API int GetWorkerCount() const;
         void Destroy();

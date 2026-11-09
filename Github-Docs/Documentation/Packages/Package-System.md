@@ -101,7 +101,7 @@ The rules are checked in three places, all with the same resolver:
 - **Runtime loading** (`PackageHost`) pulls in dependencies that `project.json` does not list, loads dependencies before the packages that need them, and skips a package whose dependency is missing, outside its range or incompatible with the engine. Only that package and its dependents are skipped; the error is in the log.
 - **The Package Manager** shows each package's requirements, marks unmet ones and lists dependency-only packages as *dependency*.
 
-A package can also need [engine modules](../Engine-Core/Engine-Modules.md) (`modules = { "Funke.2D" }`). Installing it adds them to `project.json` `modules`; runtime loading skips a package whose module is off, and the game build fails with an error naming the package and the module. The engine modules themselves are listed in the Package Manager under **Engine Modules**.
+A package can also need [engine modules](../Engine-Core/Engine-Modules.md). Use `moduleRequirementsVersion = 2` and `modules = { "Funke.Physics2D" }` for 2D physics, or `modules = { "Funke.2D" }` for rendering alone. Installing enables these requirements and their dependencies; runtime loading and export reject unavailable requirements. Legacy manifests without the version retain implicit physics for each dimension. Registry releases use the same `moduleRequirementsVersion` field in JSON. The Package Manager lists all four modules under **Engine Modules**.
 
 ### packages-lock.json
 

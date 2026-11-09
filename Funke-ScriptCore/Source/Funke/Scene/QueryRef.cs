@@ -981,21 +981,29 @@ public ref struct QueryRefBuilder8<TW1, TW2, TW3, TW4, TW5, TW6, TW7, TW8>
 // so the legacy SceneQuery.cs file stays untouched.
 public static class SceneQueryRefExtensions
 {
+    /// <summary>Borrows native storage. Do not Add/Remove/Create/Destroy during iteration; record changes in EntityCommandBuffer and play back afterward.</summary>
+    /// <remarks>References expire on structural changes; no automatic lifetime checks. Writable transform queries mark transforms dirty; use Readonly for read access.</remarks>
     public static QueryRefBuilder1<T> QueryRef<T>(this Scene scene)
         where T : unmanaged, IComponent
         => new QueryRefBuilder1<T>(scene.Name);
 
+    /// <summary>Borrows native storage. Do not Add/Remove/Create/Destroy during iteration; record changes in EntityCommandBuffer and play back afterward.</summary>
+    /// <remarks>References expire on structural changes; no automatic lifetime checks. Writable transform queries mark transforms dirty; use Readonly for read access.</remarks>
     public static QueryRefBuilder2<TW1, T2> QueryRef<TW1, T2>(this Scene scene)
         where TW1 : unmanaged, IComponent
         where T2 : unmanaged, IComponent
         => new QueryRefBuilder2<TW1, T2>(scene.Name);
 
+    /// <summary>Borrows native storage. Do not Add/Remove/Create/Destroy during iteration; record changes in EntityCommandBuffer and play back afterward.</summary>
+    /// <remarks>References expire on structural changes; no automatic lifetime checks. Writable transform queries mark transforms dirty; use Readonly for read access.</remarks>
     public static QueryRefBuilder3<TW1, T2, T3> QueryRef<TW1, T2, T3>(this Scene scene)
         where TW1 : unmanaged, IComponent
         where T2 : unmanaged, IComponent
         where T3 : unmanaged, IComponent
         => new QueryRefBuilder3<TW1, T2, T3>(scene.Name);
 
+    /// <summary>Borrows native storage. Do not Add/Remove/Create/Destroy during iteration; record changes in EntityCommandBuffer and play back afterward.</summary>
+    /// <remarks>References expire on structural changes; no automatic lifetime checks. Writable transform queries mark transforms dirty; use Readonly for read access.</remarks>
     public static QueryRefBuilder4<TW1, T2, T3, T4> QueryRef<TW1, T2, T3, T4>(this Scene scene)
         where TW1 : unmanaged, IComponent
         where T2 : unmanaged, IComponent
@@ -1003,6 +1011,8 @@ public static class SceneQueryRefExtensions
         where T4 : unmanaged, IComponent
         => new QueryRefBuilder4<TW1, T2, T3, T4>(scene.Name);
 
+    /// <summary>Borrows native storage. Do not Add/Remove/Create/Destroy during iteration; record changes in EntityCommandBuffer and play back afterward.</summary>
+    /// <remarks>References expire on structural changes; no automatic lifetime checks. Writable transform queries mark transforms dirty; use Readonly for read access.</remarks>
     public static QueryRefBuilder5<TW1, T2, T3, T4, T5> QueryRef<TW1, T2, T3, T4, T5>(this Scene scene)
         where TW1 : unmanaged, IComponent
         where T2 : unmanaged, IComponent
@@ -1011,6 +1021,8 @@ public static class SceneQueryRefExtensions
         where T5 : unmanaged, IComponent
         => new QueryRefBuilder5<TW1, T2, T3, T4, T5>(scene.Name);
 
+    /// <summary>Borrows native storage. Do not Add/Remove/Create/Destroy during iteration; record changes in EntityCommandBuffer and play back afterward.</summary>
+    /// <remarks>References expire on structural changes; no automatic lifetime checks. Writable transform queries mark transforms dirty; use Readonly for read access.</remarks>
     public static QueryRefBuilder6<TW1, T2, T3, T4, T5, T6> QueryRef<TW1, T2, T3, T4, T5, T6>(this Scene scene)
         where TW1 : unmanaged, IComponent
         where T2 : unmanaged, IComponent
@@ -1020,6 +1032,8 @@ public static class SceneQueryRefExtensions
         where T6 : unmanaged, IComponent
         => new QueryRefBuilder6<TW1, T2, T3, T4, T5, T6>(scene.Name);
 
+    /// <summary>Borrows native storage. Do not Add/Remove/Create/Destroy during iteration; record changes in EntityCommandBuffer and play back afterward.</summary>
+    /// <remarks>References expire on structural changes; no automatic lifetime checks. Writable transform queries mark transforms dirty; use Readonly for read access.</remarks>
     public static QueryRefBuilder7<TW1, T2, T3, T4, T5, T6, T7> QueryRef<TW1, T2, T3, T4, T5, T6, T7>(this Scene scene)
         where TW1 : unmanaged, IComponent
         where T2 : unmanaged, IComponent
@@ -1030,6 +1044,8 @@ public static class SceneQueryRefExtensions
         where T7 : unmanaged, IComponent
         => new QueryRefBuilder7<TW1, T2, T3, T4, T5, T6, T7>(scene.Name);
 
+    /// <summary>Borrows native storage. Do not Add/Remove/Create/Destroy during iteration; record changes in EntityCommandBuffer and play back afterward.</summary>
+    /// <remarks>References expire on structural changes; no automatic lifetime checks. Writable transform queries mark transforms dirty; use Readonly for read access.</remarks>
     public static QueryRefBuilder8<TW1, T2, T3, T4, T5, T6, T7, T8> QueryRef<TW1, T2, T3, T4, T5, T6, T7, T8>(this Scene scene)
         where TW1 : unmanaged, IComponent
         where T2 : unmanaged, IComponent

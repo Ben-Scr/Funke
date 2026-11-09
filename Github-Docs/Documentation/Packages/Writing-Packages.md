@@ -100,7 +100,8 @@ return {
     },
 
     dependencies = { "MyGame.Core@^1.0.0" },   -- optional, other packages this one needs
-    modules = { "Funke.2D" },                  -- optional, engine modules this one builds on
+    moduleRequirementsVersion = 2,
+    modules = { "Funke.2D" },                  -- rendering only; add Funke.Physics2D for physics
 }
 ```
 
@@ -109,7 +110,7 @@ Key points:
 - **`name`** and **`version`** are required; every layer needs a non-empty **`sources`** list. Bump `version` with `scripts/packages/BumpPackageVersion.py` when you publish a change: patch for fixes, minor for additions, major for anything that breaks packages or games using yours.
 - **`dependencies`** lists *other packages* (not NuGet packages, not the script core), each optionally with a version range (`"MyGame.Core@^1.0.0"` or `{ name = "MyGame.Core", version = "^1.0.0" }`). Dependencies build and load first, and a project only needs to list your package; the rest comes along. The range syntax is in [Package System](Package-System.md#versions-and-dependencies).
 - **`engine`** states which engine versions the release supports; a project on another engine gets a clear error instead of a crash.
-- **`modules`** lists the [engine modules](../Engine-Core/Engine-Modules.md) your package uses (`"Funke.2D"`, `"Funke.3D"`). Installing the package turns them on in the project; a project with one of them off doesn't load the package and refuses to build it. Leave it out when you only use the core (UI, text, audio, input, assets). `NewPackage.py --modules Funke.2D` writes it for you.
+- **`modules`** lists the [engine modules](../Engine-Core/Engine-Modules.md) your package uses: `Funke.2D`, `Funke.3D`, `Funke.Physics2D`, `Funke.Physics3D`. Declare **`moduleRequirementsVersion = 2`** to separate rendering and physics. Legacy manifests without this field retain implicit physics for each dimension. Installing a package enables its requirements and their dependencies; unavailable requirements block loading/building. Leave `modules` out for core-only packages. `NewPackage.py --modules Funke.2D` writes version 2 automatically.
 - The manifest is validated when project files are generated — mistakes fail loudly with a clear `[Funke Packages]` message, so you'll know right away.
 
 ---

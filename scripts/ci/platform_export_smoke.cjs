@@ -19,6 +19,10 @@ async function main() {
       channel: options.channel || undefined,
       args: options.browserArgs,
     });
+    fs.writeFileSync(path.join(options.output, 'runtime.json'), JSON.stringify({
+      node: process.version, browser: browser.version(), channel: options.channel,
+      executable: options.executable, arguments: options.browserArgs,
+    }, null, 2));
     page = await browser.newPage({ viewport: { width: options.width, height: options.height } });
     await page.route('**/favicon.ico', route => route.fulfill({ status: 204 }));
     page.on('console', message => {

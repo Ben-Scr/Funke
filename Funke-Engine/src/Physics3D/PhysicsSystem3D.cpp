@@ -1,4 +1,5 @@
 #include "pch.hpp"
+#include "Core/EngineModules.hpp"
 #include "Physics3D/PhysicsSystem3D.hpp"
 
 #include "Components/Physics3D/Collider3DComponents.hpp"
@@ -23,6 +24,7 @@ namespace Funke {
 	}
 
 	PhysicsWorld3D* PhysicsSystem3D::GetWorld(Scene& scene, bool create) {
+		if (!EngineModules::IsActive(EngineModule::Physics3D)) return nullptr;
 		if (!Application::GetIsPlaying()) return nullptr;
 		if (!m_World && create && HasPhysicsComponents(scene)) {
 			m_World = std::make_unique<PhysicsWorld3D>();

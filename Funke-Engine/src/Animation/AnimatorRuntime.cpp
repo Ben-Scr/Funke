@@ -116,6 +116,11 @@ namespace Funke {
 					continue;
 				}
 				const PropertyType type = m_Targets.GetType(target);
+				if (m_Targets.GetRotation(target) == RotationProperty::None
+					&& track.RotationMode != RotationInterpolation::EulerMultiTurn) {
+					m_BindingErrors.push_back(track.Component + "." + track.Property + " - rotation mode requires rotation property metadata");
+					continue;
+				}
 				if (!track.IsDiscrete() && !IsCurveAnimatable(type)) {
 					const std::string where = track.Component + "." + track.Property;
 					m_BindingErrors.push_back(where + " - needs discrete keys");
@@ -123,6 +128,46 @@ namespace Funke {
 					continue;
 				}
 				m_Bindings[s][t] = { target, std::max(channel, 0) };
+			}
+		}
+		m_RotationBindings.assign(m_StateClips.size(), std::vector<AnimationRotationBinding>(m_Targets.GetTargets().size()));
+		for (size_t s = 0; s < m_StateClips.size(); ++s) {
+			const AnimationClip* clip = m_StateClips[s].get();
+			if (!clip) continue;
+			std::vector<bool> invalid(m_Targets.GetTargets().size(), false);
+			for (size_t t = 0; t < clip->Tracks.size(); ++t) {
+				const TrackBinding& binding = m_Bindings[s][t];
+				if (binding.Target < 0) continue;
+				const RotationProperty representation = m_Targets.GetRotation(binding.Target);
+				if (representation == RotationProperty::None) continue;
+				auto& rotation = m_RotationBindings[s][static_cast<size_t>(binding.Target)];
+				const AnimationTrack& track = clip->Tracks[t];
+				if (!rotation.Active) {
+					rotation.Mode = representation == RotationProperty::Quaternion ? RotationInterpolation::Quaternion : track.RotationMode;
+					rotation.Active = true;
+				}
+				if (binding.Channel >= AnimationChannelCount(m_Targets.GetType(binding.Target))
+					|| rotation.Tracks[static_cast<size_t>(binding.Channel)]) {
+					invalid[static_cast<size_t>(binding.Target)] = true;
+					continue;
+				}
+				rotation.Tracks[static_cast<size_t>(binding.Channel)] = &track;
+			}
+			for (size_t target = 0; target < m_Targets.GetTargets().size(); ++target) {
+				auto& rotation = m_RotationBindings[s][target];
+				if (!rotation.Active) continue;
+				std::string error = "duplicate or invalid rotation channel";
+				if (invalid[target] || !ValidateAnimationRotation(rotation, m_Targets.GetRotation(static_cast<int>(target)),
+					m_Targets.GetType(static_cast<int>(target)), error)) {
+					const AnimationTarget& bound = m_Targets.GetTargets()[target];
+					std::string path;
+					for (const AnimationTrack* track : rotation.Tracks) {
+						if (track) { path = track->Path; break; }
+					}
+					m_BindingErrors.push_back((path.empty() ? std::string{} : path + ": ") + bound.Component + "." + bound.Property + " - " + error);
+					WarnOnce("Animator skips " + bound.Component + "." + bound.Property + " (" + error + ")");
+					rotation.Active = false;
+				}
 			}
 		}
 		m_Accumulators.assign(m_Targets.GetTargets().size(), {});
@@ -177,6 +222,7 @@ namespace Funke {
 			for (size_t t = 0; t < clip->Tracks.size() && t < bindings.size(); ++t) {
 				const TrackBinding& binding = bindings[t];
 				if (binding.Target < 0) continue;
+				if (m_Targets.GetRotation(binding.Target) != RotationProperty::None) continue;
 				Accumulator& acc = m_Accumulators[static_cast<size_t>(binding.Target)];
 				const AnimationTrack& track = clip->Tracks[t];
 				if (track.IsDiscrete()) {
@@ -195,6 +241,29 @@ namespace Funke {
 		}
 
 		for (size_t i = 0; i < m_Accumulators.size(); ++i) {
+			const RotationProperty representation = m_Targets.GetRotation(static_cast<int>(i));
+			if (representation != RotationProperty::None) {
+				PropertyValue base;
+				if (!m_Targets.Read(scene, static_cast<int>(i), base)) { m_BindingsDirty = true; continue; }
+				PropertyValue result = base;
+				float totalWeight = 0.0f;
+				RotationInterpolation mode = RotationInterpolation::EulerMultiTurn;
+				for (const AnimatorPlaybackSample& sample : samples) {
+					if (sample.State < 0 || sample.State >= static_cast<int>(m_RotationBindings.size()) || sample.Weight <= 0.0f) continue;
+					const auto& binding = m_RotationBindings[static_cast<size_t>(sample.State)][i];
+					if (!binding.Active) continue;
+					mode = binding.Mode;
+					const PropertyValue pose = EvaluateAnimationRotation(binding, representation, base, sample.ClipTime);
+					totalWeight += sample.Weight;
+					// Samples are source then destination; the incoming clip chooses the transition mode.
+					result = totalWeight == sample.Weight ? pose
+						: BlendAnimationRotation(result, pose, sample.Weight / totalWeight, representation, mode);
+				}
+				if (totalWeight <= 0.0f) continue;
+				if (totalWeight < 1.0f) result = BlendAnimationRotation(base, result, totalWeight, representation, mode);
+				if (!m_Targets.Write(scene, static_cast<int>(i), result)) m_BindingsDirty = true;
+				continue;
+			}
 			const Accumulator& acc = m_Accumulators[i];
 			if (acc.ChannelMask == 0 && !acc.Discrete) continue;
 			const int target = static_cast<int>(i);

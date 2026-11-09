@@ -8,6 +8,11 @@
 #include "Components/UI/MaskComponent.hpp"
 #include "Gui/CircularSliderGeometry.hpp"
 #include "Gui/UIDrawOrder.hpp"
+#include "Components/Graphics/ImageComponent.hpp"
+#include "Components/UI/InteractableComponent.hpp"
+#include "Scene/Scene.hpp"
+#include "Systems/UIEventSystem.hpp"
+#include "Systems/UIFocusSystem.hpp"
 
 #include <entt/entity/registry.hpp>
 
@@ -48,6 +53,49 @@ TEST_CASE("UI hit-test rejects points clipped by an ancestor mask")
 
 	registry.remove<MaskComponent>(viewport);
 	CHECK(Hit(registry, scrolledOut, { 150.0f, 0.0f }));
+}
+
+TEST_CASE("UI focus uses pointer stacking and hierarchy navigation rather than component insertion order") {
+	auto scene = Scene::CreateDetachedScene("Focus stacking");
+	auto& registry = scene->GetRegistry();
+	const auto root = MakeRect(registry, entt::null, { 0, 0 }, { 300, 300 });
+	const auto back = MakeRect(registry, root, { 0, 0 }, { 100, 100 });
+	const auto front = MakeRect(registry, root, { 0, 0 }, { 100, 100 });
+	registry.emplace<InteractableComponent>(front).Focusable = true;
+	registry.emplace<InteractableComponent>(back).Focusable = true;
+	registry.emplace<ImageComponent>(back).SortingOrder = 20;
+	registry.emplace<ImageComponent>(front).SortingOrder = 10;
+	CHECK(UIEventSystem::PickInteractable(*scene, { 0, 0 }) == back);
+	CHECK(UIFocusSystem::PickFocusable(*scene, { 0, 0 }) == back);
+	CHECK(UIFocusSystem::NavigationOrder(*scene) == std::vector<EntityHandle>{ back, front });
+	registry.get<InteractableComponent>(back).Focusable = false;
+	CHECK(UIFocusSystem::PickFocusable(*scene, { 0, 0 }) == entt::null);
+	registry.get<ImageComponent>(front).SortingOrder = 30;
+	CHECK(UIFocusSystem::PickFocusable(*scene, { 0, 0 }) == front);
+	registry.emplace<DisabledTag>(root);
+	CHECK(UIFocusSystem::NavigationOrder(*scene).empty());
+	CHECK(UIFocusSystem::PickFocusable(*scene, { 0, 0 }) == entt::null);
+}
+
+TEST_CASE("UI touch release rechecks the real layout after a captured control moves") {
+	auto scene = Scene::CreateDetachedScene("Moving captured UI");
+	auto& registry = scene->GetRegistry();
+	const auto entity = MakeRect(registry, entt::null, { 0, 0 }, { 50, 50 });
+	registry.emplace<InteractableComponent>(entity);
+	std::vector<UIEventSystem::FingerPress> presses;
+	std::vector<EntityHandle> clicked;
+	std::vector<UIEventSystem::FingerSample> fingers{ { 7, TouchPhase::Began, { 0, 0 }, true } };
+	auto pick = [&](Vec2 point) { return UIEventSystem::PickInteractable(*scene, point); };
+	UIEventSystem::UpdateFingerPresses(registry, fingers, UIEventSystem::k_NoFinger, entt::null, pick, presses, clicked);
+	REQUIRE(presses.size() == 1);
+	registry.get<RectTransform2DComponent>(entity).AnchoredPosition.x = 200;
+	ComputeUILayout(*scene);
+	fingers[0].Phase = TouchPhase::Ended;
+	UIEventSystem::UpdateFingerPresses(registry, fingers, UIEventSystem::k_NoFinger, entt::null, pick, presses, clicked);
+	CHECK(presses.empty());
+	CHECK(clicked.empty());
+	CHECK_FALSE(registry.get<InteractableComponent>(entity).IsPressed);
+	CHECK(registry.get<InteractableComponent>(entity).IsMouseUp);
 }
 
 TEST_CASE("UI hit-test intersects nested masks")

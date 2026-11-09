@@ -42,6 +42,7 @@ namespace Funke::Cli {
 		const std::optional<std::string> profileOption = args.Option("profile");
 		const std::optional<std::string> outputOption = args.Option("output", "o");
 		const bool runAfter = args.Flag("run");
+		const bool exactModules = args.Flag("exact-modules");
 		if (!args.Finish(error)) return Fail(error, k_ExitUsage);
 		if (!project) return Fail(error);
 		if (int(release) + int(development) + int(debug) > 1) {
@@ -64,6 +65,7 @@ namespace Funke::Cli {
 		project->ActiveBuildProfileName = profileName;
 
 		GameBuilder::Request request;
+		request.RequireExactModules = exactModules;
 		if (release) request.ConfigurationOverride = FunkeProject::BuildProfile::Release;
 		if (development) request.ConfigurationOverride = FunkeProject::BuildProfile::Development;
 		if (debug) request.ConfigurationOverride = FunkeProject::BuildProfile::Debug;
@@ -85,6 +87,8 @@ namespace Funke::Cli {
 
 		if (Options().Json) {
 			Out(std::string("{\"succeeded\":") + (result.Succeeded ? "true" : "false")
+				+ ",\"runtimeVariant\":" + JsonQuote(result.RuntimeVariant)
+				+ ",\"fullRuntimeFallback\":" + (result.FullRuntimeFallback ? "true" : "false")
 				+ ",\"stage\":" + JsonQuote(result.Stage)
 				+ ",\"profile\":" + JsonQuote(profileName)
 				+ ",\"configuration\":" + JsonQuote(configuration)

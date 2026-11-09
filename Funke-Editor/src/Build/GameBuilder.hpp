@@ -29,6 +29,7 @@ namespace Funke::GameBuilder {
 		std::optional<PlatformPackageInfo> PlatformPackage;
 		std::vector<std::pair<std::string, std::string>> PlatformOptions;
 		bool BundleDotNetRuntime = true;
+		bool RequireExactModules = false;
 		bool BundleAssets = false;
 		bool CompressAssetBundles = false;
 		AssetBundleCompression BundleCompression = AssetBundleCompression::LZ4;
@@ -38,6 +39,8 @@ namespace Funke::GameBuilder {
 
 	struct Result {
 		bool Succeeded = false;
+		bool FullRuntimeFallback = false;
+		std::string RuntimeVariant;
 		// Failure reason, or "Build complete".
 		std::string Stage;
 		std::string OutputDirectory;
@@ -71,7 +74,7 @@ namespace Funke::GameBuilder {
 	};
 
 	InstalledRuntime SelectInstalledRuntime(const EngineSdk::Installation& installation,
-		FunkeProject::BuildProfile profile, std::string_view preferredVariant = {});
+		FunkeProject::BuildProfile profile, std::string_view preferredVariant = {}, bool requireExactModules = false);
 
 	// Default output folder: <project>/Builds/<profile>.
 	std::string DefaultOutputDirectory(const FunkeProject& project, std::string_view profileName);

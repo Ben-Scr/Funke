@@ -445,6 +445,7 @@ TEST_CASE("Scene transfer failed undo retains both histories and all target enti
 		} restore{ info, info->deserialize };
 		info->deserialize = [](Entity, const Json::Value&) { throw std::runtime_error("Injected undo failure"); };
 		CHECK(b.Undo(*target).empty());
+		CHECK(b.GetLastError().find("Injected undo failure") != std::string::npos);
 		CHECK(a.CanUndo());
 		CHECK(b.CanUndo());
 		CHECK_FALSE(a.CanRedo());
@@ -482,6 +483,7 @@ TEST_CASE("Scene transfer restores parenting and does not retain closed scenes")
 	source.reset();
 	CHECK(weak.expired());
 	CHECK_FALSE(command->IsAvailable());
+	CHECK(command->GetUnavailableReason().find("Parent source") != std::string::npos);
 	CHECK_THROWS(command->Undo(*target));
 	CHECK(Resolve(*target, id) != entt::null);
 }
@@ -510,6 +512,17 @@ TEST_CASE("Scene transfer linked undo rebinds both scenes after play recovery") 
 	REQUIRE(SceneSerializer::DeserializeScene(*source, sourceSnapshot));
 	REQUIRE(SceneSerializer::DeserializeScene(*target, targetSnapshot));
 	history.Restore(source, std::move(savedSource));
+	source->ClearDirty();
+	target->MarkDirty();
+	CHECK(history.ForScene(source).Undo(*source).empty());
+	CHECK_FALSE(history.ForScene(source).CanUndo());
+	CHECK(history.ForScene(source).HasHistory());
+	CHECK_FALSE(history.ForScene(source).GetLastError().empty());
+	CHECK_FALSE(history.ForScene(source).CanRedo());
+	CHECK_FALSE(source->IsDirty());
+	CHECK(target->IsDirty());
+	CHECK(SceneSerializer::SerializeScene(*source) == sourceSnapshot);
+	CHECK(SceneSerializer::SerializeScene(*target) == targetSnapshot);
 	history.Restore(target, std::move(savedTarget));
 	CHECK(history.ForScene(source).CanUndo());
 	CHECK_FALSE(history.ForScene(target).Undo(*target).empty());
@@ -534,6 +547,7 @@ TEST_CASE("Scene transfer redo conflict leaves original entities and redo histor
 	auto conflict = target->CreateEntity("Conflict");
 	REQUIRE(target->SetEntityPersistentID(conflict.GetHandle(), id));
 	CHECK(b.Redo(*target).empty());
+	CHECK(b.GetLastError().find("Target entity identity already exists") != std::string::npos);
 	CHECK(a.CanRedo());
 	CHECK(b.CanRedo());
 	CHECK(Resolve(*source, id) != entt::null);
@@ -542,4 +556,67 @@ TEST_CASE("Scene transfer redo conflict leaves original entities and redo histor
 	CHECK_FALSE(a.Redo(*source).empty());
 	CHECK(Resolve(*source, id) == entt::null);
 	CHECK(Resolve(*target, id) != entt::null);
+}
+
+TEST_CASE("Scene transfer blocked partner diagnostics leave both scenes and the linked step intact") {
+	std::shared_ptr<Scene> source = Scene::CreateDetachedScene("Blocked source");
+	std::shared_ptr<Scene> target = Scene::CreateDetachedScene("Blocked target");
+	auto entity = source->CreateEntity("Moved");
+	const auto id = source->GetEntityPersistentID(entity.GetHandle());
+	const std::array roots{ entity.GetHandle() };
+	std::vector<EntityHandle> moved;
+	auto command = SceneTransferCommand::Move(source, target, roots, entt::null, moved);
+	REQUIRE(command);
+	SceneUndoHistory history;
+	auto& a = history.ForScene(source);
+	auto& b = history.ForScene(target);
+	a.PushLinked(b, std::move(command));
+	bool canRetry = false;
+	std::string expectedReason;
+	SUBCASE("newer partner edit") {
+		StructureEditRecorder recorder(*source, {}, "Create Source Entity");
+		auto extra = source->CreateEntity("Extra");
+		const std::array extraRoots{ extra.GetHandle() };
+		Push(a, recorder.Finish(*source, extraRoots));
+		canRetry = true;
+		expectedReason = "Create Source Entity";
+	}
+	SUBCASE("partner history cleared") {
+		a.Clear();
+		expectedReason = "linked step is no longer";
+	}
+	SUBCASE("partner history discarded while owner remains alive") {
+		history.Forget(source.get());
+		expectedReason = "history for scene 'Blocked source' was discarded";
+	}
+	SUBCASE("partner scene closed") {
+		history.Forget(source.get());
+		source.reset();
+		expectedReason = "Scene 'Blocked source' is no longer open";
+	}
+	const auto beforeTarget = SceneSerializer::SerializeScene(*target);
+	const auto beforeSource = source ? SceneSerializer::SerializeScene(*source) : Json::Value{};
+	std::string reason;
+	CHECK_FALSE(b.CanUndo(&reason));
+	CHECK(reason.find("Blocked source") != std::string::npos);
+	CHECK(reason.find(expectedReason) != std::string::npos);
+	for (int attempt = 0; attempt < 2; ++attempt) {
+		CHECK(b.Undo(*target).empty());
+		CHECK(b.GetLastError() == reason);
+		CHECK(b.HasHistory());
+		CHECK_FALSE(b.CanRedo());
+		CHECK(SceneSerializer::SerializeScene(*target) == beforeTarget);
+		if (source) CHECK(SceneSerializer::SerializeScene(*source) == beforeSource);
+	}
+	if (canRetry) {
+		REQUIRE(a.Undo(*source) == "Create Source Entity");
+		CHECK(b.CanUndo(&reason));
+		CHECK(reason.empty());
+		REQUIRE_FALSE(b.Undo(*target).empty());
+		CHECK(Resolve(*source, id) != entt::null);
+		CHECK(Resolve(*target, id) == entt::null);
+		CHECK_FALSE(a.CanUndo());
+		REQUIRE_FALSE(a.Redo(*source).empty());
+		CHECK(SceneSerializer::SerializeScene(*target) == beforeTarget);
+	}
 }

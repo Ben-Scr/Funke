@@ -32,7 +32,7 @@ sealed class RoslynSession
     readonly CSharpCommandLineArguments m_Arguments;
     readonly ImmutableArray<MetadataReference> m_References;
     readonly CSharpCompilationOptions m_Options;
-    readonly Dictionary<string, (DateTime Stamp, long Length, SyntaxTree Tree)> m_Trees = new(StringComparer.OrdinalIgnoreCase);
+    readonly Dictionary<string, (DateTime Stamp, long Length, SyntaxTree Tree)> m_Trees = new(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
     CSharpCompilation? m_Compilation;
     GeneratorDriver? m_Driver;
 
@@ -153,13 +153,18 @@ sealed class RoslynSession
 
         var errors = diagnostics.Where(d => d.Severity == DiagnosticSeverity.Error).ToList();
         int warnings = diagnostics.Count(d => d.Severity == DiagnosticSeverity.Warning);
+        var reported = diagnostics.Where(d => d.Severity is DiagnosticSeverity.Error or DiagnosticSeverity.Warning)
+            .OrderByDescending(d => d.Severity).ToList();
+        string diagnosticText = string.Join("\n", reported.Take(k_MaxReportedDiagnostics).Select(d => d.ToString()));
+        if (reported.Count > k_MaxReportedDiagnostics)
+            diagnosticText += $"\n{reported.Count - k_MaxReportedDiagnostics} additional diagnostic(s) omitted.";
         if (!result.Success || errors.Count > 0)
         {
             return new CompileResponse
             {
                 Status = "failed",
                 Message = $"{errors.Count} error(s)",
-                Diagnostics = string.Join("\n", errors.Take(k_MaxReportedDiagnostics).Select(d => d.ToString())),
+                Diagnostics = diagnosticText,
                 Warnings = warnings,
             };
         }
@@ -174,7 +179,7 @@ sealed class RoslynSession
         {
             WriteAtomically(Path.Combine(Path.GetDirectoryName(outputPath)!, Path.GetFileName(m_Arguments.DocumentationPath)), xmlStream);
         }
-        return new CompileResponse { Status = "compiled", Warnings = warnings };
+        return new CompileResponse { Status = "compiled", Warnings = warnings, Diagnostics = diagnosticText };
     }
 
     SyntaxTree GetTree(string path, bool forceRead = false)
@@ -242,7 +247,7 @@ sealed class RoslynSession
 sealed class ConfigOptions
 {
     readonly AnalyzerConfigSet? m_Set;
-    readonly ConcurrentDictionary<string, AnalyzerConfigOptionsResult> m_PerPath = new(StringComparer.OrdinalIgnoreCase);
+    readonly ConcurrentDictionary<string, AnalyzerConfigOptionsResult> m_PerPath = new(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
 
     public ConfigOptions(ImmutableArray<string> paths)
     {

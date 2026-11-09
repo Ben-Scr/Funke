@@ -5,17 +5,38 @@
 #include <webgpu/webgpu_cpp.h>
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
+#include <string>
 
 namespace Funke {
 
-	// GPU timer using wgpu timestamp queries (3-slot ring to avoid MapAsync stalls).
-	// Only active when FUNKE_PROFILER_ENABLED and TimestampQuery is available.
+	// Methods and availability queries run on the render thread; callbacks own only detached results.
 	class FUNKE_API GpuTimer {
 	public:
 		GpuTimer();
 		~GpuTimer();
+		GpuTimer(const GpuTimer&) = delete;
+		GpuTimer& operator=(const GpuTimer&) = delete;
+
+		enum class Status : uint8_t {
+			Uninitialized,
+			Unsupported,
+			Ready,
+			ReadbackError,
+			DeviceLost,
+		};
+		Status GetStatus() const { return m_Status; }
+
+#ifdef FUNKE_PROFILER_ENABLED
+		static bool IsSupported();
+		static const char* GetUnavailableReason();
+#else
+		static bool IsSupported() { return false; }
+		static const char* GetUnavailableReason() { return "Profiling is disabled"; }
+#endif
 
 		// Allocates the QuerySet + resolve + readback buffers when the
 		// WebGPU device was created with TimestampQuery enabled. No-op
@@ -52,6 +73,11 @@ namespace Funke {
 		static long long QueryGpuMemoryMb();
 
 	private:
+		friend struct GpuTimerTestAccess;
+		void Initialize(wgpu::Instance instance, wgpu::Device device);
+		bool CheckDevice();
+		void Disable(Status status, const char* reason);
+
 		static constexpr size_t k_RingDepth        = 3;
 		static constexpr size_t k_QueriesPerFrame  = 2;          // begin + end
 		static constexpr size_t k_BytesPerQuery    = 8;          // u64 timestamp
@@ -65,16 +91,28 @@ namespace Funke {
 			AwaitingMap,     // MapAsync issued; PollAndPublish drains on completion
 		};
 
+		struct ReadbackResult {
+			std::atomic<bool> Completed{ false };
+			wgpu::MapAsyncStatus Status = wgpu::MapAsyncStatus::Error;
+			std::string Message;
+		};
+
+		static void CompleteReadback(const std::shared_ptr<ReadbackResult>& result,
+			wgpu::MapAsyncStatus status, wgpu::StringView message);
+
 		struct Slot {
 			wgpu::Buffer Readback;
 			SlotState    State = SlotState::Empty;
+			std::shared_ptr<ReadbackResult> Result;
 		};
 
+		wgpu::Instance                m_Instance;
+		wgpu::Future                  m_DeviceLostFuture{};
 		wgpu::QuerySet                m_QuerySet;
-		wgpu::Buffer                  m_ResolveBuffer;  // size = k_BytesPerFrame * k_RingDepth
+		wgpu::Buffer                  m_ResolveBuffer;
 		std::array<Slot, k_RingDepth> m_Slots{};
 		size_t                        m_CurrentSlot = 0;
-		bool                          m_Initialized = false;
+		Status                        m_Status = Status::Uninitialized;
 		bool                          m_FrameWritesIssued = false;
 	};
 

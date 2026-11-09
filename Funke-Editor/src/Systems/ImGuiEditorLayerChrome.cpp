@@ -150,6 +150,7 @@ namespace Funke {
 		}
 		ImGui::Spacing();
 		ImGui::TextDisabled("Unsaved scenes are offered for saving first.");
+		ImGui::TextWrapped("Reloading ends all scene, prefab and asset undo/redo histories, even after saving.");
 		ImGui::Spacing();
 		const int choice = EditorUI::DialogFooter({ "Reload Now", "Later" }, 0);
 		if (choice == 0) {
@@ -620,6 +621,9 @@ namespace Funke {
 				|| m_PendingEditorAction == PendingEditorAction::Restart
 				|| m_PendingEditorAction == PendingEditorAction::RebuildEngine;
 			ImGui::TextWrapped("Save unsaved work before %s?", actionText);
+			ImGui::TextWrapped(closesApplication
+				? "Continuing ends all scene, prefab and asset undo/redo histories, even after saving."
+				: "Closing or replacing a scene ends its undo/redo history, even after saving.");
 			const std::vector<std::shared_ptr<Scene>> dirtyScenes = GetDirtyScenesForPendingAction();
 			for (const std::shared_ptr<Scene>& dirtyScene : dirtyScenes) {
 				ImGui::BulletText("Scene: %s", dirtyScene->GetName().c_str());
@@ -1031,7 +1035,7 @@ namespace Funke {
 		if (EditorTheme::IsTranslucent()) {
 			GlassBackdrop::Draw();
 		}
-		GlassBackdrop::SyncViewportCaptions(EditorPreferences::GetThemeMode() == EditorThemeMode::Glass);
+		GlassBackdrop::SyncViewportCaptions(GlassBackdrop::IsEnabled());
 
 		// MUST precede RenderDockspaceRoot: titlebar publishes its height so the dockspace offsets correctly.
 		{
@@ -1063,6 +1067,7 @@ namespace Funke {
 			std::string editPrefabName = std::filesystem::path(m_PrefabEditPath).stem().string();
 			if (editPrefabName.empty()) editPrefabName = "the prefab";
 			ImGui::Text("Save unsaved changes to %s?", editPrefabName.c_str());
+			ImGui::TextWrapped("Closing Prefab Mode ends this prefab's undo/redo history, even after saving.");
 
 			const int choice = EditorUI::DialogFooter({ "Save", "Don't Save", "Cancel" }, 0, 1);
 			if (choice == 0) {

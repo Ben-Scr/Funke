@@ -85,6 +85,26 @@ namespace {
 	}
 }
 
+TEST_CASE("Asset registry only exposes WGSL as assignable shaders") {
+	GraphicsAssetProject fixture;
+	const char* names[] = { "valid.wgsl", "upper.WGSL", "old.vs", "old.fs", "old.vert", "old.frag", "old.glsl", "old.hlsl", "old.shader" };
+	uint64_t id = 0x7138000000000300ull;
+	for (const char* name : names) {
+		CAPTURE(name);
+		const std::string path = fixture.PathTo(name);
+		REQUIRE(GraphicsAssetProject::WriteAsset(Path::FromUtf8(path), ++id));
+		AssetRegistry::MarkDirty();
+		const bool isWgsl = id <= 0x7138000000000302ull;
+		CHECK(AssetRegistry::GetKind(id) == (isWgsl ? AssetKind::Shader : AssetKind::Other));
+		const auto shaders = AssetRegistry::GetAssetsByKind(AssetKind::Shader);
+		bool selectable = false;
+		for (const auto& shader : shaders) selectable |= shader.Id == id;
+		CHECK(selectable == isWgsl);
+		CHECK(File::ReadAllText(path) == "{}");
+		CHECK(AssetRegistry::GetOrCreateAssetUUID(path) == id);
+	}
+}
+
 TEST_CASE("Asset registry clean lookups retain project switching root edits and deletion") {
 	GraphicsAssetProject fixture;
 	constexpr uint64_t originalId = 0x7138000000000001ull;
@@ -446,6 +466,8 @@ TEST_CASE("Asset registry incremental edits preserve indexes and refresh changed
 	const auto path = fixture.Root / "Assets" / "texture.png";
 	REQUIRE(GraphicsAssetProject::WriteAsset(path, original));
 	AssetRegistry::Sync();
+	const auto metaPath = Path::FromUtf8(Path::ToUtf8(path) + ".meta");
+	const auto originalStamp = std::filesystem::last_write_time(metaPath);
 	const auto scans = AssetRegistry::GetRebuildCount();
 	CHECK_FALSE(AssetRegistry::RefreshAssetPathIncremental(Path::ToUtf8(path), false));
 	CHECK(AssetRegistry::GetKind(original) == AssetKind::Texture);
@@ -459,10 +481,13 @@ TEST_CASE("Asset registry incremental edits preserve indexes and refresh changed
 	REQUIRE(AssetRegistry::WriteTextureMeta(Path::ToUtf8(path), settings));
 	CHECK(AssetRegistry::ReadTextureMeta(Path::ToUtf8(path)).Import.FilterMode == Filter::Bilinear);
 	REQUIRE(GraphicsAssetProject::WriteAsset(path, replacement));
+	std::filesystem::last_write_time(metaPath, originalStamp);
 	CHECK(AssetRegistry::RefreshAssetPathIncremental(Path::ToUtf8(path), true));
 	CHECK(AssetRegistry::GetKind(replacement) == AssetKind::Texture);
 	CHECK(AssetRegistry::GetRebuildCount() == scans);
 	CHECK(AssetRegistry::GetKind(original) == AssetKind::Unknown);
+	CHECK(AssetRegistry::ResolvePath(original).empty());
+	CHECK(AssetRegistry::GetKind(replacement) == AssetKind::Texture);
 }
 
 TEST_CASE("Asset registry explicit invalidation refreshes metadata with an unchanged fingerprint") {

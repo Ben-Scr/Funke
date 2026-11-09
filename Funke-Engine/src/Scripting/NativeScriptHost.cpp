@@ -20,14 +20,14 @@ namespace Funke {
 	// Engine API implementations — these run IN the engine process,
 	// called through function pointers from the DLL.
 
-	static void API_LogInfo(const char* msg) {
-		Log::PrintMessageTag(Log::Type::Client, Log::Level::Info, "NativeScript", msg);
+	static void API_LogInfo(const char* msg, const char* file, int line) {
+		Log::PrintMessageTagAt({file, line, ""}, Log::Type::Client, Log::Level::Info, "NativeScript", msg ? msg : "");
 	}
-	static void API_LogWarn(const char* msg) {
-		Log::PrintMessageTag(Log::Type::Client, Log::Level::Warn, "NativeScript", msg);
+	static void API_LogWarn(const char* msg, const char* file, int line) {
+		Log::PrintMessageTagAt({file, line, ""}, Log::Type::Client, Log::Level::Warn, "NativeScript", msg ? msg : "");
 	}
-	static void API_LogError(const char* msg) {
-		Log::PrintMessageTag(Log::Type::Client, Log::Level::Error, "NativeScript", msg);
+	static void API_LogError(const char* msg, const char* file, int line) {
+		Log::PrintMessageTagAt({file, line, ""}, Log::Type::Client, Log::Level::Error, "NativeScript", msg ? msg : "");
 	}
 	static float API_GetDeltaTime() {
 		return Time::GetDeltaTime();
@@ -299,7 +299,6 @@ namespace Funke {
 		--m_CallbackDepth;
 		if (!script) return nullptr;
 
-		script->m_EntityID = static_cast<uint32_t>(entity);
 		script->m_Entity = entity;
 		script->m_Scene = scene;
 		m_LiveInstances.push_back(script);
@@ -318,7 +317,6 @@ namespace Funke {
 
 		TryInvokeOnDestroy(script);
 
-		script->m_EntityID = 0;
 		script->m_Entity = entt::null;
 		script->m_Scene = nullptr;
 

@@ -554,7 +554,7 @@ def write_file(path: Path, contents: str) -> None:
     print(f"  wrote {path.relative_to(REPO_ROOT) if path.is_relative_to(REPO_ROOT) else path}")
 
 
-ENGINE_MODULES = ("Funke.2D", "Funke.3D")
+ENGINE_MODULES = ("Funke.2D", "Funke.3D", "Funke.Physics2D", "Funke.Physics3D")
 
 
 def render_manifest(name: str, description: str, layers: set[str],
@@ -594,7 +594,7 @@ def render_manifest(name: str, description: str, layers: set[str],
         name=name,
         description=description,
         engine_line=engine_line,
-        modules_line=modules_line,
+        modules_line="    moduleRequirementsVersion = 2,\n" + modules_line,
         layers=layers_text,
         dependencies=deps_text,
     )
@@ -942,7 +942,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         "--modules",
         default="",
         metavar="Funke.2D,Funke.3D",
-        help="Comma-separated engine modules the package builds on (Funke.2D, Funke.3D). "
+        help="Comma-separated engine modules the package builds on (Funke.2D, Funke.3D, Funke.Physics2D, Funke.Physics3D). "
         "Written to the manifest's `modules`; installing the package enables them in the project.",
     )
     parser.add_argument(

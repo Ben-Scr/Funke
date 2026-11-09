@@ -152,22 +152,24 @@ namespace Funke::Cli {
 	}
 
 	int RunPrefab(Args& args) {
+		const std::string overridePath = args.Option("path").value_or("");
+		const bool force = args.Flag("force");
 		const std::optional<std::string> action = args.Positional();
 		const std::optional<std::string> sceneArgument = args.Positional();
 		const std::optional<std::string> entityArgument = args.Positional();
-		const std::optional<std::string> outputArgument = args.Positional();
+		const std::optional<std::string> outputArgument = action == "create" ? args.Positional() : std::nullopt;
 		std::string error;
-		FunkeProject* project = OpenProject(args, error);
-		const std::string overridePath = args.Option("path").value_or("");
-		const bool force = args.Flag("force");
 		if (!args.Finish(error)) return Fail(error, k_ExitUsage);
-		if (!project) return Fail(error);
 		if (!action) return Fail("missing action: create, apply, revert, unpack or list", k_ExitUsage);
 		if (!sceneArgument) return Fail("missing scene", k_ExitUsage);
 		const bool needsEntity = *action != "list";
 		if (needsEntity && !entityArgument) return Fail("missing entity (uuid, name or Parent/Child path)", k_ExitUsage);
 		if (*action == "create" && !outputArgument) return Fail("missing output .prefab path", k_ExitUsage);
 
+		if (*action != "create" && *action != "apply" && *action != "revert" && *action != "unpack" && *action != "list")
+			return Fail("unknown action: " + *action, k_ExitUsage);
+		FunkeProject* project = OpenProject(args, error);
+		if (!project) return Fail(error);
 		AssetRegistry::Sync();
 		LoadedScene loaded;
 		if (!LoadScene(ResolveScenePath(*project, *sceneArgument), loaded, error)) return Fail(error);

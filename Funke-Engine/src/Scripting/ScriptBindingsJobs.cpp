@@ -14,147 +14,84 @@
 
 namespace Funke {
 
-	struct JobBindingEntry {
-		JobHandle handle;
-		void* context;
-		void (*releaseContext)(void* context);
-	};
-
 	struct JobBindingMap {
-		std::mutex mtx;
-		std::unordered_map<uint64_t, JobBindingEntry> entries;
-		std::atomic<uint64_t> nextId{ 1 }; // 0 is reserved as "invalid"
+		std::mutex Mutex;
+		std::unordered_map<uint64_t, JobHandle> Entries;
+		std::atomic<uint64_t> NextId{ 1 };
 	};
 
-	static JobBindingMap& GetMap()
-	{
-		static JobBindingMap s;
-		return s;
+	static JobBindingMap& GetMap() {
+		static JobBindingMap map;
+		return map;
 	}
 
-	static uint64_t Funke_JobSystem_Enqueue(
-		void (*work)(void* context),
-		void* context,
-		void (*releaseContext)(void* context))
-	{
-		// Defensive — the managed dispatcher always passes a valid
-		// callback, but a null work pointer is treated as a no-op so a
-		// bug on either side doesn't crash the worker.
-		if (work == nullptr) {
-			// Caller still expects a handle they can Wait/Release on.
-			JobHandle empty = Job::Schedule([]() {});
-			JobBindingMap& m = GetMap();
-			uint64_t id = m.nextId.fetch_add(1, std::memory_order_relaxed);
-			{
-				std::scoped_lock lock(m.mtx);
-				m.entries.emplace(id, JobBindingEntry{ std::move(empty), context, releaseContext });
-			}
-			return id;
+	template<typename Work>
+	static uint64_t ScheduleScriptJob(void* context, void (*releaseContext)(void*), Work work) {
+		auto& map = GetMap();
+		const uint64_t id = map.NextId.fetch_add(1, std::memory_order_relaxed);
+		auto release = [id, releaseContext](void* owned) {
+			if (releaseContext) releaseContext(owned);
+			auto& map = GetMap();
+			std::scoped_lock lock(map.Mutex);
+			map.Entries.erase(id);
+		};
+		// Ownership starts before any allocation; rejected submissions also release exactly once.
+		std::shared_ptr<void> owner(context, release);
+		auto block = JobInternal::CreateBlock(1);
+		{
+			std::scoped_lock lock(map.Mutex);
+			map.Entries.emplace(id, JobHandle(block));
 		}
+		JobInternal::Enqueue(block, [owner = std::move(owner), work]() { work(); });
+		return id;
+	}
 
-		JobHandle handle = Job::Schedule([work, context]() {
-			work(context);
+	static uint64_t Funke_JobSystem_Enqueue(void (*work)(void*), void* context, void (*releaseContext)(void*)) {
+		return ScheduleScriptJob(context, releaseContext, [work, context]() {
+			if (work) work(context);
 		});
-
-		JobBindingMap& m = GetMap();
-		uint64_t id = m.nextId.fetch_add(1, std::memory_order_relaxed);
-		{
-			std::scoped_lock lock(m.mtx);
-			m.entries.emplace(id, JobBindingEntry{ std::move(handle), context, releaseContext });
-		}
-		return id;
 	}
 
-	static uint64_t Funke_JobSystem_ParallelFor(
-		int begin, int end, int batchSize,
-		void (*work)(void* context, int lo, int hi),
-		void* context,
-		void (*releaseContext)(void* context))
-	{
-		if (work == nullptr || begin >= end) {
-			// Same defensive shape as Enqueue — return an empty handle so
-			// the managed side can still Wait/Release without branching.
-			JobHandle empty = Job::Schedule([]() {});
-			JobBindingMap& m = GetMap();
-			uint64_t id = m.nextId.fetch_add(1, std::memory_order_relaxed);
-			{
-				std::scoped_lock lock(m.mtx);
-				m.entries.emplace(id, JobBindingEntry{ std::move(empty), context, releaseContext });
-			}
-			return id;
-		}
-
-		const size_t length = static_cast<size_t>(static_cast<int64_t>(end) - begin);
-		JobHandle handle = ParallelForAsync(
-			0, length,
-			[work, context, begin](size_t lo, size_t hi) {
-				work(context,
-					static_cast<int>(static_cast<int64_t>(begin) + static_cast<int64_t>(lo)),
-					static_cast<int>(static_cast<int64_t>(begin) + static_cast<int64_t>(hi)));
-			},
-			static_cast<size_t>(batchSize < 0 ? 0 : batchSize));
-
-		JobBindingMap& m = GetMap();
-		uint64_t id = m.nextId.fetch_add(1, std::memory_order_relaxed);
-		{
-			std::scoped_lock lock(m.mtx);
-			m.entries.emplace(id, JobBindingEntry{ std::move(handle), context, releaseContext });
-		}
-		return id;
+	static uint64_t Funke_JobSystem_ParallelFor(int begin, int end, int batchSize,
+		void (*work)(void*, int, int), void* context, void (*releaseContext)(void*)) {
+		return ScheduleScriptJob(context, releaseContext, [=]() {
+			if (!work || begin >= end) return;
+			const size_t length = static_cast<size_t>(static_cast<int64_t>(end) - begin);
+			// The owner outlives every partition, including a partition that fails early.
+			ParallelFor(0, length, [=](size_t lo, size_t hi) {
+				work(context, static_cast<int>(static_cast<int64_t>(begin) + lo),
+					static_cast<int>(static_cast<int64_t>(begin) + hi));
+			}, static_cast<size_t>(batchSize < 0 ? 0 : batchSize));
+		});
 	}
 
-	static void Funke_JobSystem_Wait(uint64_t handleId)
-	{
-		if (handleId == 0) return;
-
-		// Snapshot the handle under the lock so we don't hold the map
-		// mutex across Job::Wait (which can block + work-steal for a
-		// while). Copying a JobHandle is cheap (shared_ptr increment).
-		JobHandle h;
+	static void Funke_JobSystem_Wait(uint64_t id) {
+		JobHandle handle;
 		{
-			JobBindingMap& m = GetMap();
-			std::scoped_lock lock(m.mtx);
-			auto it = m.entries.find(handleId);
-			if (it == m.entries.end()) return;
-			h = it->second.handle;
+			auto& map = GetMap();
+			std::scoped_lock lock(map.Mutex);
+			auto it = map.Entries.find(id);
+			if (it == map.Entries.end()) return;
+			handle = it->second;
 		}
-		Job::Wait(h);
+		Job::Wait(handle);
 	}
 
-	static int Funke_JobSystem_IsComplete(uint64_t handleId)
-	{
-		if (handleId == 0) return 1;
-
-		JobBindingMap& m = GetMap();
-		std::scoped_lock lock(m.mtx);
-		auto it = m.entries.find(handleId);
-		if (it == m.entries.end()) return 1;
-		return it->second.handle.IsComplete() ? 1 : 0;
+	static int Funke_JobSystem_IsComplete(uint64_t id) {
+		auto& map = GetMap();
+		std::scoped_lock lock(map.Mutex);
+		return map.Entries.find(id) == map.Entries.end() ? 1 : 0;
 	}
 
-	static void Funke_JobSystem_Release(uint64_t handleId)
-	{
-		if (handleId == 0) return;
+	static void Funke_JobSystem_Release(uint64_t id) {
+		// Legacy callers may release early; workers retain ownership until completion.
+		Funke_JobSystem_Wait(id);
+	}
 
-		// Pull the entry out under the lock so we can call the managed
-		// release callback OUTSIDE the lock — the callback frees a
-		// GCHandle which may trigger arbitrary managed work, and we
-		// don't want to hold the binding-map mutex during that.
-		JobBindingEntry entry;
-		{
-			JobBindingMap& m = GetMap();
-			std::scoped_lock lock(m.mtx);
-			auto it = m.entries.find(handleId);
-			if (it == m.entries.end()) return;
-			entry = std::move(it->second);
-			m.entries.erase(it);
-		}
-		if (entry.releaseContext != nullptr) {
-			entry.releaseContext(entry.context);
-		}
-		// JobHandle in `entry` falls out of scope here, dropping its
-		// shared_ptr reference to the JobControlBlock. The block frees
-		// itself if no waiters retained a copy.
+	FUNKE_API size_t GetScriptJobRegistrationCount() {
+		auto& map = GetMap();
+		std::scoped_lock lock(map.Mutex);
+		return map.Entries.size();
 	}
 
 	static int Funke_JobSystem_GetWorkerCount()

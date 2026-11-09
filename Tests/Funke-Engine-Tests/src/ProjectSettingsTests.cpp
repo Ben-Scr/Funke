@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 
 #include "Core/Application.hpp"
+#include "Core/EngineModules.hpp"
 #include "Core/Time.hpp"
 #include "Core/Version.hpp"
 #include "Project/FunkeProject.hpp"
@@ -267,6 +268,73 @@ TEST_CASE("FunkeProject rejects unreadable and newer project formats") {
 	CHECK(File::ReadAllText(projectFile.string()) == newerJson);
 }
 
+TEST_CASE("FunkeProject validates module IDs without enabling optional modules or rewriting invalid files") {
+	namespace fs = std::filesystem;
+	const auto suffix = std::chrono::steady_clock::now().time_since_epoch().count();
+	const fs::path root = fs::temp_directory_path() / ("FunkeModuleValidation_" + std::to_string(suffix));
+	fs::create_directories(root / "Assets");
+	struct Cleanup {
+		fs::path Root;
+		std::vector<std::string> Modules;
+		~Cleanup() {
+			EngineModules::Configure(Modules);
+			std::error_code error;
+			fs::remove_all(Root, error);
+		}
+	} cleanup{ root, EngineModules::GetActiveIds() };
+	EngineModules::Configure({});
+	const std::string projectFile = Path::ToUtf8(root / "project.json");
+	const std::string prefix = R"({"projectFormatVersion":2,"name":"ModuleValidation","engineVersion":"2026.1.0")";
+	for (const std::string& modules : { R"("Funke.2D")", "null", "{}", "[42]", "[null]", R"(["Funke.3d"])", R"([""])" }) {
+		CAPTURE(modules);
+		const std::string source = prefix + ",\"modules\":" + modules + "}";
+		REQUIRE(File::WriteAllText(projectFile, source));
+		FunkeProject loaded;
+		loaded.Name = "unchanged";
+		std::string error;
+		CHECK_FALSE(FunkeProject::TryLoad(Path::ToUtf8(root), loaded, &error, false));
+		CHECK(loaded.Name == "unchanged");
+		CHECK(File::ReadAllText(projectFile) == source);
+		CHECK_FALSE(error.empty());
+		if (modules == R"(["Funke.3d"])" || modules == R"([""])") {
+			CHECK(error.find("Unknown engine module") != std::string::npos);
+			CHECK(error.find("Funke.2D, Funke.3D") != std::string::npos);
+		}
+		else {
+			CHECK(error.find("'modules'") != std::string::npos);
+		}
+	}
+	for (const std::vector<std::string>& modules : { std::vector<std::string>{}, { "Funke.3D" }, { "Funke.2D", "Funke.3D" } }) {
+		Json::Value data = Json::Parse(prefix + "}");
+		Json::Value selection = Json::Value::MakeArray();
+		for (const std::string& id : modules) selection.Append(id);
+		data.AddMember("modules", std::move(selection));
+		REQUIRE(File::WriteAllText(projectFile, Json::Stringify(data)));
+		FunkeProject loaded;
+		std::string error;
+		REQUIRE_MESSAGE(FunkeProject::TryLoad(Path::ToUtf8(root), loaded, &error, false), error);
+		CHECK(loaded.Modules == modules);
+		REQUIRE(loaded.Save());
+		FunkeProject roundTrip;
+		REQUIRE(FunkeProject::TryLoad(Path::ToUtf8(root), roundTrip, &error, false));
+		CHECK(roundTrip.Modules == modules);
+		CHECK(EngineModules::GetActiveIds().empty());
+	}
+	REQUIRE(File::WriteAllText(projectFile, R"({"projectFormatVersion":1,"name":"ModuleValidation","engineVersion":"2026.1.0"})"));
+	FunkeProject legacy;
+	std::string error;
+	REQUIRE(FunkeProject::TryLoad(Path::ToUtf8(root), legacy, &error, false));
+	CHECK(legacy.HasModule("Funke.2D"));
+	CHECK(legacy.HasModule("Funke.3D"));
+	CHECK(EngineModules::GetActiveIds().empty());
+	const std::string original = File::ReadAllText(projectFile);
+	for (const std::string& invalid : { "", "Funke.3d" }) {
+		legacy.Modules = { invalid };
+		CHECK_FALSE(legacy.Save());
+		CHECK(File::ReadAllText(projectFile) == original);
+	}
+}
+
 TEST_CASE("FunkeProject rejects project names that escape derived paths") {
 	namespace fs = std::filesystem;
 	const auto suffix = std::chrono::steady_clock::now().time_since_epoch().count();
@@ -505,5 +573,31 @@ TEST_CASE("Runtime overlays default to off for Release builds unless project.jso
 		CHECK_FALSE(loaded.ResolveShowRuntimeLogs());
 		loaded.ActiveBuildProfile = FunkeProject::BuildProfile::Development;
 		CHECK_FALSE(loaded.ResolveShowRuntimeLogs());
+	}
+}
+
+TEST_CASE("FunkeProject physics migration is versioned and read-only loading does not rewrite files") {
+	namespace fs = std::filesystem;
+	const fs::path root = fs::temp_directory_path() / ("FunkePhysicsMigration_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+	fs::create_directories(root / "Assets");
+	struct Cleanup { fs::path Root; ~Cleanup() { std::error_code ec; fs::remove_all(Root, ec); } } cleanup{ root };
+	const std::string path = Path::ToUtf8(root / "project.json");
+	for (const std::string modules : { "", R"(,"modules":[])" , R"(,"modules":["Funke.2D"])" , R"(,"modules":["Funke.3D"])" , R"(,"modules":["Funke.2D","Funke.3D"])" }) {
+		CAPTURE(modules);
+		const std::string source = R"({"projectFormatVersion":1,"name":"Legacy","engineVersion":"2026.1.0")" + modules + "}";
+		REQUIRE(File::WriteAllText(path, source));
+		FunkeProject loaded;
+		std::string error;
+		REQUIRE_MESSAGE(FunkeProject::TryLoad(Path::ToUtf8(root), loaded, &error, false), error);
+		CHECK(File::ReadAllText(path) == source);
+		CHECK(loaded.HasModule("Funke.Physics2D") == loaded.HasModule("Funke.2D"));
+		CHECK(loaded.HasModule("Funke.Physics3D") == loaded.HasModule("Funke.3D"));
+		REQUIRE_MESSAGE(FunkeProject::TryLoad(Path::ToUtf8(root), loaded, &error, true), error);
+		CHECK(loaded.ProjectFormatVersion == FunkeProject::k_CurrentProjectFormatVersion);
+		loaded.Modules = { "Funke.2D", "Funke.3D" };
+		REQUIRE(loaded.Save());
+		REQUIRE(FunkeProject::TryLoad(Path::ToUtf8(root), loaded, &error, false));
+		CHECK_FALSE(loaded.HasModule("Funke.Physics2D"));
+		CHECK_FALSE(loaded.HasModule("Funke.Physics3D"));
 	}
 }

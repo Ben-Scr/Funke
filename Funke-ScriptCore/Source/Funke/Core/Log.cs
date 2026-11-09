@@ -1,4 +1,5 @@
 using System;
+using System.Runtime.CompilerServices;
 using Funke.Interop;
 
 namespace Funke;
@@ -23,23 +24,24 @@ public static class Log
         catch (Exception ex) { InternalCalls.Log_Error($"Log.LogMessage subscriber threw: {ex}"); }
     }
 
-    private static void Write(string message, Action<string> nativeWrite)
+    private static void Write(string message, string file, int line, Action<string, string, int> nativeWrite)
     {
-        nativeWrite(message);
+        nativeWrite(message, file, line);
         RaiseLogMessage(message);
     }
 
-    internal static void Print(object? obj) => Log.Info(obj?.ToString() ?? "null");
+    internal static void Print(object? obj, [CallerFilePath] string file = "", [CallerLineNumber] int line = 0) => Info(obj?.ToString() ?? "null", file, line);
 
-    public static void Trace(string message) => Write(message, InternalCalls.Log_Trace);
-    public static void Trace(object obj) => Trace(obj?.ToString() ?? "null");
+    public static void Trace(string message, [CallerFilePath] string file = "", [CallerLineNumber] int line = 0) => Write(message, file, line, InternalCalls.Log_Trace);
+    public static void Trace(object obj, [CallerFilePath] string file = "", [CallerLineNumber] int line = 0) => Trace(obj?.ToString() ?? "null", file, line);
 
-    public static void Info(string message) => Write(message, InternalCalls.Log_Info);
-    public static void Info(object obj) => Info(obj?.ToString() ?? "null");
+    public static void Info(string message, [CallerFilePath] string file = "", [CallerLineNumber] int line = 0) => Write(message, file, line, InternalCalls.Log_Info);
+    public static void Info(object obj, [CallerFilePath] string file = "", [CallerLineNumber] int line = 0) => Info(obj?.ToString() ?? "null", file, line);
 
-    public static void Warn(string message) => Write(message, InternalCalls.Log_Warn);
-    public static void Warn(object obj) => Warn(obj?.ToString() ?? "null");
+    public static void Warn(string message, [CallerFilePath] string file = "", [CallerLineNumber] int line = 0) => Write(message, file, line, InternalCalls.Log_Warn);
+    public static void Warn(object obj, [CallerFilePath] string file = "", [CallerLineNumber] int line = 0) => Warn(obj?.ToString() ?? "null", file, line);
 
-    public static void Error(string message) => Write(message, InternalCalls.Log_Error);
-    public static void Error(object obj) => Error(obj?.ToString() ?? "null");
+    public static void Error(string message, [CallerFilePath] string file = "", [CallerLineNumber] int line = 0) => Write(message, file, line, InternalCalls.Log_Error);
+    public static void Error(object obj, [CallerFilePath] string file = "", [CallerLineNumber] int line = 0) => Error(obj?.ToString() ?? "null", file, line);
+
 }

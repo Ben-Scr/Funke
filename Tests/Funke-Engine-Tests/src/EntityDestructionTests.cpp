@@ -293,3 +293,23 @@ TEST_CASE("Scene delayed destruction uses scaled time and starts callback deadli
 	CHECK(application.Run() == 0);
 	CHECK(application.Completed);
 }
+
+TEST_CASE("Backlog typed destroy rejects foreign and stale entities") {
+	Application app;
+	auto a = Scene::CreateDetachedScene("A");
+	auto b = Scene::CreateDetachedScene("B");
+	auto first = a->CreateEmptyEntity();
+	auto foreign = b->CreateEmptyEntity();
+	REQUIRE(first.GetHandle() == foreign.GetHandle());
+	a->DestroyEntity(foreign);
+	a->DestroyEntity(Entity::Null);
+	CHECK(first.IsValid());
+	CHECK(foreign.IsValid());
+	CHECK(a->GetEntityCount() == 1);
+	CHECK(b->GetEntityCount() == 1);
+	a->DestroyEntity(first);
+	auto replacement = a->CreateEmptyEntity();
+	a->DestroyEntity(first);
+	CHECK(replacement.IsValid());
+	CHECK(a->GetEntityCount() == 1);
+}

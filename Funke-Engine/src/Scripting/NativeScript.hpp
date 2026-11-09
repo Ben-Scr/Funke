@@ -9,13 +9,23 @@
 #include "Scripting/NativeEngineAPI.hpp"
 #include "Scripting/NativeScriptRegistry.hpp"
 #include "Scripting/NativeScriptField.hpp"
+#include <Utils/StringHelper.hpp>
 
 #include <cstdint>
 #include <string>
+#include <source_location>
 #include <type_traits>
 #include <utility>
 
 namespace Funke {
+
+	struct NativePrintValue {
+		std::string Text;
+		std::source_location Location;
+		template <typename T>
+		NativePrintValue(T&& value, std::source_location location = std::source_location::current())
+			: Text(StringHelper::ToString(std::forward<T>(value))), Location(location) {}
+	};
 
 	class NativeScript {
 	public:
@@ -30,11 +40,15 @@ namespace Funke {
 			return nullptr;
 		}
 
-		void Print(const std::string& message) const {
-			if (g_EngineAPI && g_EngineAPI->LogInfo) g_EngineAPI->LogInfo(message.c_str());
+		void Print(std::source_location location = std::source_location::current()) const {
+			if (g_EngineAPI && g_EngineAPI->LogInfo) g_EngineAPI->LogInfo("", location.file_name(), static_cast<int>(location.line()));
 		}
 
-		uint32_t GetEntityID() const { return m_EntityID; }
+		template <typename... Args>
+		void Print(NativePrintValue first, Args&&... args) const {
+			if (g_EngineAPI && g_EngineAPI->LogInfo) g_EngineAPI->LogInfo(StringHelper::ToString(first.Text, std::forward<Args>(args)...).c_str(), first.Location.file_name(), static_cast<int>(first.Location.line()));
+		}
+
 		EntityHandle GetEntityHandle() const { return m_Entity; }
 		Scene* GetScene() const { return m_Scene; }
 		entt::registry* GetRegistry() const { return m_Scene ? &m_Scene->GetRegistry() : nullptr; }
@@ -126,18 +140,15 @@ namespace Funke {
 		}
 
 		friend class NativeScriptHost;
-		uint32_t m_EntityID = 0;
 		EntityHandle m_Entity = entt::null;
-
-	protected:
 		Scene* m_Scene = nullptr;
 	};
 
 } // namespace Funke
 
-#define FNK_NATIVE_LOG_INFO(msg)  do { if (Funke::g_EngineAPI && Funke::g_EngineAPI->LogInfo) Funke::g_EngineAPI->LogInfo(msg); } while(0)
-#define FNK_NATIVE_LOG_WARN(msg)  do { if (Funke::g_EngineAPI && Funke::g_EngineAPI->LogWarn) Funke::g_EngineAPI->LogWarn(msg); } while(0)
-#define FNK_NATIVE_LOG_ERROR(msg) do { if (Funke::g_EngineAPI && Funke::g_EngineAPI->LogError) Funke::g_EngineAPI->LogError(msg); } while(0)
+#define FNK_NATIVE_LOG_INFO(msg)  do { if (Funke::g_EngineAPI && Funke::g_EngineAPI->LogInfo) Funke::g_EngineAPI->LogInfo(msg, __FILE__, __LINE__); } while(0)
+#define FNK_NATIVE_LOG_WARN(msg)  do { if (Funke::g_EngineAPI && Funke::g_EngineAPI->LogWarn) Funke::g_EngineAPI->LogWarn(msg, __FILE__, __LINE__); } while(0)
+#define FNK_NATIVE_LOG_ERROR(msg) do { if (Funke::g_EngineAPI && Funke::g_EngineAPI->LogError) Funke::g_EngineAPI->LogError(msg, __FILE__, __LINE__); } while(0)
 
 #define FNK_NATIVE_JOIN_IMPL(a, b) a##b
 #define FNK_NATIVE_JOIN(a, b) FNK_NATIVE_JOIN_IMPL(a, b)

@@ -751,13 +751,15 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
 	}
 
 	std::unique_ptr<ImageData> Texture2D::DecodeFileToCpu(const char* path,
-		bool flipVertical)
+		bool flipVertical, size_t maxPixels)
 	{
 		if (path == nullptr || *path == '\0') return nullptr;
 
 		int w = 0, h = 0, n = 0;
 		const auto bytes = File::ReadAllBytes(path);
 		if (bytes.empty() || bytes.size() > static_cast<size_t>(std::numeric_limits<int>::max())) return nullptr;
+		if (maxPixels && (!stbi_info_from_memory(bytes.data(), static_cast<int>(bytes.size()), &w, &h, &n)
+			|| w <= 0 || h <= 0 || static_cast<size_t>(w) > maxPixels / static_cast<size_t>(h))) return nullptr;
 		std::unique_ptr<unsigned char, decltype(&stbi_image_free)> pixels(
 			stbi_load_from_memory(bytes.data(), static_cast<int>(bytes.size()), &w, &h, &n, 4), &stbi_image_free);
 		if (!pixels || w <= 0 || h <= 0) return nullptr;

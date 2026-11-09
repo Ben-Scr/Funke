@@ -81,6 +81,7 @@ namespace Funke {
 			const std::shared_ptr<Scene>& target, std::span<const EntityHandle> roots,
 			EntityHandle targetParent, std::vector<EntityHandle>& moved);
 		bool IsAvailable() const override;
+		std::string GetUnavailableReason() const override;
 		void RebindScene(const std::weak_ptr<Scene>& previous, const std::shared_ptr<Scene>& replacement) override;
 		void Undo(Scene&) override;
 		void Redo(Scene&) override;
@@ -95,6 +96,8 @@ namespace Funke {
 			const Snapshot& departing, const Snapshot& arriving);
 		std::weak_ptr<Scene> m_Source;
 		std::weak_ptr<Scene> m_Target;
+		std::string m_SourceName;
+		std::string m_TargetName;
 		Snapshot m_Before;
 		Snapshot m_After;
 		std::vector<uint64_t> m_SourceOrderAfter;

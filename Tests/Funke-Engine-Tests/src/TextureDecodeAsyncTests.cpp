@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 
 #include "Core/UUID.hpp"
+#include "../../../Funke-Launcher/src/Systems/LibraryThumbnails.hpp"
 #include "Graphics/Texture2D.hpp"
 #include "Serialization/File.hpp"
 #include "Serialization/Path.hpp"
@@ -93,4 +94,41 @@ TEST_CASE("Async texture decoding rejects missing and malformed files without GP
 	CHECK_FALSE(Texture2D::DecodeFileToCpu(path.c_str(), true));
 	REQUIRE(file.Write());
 	CHECK(MatchesPixels(Texture2D::DecodeFileToCpu(path.c_str(), true).get(), true));
+}
+
+TEST_CASE("Thumbnail decoding rejects pixel limits before allocation") {
+	TextureDecodeFile file;
+	REQUIRE(file.Write());
+	const std::string path = Path::ToUtf8(file.Path);
+	CHECK_FALSE(Texture2D::DecodeFileToCpu(path.c_str(), false, 62));
+	CHECK(MatchesPixels(Texture2D::DecodeFileToCpu(path.c_str(), false, 63).get(), false));
+}
+
+TEST_CASE("Library thumbnails deduplicate pending and failed requests until refresh") {
+	std::atomic<int> calls = 0;
+	std::promise<void> release;
+	auto gate = release.get_future().share();
+	LibraryThumbnails cache([&](const std::string&) {
+		++calls;
+		gate.wait();
+		return std::unique_ptr<ImageData>{};
+	});
+	CHECK(cache.GetState("", "") == LibraryThumbnails::State::Missing);
+	cache.Request("fixture", "1");
+	cache.Request("fixture", "1");
+	CHECK(cache.GetState("fixture", "1") == LibraryThumbnails::State::Loading);
+	release.set_value();
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+	while (cache.GetState("fixture", "1") == LibraryThumbnails::State::Loading && std::chrono::steady_clock::now() < deadline) {
+		cache.Pump(); std::this_thread::yield();
+	}
+	CHECK(calls == 1);
+	CHECK(cache.GetState("fixture", "1") == LibraryThumbnails::State::Failed);
+	cache.Request("fixture", "1");
+	CHECK(calls == 1);
+	cache.Refresh(); cache.Pump();
+	CHECK(cache.GetState("fixture", "1") == LibraryThumbnails::State::Missing);
+	cache.Request("fixture", "1");
+	cache.Shutdown();
+	CHECK(calls == 2);
 }

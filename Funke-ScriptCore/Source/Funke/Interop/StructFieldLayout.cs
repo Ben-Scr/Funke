@@ -96,6 +96,7 @@ internal static class StructFieldLayout
         if (t == typeof(short) || t == typeof(ushort) || t == typeof(char)) return 2;
         if (t == typeof(int) || t == typeof(uint) || t == typeof(float)) return 4;
         if (t == typeof(long) || t == typeof(ulong) || t == typeof(double)) return 8;
-        return 0; // nint/nuint: platform-sized, not supported here
+        if (t == typeof(nint) || t == typeof(nuint)) return IntPtr.Size;
+        return 0;
     }
 }

@@ -1,6 +1,7 @@
 #include "pch.hpp"
 #include "Packages/NuGetSource.hpp"
 #include "Serialization/Json.hpp"
+#include "Serialization/Path.hpp"
 #include "Utils/Process.hpp"
 
 #include <chrono>
@@ -72,13 +73,14 @@ namespace Funke {
 	PackageOperationResult NuGetSource::Install(const std::string& packageId,
 		const std::string& version, const std::string& csprojPath) {
 
-		// dotnet remove ignores its positional <PROJECT> arg and searches CWD; run from project's parent dir so both add and remove use the same pattern.
-		const std::filesystem::path projectDir = std::filesystem::path(csprojPath).parent_path();
+		const std::filesystem::path project = Path::FromUtf8(csprojPath);
+		const std::filesystem::path projectDir = project.parent_path();
 
 		FNK_CORE_INFO_TAG("NuGetSource", "Installing {} {} into {}", packageId, version, csprojPath);
 		std::vector<std::string> command = {
 			"dotnet",
 			"add",
+			Path::ToUtf8(project.filename()),
 			"package",
 			packageId
 		};
@@ -102,12 +104,14 @@ namespace Funke {
 	PackageOperationResult NuGetSource::Remove(const std::string& packageId,
 		const std::string& csprojPath) {
 
-		const std::filesystem::path projectDir = std::filesystem::path(csprojPath).parent_path();
+		const std::filesystem::path project = Path::FromUtf8(csprojPath);
+		const std::filesystem::path projectDir = project.parent_path();
 
 		FNK_CORE_INFO_TAG("NuGetSource", "Removing {} from {}", packageId, csprojPath);
 		Process::Result result = Process::Run({
 			"dotnet",
 			"remove",
+			Path::ToUtf8(project.filename()),
 			"package",
 			packageId
 		}, projectDir, std::chrono::minutes(5));

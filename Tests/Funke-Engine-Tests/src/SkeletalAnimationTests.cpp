@@ -1,4 +1,5 @@
 #include <doctest/doctest.h>
+#include "Components/General/NameComponent.hpp"
 
 #include "Components/General/Transform3DComponent.hpp"
 #include "Components/Graphics/MeshRendererComponent.hpp"
@@ -553,7 +554,8 @@ TEST_CASE("SkinnedMeshRenderer JSON round-trips its fields and conflicts with Me
 	REQUIRE(info);
 	CHECK(info->displayName == "Skinned Mesh Renderer");
 	auto scene = Scene::CreateDetachedScene("SkinnedSerialization");
-	Entity source = scene->CreateEntity("Src");
+	Entity source = scene->CreateEmptyEntity();
+	source.AddComponent<NameComponent>("Src");
 	auto& renderer = source.AddComponent<SkinnedMeshRendererComponent>();
 	renderer.Model = 18446744073709551557ull;
 	renderer.Material = 9223372036854775901ull;
@@ -566,7 +568,9 @@ TEST_CASE("SkinnedMeshRenderer JSON round-trips its fields and conflicts with Me
 	renderer.PreviewInEditMode = true;
 	renderer.Time = 3.0f;
 
-	Entity target = scene->CreateEntity("Dst");
+	Entity target = scene->CreateEmptyEntity();
+
+	target.AddComponent<NameComponent>("Dst");
 	target.AddComponent<SkinnedMeshRendererComponent>();
 	info->deserialize(target, Json::Parse(Json::Stringify(info->serialize(source))));
 	const auto& loaded = target.GetComponent<SkinnedMeshRendererComponent>();
@@ -587,7 +591,87 @@ TEST_CASE("SkinnedMeshRenderer JSON round-trips its fields and conflicts with Me
 	CHECK(target.GetComponent<SkinnedMeshRendererComponent>().Clip.empty());
 	CHECK(target.GetComponent<SkinnedMeshRendererComponent>().Speed == 1.0f);
 
-	Entity meshEntity = scene->CreateEntity("Mesh");
+	Entity meshEntity = scene->CreateEmptyEntity();
+
+	meshEntity.AddComponent<NameComponent>("Mesh");
 	meshEntity.AddComponent<MeshRendererComponent>();
 	CHECK(registry.HasConflict(meshEntity, typeid(SkinnedMeshRendererComponent)));
+}
+
+TEST_CASE("Backlog skin normals remain perpendicular under nonuniform scale") {
+	SkinnedMeshData data;
+	MeshVertex vertex{};
+	vertex.Normal[0] = vertex.Normal[1] = 0.70710678f;
+	data.BindVertices.push_back(vertex);
+	data.VertexJoints.push_back({0,0,0,0});
+	data.VertexWeights.push_back(glm::vec4(1,0,0,0));
+	glm::mat4 scale(1.0f);
+	scale[0][0] = 2.0f;
+	std::vector<MeshVertex> output;
+	SkeletalAnimation::SkinVertices(data, {scale}, output);
+	REQUIRE(output.size() == 1);
+	const glm::vec3 normal(output[0].Normal[0], output[0].Normal[1], output[0].Normal[2]);
+	CHECK(glm::dot(normal, glm::vec3(2,-1,0)) == doctest::Approx(0).epsilon(1e-5));
+	CHECK(glm::length(normal) == doctest::Approx(1));
+}
+
+TEST_CASE("Backlog glTF rejects overflowing offsets and unsupported strides") {
+	TestModel model;
+	const std::string valid = model.EmbeddedJson();
+	for (const std::string field : {"\"byteStride\":9223372036854775807,", "\"byteOffset\":9223372036854775807,"}) {
+		std::string invalid = valid;
+		const auto pos = invalid.find("\"bufferView\":0,");
+		REQUIRE(pos != std::string::npos);
+		if (field.starts_with("\"byteStride")) {
+			const auto view = invalid.find("\"buffer\":0,");
+			invalid.insert(view, field);
+		} else invalid.insert(pos, field);
+		MeshAsset asset;
+		std::string error;
+		CHECK_FALSE(ParseGltf(AsBytes(invalid), nullptr, asset, &error));
+		CHECK_FALSE(error.empty());
+	}
+}
+
+TEST_CASE("Backlog glTF rejects boundary ranges and preserves interleaved accessor data") {
+	TestModel model;
+	const auto valid = model.EmbeddedJson();
+	for (bool inView : {false, true}) for (const char* field : {"byteOffset", "byteLength", "count", "byteStride"}) {
+		if (inView != (std::string(field) == "byteLength" || std::string(field) == "byteStride")) continue;
+		for (int64_t value : {int64_t(-1), int64_t(4294967295ULL), std::numeric_limits<int64_t>::max()}) {
+			auto json = Json::Parse(valid);
+			auto& object = json.FindMember(inView ? "bufferViews" : "accessors")->GetArray()[0];
+			if (auto* existing = object.FindMember(field)) *existing = Json::Value(value);
+			else object.AddMember(field, value);
+			MeshAsset asset;
+			std::string error;
+			CHECK_FALSE(ParseGltf(AsBytes(Json::Stringify(json)), nullptr, asset, &error));
+			CHECK_FALSE(error.empty());
+		}
+	}
+	MeshAsset packed;
+	REQUIRE(ParseGltf(AsBytes(valid), nullptr, packed));
+	std::vector<uint8_t> interleaved;
+	for (size_t vertex = 0; vertex < 3; ++vertex) {
+		interleaved.insert(interleaved.end(), model.Buffer.begin() + vertex * 12, model.Buffer.begin() + (vertex + 1) * 12);
+		interleaved.insert(interleaved.end(), 4, 0x5a);
+	}
+	interleaved.insert(interleaved.end(), model.Buffer.begin() + 36, model.Buffer.end());
+	model.Buffer = std::move(interleaved);
+	auto json = Json::Parse(model.EmbeddedJson());
+	auto& views = json.FindMember("bufferViews")->GetArray();
+	*views[0].FindMember("byteLength") = Json::Value(48);
+	views[0].AddMember("byteStride", 16);
+	for (size_t i = 1; i < views.size(); ++i) {
+		auto* offset = views[i].FindMember("byteOffset");
+		*offset = Json::Value(offset->AsInt64Or(0) + 12);
+	}
+	MeshAsset result;
+	REQUIRE(ParseGltf(AsBytes(Json::Stringify(json)), nullptr, result));
+	REQUIRE(result.Data.Vertices.size() == packed.Data.Vertices.size());
+	CHECK(result.Data.Indices == packed.Data.Indices);
+	for (size_t i = 0; i < result.Data.Vertices.size(); ++i) for (int axis = 0; axis < 3; ++axis) {
+		CHECK(result.Data.Vertices[i].Position[axis] == packed.Data.Vertices[i].Position[axis]);
+		CHECK(result.Data.Vertices[i].Normal[axis] == doctest::Approx(packed.Data.Vertices[i].Normal[axis]));
+	}
 }

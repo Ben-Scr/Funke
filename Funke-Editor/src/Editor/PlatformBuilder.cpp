@@ -220,6 +220,7 @@ namespace Funke::PlatformBuilder {
 		Json::Value modules = Json::Value::MakeArray();
 		for (const std::string& module : request.Modules) modules.Append(module);
 		json.AddMember("modules", std::move(modules));
+		json.AddMember("moduleRequirementsVersion", 2);
 		Json::Value options = Json::Value::MakeObject();
 		for (const auto& [key, value] : request.Options) options.AddMember(key, value);
 		json.AddMember("options", std::move(options));

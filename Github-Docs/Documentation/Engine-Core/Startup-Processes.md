@@ -155,6 +155,10 @@ A few details worth knowing:
 
 When the loop ends, scenes unload and systems receive `OnDestroy`; packages receive `FunkePackage_OnUnload`. Pending asset-loader work is stopped before the asset managers and graphics device are destroyed. The remaining subsystems shut down and the core shutdown guard runs last.
 
+The native allocation tracker has process lifetime. Its final `Allocator::Shutdown()` disables tracking permanently and retains the one `AllocatorData` object, mutex and remaining map nodes so late allocator calls cannot lock freed storage. Later allocations use the raw allocator; calling `Init()` again does not create another tracker or restart its counters. Scene/project reloads occur inside this core lifetime. A shutdown report lists allocations still live at that instant, which must be distinguished from growth across repeated scene cycles and from this retained bookkeeping.
+
+Native diagnostics should read `Memory::GetAllocationStatsSnapshot()` once and use both counters from that value. The legacy reference-returning `Memory::GetAllocationStats()` is deprecated because it races with allocation updates; its symbol remains available for compatibility. The snapshot describes tracked allocations, not total process or GPU memory.
+
 ---
 
 ## Quick reference: the boot order

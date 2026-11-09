@@ -95,6 +95,8 @@ namespace Funke {
 				return UIntValue == other.UIntValue
 					&& StringValue == other.StringValue;
 			case PropertyType::Graph:
+			case PropertyType::NestedList:
+			case PropertyType::Dictionary:
 				// Curve keys ride encoded in StringValue.
 				return StringValue == other.StringValue;
 			}

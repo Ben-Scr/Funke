@@ -76,7 +76,10 @@ fn skin(@builtin(global_invocation_id) id: vec3<u32>) {
         matrix += weight * joint;
     }
     let position = (matrix * vertex.position).xyz;
-    var normal = (matrix * vertex.normal).xyz;
+    let cofactor = mat3x3<f32>(cross(matrix[1].xyz, matrix[2].xyz),
+        cross(matrix[2].xyz, matrix[0].xyz), cross(matrix[0].xyz, matrix[1].xyz));
+    var normal = cofactor * vertex.normal.xyz;
+    if (dot(matrix[0].xyz, cofactor[0]) < 0.0) { normal = -normal; }
     let magnitude = length(normal);
     if (magnitude > 1e-12) { normal /= magnitude; }
     else { normal = vec3<f32>(0, 1, 0); }

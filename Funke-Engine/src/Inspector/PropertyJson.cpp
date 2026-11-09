@@ -38,7 +38,8 @@ namespace Funke::PropertyJson {
 	}
 
 	bool IsSupported(PropertyType type) {
-		return type != PropertyType::None && type != PropertyType::StringList && type != PropertyType::List && type != PropertyType::Graph;
+		return type != PropertyType::None && type != PropertyType::StringList && type != PropertyType::List
+			&& type != PropertyType::Graph && type != PropertyType::NestedList && type != PropertyType::Dictionary;
 	}
 
 	bool Encode(const PropertyValue& value, Json::Value& out, std::string& error) {

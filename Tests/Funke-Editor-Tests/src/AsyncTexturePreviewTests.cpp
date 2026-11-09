@@ -295,3 +295,15 @@ TEST_CASE("Texture preview smooth thumbnails avoid transparent color fringes whi
 		CHECK(result.Image->Pixels[i * 4 + 3] == 128);
 	}
 }
+
+TEST_CASE("Backlog retired previews stay alive until the next frame pump") {
+	auto& previews = AsyncTexturePreviews::Get();
+	for (int i = 0; i < 3; ++i) {
+		auto preview = std::make_shared<TexturePreview>("retired thumbnail", Filter::Point, false);
+		std::weak_ptr<TexturePreview> weak = preview;
+		previews.Retire(std::move(preview));
+		CHECK_FALSE(weak.expired());
+		previews.Pump();
+		CHECK(weak.expired());
+	}
+}

@@ -31,6 +31,31 @@ namespace Funke.Tests
         }
 
         [Fact]
+        public void CaseSensitiveSourceFilesRemainDistinct()
+        {
+            if (OperatingSystem.IsWindows()) return;
+            CreateProject();
+            WriteScript("Player.cs", "public class Upper {}");
+            AssertStatus("compiled", Compile());
+            WriteScript("player.cs", "public class Lower {}");
+            if (!File.ReadAllText(Path.Combine(m_Root, "Assets", "Player.cs")).Contains("Upper")) return;
+            AssertStatus("compiled", Compile());
+            Assert.Contains("Upper", ReadTypeNames());
+            Assert.Contains("Lower", ReadTypeNames());
+            WriteScript("player.cs", "public class EditedLower {}");
+            AssertStatus("compiled", Compile(changedPaths: new[] { Path.Combine(m_Root, "Assets", "player.cs") }));
+            Assert.Contains("Upper", ReadTypeNames());
+            Assert.Contains("EditedLower", ReadTypeNames());
+            File.Delete(Path.Combine(m_Root, "Assets", "Player.cs"));
+            AssertStatus("compiled", Compile(changedPaths: new[] { Path.Combine(m_Root, "Assets", "Player.cs") }));
+            Assert.DoesNotContain("Upper", ReadTypeNames());
+            Assert.Contains("EditedLower", ReadTypeNames());
+            File.Move(Path.Combine(m_Root, "Assets", "player.cs"), Path.Combine(m_Root, "Assets", "PLAYER.cs"));
+            AssertStatus("compiled", Compile());
+            Assert.Contains("EditedLower", ReadTypeNames());
+        }
+
+        [Fact]
         public void EditedScriptRecompilesWithoutReevaluation()
         {
             CreateProject();
@@ -46,6 +71,136 @@ namespace Funke.Tests
             AssertStatus("compiled", second);
             Assert.False(second.Evaluated);
             Assert.Contains("Enemy", ReadTypeNames());
+        }
+
+        [Fact]
+        public void FileRenameMoveAndUndoKeepFullTypeNamesAndRefreshPdbPaths()
+        {
+            CreateProject();
+            WriteScript("Player.cs", "namespace MyGame { public class Player { public int Value() => 7; } public class Other { public int Value() => 8; } }");
+            AssertStatus("compiled", Compile());
+            var original = Path.Combine(m_Root, "Assets", "Player.cs");
+            var moved = Path.Combine(m_Root, "Assets", "Moved", "PlayerMovement.cs");
+            Directory.CreateDirectory(Path.GetDirectoryName(moved)!);
+            foreach (bool undo in new[] { false, true }) {
+                File.Move(undo ? moved : original, undo ? original : moved);
+                AssertStatus("compiled", Compile());
+                using var dll = File.OpenRead(OutputPath);
+                using var pe = new PEReader(dll);
+                var metadata = pe.GetMetadataReader();
+                var names = metadata.TypeDefinitions.Select(h => metadata.GetTypeDefinition(h))
+                    .Select(t => metadata.GetString(t.Namespace) + "." + metadata.GetString(t.Name));
+                Assert.Contains("MyGame.Player", names); Assert.Contains("MyGame.Other", names);
+                using var pdb = File.OpenRead(Path.ChangeExtension(OutputPath, ".pdb"));
+                using var provider = MetadataReaderProvider.FromPortablePdbStream(pdb);
+                var symbols = provider.GetMetadataReader();
+                var paths = symbols.Documents.Select(h => symbols.GetString(symbols.GetDocument(h).Name)).ToArray();
+                Assert.Contains(undo ? original : moved, paths);
+                Assert.DoesNotContain(undo ? moved : original, paths);
+            }
+        }
+
+        [Fact]
+        public void ComponentHelpersPreserveNullableFlowAndRefUsage()
+        {
+            CreateProject(extraProperties: "<TreatWarningsAsErrors>true</TreatWarningsAsErrors>",
+                extraItems: $"<Reference Include=\"Funke-ScriptCore\"><HintPath>{typeof(Entity).Assembly.Location}</HintPath></Reference>");
+            Directory.CreateDirectory(Path.GetDirectoryName(OutputPath)!);
+            File.Copy(typeof(Entity).Assembly.Location, Path.Combine(Path.GetDirectoryName(OutputPath)!, "Funke-ScriptCore.dll"));
+            WriteScript("Helpers.cs", """
+                using Funke;
+                using Funke.Native;
+                public class Helpers : EntityScript
+                {
+                    public void Use(Scene scene)
+                    {
+                        if (TryGetComponent<NameComponent>(out var name)) Print(name.Name);
+                        if (Entity.TryGetComponent<NameComponent>(out var other)) Print(other.Name);
+                        if (scene.TryGetSingleton<NameComponent>(out var singleton)) Print(singleton.Name);
+                        if (scene.TryGetSingletonEntity<NameComponent>(out var entity)) Print(entity.ID);
+                        Print(HasComponent<NameComponent>());
+                        if (Transform2D is { } two) two.LocalPosition = two.WorldPosition;
+                        if (Transform3D is { } three) three.LocalPosition = three.WorldPosition;
+                        if (HasNativeComponent<NativeTransform2D>())
+                        {
+                            var copy = Entity.TransformRef;
+                            ref var transform = ref GetRefOrThrow<NativeTransform2D>();
+                            transform = copy;
+                            ref readonly var read = ref GetNativeComponentReadOnly<NativeTransform2D>();
+                            Print(read.Position);
+                        }
+                        RemoveNativeComponent<NativeTransform2D>();
+                    }
+                }
+                """);
+            AssertStatus("compiled", Compile());
+
+            WriteScript("UnsafeUse.cs", """
+                using Funke;
+                public class UnsafeUse : EntityScript
+                {
+                    public void Use()
+                    {
+                        TryGetComponent<NameComponent>(out var name);
+                        Print(name.Name);
+                    }
+                }
+                """);
+            var failed = Compile();
+            AssertStatus("failed", failed);
+            Assert.Contains("CS8602", failed.Diagnostics);
+        }
+
+        [Fact]
+        public void WarningsCarryLocationsAndAreClearedByACleanBuild()
+        {
+            CreateProject();
+            WriteScript("Warning.cs", "#warning Visible compiler warning\npublic class Warning { }");
+            var warning = Compile();
+            AssertStatus("compiled", warning);
+            Assert.Contains("Warning.cs(1,10): warning CS1030", warning.Diagnostics);
+
+            WriteScript("Broken.cs", "public class Broken { int x = 1 }");
+            var failed = Compile();
+            AssertStatus("failed", failed);
+            Assert.Contains("CS1002", failed.Diagnostics);
+            Assert.Contains("warning CS1030", failed.Diagnostics);
+
+            WriteScript("Warning.cs", "public class Warning { }");
+            WriteScript("Broken.cs", "public class Fixed { }");
+            var clean = Compile();
+            AssertStatus("compiled", clean);
+            Assert.True(string.IsNullOrEmpty(clean.Diagnostics));
+        }
+
+        [Fact]
+        public void FullBuildPreservesWarningsAndDoesNotReplayThemOnTheFastPath()
+        {
+            CreateProject();
+            WriteScript("A.cs", "public class A { }");
+            AssertStatus("compiled", Compile());
+            CreateProject(extraProperties: "<LangVersion>latest</LangVersion>");
+            WriteScript("A.cs", "#warning Full build warning\npublic class A { }");
+            var full = Compile();
+            AssertStatus("compiled", full);
+            Assert.True(full.FullBuild);
+            Assert.Contains("CS1030", full.Diagnostics);
+            WriteScript("A.cs", "public class A { }");
+            var clean = Compile();
+            AssertStatus("compiled", clean);
+            Assert.False(clean.FullBuild);
+            Assert.True(string.IsNullOrEmpty(clean.Diagnostics));
+        }
+
+        [Fact]
+        public void DiagnosticLimitReportsOmittedCount()
+        {
+            CreateProject();
+            WriteScript("Warnings.cs", string.Concat(Enumerable.Repeat("#warning bounded\n", 205)) + "public class Warnings { }");
+            var result = Compile();
+            AssertStatus("compiled", result);
+            Assert.Equal(200, result.Diagnostics!.Split("warning CS1030").Length - 1);
+            Assert.Contains("5 additional diagnostic(s) omitted.", result.Diagnostics);
         }
 
         [Fact]

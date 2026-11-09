@@ -1,21 +1,9 @@
-// Tests for Funke::Path — only the pure, deterministic surface is exercised.
-//
-// Path.hpp's only platform-stable, inline (always-linkable) function is the
-// Combine(...) variadic template, which joins fragments with std::filesystem's
-// '/=' operator and returns a UTF-8 string. The other members
-// (GetSpecialFolderPath, ExecutableDir, ResolveFunkeAssets,
-// ToProjectRelativeDisplay, Current) query the real filesystem / environment,
-// so they are intentionally skipped here.
-//
-// Combine's output uses the platform's preferred separator ('\\' on Windows,
-// '/' on Linux). To stay cross-platform, expectations are derived from the same
-// std::filesystem semantics rather than hardcoding a separator.
-
 #include <doctest/doctest.h>
 
 #include "Serialization/Path.hpp"
 
 #include <filesystem>
+#include <chrono>
 #include <string>
 
 using namespace Funke;
@@ -115,4 +103,45 @@ TEST_CASE("Path filesystem conversion preserves Unicode UTF-8") {
 	const std::string unicode = "Pr\xC3\xBC" "fung";
 	CHECK(Path::ToUtf8(Path::FromUtf8(unicode)) == unicode);
 	CHECK(Path::Combine(unicode, "Assets") == unicode + kSep + "Assets");
+}
+
+TEST_CASE("Path resolves relocated bundle resources from the content base independently of cwd") {
+	const auto suffix = std::chrono::steady_clock::now().time_since_epoch().count();
+	const fs::path root = fs::temp_directory_path() / ("FunkeAssetPaths_" + std::to_string(suffix));
+	struct Restore {
+		fs::path Root;
+		fs::path Cwd;
+		std::string ContentBase;
+		~Restore() {
+			Path::SetExecutableDirOverride(ContentBase);
+			std::error_code error;
+			fs::current_path(Cwd, error);
+			fs::remove_all(Root, error);
+		}
+	} restore{ root, fs::current_path(), Path::ExecutableDir() };
+	const fs::path foreign = root / "Foreign working directory";
+	fs::create_directories(foreign / "FunkeAssets/Textures");
+	fs::current_path(foreign);
+	const fs::path staged = root / "Staged/Funke.app";
+	fs::create_directories(staged / "Contents/MacOS");
+	fs::create_directories(staged / "Contents/Resources/FunkeAssets/Textures");
+	const fs::path moved = root / Path::FromUtf8("Relocated Applications Pr\xC3\xBC" "fung") / "Funke.app";
+	fs::create_directories(moved.parent_path());
+	fs::rename(staged, moved);
+	const fs::path resources = moved / "Contents/Resources";
+	Path::SetExecutableDirOverride(Path::ToUtf8(resources));
+	CHECK(fs::equivalent(Path::FromUtf8(Path::ResolveFunkeAssets("")), resources / "FunkeAssets"));
+	CHECK(fs::equivalent(Path::FromUtf8(Path::ResolveFunkeAssets("Textures")), resources / "FunkeAssets/Textures"));
+	CHECK(Path::ResolveFunkeAssets("Missing").empty());
+	fs::remove_all(resources / "FunkeAssets");
+	CHECK(Path::ResolveFunkeAssets("").empty());
+	CHECK(Path::ResolveFunkeAssets("Textures").empty());
+
+	const fs::path executable = root / "Release/Funke-Editor";
+	fs::create_directories(executable);
+	fs::create_directories(executable.parent_path() / "FunkeAssets/Textures");
+	Path::SetExecutableDirOverride(Path::ToUtf8(executable));
+	CHECK(fs::equivalent(Path::FromUtf8(Path::ResolveFunkeAssets("Textures")), executable.parent_path() / "FunkeAssets/Textures"));
+	fs::create_directories(executable / "FunkeAssets/Textures");
+	CHECK(fs::equivalent(Path::FromUtf8(Path::ResolveFunkeAssets("Textures")), executable / "FunkeAssets/Textures"));
 }

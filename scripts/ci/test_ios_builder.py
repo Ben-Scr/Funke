@@ -1,4 +1,4 @@
-"""Exercise iOS build orchestration without Xcode, signing or dependency downloads."""
+"""Evidence: unit_mock. Build orchestration without Xcode, signing or device qualification."""
 
 from contextlib import ExitStack
 import importlib.util
@@ -74,6 +74,19 @@ class IOSBuilderTests(unittest.TestCase):
         managed = self.root / "work/managed"
         self.assertEqual((managed / "Funke-ScriptCore.dll").read_bytes(), b"core fixture")
         self.assertEqual((managed / "System.Private.CoreLib.dll").read_bytes(), b"framework fixture")
+
+    def test_unsigned_content_survives_staging_removal_and_publish(self):
+        import shutil
+        project = ios.build(self.request)
+        shutil.rmtree(self.content)
+        published = self.root / "published"
+        shutil.move(str(self.request.output_dir), published)
+        exported = published / project.name
+        self.assertTrue((exported / "Content/project.json").is_file())
+        self.assertEqual((exported / "Content/Funke-ScriptCore.dll").read_bytes(), b"core fixture")
+        self.assertTrue((exported / "Managed/System.Private.CoreLib.dll").is_file())
+        self.assertIn("-DFUNKE_CONTENT_DIR=$(PROJECT_DIR)/Content", self.commands[0])
+        self.assertIn("-DFUNKE_MANAGED_DIR=$(PROJECT_DIR)/Managed", self.commands[0])
 
     def test_signed_build_rejects_missing_app_instead_of_reporting_success(self):
         self.request.options["developmentTeam"] = "TEAM123"

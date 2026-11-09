@@ -1,4 +1,4 @@
-"""Exercise Web export commands and artifact validation with fake external tool outputs."""
+"""Evidence: unit_mock. Fake compiler outputs; no real build or browser qualification."""
 
 from contextlib import ExitStack
 import importlib.util

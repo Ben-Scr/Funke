@@ -11,26 +11,17 @@
         "src/Components/Graphics/SpriteRendererComponent.hpp",
         "src/Components/Graphics/TerrainRenderer2DComponent.hpp",
         "src/Components/Graphics/ParticleSystem2DComponent.*",
-        "src/Components/Physics/**",
         "src/Graphics/Renderer2D.*",
         "src/Graphics/DynamicRenderData.hpp",
-        "src/Physics/Box2DWorld.*",
-        "src/Physics/Joints2D.*",
-        "src/Physics/Collision2D.hpp",
-        "src/Physics/CollisionDispatcher.hpp",
-        "src/Physics/OverlapMode.hpp",
-        "src/Physics/PhysicsDebugDraw2D.*",
-        "src/Physics/Physics2D.*",
-        "src/Physics/PhysicsSystem2D.*",
-        "src/Physics/PhysicsUtility.*",
-        "src/Physics/RaycastHit2D.hpp",
         "src/Scene/BuiltInComponentRegistration2D.cpp",
-        "src/Scene/BuiltInComponentRegistrationPhysics.cpp",
         "src/Scene/EntityPicker.*",
         "src/Scripting/ScriptBindings2D.cpp",
         "src/Systems/TransformHierarchySystem.*",
-        "src/Systems/ParticleUpdateSystem.*"
-      ]
+        "src/Systems/ParticleUpdateSystem.*",
+        "src/Graphics/SpriteQuad.*",
+        "src/Graphics/StaticRenderData.hpp"
+      ],
+      "dependencies": []
     },
     {
       "id": "Funke.3D",
@@ -45,24 +36,59 @@
         "src/Components/Graphics/MeshRendererComponent.hpp",
         "src/Components/Graphics/ParticleSystem3DComponent.*",
         "src/Components/Graphics/SkinnedMeshRendererComponent.hpp",
-        "src/Components/Physics3D/**",
         "src/Graphics/Renderer3D.*",
         "src/Graphics/Lighting3D.*",
         "src/Graphics/MeshAsset.*",
         "src/Graphics/GltfImporter.*",
         "src/Graphics/SkeletalAnimation.*",
         "src/Graphics/PrimitiveMesh.*",
-        "src/Physics3D/**",
         "src/Scene/BuiltInComponentRegistration3D.cpp",
-        "src/Scene/BuiltInComponentRegistrationPhysics3D.cpp",
         "src/Scene/BuiltInComponentRegistrationParticles3D.cpp",
         "src/Scene/BuiltInComponentRegistrationSkinnedMesh3D.cpp",
         "src/Scene/EntityPicker3D.*",
         "src/Scripting/ScriptBindings3D.cpp",
-        "src/Scripting/ScriptBindingsPhysics3D.cpp",
         "src/Systems/Transform3DHierarchySystem.*",
         "src/Systems/Particle3DUpdateSystem.*",
         "src/Systems/SkinnedMeshAnimationSystem.*"
+      ],
+      "dependencies": []
+    },
+    {
+      "id": "Funke.Physics2D",
+      "define": "FUNKE_WITH_PHYSICS2D",
+      "option": "physics2d",
+      "dependencies": [
+        "Funke.2D"
+      ],
+      "sources": [
+        "src/Components/Physics/**",
+        "src/Physics/Box2DWorld.*",
+        "src/Physics/Joints2D.*",
+        "src/Physics/Collision2D.hpp",
+        "src/Physics/CollisionDispatcher.hpp",
+        "src/Physics/OverlapMode.hpp",
+        "src/Physics/PhysicsDebugDraw2D.*",
+        "src/Physics/Physics2D.*",
+        "src/Physics/PhysicsSystem2D.*",
+        "src/Physics/PhysicsUtility.*",
+        "src/Physics/RaycastHit2D.hpp",
+        "src/Scene/BuiltInComponentRegistrationPhysics.cpp",
+        "src/Scripting/ScriptBindingsPhysics2D.cpp",
+        "src/Physics/PhysicsScene2D.*"
+      ]
+    },
+    {
+      "id": "Funke.Physics3D",
+      "define": "FUNKE_WITH_PHYSICS3D",
+      "option": "physics3d",
+      "dependencies": [
+        "Funke.3D"
+      ],
+      "sources": [
+        "src/Components/Physics3D/**",
+        "src/Physics3D/**",
+        "src/Scene/BuiltInComponentRegistrationPhysics3D.cpp",
+        "src/Scripting/ScriptBindingsPhysics3D.cpp"
       ]
     }
   ]

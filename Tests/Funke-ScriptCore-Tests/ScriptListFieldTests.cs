@@ -15,8 +15,40 @@ namespace FunkeScriptCoreTests;
 /// escaping cases below are the contract the native side relies on.
 /// Reached via reflection so the interop file is not modified for testing.
 /// </summary>
+[Collection(NativeCallbacksCollection.Name)]
 public class ScriptListFieldTests
 {
+    public class InspectorLimits : Funke.EntityScript
+    {
+        public float Scalar = 1;
+        public List<float> Values = new();
+        public List<List<int>> Nested = new();
+        public List<List<List<int>>> TooDeep = new();
+        public Dictionary<string, int> Dictionary = new();
+        [Funke.HideFromEditor] public Dictionary<string, int> Hidden = new();
+        [Funke.EditorIgnore] public Dictionary<string, int> Ignored = new();
+        public List<InspectorItem> Items = new();
+    }
+
+    public class InspectorItem
+    {
+        public int Value = 3;
+        public List<int> Children = new();
+    }
+
+    [Fact]
+    public void InspectorDiagnosticsDescribeOnlyVisibleUnsupportedMembers()
+    {
+        string json = Funke.Interop.ScriptInstanceManager.DescribeInspectorType(typeof(InspectorLimits));
+        using var doc = System.Text.Json.JsonDocument.Parse(json);
+        Assert.True(doc.RootElement.GetProperty("exists").GetBoolean());
+        string[] paths = doc.RootElement.GetProperty("warnings").EnumerateArray()
+            .Select(w => w.GetProperty("path").GetString()!).ToArray();
+        Assert.Equal(new[] { "Items[].Children", "TooDeep" }, paths.OrderBy(p => p).ToArray());
+        using var missing = System.Text.Json.JsonDocument.Parse(Funke.Interop.ScriptInstanceManager.DescribeInspectorType(null));
+        Assert.False(missing.RootElement.GetProperty("exists").GetBoolean());
+    }
+
     private static readonly Type s_Type = ResolveType();
 
     private static Type ResolveType()
@@ -63,7 +95,12 @@ public class ScriptListFieldTests
     [Fact]
     public void UnsupportedCollectionsAreNotLists()
     {
-        Assert.Equal("unsupported", MapFieldType(typeof(List<List<int>>)));   // nested
+        Assert.Equal("nestedList", MapFieldType(typeof(List<List<int>>)));
+        Assert.Equal("nestedList", MapFieldType(typeof(float[][])));
+        Assert.Equal("dictionary", MapFieldType(typeof(Dictionary<string, int>)));
+        Assert.Equal("unsupported", MapFieldType(typeof(List<List<List<int>>>)));
+        Assert.Equal("unsupported", MapFieldType(typeof(List<int[]>)));
+        Assert.Equal("unsupported", MapFieldType(typeof(Dictionary<string, List<int>>)));
         Assert.Equal("unsupported", MapFieldType(typeof(int[,])));            // multi-rank
         Assert.Equal("unsupported", MapFieldType(typeof(Dictionary<int, int>)));
     }
@@ -213,5 +250,125 @@ public class ScriptListFieldTests
         Assert.Single(back);
         Assert.Equal(0, back[0].Count);
         Assert.Equal("", back[0].Label);
+    }
+
+    public struct CollectionStruct
+    {
+        public List<List<int>>? Rows { get; set; }
+        public Dictionary<string, int>? Map { get; set; }
+    }
+
+    public class CollectionOwner
+    {
+        public List<List<int>>? Rows = new() { new() { 7 } };
+        public float[][]? Matrix { get; set; } = new[] { new[] { 1f } };
+        public Dictionary<string, int>? Map = new() { ["keep"] = 42 };
+        public Dictionary<string, float>? Weights { get; set; } = new() { ["old"] = 1f };
+        public CollectionStruct Data { get; set; }
+    }
+
+    private unsafe delegate void FieldWriter(object instance, byte* name, byte* value);
+
+    private static unsafe void Write(object target, string name, string value)
+    {
+        var write = Method("ApplyFieldEdit", typeof(object), typeof(byte*), typeof(byte*)).CreateDelegate<FieldWriter>();
+        byte[] n = System.Text.Encoding.UTF8.GetBytes(name + "\0");
+        byte[] v = System.Text.Encoding.UTF8.GetBytes(value + "\0");
+        fixed (byte* np = n) fixed (byte* vp = v) write(target, np, vp);
+    }
+
+    [Fact]
+    public void NestedCollectionsPreserveNullEmptyAndScalarValues()
+    {
+        var ints = new List<List<int>?> { null, new(), new() { -3, 7 } };
+        string wire = Format(typeof(List<List<int>>), ints);
+        var result = Assert.IsType<List<List<int>>>(Parse(typeof(List<List<int>>), wire));
+        Assert.Null(result[0]);
+        Assert.Empty(result[1]);
+        Assert.Equal(new[] { -3, 7 }, result[2]);
+        Assert.Null(Parse(typeof(List<List<int>>), Format(typeof(List<List<int>>), null)));
+        Assert.Empty(Assert.IsType<List<List<int>>>(Parse(typeof(List<List<int>>), Format(typeof(List<List<int>>), new List<List<int>>()))));
+        var floats = new float[]?[] { null, Array.Empty<float>(), new[] { 1.25f, -7f } };
+        var roundtrip = Assert.IsType<float[][]>(Parse(typeof(float[][]), Format(typeof(float[][]), floats)));
+        Assert.Null(roundtrip[0]);
+        Assert.Empty(roundtrip[1]);
+        Assert.Equal(floats[2], roundtrip[2]);
+        var strings = new List<List<string?>> { new() { null, "", "ä😀\n\\\"" } };
+        var textResult = Assert.IsType<List<List<string?>>>(Parse(typeof(List<List<string>>), Format(typeof(List<List<string>>), strings)));
+        Assert.Equal(strings[0], textResult[0]);
+    }
+
+    [Fact]
+    public void CollectionWritesReachPropertiesAndBoxedStructMembers()
+    {
+        var owner = new CollectionOwner();
+        string rows = Format(typeof(List<List<int>>), new List<List<int>> { new() { 1, 2 }, new() });
+        string map = Format(typeof(Dictionary<string, int>), new Dictionary<string, int> { ["α"] = 5 });
+        Write(owner, "Rows", rows);
+        Write(owner, "Data.Rows", rows);
+        Write(owner, "Data.Map", map);
+        Write(owner, "Matrix", Format(typeof(float[][]), new[] { new[] { 1.5f, 2.5f } }));
+        Write(owner, "Weights", Format(typeof(Dictionary<string, float>), new Dictionary<string, float> { [""] = 3.5f }));
+        Assert.Equal(new[] { 1, 2 }, owner.Rows![0]);
+        Assert.Equal(new[] { 1, 2 }, owner.Data.Rows![0]);
+        Assert.Equal(5, owner.Data.Map!["α"]);
+        Assert.Equal(new[] { 1.5f, 2.5f }, owner.Matrix![0]);
+        Assert.Equal(3.5f, owner.Weights![""]);
+        Write(owner, "Data.Rows", Format(typeof(List<List<int>>), null));
+        Write(owner, "Weights", Format(typeof(Dictionary<string, float>), null));
+        Assert.Null(owner.Data.Rows);
+        Assert.Null(owner.Weights);
+    }
+
+    [Fact]
+    public void DictionariesHaveDeterministicOrdinalKeysAndPreserveUnicodeAndEmptyKeys()
+    {
+        var first = new Dictionary<string, int> { ["z"] = 1, [""] = 2, ["ä😀"] = 3, ["A"] = 4, ["a"] = 5, ["\uE000"] = 6 };
+        var reversed = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (var entry in first.Reverse()) reversed.Add(entry.Key, entry.Value);
+        string wire = Format(typeof(Dictionary<string, int>), first);
+        Assert.Equal(wire, Format(typeof(Dictionary<string, int>), reversed));
+        var result = Assert.IsType<Dictionary<string, int>>(Parse(typeof(Dictionary<string, int>), wire));
+        Assert.Equal(first.OrderBy(e => e.Key), result.OrderBy(e => e.Key));
+        Assert.Equal(4, result["A"]);
+        Assert.Equal(5, result["a"]);
+        var strings = new Dictionary<string, string?> { [""] = null, ["\n\\\""] = "", ["字"] = "\n\\😀" };
+        var restored = Assert.IsType<Dictionary<string, string?>>(Parse(typeof(Dictionary<string, string>), Format(typeof(Dictionary<string, string>), strings)));
+        Assert.Equal(strings.OrderBy(e => e.Key), restored.OrderBy(e => e.Key));
+    }
+
+    [Theory]
+    [InlineData("[[\"same\",\"1\"],[\"same\",\"2\"]]")]
+    [InlineData("[[null,\"1\"]]")]
+    [InlineData("[[\"new\",\"not-an-int\"]]")]
+    [InlineData("[[\"new\",\"99999999999999999999\"]]")]
+    [InlineData("[[\"new\",null]]")]
+    [InlineData("[[\"new\",5]]")]
+    [InlineData("[[\"new\",\"1\"],[\"late-invalid\",\"bad\"]]")]
+    public void InvalidDictionaryWriteKeepsTheWholePreviousValue(string items)
+    {
+        var owner = new CollectionOwner();
+        var previous = owner.Map;
+        Write(owner, "Map", "{\"version\":1,\"kind\":\"dictionary\",\"leaf\":\"int\",\"comparer\":\"ordinal\",\"items\":" + items + "}");
+        Assert.Same(previous, owner.Map);
+        Assert.Equal(42, owner.Map!["keep"]);
+        Assert.Single(owner.Map);
+    }
+
+    [Fact]
+    public void UnsupportedComparerAndMalformedSchemaNeverReplaceExistingCollections()
+    {
+        var owner = new CollectionOwner { Map = new(StringComparer.OrdinalIgnoreCase) { ["Keep"] = 42 } };
+        var previous = owner.Map;
+        string encoded = Format(typeof(Dictionary<string, int>), owner.Map);
+        Assert.Contains("\"comparer\":\"unsupported\"", encoded);
+        Write(owner, "Map", Format(typeof(Dictionary<string, int>), new Dictionary<string, int> { ["new"] = 3 }));
+        Assert.Same(previous, owner.Map);
+        Assert.Equal(42, owner.Map!["KEEP"]);
+        var rows = owner.Rows;
+        Write(owner, "Rows", "{}");
+        Write(owner, "Rows", "{\"version\":2,\"kind\":\"nestedList\",\"leaf\":\"int\",\"items\":[]}");
+        Write(owner, "Rows", "{\"version\":1,\"kind\":\"nestedList\",\"leaf\":\"int\",\"items\":[[\"1\"],[\"bad\"]]}");
+        Assert.Same(rows, owner.Rows);
     }
 }

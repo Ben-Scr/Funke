@@ -9,9 +9,12 @@
 #include "Project/FunkeProject.hpp"
 #include "Project/PackageBuildCache.hpp"
 
+#include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <string_view>
+#include <vector>
 
 namespace {
 	struct PackageCacheFixture {
@@ -338,3 +341,66 @@ TEST_CASE("Project package cache validates settings beside generated targets") {
 	CHECK_FALSE(after.Valid);
 	CHECK(after.Digest().empty());
 }
+
+#ifdef FNK_PLATFORM_WINDOWS
+TEST_CASE("Project package cache reads native dependency logs from both compiler task names") {
+	using namespace Funke;
+	using namespace Funke::PackageBuildCache;
+	for (const char* suffix : { "", "-vs18.0" })
+	for (const char* compilerName : { "CL.read.1.tlog", "Microsoft.Build.CPPTasks.CL.read.1.tlog" }) {
+		PackageCacheFixture fixture;
+		Snapshot snapshot;
+		snapshot.NativeTargets = { "Pkg.Example.Native" };
+		const auto logs = fixture.Root / ".funke/build/packages/bin-int/Release-windows-x86_64"
+			/ (std::string("Pkg.Example.Native") + suffix) / "Example.tlog";
+		const auto header = fixture.Root / "include/Example.hpp";
+		fixture.Write(header, "header-before");
+		const auto writeLog = [&](const std::filesystem::path& path, const std::wstring& text) {
+			std::filesystem::create_directories(path.parent_path());
+			std::vector<uint8_t> bytes{ 0xff, 0xfe };
+			for (wchar_t character : text) {
+				bytes.push_back(static_cast<uint8_t>(character));
+				bytes.push_back(static_cast<uint8_t>(character >> 8));
+			}
+			REQUIRE(File::WriteAllBytes(Path::ToUtf8(path), bytes));
+		};
+		const auto compiler = logs / compilerName;
+		const auto linker = logs / "link.read.1.tlog";
+		writeLog(compiler, L"^SOURCE\r\n" + header.wstring() + L"\r\n");
+		writeLog(linker, L"^LINK\r\n" + header.wstring() + L"\r\n");
+		std::vector<std::string> paths;
+		REQUIRE(ReadNativeDependencies(fixture.Project, snapshot, "Release", paths));
+		CHECK(std::find(paths.begin(), paths.end(), Path::ToUtf8(header)) != paths.end());
+		const auto before = Dependencies(paths);
+		REQUIRE_FALSE(before.empty());
+		SUBCASE("changed dependency invalidates") {
+			fixture.Write(header, "header-after-with-new-input");
+			CHECK(Dependencies(paths) != before);
+		}
+		SUBCASE("missing dependency invalidates") {
+			std::filesystem::remove(header);
+			CHECK(Dependencies(paths).empty());
+		}
+		SUBCASE("missing compiler log is rejected") {
+			std::filesystem::remove(compiler);
+			CHECK_FALSE(ReadNativeDependencies(fixture.Project, snapshot, "Release", paths));
+		}
+		SUBCASE("unrelated compiler task is rejected") {
+			std::filesystem::rename(compiler, logs / "Other.CL.read.1.tlog");
+			CHECK_FALSE(ReadNativeDependencies(fixture.Project, snapshot, "Release", paths));
+		}
+		SUBCASE("missing linker log is rejected") {
+			std::filesystem::remove(linker);
+			CHECK_FALSE(ReadNativeDependencies(fixture.Project, snapshot, "Release", paths));
+		}
+		SUBCASE("malformed compiler log is rejected") {
+			fixture.Write(compiler, "not UTF16");
+			CHECK_FALSE(ReadNativeDependencies(fixture.Project, snapshot, "Release", paths));
+		}
+		SUBCASE("relative dependency is rejected") {
+			writeLog(compiler, L"relative.hpp\r\n");
+			CHECK_FALSE(ReadNativeDependencies(fixture.Project, snapshot, "Release", paths));
+		}
+	}
+}
+#endif

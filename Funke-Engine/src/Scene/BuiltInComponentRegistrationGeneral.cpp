@@ -32,7 +32,7 @@ namespace Funke::BuiltInComponentRegistrationInternal {
 					[](Entity& e, float v) {
 						e.GetComponent<Transform2DComponent>().SetRotation(Radians(v));
 					},
-					Properties::Meta::DragSpeed(1.0f)),
+					Properties::Meta::DragSpeed(1.0f).WithRotation()),
 				Properties::MakeWith<Vec2>("Scale", "Scale",
 					[](const Entity& e) { return e.GetComponent<Transform2DComponent>().LocalScale; },
 					[](Entity& e, const Vec2& v) {
@@ -53,7 +53,8 @@ namespace Funke::BuiltInComponentRegistrationInternal {
 				Properties::Make("AnchorMax", "Anchor Max", &RectTransform2DComponent::AnchorMax),
 				Properties::MakeWith<float>("Rotation", "Rotation",
 					[](const Entity& e) { return Degrees(e.GetComponent<RectTransform2DComponent>().LocalRotation); },
-					[](Entity& e, float v) { e.GetComponent<RectTransform2DComponent>().LocalRotation = Radians(v); }),
+					[](Entity& e, float v) { e.GetComponent<RectTransform2DComponent>().LocalRotation = Radians(v); },
+					PropertyMetadata{}.WithRotation()),
 				Properties::Make("Scale", "Scale", &RectTransform2DComponent::LocalScale),
 			});
 

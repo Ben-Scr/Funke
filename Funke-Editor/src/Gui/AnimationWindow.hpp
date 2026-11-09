@@ -69,7 +69,7 @@ namespace Funke {
 		bool IsKeySelected(int track, int key) const;
 		void SelectKey(int track, int key, bool additive);
 		void DeleteSelection();
-		void AddKeysAtTime(const std::vector<int>& tracks);
+		void AddKeysAtTime(const std::vector<int>& tracks, float keyTime = -1.0f);
 		void SetCurveKey(AnimationTrack& track, float time, float value, PropertyType type);
 		void SetDiscreteKey(AnimationTrack& track, float time, const std::string& value);
 		int FindOrAddTrack(const std::string& path, const std::string& component, const std::string& property);

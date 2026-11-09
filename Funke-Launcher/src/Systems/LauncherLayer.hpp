@@ -7,6 +7,7 @@
 #include "Gui/SplashScreen.hpp"
 #include "Graphics/Texture2D.hpp"
 #include "Systems/Prerequisites.hpp"
+#include "Systems/LibraryThumbnails.hpp"
 #include "Utils/OwnedTask.hpp"
 #include <chrono>
 #include <filesystem>
@@ -78,6 +79,7 @@ namespace Funke {
 		};
 
 	private:
+		LibraryThumbnails m_LibraryThumbnails;
 		struct CreateProjectTaskState {
 			std::mutex Mutex;
 			std::thread Worker;

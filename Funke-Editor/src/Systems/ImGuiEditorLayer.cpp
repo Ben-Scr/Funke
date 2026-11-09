@@ -1,4 +1,5 @@
 #include <pch.hpp>
+#include <sstream>
 #include "ImGuiEditorLayer.hpp"
 #include "Gui/EditorShortcuts.hpp"
 #include "Core/EngineModules.hpp"
@@ -95,6 +96,7 @@
 #include "Serialization/PrefabTemplateCache.hpp"
 #include "Scripting/ScriptEngine.hpp"
 #include "Scripting/ScriptSystem.hpp"
+#include "Scripting/ManagedScriptCompiler.hpp"
 #include "Scripting/ScriptDiscovery.hpp"
 #include "Scripting/ScriptComponentInspector.hpp"
 #include "Systems/TransformHierarchySystem.hpp"
@@ -530,29 +532,7 @@ namespace Funke {
 			return (ec ? path : canonical).lexically_normal().make_preferred().string();
 		}
 
-		std::string FindFileByName(const std::filesystem::path& root, const std::string& fileNameLower) {
-			std::error_code ec;
-			if (!std::filesystem::is_directory(root, ec) || ec) {
-				return {};
-			}
-
-			std::filesystem::recursive_directory_iterator it(
-				root,
-				std::filesystem::directory_options::skip_permission_denied,
-				ec);
-			const std::filesystem::recursive_directory_iterator end;
-			for (; it != end && !ec; it.increment(ec)) {
-				const std::filesystem::directory_entry& entry = *it;
-				std::error_code entryEc;
-				if (!entry.is_regular_file(entryEc) || entryEc) continue;
-				if (ToLowerCopy(entry.path().filename().string()) == fileNameLower) {
-					return CanonicalFilePath(entry.path());
-				}
-			}
-			return {};
-		}
-
-		std::string ResolveLogSourceFile(std::string rawPath) {
+		std::string ResolveLogSourceFileUncached(std::string rawPath) {
 			if (rawPath.rfind("file:///", 0) == 0) {
 				rawPath.erase(0, 8);
 			}
@@ -580,28 +560,23 @@ namespace Funke {
 				}
 			}
 
-			if (!sourcePath.has_filename()) {
-				return {};
-			}
-
-			FunkeProject* project = ProjectManager::GetCurrentProject();
-			if (!project) {
-				return {};
-			}
-
-			const std::string fileNameLower = ToLowerCopy(sourcePath.filename().string());
-			const std::array<std::filesystem::path, 3> roots = {
-				std::filesystem::path(project->ScriptsDirectory),
-				std::filesystem::path(project->AssetsDirectory),
-				std::filesystem::path(project->RootDirectory)
-			};
-			for (const std::filesystem::path& root : roots) {
-				if (std::string resolved = FindFileByName(root, fileNameLower); !resolved.empty()) {
-					return resolved;
-				}
-			}
-
 			return {};
+		}
+
+		std::string ResolveLogSourceFile(const std::string& rawPath) {
+			static std::unordered_map<std::string, std::string> cache;
+			static std::string cachedRoot;
+			static auto refreshed = std::chrono::steady_clock::now();
+			const auto now = std::chrono::steady_clock::now();
+			const auto* project = ProjectManager::GetCurrentProject();
+			const std::string root = project ? project->RootDirectory : "";
+			if (root != cachedRoot || now - refreshed > std::chrono::seconds(2) || cache.size() >= 1024) {
+				cache.clear();
+				cachedRoot = root;
+				refreshed = now;
+			}
+			if (const auto found = cache.find(rawPath); found != cache.end()) return found->second;
+			return cache.emplace(rawPath, ResolveLogSourceFileUncached(rawPath)).first->second;
 		}
 
 		std::string ExtractRawSourcePath(std::string_view message, size_t extStart, size_t extEnd, size_t* outPathStart = nullptr) {
@@ -624,6 +599,12 @@ namespace Funke {
 				start = inToken + 4;
 			}
 
+			if (start == std::string_view::npos) {
+				for (size_t i = lineStart; i + 2 < extStart; ++i) {
+					if (std::isalpha(static_cast<unsigned char>(message[i])) && message[i + 1] == ':'
+						&& (message[i + 2] == '/' || message[i + 2] == '\\')) { start = i; break; }
+				}
+			}
 			if (start == std::string_view::npos) {
 				start = extStart;
 				while (start > lineStart) {
@@ -998,7 +979,9 @@ namespace Funke {
 		m_DetachedUndoStack.Clear();
 	}
 
-	void ImGuiEditorLayer::ForgetUndoHistory(const Scene* scene) {
+	void ImGuiEditorLayer::ForgetUndoHistory(const Scene* scene, const std::string& reason) {
+		const bool hadHistory = m_SceneUndoHistory.HasHistory(scene)
+			|| (scene == m_PrefabEditScene.get() && m_DetachedUndoStack.HasHistory());
 		if (m_UndoStackSceneId == scene) {
 			InspectorUndoRecorder::Reset();
 			m_ActiveUndoStack = nullptr;
@@ -1006,6 +989,20 @@ namespace Funke {
 		}
 		m_SceneUndoHistory.Forget(scene);
 		if (scene == m_PrefabEditScene.get()) m_DetachedUndoStack.Clear();
+		if (hadHistory) ShowHistoryStatus("Undo/redo history ended", reason + " Reopening starts a new history.");
+	}
+
+	void ImGuiEditorLayer::ShowHistoryStatus(std::string title, std::string detail) {
+		m_HistoryStatusTitle = std::move(title);
+		m_HistoryStatusDetail = std::move(detail);
+		m_UndoToastActive = false;
+	}
+
+	void ImGuiEditorLayer::ShowDiscardedHistories(const std::vector<std::string>& scenes) {
+		if (scenes.empty() || Application::GetIsPlaying()) return;
+		std::string detail = "Undo/redo history was discarded because these scene instances were closed or replaced:";
+		for (const auto& name : scenes) detail += "\n" + name;
+		ShowHistoryStatus("Undo/redo history ended", detail + "\nReopening starts a new history.");
 	}
 
 	void ImGuiEditorLayer::PerformUndoRedo(Scene& scene, bool redo) {
@@ -1021,7 +1018,11 @@ namespace Funke {
 		UndoStack& history = GetUndoStack(scene);
 		InspectorUndoRecorder::Flush(history, true);
 		const std::string action = redo ? history.Redo(scene) : history.Undo(scene);
-		if (action.empty()) return;
+		if (action.empty()) {
+			if (!history.GetLastError().empty()) ShowHistoryStatus(redo ? "Redo blocked" : "Undo blocked",
+				history.GetLastError() + "\nThe step remains in this session's history; no other steps were automatically applied.");
+			return;
+		}
 		if (prefabRootId != 0) scene.TryResolveEntityRef(prefabRootId, m_PrefabEditRootEntity);
 
 		// Structural steps rebuild entities with new handles; re-resolve the selection by persistent id.
@@ -1058,7 +1059,13 @@ namespace Funke {
 	}
 
 	void ImGuiEditorLayer::PerformHistoryAction(bool redo) {
-		if (m_AssetBrowser.UsesAssetHistory()) ShowUndoToast(m_AssetBrowser.UndoRedoAssets(redo), redo);
+		if (m_AssetBrowser.UsesAssetHistory()) {
+			try { ShowUndoToast(m_AssetBrowser.UndoRedoAssets(redo), redo); }
+			catch (const std::exception& error) {
+				ShowHistoryStatus(redo ? "Asset redo blocked" : "Asset undo blocked", std::string(error.what())
+					+ "\nThe step remains in this session's history. Resolve the conflict before retrying; external edits are not recorded.");
+			}
+		}
 		else if (Scene* scene = GetContextScene()) PerformUndoRedo(*scene, redo);
 	}
 
@@ -1072,6 +1079,8 @@ namespace Funke {
 
 	void ImGuiEditorLayer::ShowUndoToast(const std::string& action, bool redo) {
 		if (action.empty()) return;
+		m_HistoryStatusTitle.clear();
+		m_HistoryStatusDetail.clear();
 		m_UndoToastText = (redo ? "Redo: " : "Undo: ") + action;
 		m_UndoToastRedo = redo;
 		m_UndoToastElapsed = 0.0f;
@@ -1094,7 +1103,7 @@ namespace Funke {
 
 		ImDrawList* dl = ImGui::GetForegroundDrawList();
 
-		constexpr float iconSize = 18.0f;
+		const float iconSize = std::round(ImGui::GetFontSize() * 1.2f);
 		constexpr float padX = 12.0f, padY = 8.0f, gap = 8.0f;
 		const ImVec2 textSize = ImGui::CalcTextSize(m_UndoToastText.c_str());
 		const float boxW = iconSize + gap + textSize.x + padX * 2.0f;
@@ -1113,7 +1122,7 @@ namespace Funke {
 
 		const float iconX = boxX + padX;
 		const float iconY = boxY + (boxH - iconSize) * 0.5f;
-		const uint64_t icon = EditorIcons::Get(m_UndoToastRedo ? "redo" : "undo", 16);
+		const uint64_t icon = EditorIcons::Get(m_UndoToastRedo ? "redo" : "undo", static_cast<int>(std::ceil(iconSize * ImGui::GetWindowViewport()->DpiScale)));
 		if (icon != 0) {
 			dl->AddImage(static_cast<ImTextureID>(static_cast<intptr_t>(icon)),
 				ImVec2(iconX, iconY), ImVec2(iconX + iconSize, iconY + iconSize),
@@ -1204,6 +1213,9 @@ namespace Funke {
 
 			// Stamp at receipt (emit time) so ordering survives the buffered/deferred path.
 			LogEntry record{ entry.Message, entry.Level };
+			record.SourceFilePath = entry.SourceFile;
+			record.SourceIdentity = entry.SourceFile;
+			record.SourceLine = entry.SourceLine;
 			record.Timestamp = FormatLogClockTimestamp();
 
 			if (state->Mutex.try_lock()) {
@@ -1502,6 +1514,10 @@ namespace Funke {
 
 		Scene* activeScene = app.GetSceneManager() ? SceneManager::GetActiveScene() : nullptr;
 		if (!activeScene) {
+			InspectorUndoRecorder::Reset();
+			m_ActiveUndoStack = nullptr;
+			m_UndoStackSceneId = nullptr;
+			ShowDiscardedHistories(m_SceneUndoHistory.Retain({}));
 			ClearUndoHistory();
 			return;
 		}
@@ -1512,7 +1528,7 @@ namespace Funke {
 		Scene& selectionScene = *selectionContextScene;
 
 		UndoStack& history = GetUndoStack(selectionScene);
-		m_SceneUndoHistory.Retain(SceneManager::GetLoadedScenes());
+		ShowDiscardedHistories(m_SceneUndoHistory.Retain(SceneManager::GetLoadedScenes()));
 		InspectorUndoRecorder::Flush(history);
 
 		// Advance the undo/redo toast fade (fade-in 0.15 + hold 1.3 + fade-out 0.5).
@@ -1657,14 +1673,19 @@ namespace Funke {
 	}
 
 	void ImGuiEditorLayer::AppendLogEntry(LogEntry entry) {
-		if (entry.Level >= Log::Level::Warn) {
-			if (std::optional<LogSourceLocation> location = FindLogSourceLocation(entry.Message)) {
-				entry.SourceFilePath = std::move(location->FilePath);
-				entry.SourceLinkText = std::move(location->LinkText);
-				entry.SourceLine = location->Line;
-				entry.SourceLinkStart = location->MessageStart;
-				entry.SourceLinkEnd = location->MessageEnd;
-			}
+		const auto diagnosticLocation = entry.SourceFilePath.empty() || entry.Message.starts_with("[ScriptCompiler]")
+			? FindLogSourceLocation(entry.Message) : std::nullopt;
+		if (diagnosticLocation) {
+			entry.SourceFilePath = diagnosticLocation->FilePath;
+			entry.SourceIdentity = entry.SourceFilePath;
+			entry.SourceLinkText = diagnosticLocation->LinkText;
+			entry.SourceLine = diagnosticLocation->Line;
+			entry.SourceLinkStart = diagnosticLocation->MessageStart;
+			entry.SourceLinkEnd = diagnosticLocation->MessageEnd;
+		} else if (!entry.SourceFilePath.empty()) {
+			entry.SourceFilePath = ResolveLogSourceFile(entry.SourceFilePath);
+			if (!entry.SourceFilePath.empty()) entry.SourceIdentity = entry.SourceFilePath;
+			if (!entry.SourceFilePath.empty()) entry.SourceLinkText = std::filesystem::path(entry.SourceFilePath).filename().string() + ":" + std::to_string(entry.SourceLine);
 		}
 
 		m_LogEntries.push_back(std::move(entry));
@@ -1899,13 +1920,14 @@ namespace Funke {
 			if (ImGui::MenuItem("Quit")) {
 				Application::RequestQuit();
 			}
+			EditorUI::Tooltip("Closing the editor ends all scene, prefab and asset undo/redo histories, even after saving.");
 			const bool reloadPending = EditorRestart::HasPending();
 			if (ImGui::MenuItem(reloadPending ? "Reload App (pending)" : "Reload App")) {
 				RequestEditorAction(reloadPending && EditorRestart::GetPendingKind() == EditorRestart::Kind::Restart
 					? PendingEditorAction::Restart : PendingEditorAction::Reload);
 			}
-			if (reloadPending && ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) {
-				std::string reasons;
+			if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) {
+				std::string reasons = "Reloading ends all scene, prefab and asset undo/redo histories, even after saving.";
 				for (const EditorRestart::Reason& reason : EditorRestart::GetPending()) {
 					reasons += (reasons.empty() ? "" : "\n") + reason.Text;
 				}
@@ -1951,12 +1973,17 @@ namespace Funke {
 			// keyboard handler in OnUpdate. Disabled during play.
 			Scene* undoScene = GetContextScene();
 			const bool canEditHistory = (undoScene || m_AssetBrowser.UsesAssetHistory()) && !Application::GetIsPlaying();
-			if (ImGui::MenuItem("Undo", EditorShortcuts::k_UndoLabel, false, canEditHistory && (m_AssetBrowser.UsesAssetHistory() ? m_AssetBrowser.CanUndoAssets() : GetUndoStack(*undoScene).CanUndo()))) {
+			std::string undoReason, redoReason;
+			const bool canUndo = canEditHistory && (m_AssetBrowser.UsesAssetHistory() ? m_AssetBrowser.CanUndoAssets() : GetUndoStack(*undoScene).CanUndo(&undoReason));
+			const bool canRedo = canEditHistory && (m_AssetBrowser.UsesAssetHistory() ? m_AssetBrowser.CanRedoAssets() : GetUndoStack(*undoScene).CanRedo(&redoReason));
+			if (ImGui::MenuItem("Undo", EditorShortcuts::k_UndoLabel, false, canUndo)) {
 				PerformHistoryAction(false);
 			}
-			if (ImGui::MenuItem("Redo", EditorShortcuts::k_RedoLabel, false, canEditHistory && (m_AssetBrowser.UsesAssetHistory() ? m_AssetBrowser.CanRedoAssets() : GetUndoStack(*undoScene).CanRedo()))) {
+			if (!undoReason.empty()) EditorUI::Tooltip("Undo blocked. " + undoReason);
+			if (ImGui::MenuItem("Redo", EditorShortcuts::k_RedoLabel, false, canRedo)) {
 				PerformHistoryAction(true);
 			}
+			if (!redoReason.empty()) EditorUI::Tooltip("Redo blocked. " + redoReason);
 			ImGui::Separator();
 			if (ImGui::BeginMenu("View")) {
 				RenderEditorViewSettingsMenu();
@@ -2083,19 +2110,23 @@ namespace Funke {
 			const char* Shortcut;
 			bool Enabled;
 			std::function<void()> Run;
+			std::string Help;
 		};
 		const bool playing = Application::GetIsPlaying();
 		const bool hasProject = ProjectManager::HasProject();
 		Scene* undoScene = GetContextScene();
 		const bool canEditHistory = (undoScene || m_AssetBrowser.UsesAssetHistory()) && !playing;
+		std::string undoReason, redoReason;
+		const bool canUndo = canEditHistory && (m_AssetBrowser.UsesAssetHistory() ? m_AssetBrowser.CanUndoAssets() : GetUndoStack(*undoScene).CanUndo(&undoReason));
+		const bool canRedo = canEditHistory && (m_AssetBrowser.UsesAssetHistory() ? m_AssetBrowser.CanRedoAssets() : GetUndoStack(*undoScene).CanRedo(&redoReason));
 		const bool canSwitchViewMode = EngineModules::IsActive(EngineModule::TwoD) && EngineModules::IsActive(EngineModule::ThreeD);
 		std::vector<Command> commands = {
 			{ "Save Scene", EditorShortcuts::k_SaveLabel, !playing, [&]() { SaveScenesFromMenu(scene); } },
 			{ "Enter Play Mode", nullptr, !playing && !m_PlayModeRecompilePending, [&]() {
 				if (Scene* active = SceneManager::GetActiveScene()) BeginPlayModeRequest(*active);
 			} },
-			{ "Undo", EditorShortcuts::k_UndoLabel, canEditHistory && (m_AssetBrowser.UsesAssetHistory() ? m_AssetBrowser.CanUndoAssets() : GetUndoStack(*undoScene).CanUndo()), [&]() { PerformHistoryAction(false); } },
-			{ "Redo", EditorShortcuts::k_RedoLabel, canEditHistory && (m_AssetBrowser.UsesAssetHistory() ? m_AssetBrowser.CanRedoAssets() : GetUndoStack(*undoScene).CanRedo()), [&]() { PerformHistoryAction(true); } },
+			{ "Undo", EditorShortcuts::k_UndoLabel, canUndo, [&]() { PerformHistoryAction(false); }, undoReason },
+			{ "Redo", EditorShortcuts::k_RedoLabel, canRedo, [&]() { PerformHistoryAction(true); }, redoReason },
 			{ "Build...", nullptr, hasProject && !playing, [&]() { OpenPanel("Build", m_ShowBuildPanel); } },
 			{ "Build Profiles", nullptr, hasProject, [&]() { OpenPanel("Build Profiles", m_ShowBuildProfilesPanel); } },
 			{ "Project Settings", nullptr, hasProject, [&]() { OpenPanel("Project Settings", m_ShowProjectSettings); } },
@@ -2137,8 +2168,8 @@ namespace Funke {
 			} },
 			{ "Reset Game View Toolbar", nullptr, !EditorPreferences::IsGameViewToolbarDefault(),
 				[&]() { EditorPreferences::ResetGameViewToolbar(); } },
-			{ "Reload Editor", nullptr, true, [&]() { RequestEditorAction(PendingEditorAction::Reload); } },
-			{ "Quit", nullptr, true, [&]() { Application::RequestQuit(); } },
+			{ "Reload Editor", nullptr, true, [&]() { RequestEditorAction(PendingEditorAction::Reload); }, "Reloading ends all scene, prefab and asset undo/redo histories, even after saving." },
+			{ "Quit", nullptr, true, [&]() { Application::RequestQuit(); }, "Closing the editor ends all scene, prefab and asset undo/redo histories, even after saving." },
 		};
 
 		// Labels must outlive the commands that point at them.
@@ -2182,6 +2213,7 @@ namespace Funke {
 				const bool highlighted = i == m_CommandPaletteSelection;
 				if (highlighted) ImGui::PushStyleColor(ImGuiCol_Header, EditorTheme::Colors::RowSelection());
 				if (ImGui::Selectable(command.Label, highlighted, ImGuiSelectableFlags_None)) run = &command;
+				if (!command.Help.empty()) EditorUI::Tooltip(command.Help);
 				if (highlighted) ImGui::PopStyleColor();
 				if (command.Shortcut) {
 					ImGui::SameLine(ImGui::GetContentRegionMax().x - ImGui::CalcTextSize(command.Shortcut).x);
@@ -2190,6 +2222,8 @@ namespace Funke {
 				ImGui::EndDisabled();
 				ImGui::PopID();
 			}
+			const auto& help = matches[static_cast<std::size_t>(m_CommandPaletteSelection)]->Help;
+			if (!help.empty()) EditorUI::StatusText(EditorUI::Tone::Warning, help.c_str());
 			if (ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter)) {
 				run = matches[static_cast<std::size_t>(m_CommandPaletteSelection)];
 			}
@@ -2217,6 +2251,23 @@ namespace Funke {
 		char frameRate[32];
 		std::snprintf(frameRate, sizeof(frameRate), "%.0f FPS", ImGui::GetIO().Framerate);
 		const float frameRateWidth = ImGui::CalcTextSize(frameRate).x;
+		if (!m_HistoryStatusTitle.empty()) {
+			if (ImGui::SmallButton((m_HistoryStatusTitle + "##HistoryStatus").c_str())) ImGui::OpenPopup("History details");
+			EditorUI::Tooltip(m_HistoryStatusDetail);
+			const float detailsWidth = std::min(ImGui::GetFontSize() * 36.0f, ImGui::GetWindowViewport()->WorkSize.x * 0.9f);
+			ImGui::SetNextWindowSize(ImVec2(detailsWidth, 0.0f), ImGuiCond_Appearing);
+			if (ImGui::BeginPopup("History details")) {
+				EditorUI::StatusText(EditorUI::Tone::Warning, m_HistoryStatusTitle.c_str());
+				ImGui::TextWrapped("%s", m_HistoryStatusDetail.c_str());
+				if (EditorUI::Button("Dismiss")) {
+					m_HistoryStatusTitle.clear();
+					m_HistoryStatusDetail.clear();
+					ImGui::CloseCurrentPopup();
+				}
+				ImGui::EndPopup();
+			}
+			ImGui::SameLine();
+		}
 		ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), ImGui::GetContentRegionMax().x - frameRateWidth));
 		ImGui::AlignTextToFramePadding();
 		ImGui::TextDisabled("%s", frameRate);
@@ -2373,6 +2424,24 @@ namespace Funke {
 		return true;
 	}
 
+	void ImGuiEditorLayer::ReportPlayModeBuildFailure() {
+		DrainPendingLogEntries();
+		auto appendMissing = [this](const std::string& message) {
+			if (message.empty()) return;
+			const bool visible = std::any_of(m_LogEntries.begin(), m_LogEntries.end(), [&](const LogEntry& entry) {
+				return entry.Message.find(message) != std::string::npos;
+			});
+			if (!visible) AppendLogEntry({ message,
+				message.find("warning ") != std::string::npos ? Log::Level::Warn : Log::Level::Error });
+		};
+		std::istringstream output(ManagedScriptCompiler::LimitOutput(ScriptSystem::GetLastRebuildOutput()));
+		std::string line;
+		while (std::getline(output, line)) {
+			appendMissing(line);
+		}
+		appendMissing("Script compilation or assembly reload failed. Play Mode was not started.");
+	}
+
 	void ImGuiEditorLayer::BeginPlayModeRequest(Scene& scene) {
 		if (m_SceneOpenOperation != 0 || !m_SceneOpenFallbackPath.empty()) return;
 		if (!PreparePlayModeSnapshot(scene)) {
@@ -2384,9 +2453,6 @@ namespace Funke {
 		}
 		CaptureScriptFieldOverrides(/*merge=*/false);
 
-		m_LogEntries.clear();
-		m_SelectedLogIndex = -1;
-		m_LogScrollToEnd = m_LogAutoScroll;
 		ApplicationEditorAccess::SetPlaymodePaused(false);
 
 		ScriptSystem* scriptSys = scene.HasSystem<ScriptSystem>() ? scene.GetSystem<ScriptSystem>() : nullptr;
@@ -2408,7 +2474,7 @@ namespace Funke {
 			m_PlayModeScenes.clear();
 			m_PlayModeActiveScene.clear();
 			m_PlayModeScriptFields.clear();
-			FNK_ERROR_TAG("PlayMode", "Script compilation failed. Play Mode was not started.");
+			ReportPlayModeBuildFailure();
 			return;
 		}
 
@@ -2416,6 +2482,18 @@ namespace Funke {
 	}
 
 	void ImGuiEditorLayer::CompletePlayModeEntry(Scene& scene) {
+		m_PlayModeRecompilePending = false;
+		m_PlayModeRecompileScene.reset();
+		if (EditorPreferences::GetResetRegisteredStateOnPlay() && !ScriptEngine::ResetRegisteredPlayState()) {
+			m_PlayModeScenes.clear();
+			m_PlayModeActiveScene.clear();
+			m_PlayModeScriptFields.clear();
+			FNK_ERROR_TAG("PlayMode", "Reset of registered game state failed. Play Mode was not started; see the reset method error above.");
+			return;
+		}
+		m_LogEntries.clear();
+		m_SelectedLogIndex = -1;
+		m_LogScrollToEnd = m_LogAutoScroll;
 		m_PlayModeRecompilePending = false;
 		m_PlayModeRecompileScene.reset();
 		m_PlayModeSelection = CaptureLoadedSceneSelection();
@@ -2449,7 +2527,10 @@ namespace Funke {
 			Time::SetFixedDeltaTime(project->GetFixedDeltaTimeSeconds());
 			RenderSettings::Apply(project->Graphics);
 		}
-		scene.StartManagedSceneSystemsForPlayMode();
+		for (const auto& weakScene : SceneManager::GetLoadedScenes()) {
+			if (auto loaded = weakScene.lock(); loaded && loaded->IsLoaded() && !loaded->IsLifecycleSuspended())
+				loaded->StartManagedSceneSystemsForPlayMode();
+		}
 		// Reset Box2D sleep timers so bodies that sat through editor
 		// idle don't immediately freeze on the first physics step.
 		if (PhysicsSystem2D::IsInitialized()) {
@@ -2477,7 +2558,7 @@ namespace Funke {
 			m_PlayModeActiveScene.clear();
 			m_PlayModeScriptFields.clear();
 			if (scriptSys) {
-				FNK_ERROR_TAG("PlayMode", "Script compilation failed. Play Mode was not started.");
+				ReportPlayModeBuildFailure();
 			}
 			else {
 				FNK_ERROR_TAG("PlayMode", "The scene that requested script compilation is no longer loaded. Play Mode was not started.");
@@ -2860,6 +2941,14 @@ namespace Funke {
 			return false;
 		}
 
+		if (!ScriptEngine::PrepareResourceRelease(true)) {
+			FNK_ERROR_TAG("PlayMode", "Stop refused: script jobs are still running.");
+			return false;
+		}
+		struct ResumeScriptScope {
+			~ResumeScriptScope() { ScriptEngine::ResumeResourceScope(true); }
+		} resumeScriptScope;
+
 		FUNKE_PROFILE_SCOPE("PlayMode Stop");
 		using StopClock = std::chrono::steady_clock;
 		const StopClock::time_point stopStart = StopClock::now();
@@ -2987,6 +3076,8 @@ namespace Funke {
 		Application::SetIsPlaying(playModeRestore.PreviousState);
 		for (const std::shared_ptr<Scene>& playScene : playScenes) {
 			if (SceneManager::SuspendLoadedSceneForRelease(playScene)) continue;
+
+			ScriptEngine::ResumeResourceScope(true);
 
 			discardStagedScenes();
 			Application::SetIsPlaying(playModeRestore.PreviousState);
@@ -3176,6 +3267,9 @@ namespace Funke {
 			for (auto& [name, history] : m_PlayModeUndoHistory) {
 				m_SceneUndoHistory.Restore(SceneManager::GetLoadedScene(name).lock(), std::move(history));
 			}
+		}
+		else if (std::any_of(m_PlayModeUndoHistory.begin(), m_PlayModeUndoHistory.end(), [](const auto& entry) { return entry.second.HasHistory(); })) {
+			ShowHistoryStatus("Undo/redo history ended", "Play-mode scene restoration failed. Suspended edit histories were discarded; inspect the recovered scenes before saving.");
 		}
 		m_PlayModeUndoHistory.clear();
 		m_GizmoDragActive = false;
@@ -4706,7 +4800,7 @@ namespace Funke {
 		if (save && !SavePrefabEditChanges()) {
 			return false;
 		}
-		ForgetUndoHistory(m_PrefabEditScene.get());
+		ForgetUndoHistory(m_PrefabEditScene.get(), "Prefab Mode closed: " + m_PrefabEditPath + ". Its undo/redo history was discarded.");
 
 		ClearEntitySelection();
 		GetHierarchyState().EntityOrder.clear(); GetHierarchyState().Dirty = true;
@@ -4788,7 +4882,7 @@ namespace Funke {
 			const std::string title = showDirtyMark ? (prefabName + " *") : prefabName;
 
 			const float backButtonStartX = ImGui::GetCursorPosX();
-			if (EditorUI::IconButton("##PrefabBack", "arrow_left", "Back to scene")) {
+			if (EditorUI::IconButton("##PrefabBack", "arrow_left", "Back to scene. Closing Prefab Mode ends this prefab's undo/redo history.")) {
 				if (m_PrefabEditDirty) {
 					m_ShowPrefabEditDiscardPrompt = true;
 				}
@@ -5034,6 +5128,7 @@ namespace Funke {
 					} else {
 						ImGui::MenuItem("Remove", nullptr, false, false);
 					}
+					EditorUI::Tooltip("Removing this scene ends its undo/redo history, even after saving. Other loaded scenes keep their histories.");
 					// Manual reorder fallback for users without drag-and-drop
 					// muscle memory (and a keyboard-only accessibility path).
 					// Disabled at the boundaries.

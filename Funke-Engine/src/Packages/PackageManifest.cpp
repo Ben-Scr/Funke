@@ -456,6 +456,13 @@ namespace Funke {
 			}
 		}
 
+		int requirementsVersion = 1;
+		if (const LuaValue* requirements = root.Find("moduleRequirementsVersion"); requirements && requirements->Kind != LuaValue::Type::Nil) {
+			if (requirements->Kind != LuaValue::Type::Number || (requirements->Number != 1 && requirements->Number != 2)) {
+				return fail("moduleRequirementsVersion must be 1 or 2");
+			}
+			requirementsVersion = static_cast<int>(requirements->Number);
+		}
 		if (const LuaValue* modules = root.Find("modules"); modules && modules->Kind != LuaValue::Type::Nil) {
 			if (modules->Kind != LuaValue::Type::Table || !modules->Table->Fields.empty()) {
 				return fail("package '" + manifest.Name + "': `modules` must be a list such as { \"Funke.2D\" }");
@@ -463,13 +470,16 @@ namespace Funke {
 			for (const LuaValue& value : modules->Table->Array) {
 				if (value.Kind != LuaValue::Type::String || !EngineModules::FromId(value.String)) {
 					return fail("package '" + manifest.Name + "': unknown engine module '" + value.String
-						+ "' in `modules` (known: Funke.2D, Funke.3D)");
+						+ "' in `modules` (known: Funke.2D, Funke.3D, Funke.Physics2D, Funke.Physics3D)");
 				}
 				if (std::find(manifest.Modules.begin(), manifest.Modules.end(), value.String) == manifest.Modules.end()) {
 					manifest.Modules.push_back(value.String);
 				}
 			}
 		}
+
+		manifest.Modules = requirementsVersion < 2
+			? EngineModules::ExpandLegacySelection(manifest.Modules) : EngineModules::Resolve(manifest.Modules);
 
 		if (const LuaValue* layers = root.Find("layers"); layers && layers->Kind == LuaValue::Type::Table) {
 			for (const auto& [layerName, layer] : layers->Table->Fields) {

@@ -67,6 +67,10 @@ namespace Funke::Cli {
 					value.AddMember("version", std::string{});
 					value.AddMember("source", std::string("module"));
 					value.AddMember("enabled", project->HasModule(EngineModules::GetId(module)));
+					const auto status = EngineModules::GetStatus(EngineModules::GetId(module), project->Modules);
+					value.AddMember("compiled", EngineModules::IsCompiled(module));
+					value.AddMember("status", std::string(EngineModules::GetStatusName(status)));
+					value.AddMember("message", EngineModules::GetStatusMessage(EngineModules::GetId(module), status));
 					value.AddMember("description", std::string(EngineModules::GetDescription(module)));
 					list.Append(std::move(value));
 				}
@@ -85,8 +89,9 @@ namespace Funke::Cli {
 			std::string text;
 			for (EngineModule module : k_AllEngineModules) {
 				const std::string_view id = EngineModules::GetId(module);
-				text += std::string(project->HasModule(id) ? "* " : "  ") + std::string(id) + "  (engine module)  "
-					+ std::string(EngineModules::GetDescription(module)) + "\n";
+				const auto status = EngineModules::GetStatus(id, project->Modules);
+				text += std::string(project->HasModule(id) ? "* " : "  ") + std::string(id) + "  (engine module, "
+					+ std::string(EngineModules::GetStatusName(status)) + ")  " + EngineModules::GetStatusMessage(id, status) + "\n";
 			}
 			for (const FunkePackageManifest& manifest : manifests) {
 				text += std::string(enabled(manifest.Name) ? "* " : "  ") + manifest.Name + " " + manifest.Version

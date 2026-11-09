@@ -4,6 +4,9 @@
   "description": "An empty 2D scene with just a camera.",
   "category": "2D",
   "sortOrder": 0,
-  "modules": [ "Funke.2D" ],
-  "startupScene": "SampleScene"
+  "modules": [
+    "Funke.2D"
+  ],
+  "startupScene": "SampleScene",
+  "moduleRequirementsVersion": 2
 }

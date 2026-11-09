@@ -69,11 +69,19 @@ namespace Funke {
 			if (out.VersionText.empty() || out.DownloadUrl.empty() || !IsSha256Hex(out.Sha256)) return false;
 			out.EngineRange = ReadEngineRange(node);
 			if (const Json::Value* dependencies = node.FindMember("dependencies")) ReadDependencies(*dependencies, out.Dependencies);
-			if (const Json::Value* modules = node.FindMember("modules"); modules && modules->IsArray()) {
+			if (const Json::Value* modules = node.FindMember("modules")) {
+				if (!modules->IsArray()) return false;
 				for (const Json::Value& module : modules->GetArray()) {
-					if (module.IsString() && !module.AsStringOr().empty()) out.Modules.push_back(module.AsStringOr());
+					if (!module.IsString() || module.AsStringOr().empty()) return false;
+					out.Modules.push_back(module.AsStringOr());
 				}
 			}
+			int requirementsVersion = 1;
+			if (const auto* requirements = node.FindMember("moduleRequirementsVersion")) {
+				if (!requirements->IsNumber() || (requirements->AsDoubleOr(0) != 1 && requirements->AsDoubleOr(0) != 2)) return false;
+				requirementsVersion = requirements->AsIntOr(0);
+			}
+			out.Modules = requirementsVersion < 2 ? EngineModules::ExpandLegacySelection(out.Modules) : EngineModules::Resolve(out.Modules);
 			if (const Json::Value* size = node.FindMember("sizeBytes")) out.SizeBytes = size->AsUInt64Or(0);
 			return true;
 		}

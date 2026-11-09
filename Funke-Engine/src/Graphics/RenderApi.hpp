@@ -39,6 +39,7 @@ namespace Funke {
 		static const std::string& GetVersionString() noexcept;
 		static const std::string& GetVendorString() noexcept;
 		static const std::string& GetRendererString() noexcept;
+		static const std::string& GetDriverDescription() noexcept;
 
 
 		static void Clear(ClearFlags flags);

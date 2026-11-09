@@ -1,8 +1,10 @@
 #include <doctest/doctest.h>
 
-#include "Funke/Core.hpp"
+#include "Core/Exceptions.hpp"
+#include "Memory/FrameArenas.hpp"
 
 #include <cstdint>
+#include <thread>
 
 using namespace Funke;
 
@@ -113,3 +115,44 @@ TEST_CASE("FrameArenas zero-capacity spec produces empty arenas") {
 	CHECK(FrameArenas::Frame().Allocate(1)      == nullptr);
 	CHECK(FrameArenas::Persistent().Allocate(1) == nullptr);
 }
+
+#ifdef FNK_DEBUG
+TEST_CASE("FrameArenas reject worker access including retained arena references") {
+	ScopedFrameArenas guard({ 1024, 1024 });
+	Arena& frame = FrameArenas::Frame();
+	Arena& persistent = FrameArenas::Persistent();
+	REQUIRE(frame.Allocate(64) != nullptr);
+	REQUIRE(persistent.Allocate(32) != nullptr);
+	std::thread worker([&]() {
+		CHECK_THROWS_AS(FrameArenas::Frame(), FunkeException);
+		CHECK_THROWS_AS(FrameArenas::Persistent(), FunkeException);
+		CHECK_THROWS_AS(FrameArenas::OnEndFrame(), FunkeException);
+		CHECK_THROWS_AS(FrameArenas::ResetPersistent(), FunkeException);
+		CHECK_THROWS_AS(FrameArenas::Shutdown(), FunkeException);
+		CHECK_THROWS_AS(FrameArenas::Initialize(), FunkeException);
+		CHECK(frame.Allocate(8) == nullptr);
+		CHECK(persistent.Allocate(8) == nullptr);
+		frame.Reset();
+		persistent.Reset();
+		Arena local(128);
+		CHECK(local.Allocate(8) != nullptr);
+		local.Reset();
+		CHECK(local.Used() == 0);
+	});
+	worker.join();
+	CHECK(frame.Used() == 64);
+	CHECK(persistent.Used() == 32);
+}
+
+TEST_CASE("FrameArenas reinitialization binds the new lifecycle thread") {
+	FrameArenas::Initialize({ 128, 128 });
+	FrameArenas::Shutdown();
+	std::thread nextLifecycle([]() {
+		ScopedFrameArenas guard({ 256, 256 });
+		CHECK(FrameArenas::Frame().Allocate(8) != nullptr);
+		CHECK(FrameArenas::Persistent().Allocate(8) != nullptr);
+	});
+	nextLifecycle.join();
+	CHECK_FALSE(FrameArenas::IsInitialized());
+}
+#endif

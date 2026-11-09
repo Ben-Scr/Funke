@@ -15,8 +15,57 @@
 #include "Systems/Transform3DHierarchySystem.hpp"
 
 #include <vector>
+#include <filesystem>
+#include "Serialization/File.hpp"
+#include <cmath>
+#include <cstdlib>
+#include <iomanip>
+#include <limits>
+#include <sstream>
 
 using namespace Funke;
+
+TEST_CASE("Backlog signed mesh scaling preserves asymmetric surfaces directly and under a parent") {
+	PrimitiveMeshData data;
+	auto fixture = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path()
+		/ "Fixtures/PhysicsReflection/asymmetric.obj";
+	if (fixture.is_relative() && !std::filesystem::exists(fixture)) fixture = std::filesystem::path("Tests") / fixture;
+	REQUIRE(MeshLibrary::LoadFromFile(fixture.string(), data));
+	const uint64_t mesh = MeshLibrary::CreateRuntime();
+	struct Cleanup { uint64_t Mesh; ~Cleanup() { MeshLibrary::DestroyRuntime(Mesh); } } cleanup{mesh};
+	REQUIRE(MeshLibrary::SetRuntimeData(mesh, std::move(data)));
+	for (int axis = 0; axis < 3; ++axis) for (bool parentScale : {false, true}) for (bool dynamic : {false, true}) {
+		CAPTURE(axis);
+		CAPTURE(parentScale);
+		CAPTURE(dynamic);
+		auto scene = Scene::CreateDetachedScene("Mesh reflection");
+		auto parent = scene->CreateEmptyEntity();
+		parent.AddComponent<Transform3DComponent>();
+		auto entity = scene->CreateEmptyEntity();
+		entity.AddComponent<Transform3DComponent>();
+		entity.SetParent(parent);
+		Vec3 scale(1.0f);
+		scale[axis] = -1.0f;
+		(parentScale ? parent : entity).GetComponent<Transform3DComponent>().Scale = scale;
+		entity.AddComponent<MeshRendererComponent>().CustomMesh = mesh;
+		entity.AddComponent<MeshCollider3DComponent>();
+		if (dynamic) entity.AddComponent<Rigidbody3DComponent>();
+		PhysicsWorld3D world;
+		world.SetGravity(Vec3(0));
+		Transform3DHierarchySystem::Propagate(*scene);
+		world.SyncFromScene(*scene, 1.0f / 60.0f);
+		Vec3 origin = Vec3(0.5f, 0.75f, 1.0f) * scale;
+		origin[axis] = -10.0f;
+		Vec3 direction(0);
+		direction[axis] = 1.0f;
+		RaycastHit3D hit;
+		REQUIRE(world.Raycast(origin, direction, 20, hit));
+		CHECK(hit.Entity == entity.GetHandle());
+		const float expected[] = {-1.0f, -1.5f, -2.0f};
+		CHECK(hit.Point[axis] == doctest::Approx(expected[axis]).epsilon(0.02));
+		CHECK(glm::dot(hit.Normal, direction) < 0);
+	}
+}
 
 namespace {
 	constexpr float k_Dt = 1.0f / 60.0f;
@@ -74,6 +123,41 @@ TEST_CASE("Physics3D: settled sleeping roots skip pose work and still observe te
 	Run(*scene, world, 1);
 	CHECK(box.GetComponent<Transform3DComponent>().GetWorldPosition().x == doctest::Approx(12.0f));
 	CHECK(world.GetLastSyncStats().PoseWrites == 1);
+}
+
+TEST_CASE("Large-coordinate physics records float resolution contact stability and slow motion") {
+	std::ostringstream csv;
+	csv << "offset,float_step,authored_millimeter_step,settled_y_min,settled_y_max,slow_motion_x,contact_events\n" << std::setprecision(10);
+	for (float offset : { 0.0f, 1000.0f, 10000.0f, 100000.0f, 1000000.0f, 10000000.0f }) {
+		CAPTURE(offset);
+		auto scene = Scene::CreateDetachedScene("Coordinate precision");
+		CreateBox(*scene, { offset, -0.5f, 0 }, { 10, 1, 10 });
+		auto box = CreateBox(*scene, { offset, 3, 0 });
+		box.AddComponent<Rigidbody3DComponent>();
+		PhysicsWorld3D world;
+		ContactLog contacts;
+		Run(*scene, world, 180, &contacts);
+		float minimum = std::numeric_limits<float>::max(), maximum = std::numeric_limits<float>::lowest();
+		for (int frame = 0; frame < 120; ++frame) {
+			Run(*scene, world, 1, &contacts);
+			const float y = box.GetComponent<Transform3DComponent>().Position.y;
+			CHECK(std::isfinite(y));
+			minimum = std::min(minimum, y);
+			maximum = std::max(maximum, y);
+		}
+		const float before = box.GetComponent<Transform3DComponent>().Position.x;
+		world.SetLinearVelocity(box.GetHandle(), { 0.1f, 0, 0 });
+		Run(*scene, world, 60, &contacts);
+		const float moved = box.GetComponent<Transform3DComponent>().Position.x - before;
+		csv << offset << ',' << std::nextafter(offset, std::numeric_limits<float>::infinity()) - offset << ','
+			<< (offset + 0.001f) - offset << ',' << minimum << ',' << maximum << ',' << moved << ',' << contacts.Events.size() << '\n';
+		if (offset == 0) {
+			CHECK(minimum > 0.45f);
+			CHECK(maximum < 0.55f);
+			CHECK_FALSE(contacts.Events.empty());
+		}
+	}
+	if (const char* report = std::getenv("FUNKE_TEST_PRECISION_REPORT")) CHECK(File::WriteAllText(report, csv.str()));
 }
 
 TEST_CASE("Physics3D: wake and sleep between writebacks preserves the final pose") {

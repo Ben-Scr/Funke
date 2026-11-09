@@ -26,7 +26,8 @@ namespace Funke {
 		bool PreferenceSectionVisible(const char* section, const char* keywords) const;
 
 		// Layout modal state lives on the panel (not TU-static) so OpenPopup and BeginPopupModal share the same id-stack scope.
-		char m_SaveLayoutBuffer[64]{};
+		char m_SaveLayoutBuffer[65]{};
+		std::string m_LayoutError;
 		bool m_OpenSaveLayoutRequest = false;
 		std::string m_PendingDeleteLayoutName;
 		bool m_OpenDeleteLayoutRequest = false;

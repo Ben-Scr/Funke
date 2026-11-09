@@ -38,6 +38,22 @@ from pathlib import Path
 from typing import Any, Callable
 
 PROTOCOL_VERSION = 1
+MODULE_IDS = ("Funke.2D", "Funke.3D", "Funke.Physics2D", "Funke.Physics3D")
+
+
+def resolve_modules(modules: list[str], version: int = 2) -> list[str]:
+    if type(version) is not int or version not in (1, 2):
+        raise BuilderError(f"Unsupported moduleRequirementsVersion: {version}")
+    if not isinstance(modules, list) or any(not isinstance(m, str) or m not in MODULE_IDS for m in modules):
+        raise BuilderError("Invalid engine modules; expected a list of known module IDs.")
+    selected = set(modules)
+    for dimension, physics in (("Funke.2D", "Funke.Physics2D"), ("Funke.3D", "Funke.Physics3D")):
+        if version == 1 and dimension in selected:
+            selected.add(physics)
+        if physics in selected:
+            selected.add(dimension)
+    return [m for m in MODULE_IDS if m in selected]
+
 
 
 class BuilderError(Exception):
@@ -87,14 +103,14 @@ class BuildRequest:
     def modules_key(self) -> str:
         """Part of a build-cache directory name: one cache per engine-module combination."""
         if self.modules is None:
-            return "all"
-        return "-".join(sorted(m.removeprefix("Funke.").lower() for m in self.modules)) or "nomodules"
+            return "v2-all"
+        return "v2-" + ("-".join(m.removeprefix("Funke.").lower() for m in resolve_modules(self.modules)) or "nomodules")
 
     def cmake_module_args(self) -> list[str]:
         """funke_add_engine(MODULES ...) input; "none" selects no module (an empty list would mean all)."""
         if self.modules is None:
             return []
-        return ["-DFUNKE_ENGINE_MODULES=" + (";".join(self.modules) if self.modules else "none")]
+        return ["-DFUNKE_ENGINE_MODULES=" + (";".join(resolve_modules(self.modules)) if self.modules else "none")]
 
     def option(self, name: str, default: str = "") -> str:
         """A build option as text. "env:NAME" reads the environment, so secrets such as signing
@@ -130,7 +146,7 @@ class BuildRequest:
             icon_path=Path(icon) if icon else None,
             entity_bits=int(data.get("entityBits", 20)),
             options=data.get("options") or {},
-            modules=[str(m) for m in data["modules"]] if isinstance(data.get("modules"), list) else None,
+            modules=resolve_modules(data["modules"], data.get("moduleRequirementsVersion", 1)) if "modules" in data else None,
         )
 
 

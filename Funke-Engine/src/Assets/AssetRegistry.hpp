@@ -871,7 +871,8 @@ namespace Funke {
 				entry.Mtime = std::filesystem::file_time_type(std::filesystem::file_time_type::duration(rec.MetaMtime));
 				entry.Size = rec.MetaSize;
 				entry.AssetGuid = rec.Guid;
-				State().MetaIdCache[GetMetaPath(abs)] = entry;
+				// An explicit metadata refresh is newer than the persisted snapshot, even at the same timestamp.
+				State().MetaIdCache.try_emplace(GetMetaPath(abs), entry);
 			}
 		}
 
@@ -1049,7 +1050,7 @@ namespace Funke {
 			if (extension == ".ttf" || extension == ".otf") {
 				return AssetKind::Font;
 			}
-			if (extension == ".wgsl" || extension == ".vs" || extension == ".fs" || extension == ".vert" || extension == ".frag" || extension == ".glsl") {
+			if (extension == ".wgsl") {
 				return AssetKind::Shader;
 			}
 			if (extension == ".dataasset") {

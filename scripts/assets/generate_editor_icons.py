@@ -72,7 +72,7 @@ GLYPHS = [
     "minus", "move", "pause", "pen", "pin", "play", "plus", "post_processing",
     "redo", "reset", "rotation", "save", "scale", "search", "settings", "settings_gear",
     "step_forward", "stop", "undo", "zoom_in", "zoom_out", "open_folder",
-    "monitor", "image", "flag", "hammer", "systems", "physics",
+    "monitor", "image", "flag", "hammer", "systems", "physics", "templates",
 ]
 COMPONENTS = [
     "animator", "audio_source", "camera", "collider_box_2d", "collider_box_3d", "collider_capsule_3d",
@@ -207,11 +207,22 @@ def glyph(c: Canvas, name: str):
         c.rect((6, 5, 10, 19), q, width=0, radius=1, fill=q); c.rect((14, 5, 18, 19), q, width=0, radius=1, fill=q)
     elif name == "stop":
         c.rect((5, 5, 19, 19), q, width=0, radius=2, fill=q)
-    elif name in {"undo", "redo", "reset", "rotation"}:
-        if name == "undo": c.arc((5, 5, 19, 19), 35, 285, q); c.line([(6, 9), (6, 5), (10, 5)], q)
-        elif name == "redo": c.arc((5, 5, 19, 19), 215, 465, q); c.line([(18, 15), (18, 19), (14, 19)], q)
-        elif name == "reset": c.arc((4, 4, 20, 20), -55, 250, q); c.line([(17, 5), (20, 5), (20, 8)], q)
-        else: c.arc((5, 5, 19, 19), 0, 300, q); c.line([(16, 5), (19, 5), (19, 8)], q)
+    elif name in {"undo", "redo"}:
+        points = [(5, 9), (13, 9)]
+        points += [(13 + 6 * math.cos(math.radians(a)), 15 + 6 * math.sin(math.radians(a))) for a in range(-90, 1, 5)]
+        points += [(19, 18)]
+        head = [(9, 5), (5, 9), (9, 13)]
+        if name == "redo":
+            points = [(24-x, y) for x, y in points]
+            head = [(24-x, y) for x, y in head]
+        c.line(points, q)
+        c.line(head, q)
+    elif name == "reset":
+        points = [(12 + 7 * math.cos(math.radians(a)), 12 + 7 * math.sin(math.radians(a))) for a in range(0, 291, 5)]
+        c.line(points, q)
+        c.line([(12, 3), (16, 5), (14, 9)], q)
+    elif name == "rotation":
+        c.arc((5, 5, 19, 19), 0, 300, q); c.line([(16, 5), (19, 5), (19, 8)], q)
     elif name == "settings":
         # A compact cog, deliberately heavier than a sunburst at 16 px.
         c.circle((12, 12), 5.9, q, fill=q)
@@ -233,7 +244,12 @@ def glyph(c: Canvas, name: str):
     elif name == "pin":
         c.line([(12, 4), (12, 20)], q); c.poly([(8, 5), (16, 5), (15, 12), (9, 12)], q)
     elif name == "copy":
-        c.rect((8, 4, 19, 16), q, radius=2); c.rect((5, 8, 16, 20), q, radius=2)
+        c.line([(8, 4), (20, 4), (20, 16)], q)
+        c.rect((4, 8, 16, 20), q, radius=1)
+    elif name == "templates":
+        c.rect((4, 4, 20, 20), q, radius=1)
+        c.line([(5, 10), (19, 10)], q)
+        c.line([(10, 10), (10, 19)], q)
     elif name == "delete":
         c.rect((7, 8, 17, 20), q, radius=1); c.line([(5, 6), (19, 6)], q); c.line([(10, 4), (14, 4)], q)
     elif name == "download":
@@ -263,7 +279,7 @@ def glyph(c: Canvas, name: str):
     elif name == "scale":
         c.line([(5,9),(5,5),(9,5)],q); c.line([(15,5),(19,5),(19,9)],q); c.line([(5,15),(5,19),(9,19)],q); c.line([(19,15),(19,19),(15,19)],q)
     elif name == "post_processing":
-        c.circle((12,12),7,q); c.line([(12,5),(12,19)],q); c.line([(5,12),(19,12)],q)
+        c.poly([(12, 3), (15, 9), (21, 12), (15, 15), (12, 21), (9, 15), (3, 12), (9, 9)], q)
     else:
         c.circle((12,12),7,q)
 

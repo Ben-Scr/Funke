@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Reflection;
 using System.Runtime.CompilerServices;
@@ -95,7 +96,7 @@ public class Entity : IEquatable<Entity>
         return new EntityRef(ID);
     }
 
-    // Returns null when no Transform2D is present; use GetRefOrThrow<NativeTransform2D> when a hard requirement is acceptable.
+    /// <summary>Legacy 2D access; null when absent. Never adds a transform.</summary>
     public Transform2D? Transform
     {
         get
@@ -107,6 +108,12 @@ public class Entity : IEquatable<Entity>
         }
         set => m_TransformComponent = value;
     }
+
+    /// <summary>Cached 2D component, or null when absent; never adds a transform.</summary>
+    public Transform2D? Transform2D => GetComponent<Transform2D>();
+
+    /// <summary>Cached 3D component, or null when absent; never adds a transform.</summary>
+    public Transform3D? Transform3D => GetComponent<Transform3D>();
 
     public string Name
     {
@@ -301,7 +308,7 @@ public class Entity : IEquatable<Entity>
         if (EnsureModuleInitialized(type.Module) && TryGetRegisteredNativeName(type, out name))
             return name;
 
-        return type.IsSubclassOf(typeof(Component)) ? type.Name : null;
+        return type.IsSubclassOf(typeof(Component)) ? ScriptInstanceManager.TypeIdentity(type) : null;
     }
 
     // Package module initializers must register their wrappers before lookup completes.
@@ -365,6 +372,9 @@ public class Entity : IEquatable<Entity>
         if (initializedPackage && (registered = FindRegisteredComponentType(name)) != null)
             return registered;
 
+        bool canonical = name.StartsWith("type:", StringComparison.Ordinal);
+        if (canonical) name = name[5..];
+        Type? match = null;
         foreach (Assembly assembly in AppDomain.CurrentDomain.GetAssemblies())
         {
             AssemblyLoadContext context = AssemblyLoadContext.GetLoadContext(assembly)!;
@@ -395,15 +405,16 @@ public class Entity : IEquatable<Entity>
                 if (!type.IsSubclassOf(typeof(Component)))
                     continue;
 
-                if (string.Equals(type.Name, name, StringComparison.Ordinal)
+                if ((!canonical && string.Equals(type.Name, name, StringComparison.Ordinal))
                     || string.Equals(type.FullName, name, StringComparison.Ordinal))
                 {
-                    return type;
+                    if (match != null && match != type) return null;
+                    match = type;
                 }
             }
         }
 
-        return null;
+        return match;
     }
 
     /// <summary>The prefab asset with this GUID (<see cref="PrefabGUID"/>), ready for <see cref="Instantiate(Entity)"/>; Invalid for 0.</summary>
@@ -567,6 +578,18 @@ public class Entity : IEquatable<Entity>
             entry.Value.NativeTypeIds.Clear();
     }
 
+    bool TryResolveScriptSlot(Type type, out string slot)
+    {
+        slot = ScriptInstanceManager.TypeIdentity(type);
+        if (InternalCalls.Entity_HasScript(ID, slot)) return true;
+        if (slot != type.Name && ScriptInstanceManager.IsUnambiguousScriptName(type.Name, type)
+            && InternalCalls.Entity_HasScript(ID, type.Name)) {
+            slot = type.Name;
+            return true;
+        }
+        return false;
+    }
+
     public T? AddComponent<T>() where T : Component, new()
     {
         if (IsPrefabAsset)
@@ -574,7 +597,7 @@ public class Entity : IEquatable<Entity>
 
         if (typeof(EntityScript).IsAssignableFrom(typeof(T)))
         {
-            if (!InternalCalls.Entity_AddScript(ID, typeof(T).Name))
+            if (!TryResolveScriptSlot(typeof(T), out string slot) && !InternalCalls.Entity_AddScript(ID, slot))
                 return null;
             return ScriptInstanceManager.GetScriptInstance(ID, typeof(T)) as T;
         }
@@ -605,7 +628,7 @@ public class Entity : IEquatable<Entity>
 
         // Script branch (see AddComponent for the CS0111 rationale).
         if (typeof(EntityScript).IsAssignableFrom(typeof(T)))
-            return InternalCalls.Entity_HasScript(ID, typeof(T).Name);
+            return TryResolveScriptSlot(typeof(T), out _);
 
         uint nativeTypeId = GetNativeComponentTypeId(typeof(T));
         return nativeTypeId != 0
@@ -629,8 +652,13 @@ public class Entity : IEquatable<Entity>
             return false;
 
         // Script branch (see AddComponent for the CS0111 rationale).
-        if (typeof(EntityScript).IsAssignableFrom(typeof(T)))
-            return InternalCalls.Entity_RemoveScript(ID, typeof(T).Name);
+        if (typeof(EntityScript).IsAssignableFrom(typeof(T))) {
+            Type type = typeof(T);
+            string canonical = ScriptInstanceManager.TypeIdentity(type);
+            return InternalCalls.Entity_RemoveScript(ID, canonical)
+                || (canonical != type.Name && ScriptInstanceManager.IsUnambiguousScriptName(type.Name, type)
+                    && InternalCalls.Entity_RemoveScript(ID, type.Name));
+        }
 
         uint nativeTypeId = GetNativeComponentTypeId(typeof(T));
         bool removed = nativeTypeId != 0
@@ -655,7 +683,7 @@ public class Entity : IEquatable<Entity>
         return GetComponentByType(typeof(T)) as T;
     }
 
-    public bool TryGetComponent<T>(out T? value) where T : Component, new()
+    public bool TryGetComponent<T>([NotNullWhen(true)] out T? value) where T : Component, new()
     {
         value = GetComponent<T>();
         return value != null;
@@ -745,7 +773,8 @@ public class Entity : IEquatable<Entity>
         return ScriptInstanceManager.GetScriptInstance(ID, scriptName);
     }
 
-    // Returns a ref-to-null (Unsafe.IsNullRef) when absent. Ref is valid only until the next structural change to that component pool; refetch each frame.
+    /// <summary>Borrowed writable reference, or a null ref when absent (check Unsafe.IsNullRef before use).</summary>
+    /// <remarks>Expires on structural changes; reacquire each frame. Ordinary assignment copies the struct. Transform access marks scene transforms dirty. Use GetRefOrThrow for required components.</remarks>
     public unsafe ref T GetNativeComponent<T>() where T : unmanaged, IComponent
     {
         void* p = InternalCalls.Entity_GetComponentPtr(ID, ComponentTypes<T>.NativeName);
@@ -753,7 +782,8 @@ public class Entity : IEquatable<Entity>
         return ref Unsafe.AsRef<T>(p);
     }
 
-    // Read-only twin of GetNativeComponent: reading a Transform this way doesn't force a full hierarchy pass that frame.
+    /// <summary>Borrowed read-only reference, or a null ref when absent (check Unsafe.IsNullRef before use).</summary>
+    /// <remarks>Expires on structural changes; reacquire each frame. Ordinary assignment copies the struct. Does not mark transforms dirty.</remarks>
     public unsafe ref readonly T GetNativeComponentReadOnly<T>() where T : unmanaged, IComponent
     {
         void* p = InternalCalls.Entity_GetComponentPtrReadOnly(ID, ComponentTypes<T>.NativeName);
@@ -761,6 +791,8 @@ public class Entity : IEquatable<Entity>
         return ref Unsafe.AsRef<T>(p);
     }
 
+    /// <summary>Borrowed writable reference; throws InvalidOperationException when absent.</summary>
+    /// <remarks>Expires on structural changes; reacquire each frame. Ordinary assignment copies the struct. Transform access marks scene transforms dirty.</remarks>
     public unsafe ref T GetRefOrThrow<T>() where T : unmanaged, IComponent
     {
         void* p = InternalCalls.Entity_GetComponentPtr(ID, ComponentTypes<T>.NativeName);
@@ -770,6 +802,10 @@ public class Entity : IEquatable<Entity>
         return ref Unsafe.AsRef<T>(p);
     }
 
+    /// <summary>Borrowed writable 2D transform; throws InvalidOperationException when absent and marks scene transforms dirty.</summary>
+    /// <remarks>Expires on structural changes; reacquire each frame. Use TransformRefReadOnly for reading.</remarks>
+    /// <example><code>var copy = entity.TransformRef;
+    /// ref var transform = ref entity.TransformRef;</code>Only the second variable writes through to native storage; neither reference may outlive a structural change.</example>
     public unsafe ref Native.NativeTransform2D TransformRef
     {
         get
@@ -782,7 +818,8 @@ public class Entity : IEquatable<Entity>
         }
     }
 
-    // Prefer over TransformRef when only reading: TransformRef marks the whole scene's transforms dirty.
+    /// <summary>Borrowed read-only 2D transform; throws InvalidOperationException when absent without marking transforms dirty.</summary>
+    /// <remarks>Expires on structural changes; reacquire each frame. Ordinary assignment copies the struct.</remarks>
     public unsafe ref readonly Native.NativeTransform2D TransformRefReadOnly
     {
         get
@@ -834,7 +871,7 @@ public class Entity : IEquatable<Entity>
         var component = (Component)Activator.CreateInstance(type)!;
         component.Entity = this;
         if (!TryGetRegisteredNativeName(type, out _))
-            ApplyManagedFieldValues(component, InternalCalls.Entity_GetManagedComponentFields(ID, type.Name));
+            ApplyManagedFieldValues(component, InternalCalls.Entity_GetManagedComponentFields(ID, GetComponentName(type) ?? type.Name));
 
         m_ComponentCache ??= new Dictionary<Type, Component>();
         s_ManagedComponentStore[ID] = m_ComponentCache;
@@ -1145,6 +1182,57 @@ public class Entity : IEquatable<Entity>
     }
 
     public static Entity Create(Entity source) => Instantiate(source);
+
+    /// <summary>Creates a 2D entity at a parent-local position and angle in degrees; null parent means scene root.</summary>
+    public static Entity Create2D(string? name = null, Vector2 localPosition = default, float localRotationDegrees = 0, Entity? parent = null)
+        => SpawnExplicit(null, name, false, new Vector3(localPosition.X, localPosition.Y, 0), new Vector3(0, 0, localRotationDegrees), parent);
+
+    /// <summary>Creates a 3D entity at a parent-local position and Euler rotation in degrees; null parent means scene root.</summary>
+    public static Entity Create3D(string? name = null, Vector3 localPosition = default, Vector3 localRotationDegrees = default, Entity? parent = null)
+        => SpawnExplicit(null, name, true, localPosition, localRotationDegrees, parent);
+
+    /// <summary>Clones a 2D source and sets parent-local values before Awake/Enable. Throws for a source without Transform2D.</summary>
+    public static Entity Instantiate2D(Entity source, Vector2 localPosition = default, float localRotationDegrees = 0, Entity? parent = null)
+        => source == null || source == Invalid ? Invalid : SpawnExplicit(source, null, false, new Vector3(localPosition.X, localPosition.Y, 0), new Vector3(0, 0, localRotationDegrees), parent);
+
+    /// <summary>Clones a 3D source and sets parent-local values before Awake/Enable. Throws for a source without Transform3D.</summary>
+    public static Entity Instantiate3D(Entity source, Vector3 localPosition = default, Vector3 localRotationDegrees = default, Entity? parent = null)
+        => source == null || source == Invalid ? Invalid : SpawnExplicit(source, null, true, localPosition, localRotationDegrees, parent);
+
+    private static Entity SpawnExplicit(Entity? source, string? name, bool threeD, Vector3 position, Vector3 rotation, Entity? parent)
+    {
+        if (parent != null && (parent == Invalid || parent.IsPrefabAsset))
+            throw new ArgumentException("The spawn parent must be a live scene entity or null.", nameof(parent));
+        ulong id = source == null ? InternalCalls.Entity_Create(name)
+            : source.IsPrefabAsset ? InternalCalls.Entity_InstantiatePrefab(source.PrefabGUID) : InternalCalls.Entity_Clone(source.ID);
+        if (id == 0) return Invalid;
+        try {
+            string transform = threeD ? "Transform 3D" : "Transform 2D";
+            if (source == null) {
+                string other = threeD ? "Transform 2D" : "Transform 3D";
+                if (InternalCalls.Entity_HasComponent(id, other)) InternalCalls.Entity_RemoveComponent(id, other);
+                if (!InternalCalls.Entity_HasComponent(id, transform) && !InternalCalls.Entity_AddComponent(id, transform))
+                    throw new InvalidOperationException($"Cannot create {transform}; the required engine module may be disabled.");
+            }
+            if (!InternalCalls.Entity_HasComponent(id, transform))
+                throw new InvalidOperationException($"Instantiation requires a source with {transform}; dimensional conversion is not supported.");
+            if (!InternalCalls.Entity_SetParent(id, parent?.ID ?? 0, worldPositionStays: false))
+                throw new InvalidOperationException("Cannot assign the requested spawn parent.");
+            if (threeD) {
+                InternalCalls.Transform3D_SetPosition(id, position);
+                InternalCalls.Transform3D_SetRotation(id, rotation);
+            }
+            else {
+                InternalCalls.Transform2D_SetLocalPosition(id, position.X, position.Y);
+                InternalCalls.Transform2D_SetLocalRotation(id, rotation.Z * Mathf.Deg2Rad);
+            }
+        }
+        catch {
+            InternalCalls.Entity_Destroy(id);
+            throw;
+        }
+        return Spawned(id);
+    }
 
     // CreateWith/CreateWithNative: create + attach K components in one call. Use EntityCommandBuffer for high-volume spawning (~50-100x faster). Distinct names (not overloads) due to CS0111.
 

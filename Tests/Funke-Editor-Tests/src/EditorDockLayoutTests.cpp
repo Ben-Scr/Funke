@@ -2,6 +2,7 @@
 
 #include "Gui/EditorDockLayout.hpp"
 #include "Gui/EditorShortcuts.hpp"
+#include "Gui/EditorWindowIcons.hpp"
 
 #include <imgui.h>
 #include <imgui_internal.h>
@@ -122,6 +123,68 @@ TEST_CASE("EditorDockLayout sees saved docking before the panels exist") {
 	CHECK_FALSE(EditorDockLayout::HasDockedPanels(dockspaceId));
 	ImGui::LoadIniSettingsFromMemory(ini.c_str(), ini.size());
 	CHECK(EditorDockLayout::HasDockedPanels(dockspaceId));
+}
+
+TEST_CASE("Editor window icons preserve existing layout IDs and saved docking") {
+	std::string ini;
+	ImGuiID dockspaceId = 0;
+	ImGuiID logDockId = 0;
+	{
+		HeadlessImGui imgui;
+		dockspaceId = imgui.Frame("Dockspace", BuildDefaultWhenUndocked);
+		imgui.Frame("Dockspace");
+		logDockId = NodeOf("Log")->ID;
+		ini = ImGui::SaveIniSettingsToMemory();
+	}
+
+	HeadlessImGui imgui;
+	ImGui::GetPlatformIO().WindowTitleIcon = &EditorWindowIcons::Draw;
+	ImGui::LoadIniSettingsFromMemory(ini.c_str(), ini.size());
+	imgui.Frame("Dockspace");
+	imgui.Frame("Dockspace");
+	CHECK(EditorDockLayout::HasDockedPanels(dockspaceId));
+	REQUIRE(NodeOf("Log") != nullptr);
+	CHECK(NodeOf("Log")->ID == logDockId);
+	for (const char* name : k_Panels) {
+		CAPTURE(std::string(name));
+		REQUIRE(ImGui::FindWindowByName(name) != nullptr);
+		CHECK(ImGui::FindWindowByName(name)->ID == ImHashStr(name));
+		CHECK(EditorWindowIcons::ForWindow(name) != EditorWindowIcons::Type::None);
+	}
+	const std::string saved = ImGui::SaveIniSettingsToMemory();
+	CHECK(saved.find("[Window][Log]") != std::string::npos);
+}
+
+TEST_CASE("Editor window icon spacing scales without changing ordinary tabs") {
+	HeadlessImGui imgui;
+	ImGui::GetPlatformIO().WindowTitleIcon = &EditorWindowIcons::Draw;
+	for (float fontSize : { 11.25f, 15.0f, 30.0f }) {
+		ImGui::GetStyle().FontSizeBase = fontSize;
+		ImGui::NewFrame();
+		ImGui::Begin("Host");
+		const float plainWidth = ImGui::TabItemCalcSize("Log", false).x;
+		const float iconWidth = ImGui::WindowTitleIcon("Log");
+		CHECK(iconWidth == doctest::Approx(ImGui::GetFontSize() * 1.3f));
+		CHECK(ImGui::TabItemCalcSize("Log", false, true).x == doctest::Approx(plainWidth + iconWidth));
+		CHECK(ImGui::TabItemCalcSize("Unknown", false, true).x == ImGui::TabItemCalcSize("Unknown", false).x);
+		ImGui::GetPlatformIO().WindowTitleIcon = nullptr;
+		CHECK(ImGui::TabItemCalcSize("Log", false, true).x == plainWidth);
+		ImGui::GetPlatformIO().WindowTitleIcon = &EditorWindowIcons::Draw;
+		ImGui::End();
+		ImGui::EndFrame();
+	}
+}
+
+TEST_CASE("Editor window icons support script window IDs and stay context local") {
+	HeadlessImGui imgui;
+	ImGui::GetPlatformIO().WindowTitleIcon = &EditorWindowIcons::Draw;
+	CHECK(EditorWindowIcons::ForWindow("My Tool###ScriptWindow_My.Tools.Tool") == EditorWindowIcons::Type::Script);
+	ImGuiContext* other = ImGui::CreateContext();
+	ImGui::SetCurrentContext(other);
+	CHECK(ImGui::GetPlatformIO().WindowTitleIcon == nullptr);
+	ImGui::DestroyContext(other);
+	ImGui::SetCurrentContext(imgui.Context);
+	CHECK(ImGui::GetPlatformIO().WindowTitleIcon == &EditorWindowIcons::Draw);
 }
 
 TEST_CASE("EditorShortcuts use Command for ImGui shortcuts on macOS") {

@@ -5,6 +5,8 @@
 #include "Scene/BuiltInComponentRegistration.hpp"
 #include "Scene/ComponentRegistry.hpp"
 #include "Scripting/ScriptBindings.hpp"
+#include "Scripting/ScriptGlue.hpp"
+#include "Systems/TransformHierarchySystem.hpp"
 #include "Components/General/RectTransform2DComponent.hpp"
 #include "Components/General/Transform2DComponent.hpp"
 #include "Components/General/Transform3DComponent.hpp"
@@ -80,7 +82,7 @@ TEST_CASE("EngineModules: ids round-trip and missing modules are reported") {
 	CHECK_FALSE(EngineModules::FromId("Funke.4D").has_value());
 
 	const std::vector<std::string> missing = EngineModules::GetMissingModules(
-		{ std::string(EngineModules::k_Id2D), std::string(EngineModules::k_Id3D) });
+		{ "Funke.2D", "Funke.3D", "Funke.Physics2D", "Funke.Physics3D" });
 	for (EngineModule module : k_AllEngineModules) {
 		const bool reported = std::find(missing.begin(), missing.end(), EngineModules::GetId(module)) != missing.end();
 		CHECK(reported == !EngineModules::IsCompiled(module));
@@ -95,6 +97,33 @@ TEST_CASE("EngineModules: projects without a modules field keep both; PrefersThr
 
 	project.Modules = { std::string(FunkeProject::k_Module3D) };
 	CHECK(project.PrefersThreeD());
+}
+
+TEST_CASE("EngineModules: diagnostics distinguish unknown disabled and unavailable without activating modules") {
+	ModuleStateRestore restore;
+	EngineModules::Configure({});
+	const std::vector<std::string> selected{ "Funke.2D", "Funke.3D", "Funke.Physics2D", "Funke.Physics3D", "Funke.3d" };
+	CHECK(EngineModules::GetStatus("Funke.3d", selected) == EngineModules::Status::Unknown);
+	CHECK(EngineModules::GetStatus("", selected) == EngineModules::Status::Unknown);
+	CHECK(EngineModules::GetStatusMessage("Funke.3d", EngineModules::Status::Unknown).find("correct the ID") != std::string::npos);
+	const auto missing = EngineModules::GetMissingModules(selected);
+	CHECK(std::find(missing.begin(), missing.end(), "Funke.3d") == missing.end());
+	for (EngineModule module : k_AllEngineModules) {
+		const std::string_view id = EngineModules::GetId(module);
+		CAPTURE(id);
+		const auto enabled = EngineModules::IsCompiled(module) ? EngineModules::Status::Enabled : EngineModules::Status::NotCompiled;
+		const auto disabled = EngineModules::IsCompiled(module) ? EngineModules::Status::Disabled : EngineModules::Status::NotCompiled;
+		CHECK(EngineModules::GetStatus(id, selected) == enabled);
+		CHECK(EngineModules::GetStatus(id, {}) == disabled);
+		CHECK_FALSE(EngineModules::IsActive(module));
+		CHECK(EngineModules::GetStatusMessage(id, EngineModules::Status::NotCompiled).find("use a build containing it") != std::string::npos);
+		CHECK(EngineModules::GetStatusMessage(id, EngineModules::Status::Disabled).find("funke package add") != std::string::npos);
+	}
+	CHECK(EngineModules::GetActiveIds().empty());
+	CHECK(EngineModules::GetStatusName(EngineModules::Status::Unknown) == "unknown");
+	CHECK(EngineModules::GetStatusName(EngineModules::Status::NotCompiled) == "not_compiled");
+	CHECK(EngineModules::GetStatusName(EngineModules::Status::Disabled) == "disabled");
+	CHECK(EngineModules::GetStatusName(EngineModules::Status::Enabled) == "enabled");
 }
 
 TEST_CASE("EngineModules: 3D components are tagged with their module and hidden while inactive") {
@@ -135,7 +164,7 @@ TEST_CASE("EngineModules: 2D and 3D stay exclusive while world transforms can ho
 	std::vector<std::type_index> threeD;
 	registry.ForEachComponentInfo([&](const std::type_index& id, const ComponentInfo& info) {
 		if (!info.engineModule || info.category != ComponentCategory::Component) return;
-		(*info.engineModule == EngineModule::TwoD ? twoD : threeD).push_back(id);
+		(EngineModules::GetDimension(*info.engineModule) == EngineModule::TwoD ? twoD : threeD).push_back(id);
 	});
 	REQUIRE_FALSE(twoD.empty());
 	REQUIRE_FALSE(threeD.empty());
@@ -189,7 +218,9 @@ TEST_CASE("EngineModules: scenes that already mix the modules are detected, not 
 	Entity entity = scene->CreateEmptyEntity();
 	entity.AddComponent<Transform2DComponent>();
 	CHECK(registry.FindConflictingPair(entity).first == nullptr);
-	entity.AddComponent<Rigidbody3DComponent>();
+	CHECK_THROWS_AS(entity.AddComponent<Rigidbody3DComponent>(), FunkeException);
+	// Legacy data bypasses the public insertion guard so the diagnostic can inspect it.
+	scene->GetRegistry().emplace<Rigidbody3DComponent>(entity.GetHandle());
 	const auto [first, second] = registry.FindConflictingPair(entity);
 	REQUIRE(first != nullptr);
 	REQUIRE(second != nullptr);
@@ -493,4 +524,53 @@ TEST_CASE("World UI widgets preserve their world transform when adding layout de
 	CHECK(entity.HasComponent<RectTransform2DComponent>());
 	CHECK((entity.HasComponent<Transform2DComponent>() || entity.HasComponent<Transform3DComponent>()));
 	CHECK(registry.FindConflictingPair(entity).first == nullptr);
+}
+
+TEST_CASE("EngineModules: nine independent dimension and physics selections") {
+	ModuleStateRestore restore;
+	for (int twoD = 0; twoD < 3; ++twoD) {
+		for (int threeD = 0; threeD < 3; ++threeD) {
+			CAPTURE(twoD); CAPTURE(threeD);
+			std::vector<std::string> requested;
+			if (twoD) requested.push_back(twoD == 2 ? "Funke.Physics2D" : "Funke.2D");
+			if (threeD) requested.push_back(threeD == 2 ? "Funke.Physics3D" : "Funke.3D");
+			const auto resolved = EngineModules::Resolve(requested);
+			CHECK(EngineModules::Resolve(resolved) == resolved);
+			EngineModules::Configure(requested);
+			CHECK(EngineModules::IsActive(EngineModule::TwoD) == (twoD > 0 && EngineModules::IsCompiled(EngineModule::TwoD)));
+			CHECK(EngineModules::IsActive(EngineModule::ThreeD) == (threeD > 0 && EngineModules::IsCompiled(EngineModule::ThreeD)));
+			CHECK(EngineModules::IsActive(EngineModule::Physics2D) == (twoD == 2 && EngineModules::IsCompiled(EngineModule::Physics2D)));
+			CHECK(EngineModules::IsActive(EngineModule::Physics3D) == (threeD == 2 && EngineModules::IsCompiled(EngineModule::Physics3D)));
+			auto scene = Scene::CreateDetachedScene("Module matrix");
+			CHECK(scene->GetRegistry().ctx().contains<Transform2DExternalAdapter>() == EngineModules::IsActive(EngineModule::Physics2D));
+		}
+	}
+}
+
+TEST_CASE("EngineModules: inactive physics stubs clear outputs within caller capacity") {
+	ModuleStateRestore restore;
+	EngineModules::Configure({ "Funke.2D", "Funke.3D" });
+	NativeBindings bindings{};
+	ScriptBindings::PopulateModuleBindings(bindings);
+	float x = 17, y = 19, z = 23, nx = 29, ny = 31, distance = 37;
+	uint64_t hit = 41;
+	CHECK(bindings.Physics2D_Raycast(0, 0, 1, 0, 10, &hit, &x, &y, &nx, &ny, &distance) == 0);
+	CHECK(hit == 0);
+	CHECK(x == 0); CHECK(y == 0); CHECK(nx == 0); CHECK(ny == 0); CHECK(distance == 0);
+	CHECK(bindings.Physics2D_Raycast(0, 0, 1, 0, 10, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr) == 0);
+	bindings.Rigidbody3D_GetVelocity(0, 0, &x, &y, &z);
+	CHECK(z == 0);
+	float values[] { 11, 13, 17, 19, 23, 29 };
+	CHECK(bindings.Physics3D_Raycast(0, 0, 0, 1, 0, 0, 10, &hit, values + 1, 4) == 0);
+	CHECK(values[0] == 11); CHECK(values[5] == 29);
+	for (int i = 1; i <= 4; ++i) CHECK(values[i] == 0);
+	bindings.Rigidbody3D_Get(0, values, 0);
+	bindings.Rigidbody2D_GetDynamics(0, values, -1);
+	CHECK(values[0] == 11);
+	CHECK(bindings.PolygonCollider2D_GetPath(0, 0, values + 1, 2) == 0);
+	CHECK(values[0] == 11); CHECK(values[5] == 29);
+	bindings.Joint2D_GetState(0, 0, nullptr, 10);
+	uint64_t entities[] { 43, 47, 53, 59 };
+	CHECK(bindings.Physics2D_OverlapCircleAll(0, 0, 1, entities + 1, 2) == 0);
+	CHECK(entities[0] == 43); CHECK(entities[1] == 0); CHECK(entities[2] == 0); CHECK(entities[3] == 59);
 }

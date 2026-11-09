@@ -1,6 +1,8 @@
 using System;
+using System.Linq;
 using Funke.Graphics;
 using Funke.Interop;
+using Funke.Jobs;
 
 namespace Funke;
 
@@ -33,9 +35,18 @@ public enum DefaultTexture : byte
     Invisible = 8,
 }
 
+public enum RuntimeTextureLifetime
+{
+    Automatic,
+    ScriptGeneration,
+    Manual,
+}
+
 public sealed class Texture : IEquatable<Texture>, IDisposable
 {
-    public ulong UUID { get; private set; }
+    private ulong m_UUID;
+    private readonly RuntimeBuffer? m_RuntimeBuffer;
+    public ulong UUID { get => m_RuntimeBuffer?.Disposed == true ? 0 : m_UUID; private set => m_UUID = value; }
 
     // Runtime/procedural CPU buffers, keyed by synthetic UUID. The native GPU
     // texture is already shared by UUID, so we mirror that: ANY managed Texture
@@ -43,66 +54,118 @@ public sealed class Texture : IEquatable<Texture>, IDisposable
     // SpriteRenderer.Texture) resolves to the SAME pixel buffer here. That's
     // why `sprite.Texture.SetPixel(...)` works without holding the original
     // handle. Main-thread only (scripts never touch this concurrently).
-    private sealed class RuntimeBuffer { public byte[] Pixels = System.Array.Empty<byte>(); public int Width; public int Height; public int OutOfBoundsWarnings; }
+    private sealed class RuntimeBuffer
+    {
+        public byte[] Pixels = Array.Empty<byte>();
+        public int Width;
+        public int Height;
+        public int OutOfBoundsWarnings;
+        public ScriptResourceKind Kind;
+        public long Generation;
+        public long PlaySession;
+        public bool Disposed;
+    }
     private static readonly System.Collections.Generic.Dictionary<ulong, RuntimeBuffer> s_RuntimeBuffers = new();
 
     /// <summary>True for a script-created (procedural) texture — it owns a CPU
     /// pixel buffer and must be Dispose()d to free its GPU resource.</summary>
-    public bool IsRuntime => s_RuntimeBuffers.ContainsKey(UUID);
+    public bool IsRuntime => m_RuntimeBuffer is { Disposed: false } && UUID != 0;
 
     internal Texture(ulong assetId)
     {
         UUID = assetId;
+        s_RuntimeBuffers.TryGetValue(assetId, out m_RuntimeBuffer);
     }
 
-    /// <summary>
-    /// Create a blank (transparent-black) procedural texture you can paint
-    /// into with <see cref="SetPixel"/> / <see cref="SetPixels"/>, then push
-    /// to the GPU with <see cref="Apply"/>. Assign it to a SpriteRenderer /
-    /// Image like any other texture. Call <see cref="Dispose"/> (or use a
-    /// `using`) to free the GPU resource — it is NOT garbage-collected.
-    /// </summary>
-    public static Texture? Create(int width, int height, TextureFilter filter = TextureFilter.Point)
-    {
-        if (width <= 0 || height <= 0)
-        {
-            Log.Error($"Texture.Create: invalid size {width}x{height}.");
-            return null;
-        }
+    // Preserve the entrypoints used by already compiled packages.
+    public static Texture? Create(int width, int height, TextureFilter filter)
+        => Create(width, height, filter, RuntimeTextureLifetime.Automatic);
 
-        byte[] pixels = new byte[width * height * 4];  // zero = transparent black
-        ulong uuid = InternalCalls.Texture_CreateRuntime(width, height, pixels, (int)filter);
-        if (uuid == 0)
-        {
-            Log.Error("Texture.Create: native texture creation failed (WebGPU not ready?).");
-            return null;
-        }
-        s_RuntimeBuffers[uuid] = new RuntimeBuffer { Pixels = pixels, Width = width, Height = height };
-        return new Texture(uuid);
+    public static Texture? Create(int width, int height, byte[] rgba, TextureFilter filter)
+        => Create(width, height, rgba, filter, RuntimeTextureLifetime.Automatic);
+
+    /// <summary>Create on the engine thread; retain while rendering and Dispose at ownership end. Automatic lifetime follows the calling script scope.</summary>
+    public static Texture? Create(int width, int height, TextureFilter filter = TextureFilter.Point,
+        RuntimeTextureLifetime lifetime = RuntimeTextureLifetime.Automatic)
+    {
+        if (width <= 0 || height <= 0) return null;
+        return Create(width, height, new byte[checked(width * height * 4)], filter, lifetime);
     }
 
-    /// <summary>
-    /// Creates a runtime texture from RGBA8 pixels (row 0 at the top), e.g. the result of <see cref="DecodeImage"/>.
-    /// The array is kept as the texture's CPU buffer. Dispose it when done.
-    /// </summary>
-    public static Texture? Create(int width, int height, byte[] rgba, TextureFilter filter = TextureFilter.Bilinear)
+    /// <summary>The supplied RGBA array remains owned by the runtime texture until Dispose or scope cleanup.</summary>
+    public static Texture? Create(int width, int height, byte[] rgba, TextureFilter filter = TextureFilter.Bilinear,
+        RuntimeTextureLifetime lifetime = RuntimeTextureLifetime.Automatic)
     {
-        if (width <= 0 || height <= 0 || rgba == null || rgba.Length < width * height * 4)
-        {
-            Log.Error($"Texture.Create: {width}x{height} needs {width * height * 4} RGBA bytes.");
-            return null;
-        }
+        if (width <= 0 || height <= 0 || rgba == null || rgba.Length < checked(width * height * 4)) return null;
+        ScriptResourceScope.EnsureAccepting();
+        var buffer = new RuntimeBuffer { Pixels = rgba, Width = width, Height = height,
+            Kind = ResolveLifetime(lifetime), Generation = ScriptResourceScope.CurrentGeneration,
+            PlaySession = ScriptResourceScope.CurrentPlaySession };
         ulong uuid = InternalCalls.Texture_CreateRuntime(width, height, rgba, (int)filter);
-        if (uuid == 0)
-            return null;
-        s_RuntimeBuffers[uuid] = new RuntimeBuffer { Pixels = rgba, Width = width, Height = height };
-        return new Texture(uuid);
+        if (uuid == 0) return null;
+        try
+        {
+            BeforeRuntimeRegistrationForTesting?.Invoke();
+            s_RuntimeBuffers.Add(uuid, buffer);
+            return new Texture(uuid);
+        }
+        catch
+        {
+            if (s_RuntimeBuffers.TryGetValue(uuid, out var registered) && ReferenceEquals(registered, buffer))
+                s_RuntimeBuffers.Remove(uuid);
+            InternalCalls.Texture_DestroyRuntime(uuid);
+            throw;
+        }
+    }
+
+    private static ScriptResourceKind ResolveLifetime(RuntimeTextureLifetime lifetime) => lifetime switch
+    {
+        RuntimeTextureLifetime.Automatic => ScriptResourceScope.CurrentKind,
+        RuntimeTextureLifetime.ScriptGeneration => ScriptResourceKind.Generation,
+        RuntimeTextureLifetime.Manual => ScriptResourceKind.Persistent,
+        _ => throw new ArgumentOutOfRangeException(nameof(lifetime)),
+    };
+
+    /// <summary>Transfer the shared UUID resource to a new lifetime; Manual resources require Dispose even after reload.</summary>
+    public void SetLifetime(RuntimeTextureLifetime lifetime)
+    {
+        ScriptResourceScope.EnsureAccepting();
+        var buffer = RequireBuffer(nameof(SetLifetime));
+        buffer.Kind = ResolveLifetime(lifetime);
+        buffer.Generation = ScriptResourceScope.CurrentGeneration;
+        buffer.PlaySession = ScriptResourceScope.CurrentPlaySession;
+    }
+
+    internal static Action? BeforeRuntimeRegistrationForTesting;
+
+    internal static int RuntimeBufferCount => s_RuntimeBuffers.Count;
+    internal static long RuntimeBufferBytes => s_RuntimeBuffers.Values.Sum(buffer => (long)buffer.Pixels.Length);
+
+    internal static void CleanupRuntimeTextures(bool playOnly)
+    {
+        foreach (var pair in s_RuntimeBuffers.ToArray())
+        {
+            var buffer = pair.Value;
+            if (buffer.Kind == ScriptResourceKind.Persistent) continue;
+            if (playOnly && (buffer.Kind != ScriptResourceKind.Play || buffer.PlaySession != ScriptResourceScope.PlaySession)) continue;
+            if (!playOnly && buffer.Generation != ScriptResourceScope.Generation) continue;
+            DestroyRuntimeBuffer(pair.Key, buffer);
+        }
+    }
+
+    private static void DestroyRuntimeBuffer(ulong uuid, RuntimeBuffer buffer)
+    {
+        if (buffer.Disposed) return;
+        InternalCalls.Texture_DestroyRuntime(uuid);
+        s_RuntimeBuffers.Remove(uuid);
+        buffer.Disposed = true;
+        buffer.Pixels = Array.Empty<byte>();
     }
 
     /// <summary>
     /// Decodes PNG / JPEG / BMP / TGA bytes (cover art, downloads) to RGBA8 pixels, shrinking it so the longer side is
     /// at most <paramref name="maxSize"/> (0 = keep). Safe to call from worker threads; turn the pixels into a texture
-    /// with <see cref="Create(int, int, byte[], TextureFilter)"/> on the main thread. Returns null for unreadable data.
+    /// with <see cref="Create(int, int, byte[], TextureFilter, RuntimeTextureLifetime)"/> on the main thread. Returns null for unreadable data.
     /// </summary>
     public static byte[]? DecodeImage(byte[] data, int maxSize, out int width, out int height)
     {
@@ -237,7 +300,7 @@ public sealed class Texture : IEquatable<Texture>, IDisposable
     /// <see cref="GetPixel"/> per cell. The returned array is a fresh copy of
     /// the CPU buffer; mutating it does not change the texture (write it back
     /// with <see cref="SetPixels"/> + <see cref="Apply"/>). Only valid on a
-    /// runtime texture created with <see cref="Create(int, int, TextureFilter)"/>.
+    /// runtime texture created with <see cref="Create(int, int, TextureFilter, RuntimeTextureLifetime)"/>.
     /// </summary>
     public Color[] GetPixels()
     {
@@ -267,7 +330,7 @@ public sealed class Texture : IEquatable<Texture>, IDisposable
 
     /// <summary>
     /// Write this texture to a PNG file. Only valid for runtime textures created
-    /// with <see cref="Create(int, int, TextureFilter)"/> (their pixels live in a CPU buffer). The current
+    /// with <see cref="Create(int, int, TextureFilter, RuntimeTextureLifetime)"/> (their pixels live in a CPU buffer). The current
     /// CPU buffer is saved as-is, so you do NOT need to call <see cref="Apply"/>
     /// first — Apply only pushes to the GPU. For a file/asset texture the source
     /// image is already on disk; copy <see cref="Path"/> instead.
@@ -297,10 +360,8 @@ public sealed class Texture : IEquatable<Texture>, IDisposable
 
     public void Dispose()
     {
-        if (s_RuntimeBuffers.Remove(UUID) && UUID != 0)
-        {
-            InternalCalls.Texture_DestroyRuntime(UUID);
-        }
+        if (UUID != 0 && m_RuntimeBuffer is { Disposed: false })
+            DestroyRuntimeBuffer(UUID, m_RuntimeBuffer);
         UUID = 0;
     }
 

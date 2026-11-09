@@ -1,5 +1,6 @@
 #pragma once
 #include <imgui.h>
+#include "Gui/EditorKeyboard.hpp"
 #include "Collections/Color.hpp"
 #include "Collections/Vec2.hpp"
 #include "Graphics/Filter.hpp"
@@ -92,7 +93,7 @@ namespace Funke::ImGuiUtils {
 
 		ImGui::PushID(label);
 		BeginInspectorFieldRow(label);
-		if (ImGui::BeginCombo("##Value", preview)) {
+		if (EditorKeyboard::BeginCombo("##Value", preview)) {
 			for (TEnum value : valuesOf()) {
 				const bool isSelected = (currentValue == value);
 
@@ -111,7 +112,7 @@ namespace Funke::ImGuiUtils {
 				}
 			}
 
-			ImGui::EndCombo();
+			EditorKeyboard::EndCombo();
 		}
 		ImGui::PopID();
 
@@ -653,7 +654,7 @@ namespace Funke::ImGuiUtils {
 		bool changed = false;
 		ImGui::PushID(label);
 		BeginInspectorFieldRow(label);
-		if (ImGui::BeginCombo("##Value", preview)) {
+		if (EditorKeyboard::BeginCombo("##Value", preview)) {
 			for (TEnum value : magic_enum::enum_values<TEnum>()) {
 				auto name = magic_enum::enum_name(value);
 				if (name.empty()) continue;
@@ -667,7 +668,7 @@ namespace Funke::ImGuiUtils {
 					ImGui::SetItemDefaultFocus();
 				}
 			}
-			ImGui::EndCombo();
+			EditorKeyboard::EndCombo();
 		}
 		ImGui::PopID();
 		return changed;
@@ -687,7 +688,7 @@ namespace Funke::ImGuiUtils {
 		bool changed = false;
 		ImGui::PushID(label);
 		BeginInspectorFieldRow(label);
-		if (ImGui::BeginCombo("##Value", preview)) {
+		if (EditorKeyboard::BeginCombo("##Value", preview)) {
 			for (int i = 0; i < itemCount; ++i) {
 				const bool isSelected = uniform && (sampled == i);
 				if (ImGui::Selectable(itemNames[i], isSelected)) {
@@ -699,7 +700,7 @@ namespace Funke::ImGuiUtils {
 					ImGui::SetItemDefaultFocus();
 				}
 			}
-			ImGui::EndCombo();
+			EditorKeyboard::EndCombo();
 		}
 		ImGui::PopID();
 		return changed;

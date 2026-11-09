@@ -1,5 +1,7 @@
 # Scenes
 
+For the boundary between scene APIs and the example games' navigation, chunk streaming and terrain LOD, see [Navigation and large-world capabilities](Navigation-and-Worlds.md).
+
 A **scene** is a container for a slice of your game — a level, a menu, a screen. It holds entities (with their components) and **systems** (code that runs over them). This page explains how scenes are defined, loaded, saved, and how they behave while the game runs.
 
 If you just want the short version: you design a scene in the editor, it's saved as a `.scene` file, and at runtime the engine loads it, wakes up its systems, and updates it every frame.
@@ -261,3 +263,7 @@ At startup the engine loads the **startup scene**. A scene definition is marked 
 - [Startup Processes](Startup-Processes.md) — when and how the startup scene loads.
 - [Scripting](../Scripting/Scripting.md) — SceneSystems and switching scenes from code.
 - [Editor](../Editor/Editor.md) — building scenes visually, prefabs, and Play mode.
+
+### Physics during suspended-scene recovery
+
+Reactivating a suspended scene initializes only missing 2D physics resources. A retained body must belong to the same scene and entity; its shapes must belong to that body. Valid retained bodies, polygon pieces and joint connections keep their runtime state, including velocity, pose, sleep and activation state. Live recovery therefore does not replay serialized collider or rigidbody settings over running physics. Fresh suspended/deserialized components still initialize from their stored settings. Copied foreign runtime handles are discarded without destroying their owner's resources; full scene unload retains its additional body purge.

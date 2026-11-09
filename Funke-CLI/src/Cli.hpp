@@ -59,7 +59,7 @@ namespace Funke::Cli {
 
 	// --project <dir> or the project containing the working directory. Becomes the engine's current
 	// project so the asset registry resolves GUIDs against it.
-	FunkeProject* OpenProject(Args& args, std::string& outError);
+	FunkeProject* OpenProject(Args& args, std::string& outError, bool performMigrations = true);
 
 	// Accepts an absolute path, a path relative to the working directory, or one relative to the project root.
 	std::filesystem::path ResolveProjectPath(const FunkeProject& project, const std::string& value);

@@ -78,6 +78,44 @@ namespace Funke {
 		return static_cast<int>(s_AtlasBudgetBytes / (1024 * 1024));
 	}
 
+	size_t FontManager::GetSourceCacheBytes() {
+		size_t bytes = 0;
+		for (const auto& [id, entry] : s_TtfBufferCache)
+			if (entry.Bytes) bytes += entry.Bytes->size();
+		return bytes;
+	}
+
+	size_t FontManager::GetUnusedSourceCacheBytes() {
+		size_t bytes = 0;
+		for (const auto& [id, entry] : s_TtfBufferCache)
+			if (entry.Bytes && entry.Bytes.use_count() == 1) bytes += entry.Bytes->size();
+		return bytes;
+	}
+
+	void FontManager::SetSourceMemoryBudgetBytes(size_t bytes) {
+		s_SourceBudgetBytes = bytes;
+		EnforceSourceMemoryBudget();
+	}
+
+	void FontManager::ClearSourceCache() {
+		s_TtfBufferCache.clear();
+	}
+
+	void FontManager::EnforceSourceMemoryBudget() {
+		size_t bytes = GetSourceCacheBytes();
+		while (bytes > s_SourceBudgetBytes) {
+			auto victim = s_TtfBufferCache.end();
+			for (auto it = s_TtfBufferCache.begin(); it != s_TtfBufferCache.end(); ++it) {
+				if (!it->second.Bytes || it->second.Bytes.use_count() != 1) continue;
+				if (victim == s_TtfBufferCache.end() || it->second.LastAccessTick < victim->second.LastAccessTick)
+					victim = it;
+			}
+			if (victim == s_TtfBufferCache.end()) break;
+			bytes -= victim->second.Bytes->size();
+			s_TtfBufferCache.erase(victim);
+		}
+	}
+
 	std::shared_ptr<const std::vector<uint8_t>> FontManager::GetSharedTtf(
 		uint64_t assetId, const std::string& path)
 	{
@@ -86,6 +124,7 @@ namespace Funke {
 		// must re-read. In-place edits are picked up by ReloadChangedFromDisk.
 		auto it = s_TtfBufferCache.find(assetId);
 		if (it != s_TtfBufferCache.end() && it->second.Bytes && it->second.Path == path) {
+			it->second.LastAccessTick = ++s_AccessTick;
 			return it->second.Bytes;
 		}
 		KnownFileStamps::Record(path);
@@ -95,7 +134,8 @@ namespace Funke {
 			return nullptr;
 		}
 		auto shared = std::make_shared<const std::vector<uint8_t>>(std::move(bytes));
-		s_TtfBufferCache[assetId] = TtfBufferEntry{ shared, path };
+		s_TtfBufferCache[assetId] = TtfBufferEntry{ shared, path, ++s_AccessTick };
+		EnforceSourceMemoryBudget();
 		return shared;
 	}
 
@@ -227,7 +267,8 @@ namespace Funke {
 		auto font = std::make_unique<Font>();
 		if (!font->LoadPrepared(prepared)) return FontHandle::Invalid();
 		KnownFileStamps::Record(font->GetFilepath());
-		s_TtfBufferCache[assetId] = TtfBufferEntry{ font->m_TtfBuffer, font->GetFilepath() };
+		s_TtfBufferCache[assetId] = TtfBufferEntry{ font->m_TtfBuffer, font->GetFilepath(), ++s_AccessTick };
+		EnforceSourceMemoryBudget();
 		return CreateSlot(std::move(font), assetId, pixelSize);
 	}
 
@@ -273,6 +314,7 @@ namespace Funke {
 		slot.PixelSize = 0.0f;
 		slot.InUse = false;
 		++slot.Generation;
+		EnforceSourceMemoryBudget();
 	}
 
 	void FontManager::UnloadAll() {
@@ -288,6 +330,7 @@ namespace Funke {
 		}
 		s_Lookup.clear();
 		s_FailedAsyncBakes.clear();
+		ClearSourceCache();
 		s_DefaultFont = FontHandle::Invalid();
 	}
 
@@ -299,6 +342,14 @@ namespace Funke {
 			if (KnownFileStamps::HasChangedOnDisk(entry.Path)) {
 				changed.push_back(assetId);
 			}
+		}
+
+		// Explicit source-cache clearing must not disable hot reload for active fonts.
+		for (const auto& slot : s_Slots) {
+			if (slot.InUse && slot.Font && slot.AssetUUID != 0
+				&& KnownFileStamps::HasChangedOnDisk(slot.Font->GetFilepath())
+				&& std::find(changed.begin(), changed.end(), slot.AssetUUID) == changed.end())
+				changed.push_back(slot.AssetUUID);
 		}
 
 		for (const uint64_t assetId : changed) {
@@ -318,6 +369,7 @@ namespace Funke {
 	}
 
 	void FontManager::EnforceMemoryBudget() {
+		EnforceSourceMemoryBudget();
 		if (s_AtlasBudgetBytes == 0) return;  // unlimited
 
 		size_t total = 0;

@@ -123,7 +123,7 @@ namespace Funke {
 		static_assert(std::is_empty_v<T> || std::is_default_constructible_v<T>, "Default AddComponent requires a default constructor");
 		AppendCommand(entity, [](void*, Scene& scene, EntityHandle& handle) {
 			auto& registry = scene.GetRegistry();
-			if (!registry.all_of<T>(handle)) registry.emplace<T>(handle);
+			if (!registry.all_of<T>(handle)) scene.AddComponent<T>(handle);
 		}, Operation::DefaultAdd, entt::type_hash<T>::value());
 	}
 
@@ -134,7 +134,7 @@ namespace Funke {
 		static_assert(alignof(T) <= alignof(std::max_align_t));
 		Command& command = AppendCommand(entity, [](void* state, Scene& scene, EntityHandle& handle) {
 			auto& registry = scene.GetRegistry();
-			if (!registry.all_of<T>(handle)) registry.emplace<T>(handle, std::move(*std::launder(reinterpret_cast<T*>(state))));
+			if (!registry.all_of<T>(handle)) scene.AddComponent<T>(handle, std::move(*std::launder(reinterpret_cast<T*>(state))));
 		});
 		ConstructPayload<T>(command, std::move(value));
 	}
@@ -150,7 +150,7 @@ namespace Funke {
 		Command& command = AppendCommand(entity, [](void* state, Scene& scene, EntityHandle& handle) {
 			auto& registry = scene.GetRegistry();
 			if (registry.all_of<T>(handle)) return;
-			T& component = registry.emplace<T>(handle);
+			T& component = scene.AddComponent<T>(handle);
 			(*std::launder(reinterpret_cast<Patch*>(state)))(component);
 		});
 		ConstructPayload<Patch>(command, std::forward<Configure>(configure));

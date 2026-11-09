@@ -140,8 +140,11 @@ namespace Funke {
 					m += weight[k] * (influence[k] < joints.size() ? joints[influence[k]] : identity);
 				}
 				const glm::vec3 p = glm::vec3(m * glm::vec4(source.Position[0], source.Position[1], source.Position[2], 1.0f));
-				// Joint matrices are mostly rigid; the inverse transpose isn't worth it per vertex.
-				glm::vec3 n = glm::mat3(m) * glm::vec3(source.Normal[0], source.Normal[1], source.Normal[2]);
+				const glm::mat3 linear(m);
+				const glm::mat3 cofactor(glm::cross(linear[1], linear[2]), glm::cross(linear[2], linear[0]), glm::cross(linear[0], linear[1]));
+				const float determinant = glm::dot(linear[0], cofactor[0]);
+				glm::vec3 n = cofactor * glm::vec3(source.Normal[0], source.Normal[1], source.Normal[2]);
+				if (determinant < 0.0f) n = -n;
 				const float length = glm::length(n);
 				n = length > 1e-12f ? n / length : glm::vec3(0.0f, 1.0f, 0.0f);
 				MeshVertex& out = outVertices[v];

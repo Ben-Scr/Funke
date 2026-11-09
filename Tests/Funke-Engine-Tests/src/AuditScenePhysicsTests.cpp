@@ -7,9 +7,14 @@
 #include "Components/Physics/CircleCollider2DComponent.hpp"
 #include "Components/Physics/PolygonCollider2DComponent.hpp"
 #include "Components/Physics/Rigidbody2DComponent.hpp"
+#include "Components/Physics/Joint2DComponents.hpp"
+#include "Scripting/NativeEntityCommandBuffer.hpp"
 #include "Core/Application.hpp"
+#include "Events/ScenePostStartEvent.hpp"
 #include "Jobs/JobSystem.hpp"
 #include "Physics/PhysicsSystem2D.hpp"
+#include "Physics/Physics2D.hpp"
+#include <limits>
 #include "Scene/Scene.hpp"
 #include "Scene/SceneDefinition.hpp"
 #include "Scene/SceneManager.hpp"
@@ -39,12 +44,21 @@ namespace {
 		return config;
 	}
 
+	class RecoveryDestroyFailure final : public SceneSystem {
+	public:
+		explicit RecoveryDestroyFailure(bool* fail) : m_Fail(fail) {}
+		void OnDestroy(Scene&) override { if (*m_Fail) throw std::runtime_error("expected recovery failure"); }
+	private:
+		bool* m_Fail;
+	};
+
 	class PhysicsAuditApplication final : public Application {
 	public:
-		explicit PhysicsAuditApplication(std::function<void(Scene&)> test) : m_Test(std::move(test)) {}
+		explicit PhysicsAuditApplication(std::function<void(Scene&)> test, bool* failDestroy = nullptr) : m_Test(std::move(test)), m_FailDestroy(failDestroy) {}
 		ApplicationConfig GetConfiguration() const override { return AuditConfiguration(true); }
 		void ConfigureScenes() override {
-			SceneManager::RegisterScene("Physics Audit").WithoutDefaultCamera2D().SetAsStartupScene();
+			auto& definition = SceneManager::RegisterScene("Physics Audit").WithoutDefaultCamera2D().SetAsStartupScene();
+			if (m_FailDestroy) definition.AddSystem<RecoveryDestroyFailure>(m_FailDestroy);
 		}
 		void Start() override {
 			struct QuitOnExit { ~QuitOnExit() { Application::Quit(); } } quit;
@@ -55,6 +69,7 @@ namespace {
 		}
 	private:
 		std::function<void(Scene&)> m_Test;
+		bool* m_FailDestroy;
 	};
 
 	template <typename TCollider>
@@ -390,4 +405,392 @@ TEST_CASE("Audit: scene phases stop after teardown from a system callback") {
 	CHECK(state.Interrupted);
 	CHECK(state.Destroyed);
 	CHECK(state.CallsAfterDestroy == 0);
+}
+
+TEST_CASE("Backlog raycasts accept infinite distance and reject invalid coordinates") {
+	PhysicsAuditApplication app([](Scene& scene) {
+		auto box = scene.CreateEntity("Ray target");
+		box.GetComponent<Transform2DComponent>().SetPosition({5.0f, 0.0f});
+		box.AddComponent<BoxCollider2DComponent>();
+		for (float distance : {10.0f, std::numeric_limits<float>::infinity()}) {
+			const auto hit = Physics2D::Raycast({0,0}, {1,0}, distance);
+			REQUIRE(hit.has_value());
+			CHECK(hit->distance == doctest::Approx(4.5f));
+		}
+		CHECK_FALSE(Physics2D::Raycast({0,0}, {0,0}, 10));
+		CHECK_FALSE(Physics2D::Raycast({0,0}, {1,0}, std::numeric_limits<float>::quiet_NaN()));
+		CHECK_FALSE(Physics2D::Raycast({0,0}, {std::numeric_limits<float>::infinity(),0}, 10));
+	});
+	CHECK(app.Run() == 0);
+}
+
+TEST_CASE("Backlog geometry edits refresh auto mass and preserve pinned mass") {
+	PhysicsAuditApplication app([](Scene& scene) {
+		auto box = scene.CreateEntity("Box");
+		box.AddComponent<Rigidbody2DComponent>().SetBodyType(BodyType::Dynamic);
+		auto& shape = box.AddComponent<BoxCollider2DComponent>();
+		auto& body = box.GetComponent<Rigidbody2DComponent>();
+		const float initial = body.GetMass();
+		const float initialInertia = body.GetInertia();
+		shape.SetScale({2,2}, scene);
+		CHECK(body.GetMass() == doctest::Approx(initial * 4));
+		const float centeredInertia = body.GetInertia();
+		CHECK(centeredInertia == doctest::Approx(initialInertia * 16));
+		shape.SetCenter({1,2}, scene);
+		CHECK(body.GetLocalCenterOfMass().x == doctest::Approx(1));
+		CHECK(body.GetLocalCenterOfMass().y == doctest::Approx(2));
+		CHECK(body.GetInertia() == doctest::Approx(centeredInertia));
+		body.SetMass(7);
+		shape.SetCenter({1,2}, scene);
+		shape.SetScale({3,3}, scene);
+		CHECK(body.GetMass() == doctest::Approx(7));
+		auto circle = scene.CreateEntity("Circle");
+		circle.AddComponent<Rigidbody2DComponent>().SetBodyType(BodyType::Dynamic);
+		auto& disk = circle.AddComponent<CircleCollider2DComponent>();
+		const float before = circle.GetComponent<Rigidbody2DComponent>().GetMass();
+		disk.SetRadius(1, scene);
+		CHECK(circle.GetComponent<Rigidbody2DComponent>().GetMass() == doctest::Approx(before * 4));
+	});
+	CHECK(app.Run() == 0);
+}
+
+TEST_CASE("Backlog multipart overlaps return each entity once") {
+	PhysicsAuditApplication app([](Scene& scene) {
+		auto entity = scene.CreateEntity("Multipart");
+		auto& polygon = entity.AddComponent<PolygonCollider2DComponent>();
+		const std::vector<Vec2> square{{-1,-1},{1,-1},{1,1},{-1,1}};
+		polygon.SetPaths({square, square}, scene);
+		CHECK(Physics2D::OverlapCircleAllRefs({0,0}, 3).size() == 1);
+		CHECK(Physics2D::OverlapBoxAllRefs({0,0}, {3,3}, 0).size() == 1);
+		CHECK(Physics2D::OverlapPolygonAllRefs({0,0}, square).size() == 1);
+		CHECK(Physics2D::ContainsPointAllRefs({0,0}).size() == 1);
+		SceneManager::RegisterScene("Overlap second").WithoutDefaultCamera2D();
+		auto result = SceneManager::TryLoadSceneAdditive("Overlap second");
+		REQUIRE(result.Succeeded());
+		auto otherScene = result.LoadedScene.lock();
+		REQUIRE(otherScene);
+		auto other = otherScene->CreateEntity("Same local handle");
+		REQUIRE(other.GetHandle() == entity.GetHandle());
+		other.AddComponent<PolygonCollider2DComponent>().SetPaths({square, square}, *otherScene);
+		for (const auto& hits : {Physics2D::OverlapCircleAllRefs({0,0}, 3),
+			Physics2D::OverlapBoxAllRefs({0,0}, {3,3}, 0),
+			Physics2D::OverlapPolygonAllRefs({0,0}, square), Physics2D::ContainsPointAllRefs({0,0})}) {
+			REQUIRE(hits.size() == 2);
+			CHECK(hits[0].entity == hits[1].entity);
+			CHECK(hits[0].scene != hits[1].scene);
+		}
+	});
+	CHECK(app.Run() == 0);
+}
+
+namespace {
+	struct BacklogTickSystem : SceneSystem {
+		int* Count;
+		bool Unload;
+		BacklogTickSystem(int* count, bool unload) : Count(count), Unload(unload) {}
+		void Update(Scene& scene) override {
+			++*Count;
+			if (Unload) SceneManager::UnloadScene(scene.GetName());
+		}
+	};
+	class BacklogSceneApplication final : public Application {
+	public:
+		int Counts[3]{};
+		std::vector<int> Events;
+		ApplicationConfig GetConfiguration() const override { return AuditConfiguration(false); }
+		void ConfigureScenes() override {
+			SubscribeEvent<ScenePostStartEvent>([n = 0, this](ScenePostStartEvent&) mutable { Events.push_back(++n); });
+			for (int i = 0; i < 3; ++i) SceneManager::RegisterScene("Backlog" + std::to_string(i))
+				.WithoutDefaultCamera2D().AddSystem<BacklogTickSystem>(&Counts[i], i == 0).SetAsStartupScene();
+		}
+		void Start() override { Application::SetIsPlaying(true); }
+		void Update() override { Application::Quit(); }
+	};
+}
+
+TEST_CASE("Backlog scene self-unload does not skip the next scene and event state persists") {
+	BacklogSceneApplication app;
+	CHECK(app.Run() == 0);
+	CHECK(app.Counts[0] == 1);
+	CHECK(app.Counts[1] == 1);
+	CHECK(app.Counts[2] == 1);
+	CHECK(app.Events == std::vector<int>{1,2,3});
+}
+
+namespace {
+	struct PhaseMutationState {
+		AuditPhase Phase;
+		int Mode;
+		int Calls[4]{};
+		bool IgnoreFollowingFixedTicks = false;
+		bool Complete = false;
+	};
+	class PhaseMutationSystem final : public SceneSystem {
+	public:
+		PhaseMutationSystem(PhaseMutationState* state, int index) : m_State(state), m_Index(index) {}
+		void Update(Scene&) override { Tick(*m_State, m_Index, AuditPhase::Update); }
+		void FixedUpdate(Scene&) override { Tick(*m_State, m_Index, AuditPhase::FixedUpdate); }
+		void OnPreRender(Scene&) override { Tick(*m_State, m_Index, AuditPhase::PreRender); }
+	private:
+		static void Tick(PhaseMutationState& state, int index, AuditPhase phase) {
+			if (phase != state.Phase || state.IgnoreFollowingFixedTicks || (state.Complete && index != 3)) return;
+			++state.Calls[index];
+			if (index == 0 && state.Mode == 0) SceneManager::UnloadScene("Phase0");
+			if (index == 0 && state.Mode == 1) SceneManager::UnloadScene("Phase1");
+			if (index == 1 && state.Mode == 2) SceneManager::UnloadScene("Phase0");
+			if (index == 0 && state.Mode == 3) CHECK(SceneManager::TryLoadSceneAdditive("Phase3").Succeeded());
+			if (index == 2) { state.Complete = true; Application::Quit(); }
+		}
+		PhaseMutationState* m_State;
+		int m_Index;
+	};
+	class PhaseMutationApplication final : public Application {
+	public:
+		explicit PhaseMutationApplication(PhaseMutationState& state) : m_State(state) {}
+		ApplicationConfig GetConfiguration() const override {
+			auto config = AuditConfiguration(false);
+			config.UseTargetFrameRateForMainLoop = true;
+			return config;
+		}
+		void ConfigureScenes() override {
+			for (int i = 0; i < 4; ++i) {
+				auto& scene = SceneManager::RegisterScene("Phase" + std::to_string(i))
+					.WithoutDefaultCamera2D().AddSystem<PhaseMutationSystem>(&m_State, i);
+				if (i < 3) scene.SetAsStartupScene();
+			}
+		}
+		void Start() override { Application::SetIsPlaying(true); Time::SetFixedDeltaTime(0.001f); }
+		void FixedUpdate() override {
+			// Quit completes at frame end; later catch-up ticks have their own valid scene snapshots.
+			if (m_State.Phase == AuditPhase::FixedUpdate && m_State.Complete)
+				m_State.IgnoreFollowingFixedTicks = true;
+		}
+		void Update() override { if (++m_Frames > 40) Application::Quit(); }
+	private:
+		PhaseMutationState& m_State;
+		int m_Frames = 0;
+	};
+}
+
+TEST_CASE("Backlog scene mutations preserve every phase snapshot") {
+	const float previousStep = Time::GetFixedDeltaTime();
+	for (auto phase : {AuditPhase::Update, AuditPhase::FixedUpdate, AuditPhase::PreRender}) for (int mode = 0; mode < 4; ++mode) {
+		CAPTURE(mode);
+		PhaseMutationState state{phase, mode};
+		PhaseMutationApplication app(state);
+		CHECK(app.Run() == 0);
+		CHECK(state.Complete);
+		CHECK(state.Calls[0] == 1);
+		CHECK(state.Calls[1] == (mode == 1 ? 0 : 1));
+		CHECK(state.Calls[2] == 1);
+		CHECK(state.Calls[3] == 0);
+	}
+	Time::SetFixedDeltaTime(previousStep);
+}
+
+namespace {
+	template<typename TCollider>
+	void CheckRecoveryResources(Scene& scene, bool withRigidbody, bool& failDestroy) {
+		auto& world = PhysicsSystem2D::GetMainPhysicsWorld();
+		const auto baseline = world.GetResourceCounts();
+		Entity entity = scene.CreateEntity("Retained collider");
+		entity.AddComponent<TCollider>();
+		if constexpr (std::is_same_v<TCollider, PolygonCollider2DComponent>) {
+			entity.GetComponent<TCollider>().SetPoints({ {0, 0}, {3, 0}, {3, 1}, {1, 1}, {1, 3}, {0, 3} }, scene);
+			REQUIRE(entity.GetComponent<TCollider>().GetShapePolygons().size() > 1);
+		}
+		Entity connected = Entity::Null;
+		b2JointId joint = b2_nullJointId;
+		if (withRigidbody) {
+			entity.AddComponent<Rigidbody2DComponent>().SetGravityScale(0.0f);
+			connected = scene.CreateEntity("Connected body");
+			connected.AddComponent<Rigidbody2DComponent>().SetGravityScale(0.0f);
+			entity.AddComponent<RevoluteJoint2DComponent>().ConnectedBody = connected.GetHandle();
+			Application::SetIsPlaying(true);
+			PhysicsSystem2D physics;
+			physics.FixedUpdate(1.0f / 60.0f);
+			joint = entity.GetComponent<RevoluteJoint2DComponent>().m_JointId;
+			REQUIRE(entity.GetComponent<RevoluteJoint2DComponent>().IsCreated());
+			auto& body = entity.GetComponent<Rigidbody2DComponent>();
+			body.SetPosition({ 8.0f, 9.0f });
+			body.SetRotation(0.7f);
+			body.SetVelocity({ 2.0f, 3.0f });
+			body.SetAngularVelocity(0.4f);
+		}
+		const auto bodyId = entity.GetComponent<TCollider>().m_BodyId;
+		const auto shapeId = entity.GetComponent<TCollider>().m_ShapeId;
+		const auto counts = world.GetResourceCounts();
+		auto retained = SceneManager::GetLoadedScene(scene.GetName()).lock();
+		REQUIRE(retained);
+		for (int iteration = 0; iteration < 50; ++iteration) {
+			CAPTURE(iteration);
+			const bool expectedSuspend = !failDestroy;
+			CHECK(SceneManager::SuspendLoadedSceneForRelease(retained) == expectedSuspend);
+			failDestroy = false;
+			REQUIRE(SceneManager::RollbackLoadedSceneRecovery(retained));
+			REQUIRE(SceneManager::ActivateSuspendedScene(retained, false));
+			REQUIRE(SceneManager::CommitSuspendedSceneActivation(retained));
+			const auto current = world.GetResourceCounts();
+			CHECK(current.bodyCount == counts.bodyCount);
+			CHECK(current.shapeCount == counts.shapeCount);
+			CHECK(current.jointCount == counts.jointCount);
+			CHECK(B2_ID_EQUALS(entity.GetComponent<TCollider>().m_BodyId, bodyId));
+			CHECK(B2_ID_EQUALS(entity.GetComponent<TCollider>().m_ShapeId, shapeId));
+			if (withRigidbody) {
+				const auto& body = entity.GetComponent<Rigidbody2DComponent>();
+				CHECK(body.GetPosition().x == doctest::Approx(8.0f));
+				CHECK(body.GetPosition().y == doctest::Approx(9.0f));
+				CHECK(body.GetRotation() == doctest::Approx(0.7f));
+				CHECK(body.GetVelocity().x == doctest::Approx(2.0f));
+				CHECK(body.GetVelocity().y == doctest::Approx(3.0f));
+				CHECK(body.GetAngularVelocity() == doctest::Approx(0.4f));
+				CHECK(B2_ID_EQUALS(entity.GetComponent<RevoluteJoint2DComponent>().m_JointId, joint));
+			}
+		}
+		entity.Destroy();
+		if (connected.IsValid()) connected.Destroy();
+		const auto finalCounts = world.GetResourceCounts();
+		CHECK(finalCounts.bodyCount == baseline.bodyCount);
+		CHECK(finalCounts.shapeCount == baseline.shapeCount);
+		CHECK(finalCounts.jointCount == baseline.jointCount);
+	}
+
+	template<typename TFirst, typename TSecond>
+	void CheckColliderConflict(Scene& scene) {
+		auto& world = PhysicsSystem2D::GetMainPhysicsWorld();
+		for (int api = 0; api < 5; ++api) {
+			CAPTURE(api);
+			Entity entity = scene.CreateEntity("Conflicting collider");
+			entity.AddComponent<TFirst>();
+			const auto body = entity.GetComponent<TFirst>().m_BodyId;
+			const auto shape = entity.GetComponent<TFirst>().m_ShapeId;
+			const auto counts = world.GetResourceCounts();
+			if (api == 0) CHECK_THROWS_AS(entity.AddComponent<TSecond>(), FunkeException);
+			else if (api == 1) CHECK_THROWS_AS(scene.AddComponent<TSecond>(entity.GetHandle()), FunkeException);
+			else if (api == 2) CHECK_THROWS_AS(ComponentUtils::AddComponent<TSecond>(scene.GetRegistry(), entity.GetHandle()), FunkeException);
+			else {
+				NativeEntityCommandBuffer commands;
+				auto reference = NativeEntityCommandBuffer::Existing(entity);
+				if (api == 3) {
+					commands.AddComponent<TSecond>(reference);
+					commands.Playback(scene);
+				}
+				else {
+					commands.AddComponent<TSecond>(reference, [](TSecond&) { FAIL("conflicting configure callback ran"); });
+					CHECK_THROWS_AS(commands.Playback(scene), FunkeException);
+				}
+			}
+			CHECK_FALSE(entity.HasComponent<TSecond>());
+			CHECK(entity.GetComponent<TFirst>().IsValid());
+			CHECK(B2_ID_EQUALS(entity.GetComponent<TFirst>().m_BodyId, body));
+			CHECK(B2_ID_EQUALS(entity.GetComponent<TFirst>().m_ShapeId, shape));
+			CHECK(world.GetResourceCounts().bodyCount == counts.bodyCount);
+			CHECK(world.GetResourceCounts().shapeCount == counts.shapeCount);
+			CHECK(&entity.AddComponent<TFirst>() == &entity.GetComponent<TFirst>());
+			entity.AddComponent<Rigidbody2DComponent>();
+			CHECK(B2_ID_EQUALS(entity.GetComponent<Rigidbody2DComponent>().GetBodyHandle(), body));
+			entity.Destroy();
+		}
+	}
+}
+
+TEST_CASE("Memory: recovery retains collider bodies shapes and joints for 50 cycles") {
+	bool withRigidbody = false;
+	SUBCASE("static colliders") {}
+	SUBCASE("rigidbody colliders") { withRigidbody = true; }
+	bool failDestroy = true;
+	PhysicsAuditApplication app([&](Scene& scene) {
+		CheckRecoveryResources<BoxCollider2DComponent>(scene, withRigidbody, failDestroy);
+		CheckRecoveryResources<CircleCollider2DComponent>(scene, withRigidbody, failDestroy);
+		CheckRecoveryResources<PolygonCollider2DComponent>(scene, withRigidbody, failDestroy);
+	}, &failDestroy);
+	CHECK(app.Run() == 0);
+}
+
+TEST_CASE("Memory: public collider additions enforce all directed conflicts before allocation") {
+	PhysicsAuditApplication app([](Scene& scene) {
+		CheckColliderConflict<BoxCollider2DComponent, CircleCollider2DComponent>(scene);
+		CheckColliderConflict<CircleCollider2DComponent, BoxCollider2DComponent>(scene);
+		CheckColliderConflict<BoxCollider2DComponent, PolygonCollider2DComponent>(scene);
+		CheckColliderConflict<PolygonCollider2DComponent, BoxCollider2DComponent>(scene);
+		CheckColliderConflict<CircleCollider2DComponent, PolygonCollider2DComponent>(scene);
+		CheckColliderConflict<PolygonCollider2DComponent, CircleCollider2DComponent>(scene);
+	});
+	CHECK(app.Run() == 0);
+}
+
+TEST_CASE("Memory: suspended physics initialization rejects foreign copied runtime handles") {
+	PhysicsAuditApplication app([](Scene& scene) {
+		Entity source = scene.CreateEntity("Foreign owner");
+		source.AddComponent<PolygonCollider2DComponent>().SetPoints(
+			{ {0, 0}, {3, 0}, {3, 1}, {1, 1}, {1, 3}, {0, 3} }, scene);
+		source.AddComponent<Rigidbody2DComponent>().SetGravityScale(0.0f);
+		const auto body = source.GetComponent<PolygonCollider2DComponent>().m_BodyId;
+		const auto shape = source.GetComponent<PolygonCollider2DComponent>().m_ShapeId;
+		SceneManager::RegisterScene("Foreign handles").WithoutDefaultCamera2D().OnLoad([source](Scene& target) {
+			Entity copy = target.CreateEntity("Copied runtime handles");
+			copy.AddComponent<PolygonCollider2DComponent>(source.GetComponent<PolygonCollider2DComponent>());
+			copy.AddComponent<Rigidbody2DComponent>(source.GetComponent<Rigidbody2DComponent>());
+		});
+		REQUIRE(SceneManager::TryLoadSceneAdditiveSuspended("Foreign handles").Succeeded());
+		auto target = SceneManager::GetLoadedScene("Foreign handles").lock();
+		REQUIRE(target);
+		REQUIRE(SceneManager::ActivateSuspendedScene(target, false));
+		REQUIRE(SceneManager::CommitSuspendedSceneActivation(target));
+		const auto handle = target->GetRegistry().view<PolygonCollider2DComponent>().front();
+		const auto& copied = target->GetComponent<PolygonCollider2DComponent>(handle);
+		CHECK(copied.IsValid());
+		CHECK_FALSE(B2_ID_EQUALS(copied.m_BodyId, body));
+		CHECK_FALSE(B2_ID_EQUALS(copied.m_ShapeId, shape));
+		CHECK(source.GetComponent<PolygonCollider2DComponent>().IsValid());
+		CHECK(B2_ID_EQUALS(source.GetComponent<PolygonCollider2DComponent>().m_ShapeId, shape));
+		CHECK(copied.GetShapePolygons().size() == source.GetComponent<PolygonCollider2DComponent>().GetShapePolygons().size());
+		SceneManager::UnloadScene("Foreign handles");
+		CHECK(source.GetComponent<PolygonCollider2DComponent>().IsValid());
+	});
+	CHECK(app.Run() == 0);
+}
+
+TEST_CASE("Memory: fresh suspended colliders initialize while retained sleeping bodies remain asleep") {
+	PhysicsAuditApplication app([](Scene& scene) {
+		auto blueprint = Scene::CreateDetachedScene("Fresh physics");
+		blueprint->CreateEntity("Fresh box").AddComponent<BoxCollider2DComponent>();
+		blueprint->CreateEntity("Fresh circle").AddComponent<CircleCollider2DComponent>();
+		blueprint->CreateEntity("Fresh polygon").AddComponent<PolygonCollider2DComponent>();
+		const auto serialized = SceneSerializer::SerializeScene(*blueprint);
+		SceneManager::RegisterScene("Fresh physics").WithoutDefaultCamera2D().OnLoadChecked([serialized](Scene& fresh) {
+			return SceneSerializer::DeserializeScene(fresh, serialized, "Fresh physics");
+		});
+		const auto before = PhysicsSystem2D::GetMainPhysicsWorld().GetResourceCounts();
+		REQUIRE(SceneManager::TryLoadSceneAdditiveSuspended("Fresh physics").Succeeded());
+		auto fresh = SceneManager::GetLoadedScene("Fresh physics").lock();
+		REQUIRE(fresh);
+		CHECK(PhysicsSystem2D::GetMainPhysicsWorld().GetResourceCounts().bodyCount == before.bodyCount);
+		REQUIRE(SceneManager::ActivateSuspendedScene(fresh, false));
+		REQUIRE(SceneManager::CommitSuspendedSceneActivation(fresh));
+		CHECK(PhysicsSystem2D::GetMainPhysicsWorld().GetResourceCounts().bodyCount == before.bodyCount + 3);
+		CHECK(PhysicsSystem2D::GetMainPhysicsWorld().GetResourceCounts().shapeCount == before.shapeCount + 3);
+		SceneManager::UnloadScene("Fresh physics");
+		Entity entity = scene.CreateEntity("Sleeping retained body");
+		entity.AddComponent<Rigidbody2DComponent>().SetGravityScale(0.0f);
+		entity.AddComponent<BoxCollider2DComponent>();
+		Application::SetIsPlaying(true);
+		PhysicsSystem2D physics;
+		for (int frame = 0; frame < 120 && entity.GetComponent<Rigidbody2DComponent>().IsAwake(); ++frame)
+			physics.FixedUpdate(1.0f / 60.0f);
+		REQUIRE_FALSE(entity.GetComponent<Rigidbody2DComponent>().IsAwake());
+		auto retained = SceneManager::GetLoadedScene(scene.GetName()).lock();
+		REQUIRE(SceneManager::SuspendLoadedSceneForRelease(retained));
+		REQUIRE(SceneManager::RollbackLoadedSceneRecovery(retained));
+		REQUIRE(SceneManager::ActivateSuspendedScene(retained, false));
+		REQUIRE(SceneManager::CommitSuspendedSceneActivation(retained));
+		CHECK_FALSE(entity.GetComponent<Rigidbody2DComponent>().IsAwake());
+		entity.GetComponent<BoxCollider2DComponent>().SetEnabled(false);
+		REQUIRE(SceneManager::SuspendLoadedSceneForRelease(retained));
+		REQUIRE(SceneManager::RollbackLoadedSceneRecovery(retained));
+		REQUIRE(SceneManager::ActivateSuspendedScene(retained, false));
+		REQUIRE(SceneManager::CommitSuspendedSceneActivation(retained));
+		CHECK_FALSE(entity.GetComponent<BoxCollider2DComponent>().IsEnabled());
+	});
+	CHECK(app.Run() == 0);
 }

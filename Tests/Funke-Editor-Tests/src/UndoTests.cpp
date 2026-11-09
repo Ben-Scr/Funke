@@ -25,6 +25,8 @@
 #include "Components/General/Transform2DComponent.hpp"
 #include "Components/General/RectTransform2DComponent.hpp"
 #include "Inspector/PropertyValue.hpp"
+#include "Inspector/ScriptCollectionValue.hpp"
+#include "Scripting/ScriptComponent.hpp"
 #include "Inspector/PropertyType.hpp"
 
 using namespace Funke;
@@ -36,10 +38,12 @@ namespace {
 		int* UndoCount = nullptr;
 		int* RedoCount = nullptr;
 		bool Mergeable = false;
+		std::string Action = "Edit";
 
 		void Undo(Scene&) override { if (UndoCount) ++*UndoCount; }
 		void Redo(Scene&) override { if (RedoCount) ++*RedoCount; }
 		bool TryMergeWith(const EditCommand&) override { return Mergeable; }
+		std::string Label() const override { return Action; }
 	};
 
 	std::unique_ptr<CountingCommand> MakeCounting(int* undo, int* redo, bool mergeable = false) {
@@ -48,6 +52,13 @@ namespace {
 		cmd->RedoCount = redo;
 		cmd->Mergeable = mergeable;
 		return cmd;
+	}
+
+	std::string HistoryFailure(const std::function<std::string()>& apply) {
+		try { apply(); }
+		catch (const std::exception& error) { return error.what(); }
+		FAIL("Expected a blocked asset history operation");
+		return {};
 	}
 
 	TransformSnapshot FlatSnapshot(const Vec2& pos) {
@@ -66,6 +77,12 @@ TEST_CASE("UndoStack: empty stack reports nothing and Undo/Redo are no-ops") {
 
 	CHECK_FALSE(stack.CanUndo());
 	CHECK_FALSE(stack.CanRedo());
+	CHECK_FALSE(stack.HasHistory());
+	std::string reason = "stale reason";
+	CHECK_FALSE(stack.CanUndo(&reason));
+	CHECK(reason.empty());
+	CHECK_FALSE(stack.CanRedo(&reason));
+	CHECK(reason.empty());
 	CHECK_NOTHROW(stack.Undo(*scene));
 	CHECK_NOTHROW(stack.Redo(*scene));
 }
@@ -206,6 +223,35 @@ TEST_CASE("SceneUndoHistory: replacement scenes cannot inherit stale commands or
 	CHECK(undos == 0);
 }
 
+TEST_CASE("SceneUndoHistory: reload reports loss of undo and redo while loaded scene switches are silent") {
+	SceneUndoHistory history;
+	std::shared_ptr<Scene> original = Scene::CreateDetachedScene("Reloaded");
+	std::shared_ptr<Scene> other = Scene::CreateDetachedScene("Still open");
+	int undos = 0, redos = 0;
+	history.ForScene(original).Push(MakeCounting(&undos, &redos));
+	history.ForScene(original).Push(MakeCounting(&undos, &redos));
+	REQUIRE_FALSE(history.ForScene(original).Undo(*original).empty());
+	history.ForScene(other).Push(MakeCounting(&undos, &redos));
+	const std::vector<std::weak_ptr<Scene>> both{ original, other };
+	CHECK(history.Retain(both).empty());
+	CHECK(history.ForScene(original).CanUndo());
+	CHECK(history.ForScene(original).CanRedo());
+	CHECK(history.HasHistory(original.get()));
+
+	std::shared_ptr<Scene> replacement = Scene::CreateDetachedScene("Reloaded");
+	replacement->SetSceneId(original->GetSceneId());
+	const std::vector<std::weak_ptr<Scene>> reloaded{ replacement, other };
+	CHECK(history.Retain(reloaded) == std::vector<std::string>{ "Reloaded" });
+	CHECK_FALSE(history.HasHistory(original.get()));
+	CHECK_FALSE(history.ForScene(replacement).HasHistory());
+	CHECK_FALSE(history.ForScene(replacement).CanUndo());
+	CHECK_FALSE(history.ForScene(replacement).CanRedo());
+	CHECK(history.ForScene(other).CanUndo());
+	CHECK(history.Retain(reloaded).empty());
+	CHECK(undos == 1);
+	CHECK(redos == 0);
+}
+
 TEST_CASE("TransformEditCommand::HasChange is false only when nothing moved") {
 	std::vector<TransformEditCommand::Entry> noMove = { { 1, FlatSnapshot({ 2.0f, 3.0f }), FlatSnapshot({ 2.0f, 3.0f }) } };
 	std::vector<TransformEditCommand::Entry> moved  = { { 1, FlatSnapshot({ 2.0f, 3.0f }), FlatSnapshot({ 9.0f, 3.0f }) } };
@@ -227,7 +273,7 @@ TEST_CASE("SceneUndoHistory: edit branches survive play mutations and restored s
 	CHECK_FALSE(history.ForScene(edit).CanRedo());
 	entity.Destroy();
 	edit.reset();
-	history.Retain({});
+	CHECK(history.Retain({}).empty());
 
 	std::shared_ptr<Scene> restored = Scene::CreateDetachedScene("Level");
 	REQUIRE(SceneSerializer::DeserializeScene(*restored, snapshot));
@@ -582,6 +628,93 @@ TEST_CASE("UndoStack: linked history survives moves and cannot replay after part
 	CHECK(undos == 1);
 }
 
+TEST_CASE("UndoStack: linked diagnostics name the partner and preceding undo and redo steps") {
+	std::shared_ptr<Scene> source = Scene::CreateDetachedScene("Source");
+	std::shared_ptr<Scene> target = Scene::CreateDetachedScene("Target");
+	SceneUndoHistory histories;
+	auto& a = histories.ForScene(source);
+	auto& b = histories.ForScene(target);
+	int linkedUndos = 0, linkedRedos = 0, otherUndos = 0, otherRedos = 0;
+	auto pushEdit = [&](UndoStack& stack, const char* label) {
+		auto command = MakeCounting(&otherUndos, &otherRedos);
+		command->Action = label;
+		stack.Push(std::move(command));
+	};
+	pushEdit(b, "Older target edit");
+	a.PushLinked(b, MakeCounting(&linkedUndos, &linkedRedos));
+	pushEdit(a, "Newer source edit");
+	pushEdit(b, "First target edit");
+	pushEdit(b, "Second target edit");
+	REQUIRE(a.Undo(*source) == "Newer source edit");
+	std::string reason;
+	CHECK_FALSE(a.CanUndo(&reason));
+	CHECK(reason.find("Undo 2 preceding step(s) in scene 'Target'") != std::string::npos);
+	CHECK(reason.find("Second target edit") != std::string::npos);
+	CHECK(a.Undo(*source).empty());
+	CHECK(a.GetLastError() == reason);
+	CHECK(a.HasHistory());
+	CHECK(linkedUndos == 0);
+	CHECK(otherUndos == 1);
+	REQUIRE(b.Undo(*target) == "Second target edit");
+	REQUIRE(b.Undo(*target) == "First target edit");
+	CHECK(a.CanUndo(&reason));
+	CHECK(reason.empty());
+	REQUIRE_FALSE(a.Undo(*source).empty());
+	CHECK(a.GetLastError().empty());
+	CHECK(linkedUndos == 1);
+	REQUIRE(b.Undo(*target) == "Older target edit");
+	CHECK_FALSE(a.CanRedo(&reason));
+	CHECK(reason.find("Redo 1 preceding step(s) in scene 'Target'") != std::string::npos);
+	CHECK(reason.find("Older target edit") != std::string::npos);
+	CHECK(a.Redo(*source).empty());
+	CHECK(a.GetLastError() == reason);
+	CHECK(linkedRedos == 0);
+	CHECK(otherRedos == 0);
+	REQUIRE(b.Redo(*target) == "Older target edit");
+	CHECK(a.CanRedo(&reason));
+	CHECK(reason.empty());
+	REQUIRE_FALSE(a.Redo(*source).empty());
+	CHECK(linkedRedos == 1);
+	CHECK(a.GetLastError().empty());
+}
+
+TEST_CASE("UndoStack: discarded partner histories keep the local linked entry blocked") {
+	std::shared_ptr<Scene> source = Scene::CreateDetachedScene("Source");
+	std::shared_ptr<Scene> target = Scene::CreateDetachedScene("Target");
+	SceneUndoHistory histories;
+	auto& a = histories.ForScene(source);
+	auto& b = histories.ForScene(target);
+	int undos = 0, redos = 0;
+	a.PushLinked(b, MakeCounting(&undos, &redos));
+	bool redo = false;
+	SUBCASE("undo after partner clear") { b.Clear(); }
+	SUBCASE("redo after partner clear") {
+		REQUIRE_FALSE(a.Undo(*source).empty());
+		b.Clear();
+		redo = true;
+	}
+	SUBCASE("partner history removed while scene stays alive") { histories.Forget(target.get()); }
+	SUBCASE("partner reopened with the same name and id") {
+		const auto id = target->GetSceneId();
+		histories.Forget(target.get());
+		target.reset();
+		target = Scene::CreateDetachedScene("Target");
+		target->SetSceneId(id);
+		CHECK_FALSE(histories.ForScene(target).HasHistory());
+	}
+	std::string reason;
+	CHECK_FALSE((redo ? a.CanRedo(&reason) : a.CanUndo(&reason)));
+	CHECK(reason.find("Target") != std::string::npos);
+	CHECK_FALSE(reason.empty());
+	for (int i = 0; i < 2; ++i) {
+		CHECK((redo ? a.Redo(*source) : a.Undo(*source)).empty());
+		CHECK(a.GetLastError() == reason);
+		CHECK(a.HasHistory());
+	}
+	CHECK(undos == (redo ? 1 : 0));
+	CHECK(redos == 0);
+}
+
 namespace {
 	struct AssetHistoryFixture {
 		std::filesystem::path Root;
@@ -645,6 +778,31 @@ TEST_CASE("Asset history: rename restores exact metadata and registry identity o
 	}
 }
 
+TEST_CASE("Asset history: CSharp file move and undo preserve declarations metadata and source path") {
+	AssetHistoryFixture f;
+	const auto original = f.Assets / "Player.cs";
+	const auto moved = f.Assets / "Movement" / "PlayerMovement.cs";
+	const std::string source = "namespace Game { class Player : Funke.EntityScript {} class Helper {} }";
+	const auto id = f.Create(original, source);
+	const auto metadata = File::ReadAllText(Path::ToUtf8(f.Meta(original)));
+	std::filesystem::create_directories(moved.parent_path());
+	auto edit = f.History.Begin({Path::ToUtf8(original), Path::ToUtf8(moved)}, "Move Script");
+	REQUIRE(AssetFileHistory::MoveAsset(original, moved));
+	REQUIRE(AssetRegistry::RestorePathsIncremental({Path::ToUtf8(original), Path::ToUtf8(moved)}));
+	f.History.Commit(edit);
+	CHECK(File::ReadAllText(Path::ToUtf8(moved)) == source);
+	CHECK(std::filesystem::path(AssetRegistry::ResolvePath(id)) == moved);
+	CHECK(f.History.Undo() == "Move Script");
+	CHECK(File::ReadAllText(Path::ToUtf8(original)) == source);
+	CHECK(File::ReadAllText(Path::ToUtf8(f.Meta(original))) == metadata);
+	CHECK(std::filesystem::path(AssetRegistry::ResolvePath(id)) == original);
+	CHECK_FALSE(std::filesystem::exists(moved));
+	CHECK(f.History.Redo() == "Move Script");
+	CHECK(File::ReadAllText(Path::ToUtf8(moved)) == source);
+	CHECK(File::ReadAllText(Path::ToUtf8(f.Meta(moved))) == metadata);
+	CHECK(std::filesystem::path(AssetRegistry::ResolvePath(id)) == moved);
+}
+
 TEST_CASE("Asset history: deleting a folder restores nested assets and empty directories") {
 	AssetHistoryFixture f;
 	const auto folder = f.Assets / "Folder";
@@ -672,10 +830,12 @@ TEST_CASE("Asset history: existing file or orphan metadata blocks restore withou
 	f.History.Commit(edit);
 	SUBCASE("file collision") { REQUIRE(File::WriteAllText(Path::ToUtf8(path), "external")); }
 	SUBCASE("metadata collision") { REQUIRE(File::WriteAllText(Path::ToUtf8(f.Meta(path)), "external")); }
-	CHECK_THROWS(f.History.Undo());
+	const auto conflict = std::filesystem::exists(path) ? path : f.Meta(path);
+	const auto error = HistoryFailure([&]() { return f.History.Undo(); });
+	CHECK(error.find("new file or directory") != std::string::npos);
+	CHECK(error.find(Path::ToUtf8(conflict)) != std::string::npos);
 	CHECK(f.History.CanUndo());
 	CHECK_FALSE(f.History.CanRedo());
-	const auto conflict = std::filesystem::exists(path) ? path : f.Meta(path);
 	CHECK(File::ReadAllText(Path::ToUtf8(conflict)) == "external");
 	std::filesystem::remove(conflict);
 	CHECK_FALSE(f.History.Undo().empty());
@@ -689,9 +849,79 @@ TEST_CASE("Asset history: changed files and added directory children block undo"
 	f.History.RecordCreated({ Path::ToUtf8(folder) }, "Import Assets");
 	SUBCASE("edited file") { REQUIRE(File::WriteAllText(Path::ToUtf8(file), "edited")); }
 	SUBCASE("new file") { REQUIRE(File::WriteAllText(Path::ToUtf8(folder / "external.txt"), "external")); }
-	CHECK_THROWS(f.History.Undo());
+	const auto error = HistoryFailure([&]() { return f.History.Undo(); });
+	CHECK(error.find("contents changed outside this history") != std::string::npos);
+	CHECK(error.find(Path::ToUtf8(folder)) != std::string::npos);
 	CHECK(std::filesystem::exists(file));
 	CHECK(f.History.CanUndo());
+}
+
+TEST_CASE("Asset history: rename and move diagnose external changes and retain both retry directions") {
+	AssetHistoryFixture f;
+	const auto from = f.Assets / "original.txt";
+	auto to = f.Assets / "renamed.txt";
+	std::string label = "Rename Asset";
+	SUBCASE("rename") {}
+	SUBCASE("move") {
+		to = f.Assets / "Folder" / "original.txt";
+		std::filesystem::create_directories(to.parent_path());
+		label = "Move Asset";
+	}
+	const auto id = f.Create(from);
+	const auto metadata = File::ReadAllText(Path::ToUtf8(f.Meta(from)));
+	auto edit = f.History.Begin({ Path::ToUtf8(from), Path::ToUtf8(to) }, label);
+	REQUIRE(AssetFileHistory::MoveAsset(from, to));
+	REQUIRE(AssetRegistry::RestorePathsIncremental({ Path::ToUtf8(from), Path::ToUtf8(to) }));
+	f.History.Commit(edit);
+	for (const bool redo : { false, true }) {
+		const auto current = redo ? from : to;
+		const auto destination = redo ? to : from;
+		auto apply = [&]() { return redo ? f.History.Redo() : f.History.Undo(); };
+		REQUIRE(File::WriteAllText(Path::ToUtf8(current), "external edit"));
+		for (int attempt = 0; attempt < 2; ++attempt) {
+			const auto error = HistoryFailure(apply);
+			CHECK(error.find("contents changed outside this history") != std::string::npos);
+			CHECK(error.find(Path::ToUtf8(current)) != std::string::npos);
+			CHECK(File::ReadAllText(Path::ToUtf8(current)) == "external edit");
+			CHECK(File::ReadAllText(Path::ToUtf8(f.Meta(current))) == metadata);
+			CHECK_FALSE(std::filesystem::exists(destination));
+			CHECK(std::filesystem::path(AssetRegistry::ResolvePath(id)) == current);
+			CHECK(f.History.CanUndo() == !redo);
+			CHECK(f.History.CanRedo() == redo);
+		}
+		REQUIRE(File::WriteAllText(Path::ToUtf8(current), "asset content"));
+		REQUIRE(File::WriteAllText(Path::ToUtf8(destination), "external new file"));
+		const auto collision = HistoryFailure(apply);
+		CHECK(collision.find("new file or directory") != std::string::npos);
+		CHECK(collision.find(Path::ToUtf8(destination)) != std::string::npos);
+		CHECK(File::ReadAllText(Path::ToUtf8(destination)) == "external new file");
+		CHECK(std::filesystem::path(AssetRegistry::ResolvePath(id)) == current);
+		std::filesystem::remove(destination);
+		REQUIRE(apply() == label);
+		CHECK(File::ReadAllText(Path::ToUtf8(destination)) == "asset content");
+		CHECK(File::ReadAllText(Path::ToUtf8(f.Meta(destination))) == metadata);
+		CHECK(std::filesystem::path(AssetRegistry::ResolvePath(id)) == destination);
+		CHECK_FALSE(std::filesystem::exists(current));
+	}
+}
+
+TEST_CASE("Asset history: missing files and changed types explain the blocked path") {
+	AssetHistoryFixture f;
+	const auto path = f.Assets / "asset.txt";
+	f.Create(path);
+	f.History.RecordCreated({ Path::ToUtf8(path) }, "Create Asset");
+	std::filesystem::remove(path);
+	std::string reason;
+	SUBCASE("missing file") { reason = "is missing"; }
+	SUBCASE("file replaced by directory") {
+		std::filesystem::create_directory(path);
+		reason = "file type has changed";
+	}
+	const auto error = HistoryFailure([&]() { return f.History.Undo(); });
+	CHECK(error.find(reason) != std::string::npos);
+	CHECK(error.find(Path::ToUtf8(path)) != std::string::npos);
+	CHECK(f.History.CanUndo());
+	CHECK_FALSE(f.History.CanRedo());
 }
 
 TEST_CASE("Asset history: registry GUID collision rolls back filesystem publication") {
@@ -741,7 +971,11 @@ TEST_CASE("Asset history: create redo never replaces a later file and new edits 
 	f.History.RecordCreated({ Path::ToUtf8(path) }, "Create Asset");
 	REQUIRE_FALSE(f.History.Undo().empty());
 	REQUIRE(File::WriteAllText(Path::ToUtf8(path), "external"));
-	CHECK_THROWS(f.History.Redo());
+	const auto error = HistoryFailure([&]() { return f.History.Redo(); });
+	CHECK(error.find("new file or directory") != std::string::npos);
+	CHECK(error.find(Path::ToUtf8(path)) != std::string::npos);
+	CHECK(f.History.CanRedo());
+	CHECK_FALSE(f.History.CanUndo());
 	CHECK(File::ReadAllText(Path::ToUtf8(path)) == "external");
 	std::filesystem::remove(path);
 	CHECK_FALSE(f.History.Redo().empty());
@@ -796,3 +1030,80 @@ TEST_CASE("Asset history: links inside assets remain forbidden") {
 	CHECK_FALSE(std::filesystem::exists(outside / "new.txt"));
 }
 #endif
+
+
+TEST_CASE("Structured collections: dictionary validation preserves keys and deterministic order") {
+    const std::string valid = R"({"version":1,"kind":"dictionary","leaf":"int","comparer":"ordinal","items":[["z","1"],["","2"],["A","3"],["a","4"],["\u00e4\ud83d\ude00","5"]]})";
+    Json::Value root;
+    std::string error;
+    REQUIRE(ScriptCollectionValue::Decode(PropertyType::Dictionary, valid, PropertyType::Int32, root, error));
+    const std::string canonical = ScriptCollectionValue::Encode(root);
+    std::reverse(root.FindMember("items")->GetArray().begin(), root.FindMember("items")->GetArray().end());
+    CHECK(ScriptCollectionValue::Encode(root) == canonical);
+    for (const auto& entries : {R"([["same","1"],["same","2"]])", R"([[null,"1"]])", R"([["a","bad"]])", R"([["a","2147483648"]])"}) {
+        std::string invalid = R"({"version":1,"kind":"dictionary","leaf":"int","comparer":"ordinal","items":)" + std::string(entries) + "}";
+        CHECK_FALSE(ScriptCollectionValue::Decode(PropertyType::Dictionary, invalid, PropertyType::Int32, root, error));
+        CHECK_FALSE(error.empty());
+    }
+    CHECK_FALSE(ScriptCollectionValue::Decode(PropertyType::Dictionary,
+        R"({"version":1,"kind":"dictionary","leaf":"int","comparer":"unsupported","items":[]})", PropertyType::Int32, root, error));
+    CHECK(error.find("StringComparer.Ordinal") != std::string::npos);
+    for (const auto* version : {"1.5", "1.0", "2", "\"1\""}) {
+        const std::string invalid = std::string(R"({"version":)") + version
+            + R"(,"kind":"nestedList","leaf":"int","items":[]})";
+        CHECK_FALSE(ScriptCollectionValue::Decode(PropertyType::NestedList, invalid, PropertyType::Int32, root, error));
+    }
+    REQUIRE(ScriptCollectionValue::Decode(PropertyType::NestedList,
+        R"({"version":1,"kind":"nestedList","leaf":"int","items":null})", PropertyType::Int32, root, error));
+    CHECK(error.empty());
+    REQUIRE(ScriptCollectionValue::Decode(PropertyType::NestedList,
+        R"({"version":1,"kind":"nestedList","leaf":"float","items":[null,[],["1.25","-7"]]})", PropertyType::Float, root, error));
+    CHECK(root.FindMember("items")->GetArray()[0].IsNull());
+    CHECK(root.FindMember("items")->GetArray()[1].GetArray().empty());
+    CHECK_FALSE(ScriptCollectionValue::Decode(PropertyType::NestedList,
+        R"({"version":1,"kind":"nestedList","leaf":"float","items":[[["1"]]]})", PropertyType::Float, root, error));
+}
+
+TEST_CASE("Structured collections: inspector undo restores null lists and complete dictionaries") {
+    struct Context {
+        ImGuiContext* Value = ImGui::CreateContext();
+        ~Context() { InspectorUndoRecorder::Reset(); ImGui::DestroyContext(Value); }
+    } context;
+    ImGui::GetIO().IniFilename = nullptr;
+    InspectorUndoRecorder::Reset();
+    auto scene = Scene::CreateDetachedScene("Collection undo");
+    auto entity = scene->CreateEntity("Collections");
+    auto& scripts = entity.AddComponent<ScriptComponent>();
+    scripts.AddScript("type:Game.Collections");
+    const std::array<Entity, 1> selection{ entity };
+    const std::array<PropertyType, 2> types{ PropertyType::NestedList, PropertyType::Dictionary };
+    const std::array<std::string, 2> before{
+        R"({"version":1,"kind":"nestedList","leaf":"int","items":[null,[],["7"]]})",
+        R"({"version":1,"kind":"dictionary","leaf":"int","comparer":"ordinal","items":[["","4"],["keep","42"]]})" };
+    const std::array<std::string, 2> after{
+        R"({"version":1,"kind":"nestedList","leaf":"int","items":[["1","2"],null]})",
+        R"({"version":1,"kind":"dictionary","leaf":"int","comparer":"ordinal","items":[["new","3"]]})" };
+    for (size_t i = 0; i < types.size(); ++i) {
+        UndoStack history;
+        const std::string key = "type:Game.Collections.Field" + std::to_string(i);
+        scripts.PendingFieldValues[key] = before[i];
+        PropertyDescriptor descriptor;
+        descriptor.Name = key;
+        descriptor.Type = types[i];
+        descriptor.Get = [key, type = types[i]](const Entity& e) {
+            return PropertyValue::FromString(type, e.GetComponent<ScriptComponent>().PendingFieldValues.at(key));
+        };
+        descriptor.Set = [key](Entity& e, const PropertyValue& value) { e.GetComponent<ScriptComponent>().PendingFieldValues[key] = value.ToString(); };
+        InspectorUndoRecorder::CaptureBefore(selection, descriptor);
+        descriptor.Set(entity, PropertyValue::FromString(types[i], after[i]));
+        InspectorUndoRecorder::CaptureAfter(selection, descriptor);
+        InspectorUndoRecorder::Flush(history, true);
+        REQUIRE(history.CanUndo());
+        history.Undo(*scene);
+        CHECK(scripts.PendingFieldValues.at(key) == before[i]);
+        history.Redo(*scene);
+        CHECK(scripts.PendingFieldValues.at(key) == after[i]);
+        history.Undo(*scene);
+        CHECK(scripts.PendingFieldValues.at(key) == before[i]);
+    }
+}

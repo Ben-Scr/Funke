@@ -29,6 +29,9 @@ public enum CameraBackground
 /// <summary>Position, rotation (Euler degrees) and scale relative to the parent's Transform3D.</summary>
 public class Transform3D : Component
 {
+    /// <summary>Read/write position relative to the parent; alias of Position.</summary>
+    public Vector3 LocalPosition { get => Position; set => Position = value; }
+
     public Vector3 Position
     {
         get => InternalCalls.Transform3D_GetPosition(RequireComponent<Transform3D>());
@@ -48,7 +51,7 @@ public class Transform3D : Component
         set => InternalCalls.Transform3D_SetScale(RequireComponent<Transform3D>(), value);
     }
 
-    /// <summary>World-space position as of the last transform update (one frame behind a Position set this frame).</summary>
+    /// <summary>Read-only world position from the last transform update; local writes are reflected after the next update. Unlike Transform2D.WorldPosition, this has no setter.</summary>
     public Vector3 WorldPosition => InternalCalls.Transform3D_GetWorldPosition(RequireComponent<Transform3D>());
 
     /// <summary>World-space forward direction (local -Z).</summary>

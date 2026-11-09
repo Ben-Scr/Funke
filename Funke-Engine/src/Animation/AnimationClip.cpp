@@ -40,7 +40,7 @@ namespace Funke {
 		}
 	}
 
-	float AnimationCurve::Evaluate(float time) const {
+	float AnimationCurve::Evaluate(float time, RotationInterpolation rotation) const {
 		if (Keys.empty()) return 0.0f;
 		if (Keys.size() == 1 || time <= Keys.front().Time) return Keys.front().Value;
 		if (time >= Keys.back().Time) return Keys.back().Value;
@@ -52,6 +52,8 @@ namespace Funke {
 		const float span = k1.Time - k0.Time;
 		if (span <= 0.0f) return k1.Value;
 		const float t = (time - k0.Time) / span;
+		const float end = rotation == RotationInterpolation::ShortestAngle
+			? k0.Value + std::remainder(k1.Value - k0.Value, 360.0f) : k1.Value;
 
 		switch (k0.Interpolation) {
 		case KeyInterpolation::Step:
@@ -63,11 +65,11 @@ namespace Funke {
 			const float h10 = t3 - 2.0f * t2 + t;
 			const float h01 = -2.0f * t3 + 3.0f * t2;
 			const float h11 = t3 - t2;
-			return h00 * k0.Value + h10 * span * k0.OutTangent + h01 * k1.Value + h11 * span * k1.InTangent;
+			return h00 * k0.Value + h10 * span * k0.OutTangent + h01 * end + h11 * span * k1.InTangent;
 		}
 		case KeyInterpolation::Linear:
 		default:
-			return k0.Value + (k1.Value - k0.Value) * t;
+			return k0.Value + (end - k0.Value) * t;
 		}
 	}
 
@@ -159,6 +161,20 @@ namespace Funke {
 		return KeyInterpolation::Linear;
 	}
 
+	const char* RotationInterpolationToString(RotationInterpolation mode) {
+		switch (mode) {
+		case RotationInterpolation::ShortestAngle: return "shortestAngle";
+		case RotationInterpolation::Quaternion: return "quaternion";
+		default: return "eulerMultiTurn";
+		}
+	}
+
+	RotationInterpolation RotationInterpolationFromString(const std::string& name) {
+		if (name == "shortestAngle") return RotationInterpolation::ShortestAngle;
+		if (name == "quaternion") return RotationInterpolation::Quaternion;
+		return RotationInterpolation::EulerMultiTurn;
+	}
+
 	Json::Value AnimationClipToJson(const AnimationClip& clip) {
 		Json::Value root = Json::Value::MakeObject();
 		root.AddMember("type", Json::Value("AnimationClip"));
@@ -173,6 +189,8 @@ namespace Funke {
 			t.AddMember("path", Json::Value(track.Path));
 			t.AddMember("component", Json::Value(track.Component));
 			t.AddMember("property", Json::Value(track.Property));
+			if (track.RotationMode != RotationInterpolation::EulerMultiTurn)
+				t.AddMember("rotationMode", Json::Value(RotationInterpolationToString(track.RotationMode)));
 			if (track.IsDiscrete()) {
 				Json::Value keys = Json::Value::MakeArray();
 				for (const DiscreteKeyframe& key : track.DiscreteKeys) {
@@ -230,6 +248,7 @@ namespace Funke {
 				track.Path = ReadString(t, "path");
 				track.Component = ReadString(t, "component");
 				track.Property = ReadString(t, "property");
+				track.RotationMode = RotationInterpolationFromString(ReadString(t, "rotationMode"));
 				if (track.Component.empty() || track.Property.empty()) continue;
 
 				if (const Json::Value* keys = t.FindMember("discrete"); keys && keys->IsArray()) {

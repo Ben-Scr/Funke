@@ -7,8 +7,7 @@
 namespace Funke {
 
 	void ThumbnailCache::Initialize() {
-		m_Cache.clear();
-		m_LRU.clear();
+		Clear();
 	}
 
 	void ThumbnailCache::Shutdown() {
@@ -104,12 +103,14 @@ namespace Funke {
 	void ThumbnailCache::Invalidate(const std::string& absolutePath) {
 		auto it = m_Cache.find(absolutePath);
 		if (it != m_Cache.end()) {
+			AsyncTexturePreviews::Get().Retire(std::move(it->second.Preview));
 			m_LRU.erase(it->second.LruIt); // E31: keep LRU and map in sync
 			m_Cache.erase(it);
 		}
 	}
 
 	void ThumbnailCache::Clear() {
+		for (auto& [path, entry] : m_Cache) AsyncTexturePreviews::Get().Retire(std::move(entry.Preview));
 		m_Cache.clear();
 		m_LRU.clear();
 	}
@@ -123,8 +124,10 @@ namespace Funke {
 
 		if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" || ext == ".tga")
 			return AssetType::Image;
-		if (ext == ".glsl" || ext == ".vert" || ext == ".frag" || ext == ".hlsl" || ext == ".shader")
+		if (ext == ".wgsl")
 			return AssetType::Shader;
+		if (ext == ".glsl" || ext == ".vs" || ext == ".fs" || ext == ".vert" || ext == ".frag" || ext == ".hlsl" || ext == ".shader")
+			return AssetType::ShaderSource;
 		if (ext == ".wav" || ext == ".mp3" || ext == ".ogg" || ext == ".flac")
 			return AssetType::Audio;
 		if (ext == ".ttf" || ext == ".otf")
@@ -146,6 +149,7 @@ namespace Funke {
 			case AssetType::Folder:  return "Folder";
 			case AssetType::Image:   return "Image";
 			case AssetType::Shader:  return "Shader";
+			case AssetType::ShaderSource: return "Shader source (WGSL required)";
 			case AssetType::Audio:   return "Audio";
 			case AssetType::Font:    return "Font";
 			case AssetType::Script:  return "Script";

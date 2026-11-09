@@ -3,7 +3,7 @@ using Funke.Components;
 
 namespace Funke.Native;
 
-// Layout MUST match Transform2DComponent.hpp; ScriptHostBridge verifies sizeof at init. Setters mirror root-entity writes into Local* and mark dirty so ref-API edits survive the hierarchy pass.
+// The native field contract is checked at startup; setters mirror root writes into Local* so edits survive the hierarchy pass.
 [StructLayout(LayoutKind.Sequential)]
 public struct NativeTransform2D : IComponent
 {

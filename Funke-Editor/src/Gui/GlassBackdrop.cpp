@@ -1,9 +1,12 @@
 #include <pch.hpp>
 #include "Gui/GlassBackdrop.hpp"
+#include "Gui/EditorTheme.hpp"
+#include "Editor/EditorPreferences.hpp"
 
 #include "Core/Platform/Win32Titlebar.hpp"
 
 #include <imgui.h>
+#include <imgui_internal.h>
 
 #include <algorithm>
 #include <cmath>
@@ -37,6 +40,13 @@ namespace Funke::GlassBackdrop {
 			{ 0.075f, 0.050f, 0.140f, 1.0f },
 			{ 0.060f, 0.040f, 0.110f, 1.0f },
 			{ 0.035f, 0.070f, 0.095f, 1.0f },
+		};
+
+		constexpr ImVec4 k_LightCorners[4] = {
+			{ 0.76f, 0.87f, 0.96f, 1.0f },
+			{ 0.88f, 0.83f, 0.96f, 1.0f },
+			{ 0.80f, 0.92f, 0.95f, 1.0f },
+			{ 0.92f, 0.89f, 0.96f, 1.0f },
 		};
 
 		constexpr int k_Segments = 64;
@@ -81,20 +91,58 @@ namespace Funke::GlassBackdrop {
 				}
 			}
 		}
+
+		void DrawRim(ImDrawList* dl, const ImRect& rect, float rounding, float response, float press) {
+			if (rect.GetWidth() < 4.0f || rect.GetHeight() < 4.0f) return;
+			const bool dark = EditorTheme::IsDark();
+			const float scale = ImGui::GetFontSize() / 15.0f;
+			const int first = dl->VtxBuffer.Size;
+			dl->AddRect(rect.Min, rect.Max, IM_COL32_WHITE, rounding, 0, std::max(1.0f, scale));
+			const ImVec2 mouse = ImGui::GetIO().MousePos;
+			const float reach = std::max(50.0f * scale, std::min(rect.GetWidth(), 240.0f * scale));
+			for (int i = first; i < dl->VtxBuffer.Size; ++i) {
+				ImDrawVert& vertex = dl->VtxBuffer[i];
+				const float edgeAlpha = (vertex.col >> IM_COL32_A_SHIFT) / 255.0f;
+				const float t = std::clamp((vertex.pos.y - rect.Min.y) / rect.GetHeight(), 0.0f, 1.0f);
+				float reflection = 0.0f;
+				if (response > 0.001f && ImGui::IsMousePosValid(&mouse)) {
+					const float dx = (vertex.pos.x - mouse.x) / reach;
+					const float dy = (vertex.pos.y - mouse.y) / reach;
+					reflection = std::exp(-2.0f * (dx * dx + dy * dy)) * response;
+				}
+				const float alpha = ((dark ? 0.36f : 0.70f) * (1.0f - t) + 0.08f
+					+ reflection * 0.35f) * (1.0f - press * 0.40f);
+				vertex.col = ImGui::GetColorU32(ImVec4(0.80f + 0.20f * (1.0f - t),
+					0.90f + 0.10f * (1.0f - t), 1.0f, alpha * edgeAlpha));
+			}
+			const float inset = std::max(1.0f, scale);
+			dl->AddRect(ImVec2(rect.Min.x + inset, rect.Min.y + inset),
+				ImVec2(rect.Max.x - inset, rect.Max.y - inset),
+				ImGui::GetColorU32(ImVec4(0.05f, 0.16f, 0.30f, (dark ? 0.16f : 0.12f) + press * 0.12f)),
+				std::max(0.0f, rounding - inset));
+		}
+
 	}
 
 	ImVec4 TitlebarColor(bool focused) {
-		return focused ? ImVec4(0.055f, 0.075f, 0.170f, 1.0f) : ImVec4(0.050f, 0.060f, 0.120f, 1.0f);
+		if (!EditorTheme::IsDark()) {
+			return focused ? ImVec4(0.86f, 0.92f, 0.98f, 1) : ImVec4(0.91f, 0.94f, 0.98f, 1);
+		}
+		return focused ? ImVec4(0.055f, 0.085f, 0.16f, 1) : ImVec4(0.05f, 0.07f, 0.12f, 1);
 	}
 
 	void SyncViewportCaptions(bool glass) {
 		// Viewport ID -> HWND it was tinted on; a recreated platform window needs the colour again.
 		static std::unordered_map<ImGuiID, void*> s_Tinted;
+		static bool s_WasDark = true;
+		const bool dark = EditorTheme::IsDark();
 		if (!glass && s_Tinted.empty()) return;
 
 		const ImVec4 c = TitlebarColor(true);
 		const Color caption(c.x, c.y, c.z, glass ? 1.0f : 0.0f);
 		const Color none(0.0f, 0.0f, 0.0f, 0.0f);
+		const ImVec4 text = ImGui::GetStyleColorVec4(ImGuiCol_Text);
+		const Color captionText(text.x, text.y, text.z, 1.0f);
 		const ImGuiViewport* main = ImGui::GetMainViewport();
 
 		std::unordered_map<ImGuiID, void*> live;
@@ -104,14 +152,15 @@ namespace Funke::GlassBackdrop {
 			}
 			const auto it = s_Tinted.find(viewport->ID);
 			const bool tinted = it != s_Tinted.end() && it->second == viewport->PlatformHandleRaw;
-			if (glass != tinted) {
-				Win32Titlebar::SetColors(viewport->PlatformHandleRaw, caption, none, caption);
+			if (glass != tinted || (glass && dark != s_WasDark)) {
+				Win32Titlebar::SetColors(viewport->PlatformHandleRaw, caption, glass ? captionText : none, caption);
 			}
 			if (glass) {
 				live.emplace(viewport->ID, viewport->PlatformHandleRaw);
 			}
 		}
 		s_Tinted = std::move(live);
+		s_WasDark = dark;
 	}
 
 	void Draw() {
@@ -121,29 +170,100 @@ namespace Funke::GlassBackdrop {
 		}
 
 		ImDrawList* dl = ImGui::GetBackgroundDrawList(main);
+		const bool dark = EditorTheme::IsDark();
+		const ImVec4* corners = dark ? k_BaseCorners : k_LightCorners;
 		const ImVec2 min = main->Pos;
 		const ImVec2 max(min.x + main->Size.x, min.y + main->Size.y);
 		dl->AddRectFilledMultiColor(min, max,
-			ImGui::ColorConvertFloat4ToU32(k_BaseCorners[0]),
-			ImGui::ColorConvertFloat4ToU32(k_BaseCorners[1]),
-			ImGui::ColorConvertFloat4ToU32(k_BaseCorners[2]),
-			ImGui::ColorConvertFloat4ToU32(k_BaseCorners[3]));
+			ImGui::ColorConvertFloat4ToU32(corners[0]),
+			ImGui::ColorConvertFloat4ToU32(corners[1]),
+			ImGui::ColorConvertFloat4ToU32(corners[2]),
+			ImGui::ColorConvertFloat4ToU32(corners[3]));
 
+		const ImGuiIO& io = ImGui::GetIO();
+		static ImVec2 s_Pointer(0.5f, 0.5f);
+		static float s_Response = 0.0f;
+		const bool inside = !io.AppFocusLost && ImGui::IsMousePosValid()
+			&& ImRect(min, max).Contains(io.MousePos);
+		const float ease = 1.0f - std::exp(-std::min(io.DeltaTime, 0.1f) * 7.0f);
+		const ImVec2 target = inside ? ImVec2((io.MousePos.x - min.x) / main->Size.x,
+			(io.MousePos.y - min.y) / main->Size.y) : ImVec2(0.5f, 0.5f);
+		s_Pointer.x += (target.x - s_Pointer.x) * ease;
+		s_Pointer.y += (target.y - s_Pointer.y) * ease;
+		s_Response += ((inside ? 1.0f : 0.0f) - s_Response) * ease;
 		const double time = ImGui::GetTime();
 		const float extent = std::max(main->Size.x, main->Size.y);
 		for (const Blob& blob : k_Blobs) {
 			const float sx = static_cast<float>(std::sin(time * blob.Speed.x + blob.Phase));
 			const float sy = static_cast<float>(std::sin(time * blob.Speed.y + blob.Phase * 1.3));
 			const ImVec2 center(
-				min.x + (blob.Center.x + blob.Drift.x * sx) * main->Size.x,
-				min.y + (blob.Center.y + blob.Drift.y * sy) * main->Size.y);
+				min.x + (blob.Center.x + blob.Drift.x * sx + (s_Pointer.x - 0.5f) * 0.035f) * main->Size.x,
+				min.y + (blob.Center.y + blob.Drift.y * sy + (s_Pointer.y - 0.5f) * 0.035f) * main->Size.y);
 			// Radii breathe out of phase, so the blobs morph instead of only sliding.
 			const float r = blob.Radius * extent;
 			const ImVec2 radius(
 				r * (1.0f + 0.14f * static_cast<float>(std::sin(time * blob.Speed.y * 1.7 + blob.Phase))),
 				r * (1.0f + 0.14f * static_cast<float>(std::cos(time * blob.Speed.x * 1.3 + blob.Phase))));
-			DrawBlob(dl, center, radius, blob.Color);
+			ImVec4 color = blob.Color;
+			color.w *= dark ? 0.72f : 0.22f;
+			DrawBlob(dl, center, radius, color);
 		}
+		for (int i = 0; i < 3; ++i) {
+			const float phase = static_cast<float>(time * 0.045) + i * 2.1f;
+			const ImVec2 center(min.x + main->Size.x * (0.20f + i * 0.30f + 0.06f * std::sin(phase)),
+				min.y + main->Size.y * (0.50f + 0.28f * std::cos(phase)));
+			DrawBlob(dl, center, ImVec2(extent * 0.42f, extent * 0.055f),
+				ImVec4(0.72f, 0.90f, 1.0f, dark ? 0.12f : 0.32f));
+		}
+		DrawBlob(dl, ImVec2(min.x + s_Pointer.x * main->Size.x, min.y + s_Pointer.y * main->Size.y),
+			ImVec2(extent * 0.22f, extent * 0.18f), ImVec4(0.72f, 0.88f, 1.0f, s_Response * (dark ? 0.18f : 0.32f)));
+
+	}
+
+
+	bool IsEnabled() {
+		const EditorThemeMode mode = EditorPreferences::GetThemeMode();
+		return mode == EditorThemeMode::Glass || mode == EditorThemeMode::GlassLight;
+	}
+
+	void DrawWindowEdges() {
+		if (!IsEnabled()) return;
+		ImGuiContext& context = *ImGui::GetCurrentContext();
+		for (ImGuiWindow* window : context.Windows) {
+			if (!window->Active || window->Hidden || window->IsFallbackWindow || window->DockNodeAsHost
+				|| (window->Flags & (ImGuiWindowFlags_ChildWindow | ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_Tooltip))) continue;
+			const ImRect rect(window->Pos, ImVec2(window->Pos.x + window->Size.x, window->Pos.y + window->Size.y));
+			window->DrawList->PushClipRect(rect.Min, rect.Max, false);
+			DrawRim(window->DrawList, ImRect(ImVec2(rect.Min.x + 0.5f, rect.Min.y + 0.5f),
+				ImVec2(rect.Max.x - 0.5f, rect.Max.y - 0.5f)), window->WindowRounding,
+				context.HoveredWindow == window ? 1.0f : 0.0f, 0.0f);
+			window->DrawList->PopClipRect();
+		}
+	}
+
+	void DrawLastItemSurface() {
+		if (!IsEnabled() || !ImGui::IsItemVisible()) return;
+		const ImGuiContext& context = *ImGui::GetCurrentContext();
+		const ImGuiID id = ImGui::GetItemID();
+		if (!id) return;
+		const bool disabled = (context.LastItemData.ItemFlags & ImGuiItemFlags_Disabled) != 0;
+		const bool hovered = !disabled && (ImGui::IsItemHovered() || ImGui::IsItemFocused());
+		const bool held = !disabled && ImGui::IsItemActive();
+		ImGuiStorage* storage = ImGui::GetStateStorage();
+		const ImGuiID hoverId = ImHashStr("##GlassHover", 0, id);
+		const ImGuiID pressId = ImHashStr("##GlassPress", 0, id);
+		const ImGuiID frameId = ImHashStr("##GlassFrame", 0, id);
+		const bool continuous = storage->GetInt(frameId, -2) == ImGui::GetFrameCount() - 1;
+		const float ease = 1.0f - std::exp(-std::min(ImGui::GetIO().DeltaTime, 0.1f) * 16.0f);
+		float response = continuous ? storage->GetFloat(hoverId) : 0.0f;
+		float press = continuous ? storage->GetFloat(pressId) : 0.0f;
+		response += ((hovered ? 1.0f : 0.0f) - response) * ease;
+		press += ((held ? 1.0f : 0.0f) - press) * ease;
+		storage->SetFloat(hoverId, response);
+		storage->SetFloat(pressId, press);
+		storage->SetInt(frameId, ImGui::GetFrameCount());
+		DrawRim(ImGui::GetWindowDrawList(), ImRect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax()),
+			ImGui::GetStyle().FrameRounding, response, press);
 	}
 
 }

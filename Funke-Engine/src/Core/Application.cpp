@@ -11,7 +11,9 @@
 #if FUNKE_WITH_2D
 #include "Components/Graphics/Camera2DComponent.hpp"
 #include "Graphics/Renderer2D.hpp"
+#if FUNKE_WITH_PHYSICS2D
 #include "Physics/PhysicsSystem2D.hpp"
+#endif
 #endif
 #if FUNKE_WITH_3D
 #include "Graphics/MeshAsset.hpp"
@@ -388,6 +390,14 @@ namespace Funke {
 			m_Time.AdvanceFrameCount();
 			RunAutomation::EndFrame(deltaTime);
 			if (m_RunLoop.CiSmokeTest && !m_RunLoop.SmokeQuitRequested && m_StartupLoadComplete && --m_RunLoop.SmokeFramesRemaining <= 0) {
+				const std::string assets = Path::ResolveFunkeAssets("");
+				if (assets.empty()) {
+					FNK_ERROR_TAG("Application", "CI smoke test failed: FunkeAssets unresolved from content base '{}'", Path::ExecutableDir());
+					m_RunLoop.ExitCode = 1;
+				}
+				else {
+					FNK_INFO_TAG("Application", "CI smoke test resources resolved to: '{}'", assets);
+				}
 				FNK_INFO_TAG("Application", "CI smoke test reached a stable frame; requesting graceful shutdown.");
 				RequestQuit();
 				m_RunLoop.SmokeQuitRequested = true;
@@ -528,8 +538,11 @@ namespace Funke {
 		// Before renderers, systems and component registration: each asks which modules are active.
 		if (const FunkeProject* project = ProjectManager::GetCurrentProject()) {
 			EngineModules::Configure(project->Modules);
-			for (const std::string& missing : EngineModules::GetMissingModules(project->Modules)) {
-				FNK_WARN_TAG("Application", "Project uses module '{}', but this build was compiled without it.", missing);
+			for (const std::string& id : project->Modules) {
+				const EngineModules::Status status = EngineModules::GetStatus(id, project->Modules);
+				if (status == EngineModules::Status::Unknown || status == EngineModules::Status::NotCompiled) {
+					FNK_WARN_TAG("Application", "{}", EngineModules::GetStatusMessage(id, status));
+				}
 			}
 		}
 		else {
@@ -676,8 +689,8 @@ namespace Funke {
 			timer.Reset();
 			// Construct the concrete default impl, then move into the
 			// IPhysicsEngine-typed member — mirrors the renderer wiring.
-#if FUNKE_WITH_2D
-			auto physics = EngineModules::IsActive(EngineModule::TwoD) ? std::make_unique<PhysicsSystem2D>() : nullptr;
+#if FUNKE_WITH_PHYSICS2D
+			auto physics = EngineModules::IsActive(EngineModule::Physics2D) ? std::make_unique<PhysicsSystem2D>() : nullptr;
 			if (physics) {
 				physics->Initialize();
 				m_PhysicsSystem2D = std::move(physics);
@@ -1298,6 +1311,8 @@ namespace Funke {
 
 	void Application::Shutdown(bool invokeOnQuit, bool forceWindowShutdown) {
 		m_IsShuttingDown = true;
+		// Workers may still use scenes and scripts; an exiting application cannot abandon the drain.
+		while (!ScriptEngine::PrepareResourceRelease(false, true)) {}
 
 		if (invokeOnQuit) {
 			try {
@@ -1354,10 +1369,11 @@ namespace Funke {
 		// Order matters: subsystems that hold package callbacks tear down BEFORE PackageHost::UnloadAll.
 		if (m_SceneManager) {
 			guardedShutdownStatic("SceneManager", [&]{ m_SceneManager->Shutdown(); });
-			m_SceneManager.reset();
 		}
 		guardedShutdownStatic("PrefabRootCache", []{ SceneSerializer::ClearCachedPrefabRoots(); });
 		if (ScriptEngine::IsInitialized()) guardedShutdownStatic("ScriptEngine", []{ ScriptEngine::Shutdown(); });
+		// Assembly unload unregisters dynamic components through the still-owned scene registry.
+		m_SceneManager.reset();
 		if (FontManager::IsInitialized()) guardedShutdownStatic("FontManager", []{ FontManager::Shutdown(); });
 		if (m_Configuration.EnableTextureManager) guardedShutdownStatic("TextureManager", []{ TextureManager::Shutdown(); });
 		if (ShaderManager::IsInitialized()) guardedShutdownStatic("ShaderManager", []{ ShaderManager::Shutdown(); });

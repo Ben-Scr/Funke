@@ -139,7 +139,7 @@ internal unsafe struct ManagedCallbacksStruct
 internal static class InteropHandshake
 {
     // Bump together with k_ScriptInteropLayoutVersion (ScriptGlue.hpp) on any add/remove/reorder in either table.
-    internal const int LayoutVersion = 48;
+    internal const int LayoutVersion = 50;
 
     // Codes are mirrored in ScriptEngine::LoadCoreAssembly.
     internal const int Ok = 0;
@@ -179,6 +179,85 @@ internal static class InteropHandshake
 /// <summary>Entry point called from C++ via hostfxr; exchanges native/managed function pointers.</summary>
 internal static class ScriptHostBridge
 {
+    [UnmanagedCallersOnly]
+    public static unsafe int ConfigureResourceLifecycle(delegate* unmanaged<int> isPlaying)
+    {
+        Funke.Jobs.ScriptResourceScope.IsPlaying = isPlaying;
+        return 0;
+    }
+
+    [UnmanagedCallersOnly]
+    public static int ResourceLifecycle(int operation)
+    {
+        try
+        {
+            bool playOnly = operation == 1 || operation == 3;
+            if (operation == 3 || operation == 4) { Funke.Jobs.ScriptResourceScope.Resume(playOnly); return 1; }
+            if (Funke.Jobs.ScriptResourceScope.Drain(playOnly, operation == 5 ? -1 : 5000)) return 1;
+            Log.Error($"Script resource teardown refused: {Funke.Jobs.ScriptResourceScope.ActiveCount} jobs still running after 5 seconds.");
+            return 0;
+        }
+        catch (Exception ex) { Log.Error($"Script resource teardown failed: {ex}"); return 0; }
+    }
+
+    [UnmanagedCallersOnly]
+    internal static unsafe int ConfigureComponentLayouts(delegate* unmanaged<byte*, byte*, int, int> query)
+    {
+        try
+        {
+            ComponentTypes.NativeLayoutQuery = query;
+            ComponentTypes.RunAllStaticInitializers();
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"Native component layout validation failed: {ex.Message}");
+            return -1;
+        }
+    }
+
+    [UnmanagedCallersOnly]
+    internal static int CaptureReloadState()
+    {
+        try { ScriptInstanceManager.CaptureReloadState(); return 1; }
+        catch (Exception ex) { Log.Error($"Hot reload capture failed; active instances retained: {ex.Message}"); return 0; }
+    }
+
+    [UnmanagedCallersOnly]
+    internal static void ClearReloadState() => ScriptInstanceManager.ClearReloadState();
+
+    [UnmanagedCallersOnly]
+    internal static void DiscardPreparedAssembly() => ScriptInstanceManager.DiscardPreparedAssembly();
+
+    [UnmanagedCallersOnly]
+    internal static int ResetRegisteredPlayState()
+    {
+        try { ScriptInstanceManager.ResetRegisteredPlayState(); return 1; }
+        catch (Exception ex) { Log.Error(ex.ToString()); return 0; }
+    }
+
+    [UnmanagedCallersOnly]
+    internal static unsafe int PrepareUserAssembly(byte* path, byte* error, int capacity)
+    {
+        try
+        {
+            ScriptInstanceManager.PrepareUserAssemblyPath(Marshal.PtrToStringUTF8((nint)path)!);
+            if (error != null && capacity > 0) error[0] = 0;
+            return 1;
+        }
+        catch (Exception ex)
+        {
+            byte[] message = System.Text.Encoding.UTF8.GetBytes(ex.Message);
+            if (error != null && capacity > 0)
+            {
+                int count = Math.Min(message.Length, capacity - 1);
+                message.AsSpan(0, count).CopyTo(new Span<byte>(error, count));
+                error[count] = 0;
+            }
+            return 0;
+        }
+    }
+
     [UnmanagedCallersOnly]
     internal static unsafe int Initialize(
         NativeBindingsStruct* nativeBindings,
@@ -303,8 +382,6 @@ internal static class ScriptHostBridge
             managedCallbacks->AssetLoadsCompleted = &ScriptInstanceManager.AssetLoadsCompleted;
 
             ScriptInstanceManager.SetCoreAssembly(typeof(ScriptHostBridge).Assembly);
-
-            ComponentTypes.RunAllStaticInitializers();
 
             SynchronizationContext.SetSynchronizationContext(FunkeSynchronizationContext.Instance);
             return 0;

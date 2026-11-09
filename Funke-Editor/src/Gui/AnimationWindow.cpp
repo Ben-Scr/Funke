@@ -380,8 +380,10 @@ namespace Funke {
 
 	std::string AnimationWindow::TrackError(const AnimationTrack& track) const {
 		const std::string prefix = (track.Path.empty() ? std::string{} : track.Path + ": ") + track.Component + "." + track.Property + " - ";
+		const std::string groupPrefix = (track.Path.empty() ? std::string{} : track.Path + ": ") + track.Component + "." + ParseAnimationProperty(track.Property).Base + " - ";
 		for (const std::string& error : m_Errors) {
 			if (error.rfind(prefix, 0) == 0) return error.substr(prefix.size());
+			if (error.rfind(groupPrefix, 0) == 0) return error.substr(groupPrefix.size());
 		}
 		return {};
 	}
@@ -402,7 +404,9 @@ namespace Funke {
 	void AnimationWindow::SetCurveKey(AnimationTrack& track, float time, float value, PropertyType type) {
 		const bool existing = std::any_of(track.Curve.Keys.begin(), track.Curve.Keys.end(),
 			[time](const Keyframe& k) { return std::abs(k.Time - time) <= 0.0005f; });
-		const int index = track.Curve.SetKey(time, value, IsSteppedType(type) ? KeyInterpolation::Step : KeyInterpolation::Bezier);
+		const KeyInterpolation interpolation = IsSteppedType(type) ? KeyInterpolation::Step
+			: track.RotationMode == RotationInterpolation::Quaternion ? KeyInterpolation::Linear : KeyInterpolation::Bezier;
+		const int index = track.Curve.SetKey(time, value, interpolation);
 		if (!existing && track.Curve.Keys[static_cast<size_t>(index)].Interpolation == KeyInterpolation::Bezier) {
 			track.Curve.SmoothTangents(index);
 		}
@@ -487,15 +491,51 @@ namespace Funke {
 		CommitEdit();
 	}
 
-	void AnimationWindow::AddKeysAtTime(const std::vector<int>& tracks) {
+	void AnimationWindow::AddKeysAtTime(const std::vector<int>& tracks, float keyTime) {
 		if (tracks.empty()) return;
 		BeginEdit();
-		const float time = SnapTime(m_Time);
+		const float time = SnapTime(keyTime < 0.0f ? m_Time : keyTime);
+		std::vector<bool> handled(m_Clip.Tracks.size(), false);
 		for (int index : tracks) {
 			if (index < 0 || index >= static_cast<int>(m_Clip.Tracks.size())) continue;
+			if (handled[static_cast<size_t>(index)]) continue;
 			AnimationTrack& track = m_Clip.Tracks[static_cast<size_t>(index)];
-			if (track.IsDiscrete()) SetDiscreteKey(track, time, track.GetDiscreteValue(time));
-			else SetCurveKey(track, time, track.Curve.Evaluate(time), PropertyType::Float);
+			if (track.IsDiscrete()) { SetDiscreteKey(track, time, track.GetDiscreteValue(time)); continue; }
+			const ComponentInfo* info = SceneManager::GetComponentRegistryOrBuiltIn().FindBySerializedName(track.Component);
+			const PropertyDescriptor* descriptor = info ? AnimationTargetSet::FindDescriptor(*info, ParseAnimationProperty(track.Property).Base) : nullptr;
+			const RotationProperty representation = descriptor ? descriptor->Metadata.Rotation : RotationProperty::None;
+			if (track.RotationMode != RotationInterpolation::Quaternion && representation != RotationProperty::Quaternion) {
+				SetCurveKey(track, time, track.Curve.Evaluate(time, track.RotationMode), PropertyType::Float);
+				continue;
+			}
+			if (!descriptor) continue;
+			AnimationRotationBinding binding;
+			binding.Mode = RotationInterpolation::Quaternion;
+			std::array<int, 4> group{ -1, -1, -1, -1 };
+			bool duplicate = false;
+			for (size_t sibling = 0; sibling < m_Clip.Tracks.size(); ++sibling) {
+				const AnimationTrack& other = m_Clip.Tracks[sibling];
+				const auto path = ParseAnimationProperty(other.Property);
+				if (other.Path != track.Path || other.Component != track.Component
+					|| AnimationTargetSet::FindDescriptor(*info, path.Base) != descriptor) continue;
+				handled[sibling] = true;
+				const int channel = std::max(path.Channel, 0);
+				if (channel >= AnimationChannelCount(descriptor->Type) || binding.Tracks[channel]) { duplicate = true; continue; }
+				binding.Tracks[channel] = &other;
+				group[channel] = static_cast<int>(sibling);
+			}
+			std::string error;
+			if (duplicate || !ValidateAnimationRotation(binding, representation, descriptor->Type, error)) continue;
+			PropertyValue base;
+			base.Type = descriptor->Type;
+			const PropertyValue pose = EvaluateAnimationRotation(binding, representation, base, time);
+			const auto& keys = binding.Tracks[0]->Curve.Keys;
+			const auto next = std::upper_bound(keys.begin(), keys.end(), time, [](float t, const Keyframe& key) { return t < key.Time; });
+			const KeyInterpolation interpolation = (next == keys.begin() ? keys.front() : *(next - 1)).Interpolation;
+			for (int channel = 0; channel < AnimationChannelCount(descriptor->Type); ++channel) {
+				AnimationTrack& other = m_Clip.Tracks[static_cast<size_t>(group[channel])];
+				other.Curve.SetKey(time, ReadAnimationChannel(pose, channel), interpolation);
+			}
 		}
 		CommitEdit();
 	}
@@ -529,7 +569,7 @@ namespace Funke {
 			const AnimationTrack& track = m_Clip.Tracks[i];
 			if (track.IsDiscrete() || (!m_SelectedTracks.empty() && !IsTrackSelected(static_cast<int>(i)))) continue;
 			for (float t = 0.0f; t <= end; t += end / 64.0f) {
-				const float v = track.Curve.Evaluate(t);
+				const float v = track.Curve.Evaluate(t, track.RotationMode);
 				lo = std::min(lo, v);
 				hi = std::max(hi, v);
 			}
@@ -644,7 +684,7 @@ namespace Funke {
 		(void)scene;
 		ImGui::SetNextItemWidth(ImGui::GetFontSize() * 13.0f);
 		const std::string preview = m_ClipGuid != 0 ? ClipLabel(m_ClipGuid) : std::string("No clip");
-		if (!ImGui::BeginCombo("##Clip", preview.c_str())) {
+		if (!EditorUI::BeginCombo("##Clip", preview.c_str())) {
 			EditorUI::Tooltip("Clip to edit");
 			return;
 		}
@@ -661,7 +701,7 @@ namespace Funke {
 		ImGui::BeginDisabled(m_Root == entt::null);
 		if (ImGui::Selectable("New Clip...")) RequestNewClip();
 		ImGui::EndDisabled();
-		ImGui::EndCombo();
+		EditorUI::EndCombo();
 	}
 
 	void AnimationWindow::RenderToolbar(Scene* scene) {
@@ -903,6 +943,30 @@ namespace Funke {
 			}
 			if (!error.empty()) EditorUI::Tooltip(error);
 			if (ImGui::BeginPopupContextItem("##TrackMenu")) {
+				const ComponentInfo* info = SceneManager::GetComponentRegistryOrBuiltIn().FindBySerializedName(track.Component);
+				const PropertyDescriptor* descriptor = info ? AnimationTargetSet::FindDescriptor(*info, ParseAnimationProperty(track.Property).Base) : nullptr;
+				if (!track.IsDiscrete() && descriptor && descriptor->Metadata.Rotation != RotationProperty::None
+					&& ImGui::BeginMenu("Rotation Mode")) {
+					const char* labels[] = { "Euler Multi-turn", "Shortest Angle", "Quaternion" };
+					const bool quaternionProperty = descriptor->Metadata.Rotation == RotationProperty::Quaternion;
+					for (int mode = 0; mode < 3; ++mode) {
+						const auto interpolation = static_cast<RotationInterpolation>(mode);
+						const bool checked = quaternionProperty ? interpolation == RotationInterpolation::Quaternion : track.RotationMode == interpolation;
+						if (ImGui::MenuItem(labels[mode], nullptr, checked, !quaternionProperty || mode == 2)) {
+							BeginEdit();
+							for (AnimationTrack& sibling : m_Clip.Tracks) {
+								if (sibling.Path == track.Path && sibling.Component == track.Component
+									&& AnimationTargetSet::FindDescriptor(*info, ParseAnimationProperty(sibling.Property).Base) == descriptor)
+									sibling.RotationMode = interpolation;
+							}
+							CommitEdit();
+						}
+					}
+					ImGui::Separator();
+					ImGui::TextDisabled("Applies to all channels of this rotation.");
+					ImGui::TextDisabled("Quaternion: matching Linear/Constant key times.");
+					ImGui::EndMenu();
+				}
 				if (ImGui::MenuItem("Add Key", "K")) AddKeysAtTime({ row.Track });
 				if (ImGui::MenuItem("Remove Track")) removeTrack = row.Track;
 				ImGui::EndPopup();
@@ -931,7 +995,7 @@ namespace Funke {
 				}
 			}
 			else {
-				float value = track.Curve.Evaluate(m_Time);
+				float value = track.Curve.Evaluate(m_Time, track.RotationMode);
 				const bool changed = ImGui::DragFloat("##value", &value, 0.01f, 0.0f, 0.0f, "%.3f");
 				if (ImGui::IsItemActivated()) BeginEdit();
 				if (changed) {
@@ -1340,12 +1404,8 @@ namespace Funke {
 			}
 			if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && hoveredKey.Track < 0 && hoveredRow >= 0 && m_Rows[static_cast<size_t>(hoveredRow)].Track >= 0) {
 				const int trackIndex = m_Rows[static_cast<size_t>(hoveredRow)].Track;
-				AnimationTrack& track = m_Clip.Tracks[static_cast<size_t>(trackIndex)];
 				const float t = SnapTime(XToTime(mouse.x));
-				BeginEdit();
-				if (track.IsDiscrete()) SetDiscreteKey(track, t, track.GetDiscreteValue(t));
-				else SetCurveKey(track, t, track.Curve.Evaluate(t), PropertyType::Float);
-				CommitEdit();
+				AddKeysAtTime({ trackIndex }, t);
 				m_Drag = DragKind::None;
 			}
 			if (ImGui::IsMouseClicked(ImGuiMouseButton_Right) && hoveredKey.Track >= 0) {
@@ -1464,7 +1524,7 @@ namespace Funke {
 			const AnimationTrack& track = m_Clip.Tracks[static_cast<size_t>(trackIndex)];
 			const ImU32 color = ChannelColor(track.Property);
 			std::vector<ImVec2> points;
-			for (float x = origin.x; x <= max.x; x += 2.0f) points.push_back(ImVec2(x, valueToY(track.Curve.Evaluate(XToTime(x)))));
+			for (float x = origin.x; x <= max.x; x += 2.0f) points.push_back(ImVec2(x, valueToY(track.Curve.Evaluate(XToTime(x), track.RotationMode))));
 			if (points.size() > 1) draw->AddPolyline(points.data(), static_cast<int>(points.size()), color, ImDrawFlags_None, 1.6f);
 
 			for (size_t k = 0; k < track.Curve.Keys.size(); ++k) {

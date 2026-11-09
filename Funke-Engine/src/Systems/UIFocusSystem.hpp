@@ -1,12 +1,16 @@
 #pragma once
 #include "Scene/EntityHandle.hpp"
 #include "Scene/SceneSystem.hpp"
+#include "Collections/Vec2.hpp"
+#include <vector>
 
 namespace Funke {
 
 	// MUST run before UIEventSystem: writes ActivatedThisFrame and IsFocused so UIEventSystem's hit-test sees them; when an InputField owns focus it surrenders arrow keys to UIEventSystem's caret handler.
 	class UIFocusSystem : public SceneSystem {
 	public:
+		FUNKE_API static std::vector<EntityHandle> NavigationOrder(Scene& scene);
+		FUNKE_API static EntityHandle PickFocusable(Scene& scene, const Vec2& screenUi);
 		void Update(Scene& scene) override;
 		void OnDestroy(Scene&) override {
 			m_FocusedEntity = entt::null;

@@ -170,20 +170,20 @@ public:
 	// The overlays exist only when the build enabled them at start; the commands create them on demand.
 	void RegisterRuntimeCommands() {
 		DevConsole::Register("stats", "[on|off|toggle]", std::string("Frame stats overlay (also ") + PlatformShortcuts::k_StatsLabel + ").", [this](const std::vector<std::string>& args) {
-			if (!m_StatsLayer) m_StatsLayer = &PushLayer<RuntimeStatsLayer>("RuntimeStats");
-			bool show = !m_StatsLayer->IsVisible();
+			bool show = !m_StatsLayer || !m_StatsLayer->IsVisible();
 			if (!args.empty() && args[0] != "toggle" && !DevConsole::ParseBool(args[0], show)) {
 				return DevCommandResult::Error("Expected on, off or toggle.");
 			}
+			if (!m_StatsLayer) m_StatsLayer = &PushLayer<RuntimeStatsLayer>("RuntimeStats");
 			m_StatsLayer->SetVisible(show);
 			return DevCommandResult::Ok(show ? "stats on" : "stats off");
 		});
 		DevConsole::Register("logs", "[on|off|toggle]", std::string("Log overlay (also ") + PlatformShortcuts::k_LogsLabel + ").", [this](const std::vector<std::string>& args) {
-			if (!m_LogLayer) m_LogLayer = &PushLayer<RuntimeLogLayer>("RuntimeLogs");
-			bool show = !m_LogLayer->IsVisible();
+			bool show = !m_LogLayer || !m_LogLayer->IsVisible();
 			if (!args.empty() && args[0] != "toggle" && !DevConsole::ParseBool(args[0], show)) {
 				return DevCommandResult::Error("Expected on, off or toggle.");
 			}
+			if (!m_LogLayer) m_LogLayer = &PushLayer<RuntimeLogLayer>("RuntimeLogs");
 			m_LogLayer->SetVisible(show);
 			return DevCommandResult::Ok(show ? "logs on" : "logs off");
 		});

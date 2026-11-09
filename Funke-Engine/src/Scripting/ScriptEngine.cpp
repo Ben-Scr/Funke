@@ -3,8 +3,10 @@
 #include "DevTools/DevConsole.hpp"
 #include "Scripting/InspectorEventDispatch.hpp"
 #include "Scripting/ScriptBindings.hpp"
+#include "Scripting/ScriptBindingGuard.hpp"
 #include "Scripting/ScriptComponent.hpp"
 #include "Scripting/ScriptInstance.hpp"
+#include "Scripting/ScriptSystem.hpp"
 #include "Scripting/DataAssetManager.hpp"
 #if FUNKE_WITH_3D
 #include "Graphics/MeshAsset.hpp"
@@ -27,6 +29,11 @@
 
 namespace Funke {
 	namespace {
+		int (*g_PrepareUserAssembly)(const char*, char*, int) = nullptr;
+		int (*g_ResourceLifecycle)(int) = nullptr;
+		int IsPlayingForResources() { return Application::GetIsPlaying() ? 1 : 0; }
+		std::string g_PreparedAssemblyPath;
+		std::string g_LastAssemblyError;
 		void (*g_TrustedEntityInvalidation)(uint64_t) = nullptr;
 		void (*g_TrustedComponentInvalidation)(uint64_t, uint32_t) = nullptr;
 		void (*g_TrustedEntityBatchInvalidation)(const uint64_t*, int) = nullptr;
@@ -53,8 +60,12 @@ namespace Funke {
 
 	void ScriptEngine::Shutdown()
 	{
+		while (!PrepareResourceRelease(false, true)) {}
 		// s_Initialized=false FIRST so reentrant calls from managed OnDestroy hooks bail instead of touching being-destroyed state.
 		s_Initialized = false;
+		g_PrepareUserAssembly = nullptr;
+		g_PreparedAssemblyPath.clear();
+		g_LastAssemblyError.clear();
 		g_TrustedEntityInvalidation = nullptr;
 		g_TrustedComponentInvalidation = nullptr;
 		g_TrustedEntityBatchInvalidation = nullptr;
@@ -168,6 +179,29 @@ namespace Funke {
 			return;
 		}
 
+		using ConfigureResourcesFn = int(*)(int(*)());
+		auto configureResources = reinterpret_cast<ConfigureResourcesFn>(s_Host->GetUnmanagedEntryPoint(
+			asmPath, "Funke-ScriptCore", "Funke.Interop.ScriptHostBridge", "ConfigureResourceLifecycle"));
+		g_ResourceLifecycle = reinterpret_cast<decltype(g_ResourceLifecycle)>(s_Host->GetUnmanagedEntryPoint(
+			asmPath, "Funke-ScriptCore", "Funke.Interop.ScriptHostBridge", "ResourceLifecycle"));
+		if (!configureResources || !g_ResourceLifecycle || configureResources(&IsPlayingForResources) != 0) {
+			FNK_CORE_ERROR_TAG("ScriptEngine", "Script resource lifecycle bridge unavailable. Rebuild ScriptCore and restart.");
+			return;
+		}
+
+		using ConfigureLayoutsFn = int(*)(int(*)(const char*, char*, int));
+		auto configureLayouts = reinterpret_cast<ConfigureLayoutsFn>(s_Host->GetUnmanagedEntryPoint(
+			asmPath, "Funke-ScriptCore", "Funke.Interop.ScriptHostBridge", "ConfigureComponentLayouts"));
+		g_PrepareUserAssembly = reinterpret_cast<decltype(g_PrepareUserAssembly)>(s_Host->GetUnmanagedEntryPoint(
+			asmPath, "Funke-ScriptCore", "Funke.Interop.ScriptHostBridge", "PrepareUserAssembly"));
+		if (!configureLayouts || !g_PrepareUserAssembly
+			|| configureLayouts(FNK_GUARDED_BINDING(ScriptBindings::GetComponentLayoutBuffer)) != 0) {
+			g_PrepareUserAssembly = nullptr;
+			FNK_CORE_ERROR_TAG("ScriptEngine", "Native component layout validation unavailable or failed. "
+				"Build Funke-Engine and Funke-ScriptCore together, then restart the editor. Scripting is disabled.");
+			return;
+		}
+
 		s_Callbacks = managedCallbacks;
 		g_TrustedEntityInvalidation = managedCallbacks.NotifyEntityDestroyed;
 		g_TrustedComponentInvalidation = managedCallbacks.NotifyComponentRemoved;
@@ -218,61 +252,115 @@ namespace Funke {
 
 		const std::filesystem::path assemblyPath = Path::FromUtf8(path);
 		std::error_code ec;
-		if (!std::filesystem::is_regular_file(assemblyPath, ec) || ec)
-		{
-			FNK_CORE_WARN_TAG("ScriptEngine", "User assembly not found: {}", path);
-			return false;
+		std::string candidatePath = Path::ToUtf8(std::filesystem::absolute(assemblyPath, ec).lexically_normal());
+		if (ec || candidatePath != g_PreparedAssemblyPath) {
+			const auto canonical = std::filesystem::canonical(assemblyPath, ec);
+			if (ec) {
+				DiscardPreparedAssembly();
+				FNK_CORE_ERROR_TAG("ScriptEngine", "Could not resolve user assembly '{}': {}", path, ec.message());
+				return false;
+			}
+			candidatePath = Path::ToUtf8(canonical);
 		}
-
-		const std::filesystem::path canonPath = std::filesystem::canonical(assemblyPath, ec);
-		if (ec)
-		{
-			FNK_CORE_ERROR_TAG("ScriptEngine", "Could not resolve user assembly '{}': {}", path, ec.message());
-			return false;
-		}
-		const std::string candidatePath = Path::ToUtf8(canonPath);
+		if (g_PreparedAssemblyPath != candidatePath && !PrepareUserAssembly(candidatePath)) return false;
+		g_PreparedAssemblyPath.clear();
 		FNK_CORE_INFO_TAG("ScriptEngine", "Loading user assembly: {}", candidatePath);
 
 		if (s_Callbacks.LoadUserAssembly)
 		{
+			if (!PrepareResourceRelease(false)) { DiscardPreparedAssembly(); ClearReloadState(); return false; }
+			struct ResumeScriptResources {
+				~ResumeScriptResources() { ScriptEngine::ResumeResourceScope(false); }
+			} resumeScriptResources;
+			const auto loadedScenes = SceneManager::GetLoadedScenes();
+			for (const auto& weakScene : loadedScenes) {
+				if (auto scene = weakScene.lock()) {
+					SnapshotDynamicComponentsForScene(*scene);
+					scene->ResetManagedSceneSystemsForReload();
+				}
+			}
 			ShutdownGlobalSystems();
 			InspectorEvents::ResetMissingMethodLog();
 			const int ok = s_Callbacks.LoadUserAssembly(candidatePath.c_str());
 			FNK_CORE_INFO_TAG("ScriptEngine", "LoadUserAssembly callback returned: {}", ok);
 			s_HasUserAssembly = (ok != 0);
+			ResumeResourceScope(false);
 
 			if (ok > 0) {
 				s_UserAssemblyPath = candidatePath;
 				FNK_CORE_INFO_TAG("ScriptEngine", "User assembly loaded: {}", path);
 
-					// Re-hydrate data-asset instances the assembly swap dropped (no-op on first load).
-					DataAssetManager::ReloadAll();
+				// Re-hydrate data-asset instances the assembly swap dropped (no-op on first load).
+				DataAssetManager::ReloadAll();
 
-				// Restore dynamic component rows from ScriptComponent.Scripts; new storage instances are empty after reload.
-				if (auto* app = Application::GetInstance()) {
-					if (app->GetSceneManager()) {
-						std::size_t restoredCount = 0;
-						SceneManager::ForeachLoadedScene([&](Scene& scene) {
-							restoredCount += RestoreDynamicComponentsForScene(scene);
-						});
-						if (restoredCount > 0) {
-							FNK_CORE_INFO_TAG("ScriptEngine",
-								"Restored {} dynamic component row(s) from ScriptComponent.Scripts after assembly reload.",
-								restoredCount);
-						}
-					}
-				}
 			}
 			else if (s_HasUserAssembly)
 				FNK_CORE_ERROR_TAG("ScriptEngine", "Failed to load user assembly '{}'; keeping the previous working assembly.", path);
 			else
 				FNK_CORE_ERROR_TAG("ScriptEngine", "Failed to load user assembly: {}", path);
 
+			if (ok != 0) {
+				for (const auto& weakScene : loadedScenes) {
+					if (auto scene = weakScene.lock(); scene && scene->IsLoaded()) {
+						RestoreDynamicComponentsForScene(*scene);
+						if (Application::GetIsPlaying()) {
+							std::vector<EntityHandle> entities;
+							for (auto entity : scene->GetRegistry().view<ScriptComponent>()) entities.push_back(entity);
+							for (auto entity : entities) ScriptSystem::CreateScriptInstancesNow(*scene, entity);
+						}
+						scene->StartManagedSceneSystemsForPlayMode();
+					}
+				}
+			}
 			return ok > 0;
 		}
 
+		DiscardPreparedAssembly();
+		ClearReloadState();
 		FNK_CORE_ERROR_TAG("ScriptEngine", "Cannot load user assembly: callback unavailable");
 		return false;
+	}
+
+	bool ScriptEngine::PrepareResourceRelease(bool playOnly, bool waitForCompletion)
+	{
+		if (!s_Initialized) return true;
+		return g_ResourceLifecycle && g_ResourceLifecycle(waitForCompletion ? 5 : (playOnly ? 1 : 2)) == 1;
+	}
+
+	void ScriptEngine::ResumeResourceScope(bool playOnly)
+	{
+		if (g_ResourceLifecycle) g_ResourceLifecycle(playOnly ? 3 : 4);
+	}
+
+	bool ScriptEngine::PrepareUserAssembly(const std::string& path)
+	{
+		DiscardPreparedAssembly();
+		g_LastAssemblyError.clear();
+		const std::string& candidate = path.empty() ? s_UserAssemblyPath : path;
+		if (!s_Initialized || !g_PrepareUserAssembly || candidate.empty()) {
+			g_LastAssemblyError = "User assembly preflight is unavailable. Build Funke-Engine and Funke-ScriptCore together, then restart the editor.";
+			return false;
+		}
+		std::error_code ec;
+		const auto canonical = std::filesystem::canonical(Path::FromUtf8(candidate), ec);
+		if (ec) {
+			g_LastAssemblyError = "User assembly could not be resolved: " + candidate;
+			return false;
+		}
+		const std::string fullPath = Path::ToUtf8(canonical);
+		char error[16384]{};
+		if (g_PrepareUserAssembly(fullPath.c_str(), error, sizeof(error)) != 1) {
+			g_LastAssemblyError = error[0] ? error : "User assembly preflight failed; see the scripting log.";
+			FNK_ERROR_TAG("ScriptEngine", "C# reload refused: {}", g_LastAssemblyError);
+			return false;
+		}
+		g_PreparedAssemblyPath = fullPath;
+		return true;
+	}
+
+	const std::string& ScriptEngine::GetLastAssemblyError()
+	{
+		return g_LastAssemblyError;
 	}
 
 	bool ScriptEngine::HasUserAssembly()
@@ -287,6 +375,18 @@ namespace Funke {
 		if (s_UserAssemblyPath.empty())
 			return false;
 		return LoadUserAssembly(s_UserAssemblyPath);
+	}
+
+	void ScriptEngine::SnapshotDynamicComponentsForScene(Scene& scene)
+	{
+		for (auto entity : scene.GetRegistry().view<ScriptComponent>()) {
+			auto& scripts = scene.GetRegistry().get<ScriptComponent>(entity);
+			for (const auto& instance : scripts.Scripts) {
+				const auto* info = SceneManager::GetComponentRegistry().FindBySerializedName(instance.GetClassName());
+				if (info && info->isDynamic && info->has && info->serialize && info->has(scene.GetEntity(entity)))
+					scripts.PendingDynamicComponentValues[instance.GetClassName()] = Json::Stringify(info->serialize(scene.GetEntity(entity)));
+			}
+		}
 	}
 
 	std::size_t ScriptEngine::RestoreDynamicComponentsForScene(Scene& scene)
@@ -305,6 +405,7 @@ namespace Funke {
 			if (!enttRegistry.valid(entity)) continue;
 
 			auto& scriptComponent = enttRegistry.get<ScriptComponent>(entity);
+			scriptComponent.MigrateManagedIdentities(ResolveManagedTypeName);
 			Entity entityWrapper = scene.GetEntity(entity);
 			for (const ScriptInstance& instance : scriptComponent.Scripts) {
 				const std::string& className = instance.GetClassName();
@@ -464,6 +565,20 @@ namespace Funke {
 			contactPoint.x, contactPoint.y, contactPoint.z, normal.x, normal.y, normal.z);
 	}
 
+	bool ScriptEngine::ManagedTypeNamesMatch(const std::string& left, const std::string& right)
+	{
+		if (left == right) return true;
+		const std::string resolvedLeft = ResolveManagedTypeName(left);
+		return !resolvedLeft.empty() && resolvedLeft == ResolveManagedTypeName(right);
+	}
+
+	std::string ScriptEngine::ResolveManagedTypeName(const std::string& className)
+	{
+		if (!s_Initialized || !s_Callbacks.GetClassFieldDefs) return {};
+		const char* resolved = s_Callbacks.GetClassFieldDefs(("identity:" + className).c_str());
+		return resolved && std::string_view(resolved).starts_with("type:") ? resolved : "";
+	}
+
 	bool ScriptEngine::ClassExists(const std::string& className)
 	{
 		if (!s_Initialized || !s_Callbacks.ClassExists) return false;
@@ -586,6 +701,42 @@ namespace Funke {
 #endif
 	}
 
+	bool ScriptEngine::CaptureReloadState()
+	{
+		if (!Application::GetIsPlaying()) { ClearReloadState(); return true; }
+		if (!s_HasUserAssembly) return true;
+		using CaptureFn = int(*)();
+		auto capture = reinterpret_cast<CaptureFn>(GetUnmanagedEntryPoint(
+			s_CoreAssemblyPath, "Funke-ScriptCore", "Funke.Interop.ScriptHostBridge", "CaptureReloadState"));
+		return capture && capture() == 1;
+	}
+
+	void ScriptEngine::ClearReloadState()
+	{
+		using ClearFn = void(*)();
+		auto clear = reinterpret_cast<ClearFn>(GetUnmanagedEntryPoint(
+			s_CoreAssemblyPath, "Funke-ScriptCore", "Funke.Interop.ScriptHostBridge", "ClearReloadState"));
+		if (clear) clear();
+	}
+
+	void ScriptEngine::DiscardPreparedAssembly()
+	{
+		g_PreparedAssemblyPath.clear();
+		using DiscardFn = void(*)();
+		auto discard = reinterpret_cast<DiscardFn>(GetUnmanagedEntryPoint(
+			s_CoreAssemblyPath, "Funke-ScriptCore", "Funke.Interop.ScriptHostBridge", "DiscardPreparedAssembly"));
+		if (discard) discard();
+	}
+
+	bool ScriptEngine::ResetRegisteredPlayState()
+	{
+		if (!s_HasUserAssembly) return true;
+		if (!s_Initialized || !s_Host) return false;
+		const auto reset = reinterpret_cast<int(*)()>(s_Host->GetUnmanagedEntryPoint(
+			s_CoreAssemblyPath, "Funke-ScriptCore", "Funke.Interop.ScriptHostBridge", "ResetRegisteredPlayState"));
+		return reset && reset() == 1;
+	}
+
 	void ScriptEngine::NotifyEntityDestroyed(uint64_t entityID)
 	{
 		if (!s_Initialized || entityID == 0 || !s_Callbacks.NotifyEntityDestroyed) return;
@@ -691,7 +842,7 @@ namespace Funke {
 			}
 
 			const auto existing = std::find_if(s_GlobalSystems.begin(), s_GlobalSystems.end(),
-				[&className](const GlobalSystemInstance& instance) { return instance.ClassName == className; });
+				[&className](const GlobalSystemInstance& instance) { return ManagedTypeNamesMatch(instance.ClassName, className); });
 			if (existing != s_GlobalSystems.end()) {
 				continue;
 			}
@@ -752,7 +903,7 @@ namespace Funke {
 		if (!s_Initialized) return;
 
 		auto it = std::find_if(s_GlobalSystems.begin(), s_GlobalSystems.end(),
-			[&className](const GlobalSystemInstance& instance) { return instance.ClassName == className; });
+			[&className](const GlobalSystemInstance& instance) { return ManagedTypeNamesMatch(instance.ClassName, className); });
 		if (it == s_GlobalSystems.end() || it->Handle == 0) return;
 		if (it->Enabled == enabled) return;
 

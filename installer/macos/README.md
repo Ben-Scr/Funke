@@ -44,10 +44,12 @@ Mach-O architecture rather than relabeling binaries. It refuses existing output
 files. `--include-native-sdk` retains a previously staged native SDK; default
 installers omit engine sources, headers and link libraries.
 
-The flat application payload stays under `Contents/MacOS` so the engine's
-executable-relative assets, sibling editor/runtime and EngineSDK resolution
-remain valid. Internal relative symlinks expose this payload through
-`Contents/Resources`, where SDL resolves the bundled application's base path.
+SDL resolves the bundled application's content base to `Contents/Resources`;
+`Path::ResolveFunkeAssets` searches `FunkeAssets` beneath that base. Resolving a
+native executable alias leads to `Contents/MacOS`, so tools inspecting the binary
+path must locate the sibling `Contents/Resources` instead of looking for assets
+beside the executable. The smoke preflight handles this bundle layout explicitly
+and does not accept resources from the working directory or outside the bundle.
 All bundled Mach-O dependencies are relocated to app-local
 `@loader_path` references; unresolved dependencies, external runtime references
 and wrong architectures fail the build. System libraries remain system-linked.
@@ -96,8 +98,11 @@ python3 installer/macos/smoke_test.py \
 ```
 
 This mounts read-only, copies the app to a path containing spaces and Unicode,
-unmounts, verifies its inventory and signatures, then executes the installed CLI,
-Premake and Runtime, creates a C# project, exports it and runs the exported game.
+unmounts, verifies its inventory and signatures, then executes the installed Launcher,
+Editor, CLI, Premake and Runtime, creates a C# project, exports it and runs the exported game.
+Launcher and Editor run with a foreign working directory. Their smoke logs report
+both the expected asset location and the path returned by the live native resolver;
+a missing payload, missing native confirmation, or mismatched path fails the check.
 Its test harness is copied outside the checkout so its working-directory fallback
 cannot find repository files. The test uses the system .NET SDK like the installed
 product; the exported game must use its private .NET runtime.

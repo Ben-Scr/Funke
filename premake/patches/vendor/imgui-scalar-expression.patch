@@ -1,9 +1,48 @@
 diff --git a/imgui.cpp b/imgui.cpp
-index cb73b8dcbbfa4f7dfcc91108561e3c84af08ce2f..1160dcb24d7ac83289af67113cd0ce2cffdc5023 100644
+index cb73b8dcbbfa4f7dfcc91108561e3c84af08ce2f..bf971d77b4a663369f84e29c3d75e30c3d9e0602 100644
 --- a/imgui.cpp
 +++ b/imgui.cpp
-@@ -17464,8 +17464,22 @@ void ImGui::UpdatePlatformWindows()
-         {
+@@ -7639,4 +7639,10 @@ void ImGui::RenderWindowDecorations(ImGuiWindow* window, const ImRect& title_bar
+ }
+ 
++float ImGui::WindowTitleIcon(const char* name, ImDrawList* draw_list, const ImVec2& pos)
++{
++    ImGuiContext& g = *GImGui;
++    return g.PlatformIO.WindowTitleIcon ? g.PlatformIO.WindowTitleIcon(name, draw_list, pos, g.FontSize, GetColorU32(ImGuiCol_Text)) : 0.0f;
++}
++
+ // When inside a dock node, this is handled in DockNodeCalcTabBarLayout() instead.
+ // Render title text, collapse button, close button
+@@ -7700,5 +7706,6 @@ void ImGui::RenderWindowTitleBarContents(ImGuiWindow* window, const ImRect& titl
+     // FIXME: Refactor text alignment facilities along with RenderText helpers, this is WAY too much messy code..
+     const float marker_size_x = (flags & ImGuiWindowFlags_UnsavedDocument) ? button_sz * 0.80f : 0.0f;
+-    const ImVec2 text_size = CalcTextSize(name, NULL, true) + ImVec2(marker_size_x, 0.0f);
++    const float icon_width = WindowTitleIcon(name);
++    const ImVec2 text_size = CalcTextSize(name, NULL, true) + ImVec2(marker_size_x + icon_width, 0.0f);
+ 
+     // As a nice touch we try to ensure that centered title text doesn't get affected by visibility of Close/Collapse button,
+@@ -7731,5 +7738,19 @@ void ImGui::RenderWindowTitleBarContents(ImGuiWindow* window, const ImRect& titl
+     //if (g.IO.KeyShift) window->DrawList->AddRect(layout_r.Min, layout_r.Max, IM_COL32(255, 128, 0, 255)); // [DEBUG]
+     //if (g.IO.KeyCtrl) window->DrawList->AddRect(clip_r.Min, clip_r.Max, IM_COL32(255, 128, 0, 255)); // [DEBUG]
+-    RenderTextClipped(layout_r.Min, layout_r.Max, name, NULL, &text_size, style.WindowTitleAlign, &clip_r);
++    if (icon_width > 0.0f)
++    {
++        ImVec2 pos = layout_r.Min + ImMax(ImVec2(0, 0), (layout_r.GetSize() - text_size) * style.WindowTitleAlign);
++        if (clip_r.Max.x > clip_r.Min.x)
++        {
++            window->DrawList->PushClipRect(clip_r.Min, clip_r.Max, true);
++            WindowTitleIcon(name, window->DrawList, pos);
++            window->DrawList->PopClipRect();
++        }
++        pos.x += icon_width;
++        const ImVec2 label_size(text_size.x - icon_width, text_size.y);
++        RenderTextClipped(pos, layout_r.Max, name, NULL, &label_size, ImVec2(0, 0), &clip_r);
++    }
++    else
++        RenderTextClipped(layout_r.Min, layout_r.Max, name, NULL, &text_size, style.WindowTitleAlign, &clip_r);
+ }
+ 
+@@ -17465,6 +17486,20 @@ void ImGui::UpdatePlatformWindows()
              IMGUI_DEBUG_LOG_VIEWPORT("[viewport] Create Platform Window %08X '%s'\n", viewport->ID, viewport->Window ? viewport->Window->Name : "n/a");
              g.PlatformIO.Platform_CreateWindow(viewport);
 +            if (viewport->PlatformRequestClose || viewport->PlatformHandle == NULL)
@@ -24,22 +63,25 @@ index cb73b8dcbbfa4f7dfcc91108561e3c84af08ce2f..1160dcb24d7ac83289af67113cd0ce2c
 +            }
              g.PlatformWindowsCreatedCount++;
              viewport->LastNameHash = 0;
-             viewport->LastPlatformPos = viewport->LastPlatformSize = ImVec2(FLT_MAX, FLT_MAX); // By clearing those we'll enforce a call to Platform_SetWindowPos/Size below, before Platform_ShowWindow (FIXME: Is that necessary?)
+@@ -20073,5 +20108,5 @@ static void ImGui::DockNodePreviewDockRender(ImGuiWindow* host_window, ImGuiDock
+                     overlay_draw_lists[overlay_n]->PushClipRect(tab_bar_rect.Min, tab_bar_rect.Max);
+                 TabItemBackground(overlay_draw_lists[overlay_n], tab_bb, tab_flags, overlay_col_tabs);
+-                TabItemLabelAndCloseButton(overlay_draw_lists[overlay_n], tab_bb, tab_flags, g.Style.FramePadding, payload_window->Name, 0, 0, false, NULL, NULL);
++                TabItemLabelAndCloseButton(overlay_draw_lists[overlay_n], tab_bb, tab_flags, g.Style.FramePadding, payload_window->Name, 0, 0, false, NULL, NULL, true);
+                 if (!tab_bar_rect.Contains(tab_bb))
+                     overlay_draw_lists[overlay_n]->PopClipRect();
 diff --git a/imgui.h b/imgui.h
-index c32a6baf15dea7332cffda09721d272a4a23f673..32bc6b723606e3e0779cabd00e3631b4bdb7e13c 100644
+index c32a6baf15dea7332cffda09721d272a4a23f673..9691841812f8623ad15fe570abfcfccda3a6615c 100644
 --- a/imgui.h
 +++ b/imgui.h
-@@ -292,6 +292,8 @@ typedef int     (*ImGuiInputTextCallback)(ImGuiInputTextCallbackData* data);
- typedef void    (*ImGuiSizeCallback)(ImGuiSizeCallbackData* data);              // Callback function for ImGui::SetNextWindowSizeConstraints()
+@@ -293,4 +293,6 @@ typedef void    (*ImGuiSizeCallback)(ImGuiSizeCallbackData* data);
  typedef void*   (*ImGuiMemAllocFunc)(size_t sz, void* user_data);               // Function signature for ImGui::SetAllocatorFunctions()
  typedef void    (*ImGuiMemFreeFunc)(void* ptr, void* user_data);                // Function signature for ImGui::SetAllocatorFunctions()
 +typedef bool    (*ImGuiScalarExpressionFn)(const char* buf, ImGuiDataType data_type, void* p_data); // [Funke patch] Signature for ImGui::SetScalarExpressionHook()
 +typedef bool    (*ImGuiColorPickerFooterFn)(float* col, ImGuiColorEditFlags flags); // [Funke patch] Return true when the footer changes the color; col is valid only during the callback.
  
  // ImVec2: 2D vector used to store positions, sizes etc. [Compile-time configurable type]
- // - This is a frequently used type in the API. Consider using IM_VEC2_CLASS_EXTRA to create implicit cast from/to our preferred type.
-@@ -1081,6 +1083,13 @@ namespace ImGui
-     IMGUI_API void          SetStateStorage(ImGuiStorage* storage);                             // replace current window storage with our own (if you want to manipulate it yourself, typically clear subsection of it)
+@@ -1082,4 +1084,11 @@ namespace ImGui
      IMGUI_API ImGuiStorage* GetStateStorage();
  
 +    // [Funke patch] Scalar expression hook - see DataTypeApplyFromText() in imgui_widgets.cpp.
@@ -51,13 +93,35 @@ index c32a6baf15dea7332cffda09721d272a4a23f673..32bc6b723606e3e0779cabd00e3631b4
 +
      // Text Utilities
      IMGUI_API ImVec2        CalcTextSize(const char* text, const char* text_end = NULL, bool hide_text_after_double_hash = false, float wrap_width = -1.0f);
+@@ -4228,4 +4237,7 @@ struct ImGuiPlatformIO
+     void*       Renderer_RenderState;
  
++    // [Funke] Return icon width including spacing; a NULL draw list measures without drawing. Window names/IDs stay unchanged.
++    float       (*WindowTitleIcon)(const char* name, ImDrawList* draw_list, const ImVec2& pos, float size, ImU32 color);
++
+     // Standard draw callbacks
+     ImDrawCallback  DrawCallback_ResetRenderState;      // Request to reset the graphics/render state.
+diff --git a/imgui_internal.h b/imgui_internal.h
+index a9e2cb18736393a87301a211edef0addeccb3209..6b2d6dd35a6779126021fdbbdfc66cacad9cc855 100644
+--- a/imgui_internal.h
++++ b/imgui_internal.h
+@@ -3904,8 +3904,9 @@ namespace ImGui
+     IMGUI_API bool          TabItemEx(ImGuiTabBar* tab_bar, const char* label, bool* p_open, ImGuiTabItemFlags flags, ImGuiWindow* docked_window);
+     IMGUI_API void          TabItemSpacing(const char* str_id, ImGuiTabItemFlags flags, float width);
+-    IMGUI_API ImVec2        TabItemCalcSize(const char* label, bool has_close_button_or_unsaved_marker);
++    IMGUI_API ImVec2        TabItemCalcSize(const char* label, bool has_close_button_or_unsaved_marker, bool is_window = false);
+     IMGUI_API ImVec2        TabItemCalcSize(ImGuiWindow* window);
+     IMGUI_API void          TabItemBackground(ImDrawList* draw_list, const ImRect& bb, ImGuiTabItemFlags flags, ImU32 col);
+-    IMGUI_API void          TabItemLabelAndCloseButton(ImDrawList* draw_list, const ImRect& bb, ImGuiTabItemFlags flags, ImVec2 frame_padding, const char* label, ImGuiID tab_id, ImGuiID close_button_id, bool is_contents_visible, bool* out_just_closed, bool* out_text_clipped);
++    IMGUI_API void          TabItemLabelAndCloseButton(ImDrawList* draw_list, const ImRect& bb, ImGuiTabItemFlags flags, ImVec2 frame_padding, const char* label, ImGuiID tab_id, ImGuiID close_button_id, bool is_contents_visible, bool* out_just_closed, bool* out_text_clipped, bool is_window = false);
++    IMGUI_API float         WindowTitleIcon(const char* name, ImDrawList* draw_list = NULL, const ImVec2& pos = ImVec2(0, 0));
+ 
+     // Render helpers
 diff --git a/imgui_widgets.cpp b/imgui_widgets.cpp
-index abcb02f2bbc5c97e968b3ec30a6aeae8f4cd1df9..01f5956656b0bbea6f49f0bbf5fdf318bd9ee516 100644
+index abcb02f2bbc5c97e968b3ec30a6aeae8f4cd1df9..1382fa1411679614a485502afe4e774f17b7c3d2 100644
 --- a/imgui_widgets.cpp
 +++ b/imgui_widgets.cpp
-@@ -2359,6 +2359,11 @@ void ImGui::DataTypeApplyOp(ImGuiDataType data_type, int op, void* output, const
-     IM_ASSERT(0);
+@@ -2360,4 +2360,9 @@ void ImGui::DataTypeApplyOp(ImGuiDataType data_type, int op, void* output, const
  }
  
 +// [Funke patch] Optional hook installed by the host (see ImGui::SetScalarExpressionHook).
@@ -67,9 +131,7 @@ index abcb02f2bbc5c97e968b3ec30a6aeae8f4cd1df9..01f5956656b0bbea6f49f0bbf5fdf318
 +
  // User can input math operators (e.g. +100) to edit a numerical values.
  // NB: This is _not_ a full expression evaluator. We should probably add one and replace this dumb mess..
- bool ImGui::DataTypeApplyFromText(const char* buf, ImGuiDataType data_type, void* p_data, const char* format, void* p_data_when_empty)
-@@ -2368,6 +2373,12 @@ bool ImGui::DataTypeApplyFromText(const char* buf, ImGuiDataType data_type, void
-     ImGuiDataTypeStorage data_backup;
+@@ -2369,4 +2374,10 @@ bool ImGui::DataTypeApplyFromText(const char* buf, ImGuiDataType data_type, void
      memcpy(&data_backup, p_data, type_info->Size);
  
 +    // [Funke patch] Give the host expression evaluator first crack at the text; it trims
@@ -80,9 +142,7 @@ index abcb02f2bbc5c97e968b3ec30a6aeae8f4cd1df9..01f5956656b0bbea6f49f0bbf5fdf318
 +
      while (ImCharIsBlankA(*buf))
          buf++;
-     if (!buf[0])
-@@ -6043,6 +6054,9 @@ bool ImGui::ColorEdit4(const char* label, float col[4], ImGuiColorEditFlags flag
-     return value_changed;
+@@ -6044,4 +6055,7 @@ bool ImGui::ColorEdit4(const char* label, float col[4], ImGuiColorEditFlags flag
  }
  
 +static ImGuiColorPickerFooterFn GColorPickerFooterHook = NULL;
@@ -90,9 +150,7 @@ index abcb02f2bbc5c97e968b3ec30a6aeae8f4cd1df9..01f5956656b0bbea6f49f0bbf5fdf318
 +
  bool ImGui::ColorPicker3(const char* label, float col[3], ImGuiColorEditFlags flags)
  {
-     float col4[4] = { col[0], col[1], col[2], 1.0f };
-@@ -6312,6 +6326,15 @@ bool ImGui::ColorPicker4(const char* label, float col[4], ImGuiColorEditFlags fl
-         }
+@@ -6313,4 +6327,13 @@ bool ImGui::ColorPicker4(const char* label, float col[4], ImGuiColorEditFlags fl
      }
  
 +    const ImGuiColorEditFlags preview_flags = ImGuiColorEditFlags_NoSidePreview | ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoOptions;
@@ -106,4 +164,96 @@ index abcb02f2bbc5c97e968b3ec30a6aeae8f4cd1df9..01f5956656b0bbea6f49f0bbf5fdf318
 +
      if (value_changed)
      {
-         if (flags & ImGuiColorEditFlags_InputRGB)
+@@ -7491,4 +7514,7 @@ bool ImGui::Selectable(const char* label, bool selected, ImGuiSelectableFlags fl
+     if (is_visible)
+     {
++        // [Funke patch] Match combo highlights to the framed controls without rounding table rows.
++        const bool round_combo = g.BeginComboDepth > 0 && (window->Flags & ImGuiWindowFlags_Popup) && !g.CurrentTable && !span_all_columns;
++        const float rounding = round_combo ? style.FrameRounding : 0.0f;
+         const bool highlighted = hovered || (flags & ImGuiSelectableFlags_Highlight);
+         if (highlighted || selected)
+@@ -7496,9 +7522,11 @@ bool ImGui::Selectable(const char* label, bool selected, ImGuiSelectableFlags fl
+             // Between 1.91.0 and 1.91.4 we made selected Selectable use an arbitrary lerp between _Header and _HeaderHovered. Removed that now. (#8106)
+             ImU32 col = GetColorU32((held && highlighted) ? ImGuiCol_HeaderActive : highlighted ? ImGuiCol_HeaderHovered : ImGuiCol_Header);
+-            RenderFrame(bb.Min, bb.Max, col, false, 0.0f);
++            RenderFrame(bb.Min, bb.Max, col, false, rounding);
+         }
+         if (g.NavId == id)
+         {
+-            ImGuiNavRenderCursorFlags nav_render_cursor_flags = ImGuiNavRenderCursorFlags_Compact | ImGuiNavRenderCursorFlags_NoRounding;
++            ImGuiNavRenderCursorFlags nav_render_cursor_flags = ImGuiNavRenderCursorFlags_Compact;
++            if (!round_combo)
++                nav_render_cursor_flags |= ImGuiNavRenderCursorFlags_NoRounding;
+             if (is_multi_select)
+                 nav_render_cursor_flags |= ImGuiNavRenderCursorFlags_AlwaysDraw; // Always show the nav rectangle
+@@ -10010,5 +10038,5 @@ static void ImGui::TabBarLayout(ImGuiTabBar* tab_bar)
+         const char* tab_name = TabBarGetTabName(tab_bar, tab);
+         const bool has_close_button_or_unsaved_marker = (tab->Flags & ImGuiTabItemFlags_NoCloseButton) == 0 || (tab->Flags & ImGuiTabItemFlags_UnsavedDocument);
+-        tab->ContentWidth = (tab->RequestedWidth >= 0.0f) ? tab->RequestedWidth : TabItemCalcSize(tab_name, has_close_button_or_unsaved_marker).x;
++        tab->ContentWidth = (tab->RequestedWidth >= 0.0f) ? tab->RequestedWidth : TabItemCalcSize(tab_name, has_close_button_or_unsaved_marker, tab->Window != NULL).x;
+         if ((tab->Flags & ImGuiTabItemFlags_Button) == 0)
+             tab->ContentWidth = ImMax(tab->ContentWidth, g.Style.TabMinWidthBase);
+@@ -10646,5 +10674,5 @@ bool    ImGui::TabItemEx(ImGuiTabBar* tab_bar, const char* label, bool* p_open,
+ 
+     // Calculate tab contents size
+-    ImVec2 size = TabItemCalcSize(label, (p_open != NULL) || (flags & ImGuiTabItemFlags_UnsavedDocument));
++    ImVec2 size = TabItemCalcSize(label, (p_open != NULL) || (flags & ImGuiTabItemFlags_UnsavedDocument), docked_window != NULL);
+     tab->RequestedWidth = -1.0f;
+     if (g.NextItemData.HasFlags & ImGuiNextItemDataFlags_HasWidth)
+@@ -10872,5 +10900,5 @@ bool    ImGui::TabItemEx(ImGuiTabBar* tab_bar, const char* label, bool* p_open,
+         bool just_closed;
+         bool text_clipped;
+-        TabItemLabelAndCloseButton(display_draw_list, bb, tab_just_unsaved ? (flags & ~ImGuiTabItemFlags_UnsavedDocument) : flags, tab_bar->FramePadding, label, id, close_button_id, tab_contents_visible, &just_closed, &text_clipped);
++        TabItemLabelAndCloseButton(display_draw_list, bb, tab_just_unsaved ? (flags & ~ImGuiTabItemFlags_UnsavedDocument) : flags, tab_bar->FramePadding, label, id, close_button_id, tab_contents_visible, &just_closed, &text_clipped, docked_window != NULL);
+         if (just_closed && p_open != NULL)
+         {
+@@ -10931,8 +10959,10 @@ void    ImGui::SetTabItemClosed(const char* label)
+ }
+ 
+-ImVec2 ImGui::TabItemCalcSize(const char* label, bool has_close_button_or_unsaved_marker)
++ImVec2 ImGui::TabItemCalcSize(const char* label, bool has_close_button_or_unsaved_marker, bool is_window)
+ {
+     ImGuiContext& g = *GImGui;
+     ImVec2 label_size = CalcTextSize(label, NULL, true);
++    if (is_window)
++        label_size.x += WindowTitleIcon(label);
+     ImVec2 size = ImVec2(label_size.x + g.Style.FramePadding.x, label_size.y + g.Style.FramePadding.y * 2.0f);
+     if (has_close_button_or_unsaved_marker)
+@@ -10945,5 +10975,5 @@ ImVec2 ImGui::TabItemCalcSize(const char* label, bool has_close_button_or_unsave
+ ImVec2 ImGui::TabItemCalcSize(ImGuiWindow* window)
+ {
+-    return TabItemCalcSize(window->Name, window->HasCloseButton || (window->Flags & ImGuiWindowFlags_UnsavedDocument));
++    return TabItemCalcSize(window->Name, window->HasCloseButton || (window->Flags & ImGuiWindowFlags_UnsavedDocument), true);
+ }
+ 
+@@ -10975,5 +11005,5 @@ void ImGui::TabItemBackground(ImDrawList* draw_list, const ImRect& bb, ImGuiTabI
+ // Render text label (with custom clipping) + Unsaved Document marker + Close Button logic
+ // We tend to lock style.FramePadding for a given tab-bar, hence the 'frame_padding' parameter.
+-void ImGui::TabItemLabelAndCloseButton(ImDrawList* draw_list, const ImRect& bb, ImGuiTabItemFlags flags, ImVec2 frame_padding, const char* label, ImGuiID tab_id, ImGuiID close_button_id, bool is_contents_visible, bool* out_just_closed, bool* out_text_clipped)
++void ImGui::TabItemLabelAndCloseButton(ImDrawList* draw_list, const ImRect& bb, ImGuiTabItemFlags flags, ImVec2 frame_padding, const char* label, ImGuiID tab_id, ImGuiID close_button_id, bool is_contents_visible, bool* out_just_closed, bool* out_text_clipped, bool is_window)
+ {
+     ImGuiContext& g = *GImGui;
+@@ -11000,8 +11030,10 @@ void ImGui::TabItemLabelAndCloseButton(ImDrawList* draw_list, const ImRect& bb,
+     ImRect text_ellipsis_clip_bb(bb.Min.x + frame_padding.x, bb.Min.y + frame_padding.y, bb.Max.x - frame_padding.x, bb.Max.y);
+ 
++    const float icon_width = is_window ? WindowTitleIcon(label) : 0.0f;
++
+     // Return clipped state ignoring the close button
+     if (out_text_clipped)
+     {
+-        *out_text_clipped = (text_ellipsis_clip_bb.Min.x + label_size.x) > text_ellipsis_clip_bb.Max.x;
++        *out_text_clipped = (text_ellipsis_clip_bb.Min.x + icon_width + label_size.x) > text_ellipsis_clip_bb.Max.x;
+         //draw_list->AddCircle(text_ellipsis_clip_bb.Min, 3.0f, *out_text_clipped ? IM_COL32(255, 0, 0, 255) : IM_COL32(0, 255, 0, 255));
+     }
+@@ -11063,4 +11095,11 @@ void ImGui::TabItemLabelAndCloseButton(ImDrawList* draw_list, const ImRect& bb,
+         }
+     }
++    if (icon_width > 0.0f && text_ellipsis_clip_bb.Max.x > text_ellipsis_clip_bb.Min.x)
++    {
++        draw_list->PushClipRect(text_ellipsis_clip_bb.Min, text_ellipsis_clip_bb.Max, true);
++        WindowTitleIcon(label, draw_list, text_ellipsis_clip_bb.Min);
++        draw_list->PopClipRect();
++        text_ellipsis_clip_bb.Min.x += icon_width;
++    }
+     LogSetNextTextDecoration("/", "\\");
+     RenderTextEllipsis(draw_list, text_ellipsis_clip_bb.Min, text_ellipsis_clip_bb.Max, ellipsis_max_x, label, label_end, &label_size);

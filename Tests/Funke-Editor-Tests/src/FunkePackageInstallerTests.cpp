@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 
 #include "Editor/FunkePackageInstaller.hpp"
+#include "Core/EngineModules.hpp"
 #include "Project/FunkeProject.hpp"
 
 #include <algorithm>
@@ -147,9 +148,9 @@ return { name = "Game.Levels", version = "1.0.0", dependencies = { "Game.Tiles2D
 	// Transitive: Game.Levels itself declares no module, its dependency does.
 	const auto installed = Funke::FunkePackageInstaller::InstallToProject(project, "Game.Levels");
 	REQUIRE_MESSAGE(installed.Success, installed.Message);
-	REQUIRE(installed.EnabledModules.size() == 1);
-	CHECK(installed.EnabledModules[0] == "Funke.2D");
+	CHECK(installed.EnabledModules == std::vector<std::string>{ "Funke.2D", "Funke.Physics2D" });
 	CHECK(project.HasModule("Funke.2D"));
+	CHECK(project.HasModule("Funke.Physics2D"));
 	CHECK(fixture.Read("project.json").find("Funke.2D") != std::string::npos);
 
 	const auto refused = Funke::FunkePackageInstaller::DisableModule(project, "Funke.2D");
@@ -162,6 +163,43 @@ return { name = "Game.Levels", version = "1.0.0", dependencies = { "Game.Tiles2D
 	CHECK_FALSE(project.HasModule("Funke.3D"));
 	CHECK(Funke::FunkePackageInstaller::EnableModule(project, "Funke.3D").Success);
 	CHECK(project.HasModule("Funke.3D"));
+}
+
+TEST_CASE("Module enablement rejects unknown or uncompiled IDs without changing the project") {
+	ScopedPackageProject fixture;
+	Funke::FunkeProject project;
+	project.Name = "ModuleValidation";
+	project.RootDirectory = fixture.Root.string();
+	project.ProjectFilePath = (fixture.Root / "project.json").string();
+	project.Modules.clear();
+	REQUIRE(project.Save());
+	const std::string original = fixture.Read("project.json");
+	for (const std::string& id : { "Funke.3d", "Funke.2D", "Funke.3D" }) {
+		const auto status = Funke::EngineModules::GetStatus(id, project.Modules);
+		if (status == Funke::EngineModules::Status::Disabled) continue;
+		const auto result = Funke::FunkePackageInstaller::EnableModule(project, id);
+		CHECK_FALSE(result.Success);
+		CHECK(result.Message == Funke::EngineModules::GetStatusMessage(id, status));
+		CHECK(result.EnabledModules.empty());
+		CHECK(project.Modules.empty());
+		CHECK(fixture.Read("project.json") == original);
+	}
+}
+
+TEST_CASE("Physics module installation enables its dimension and prevents removing that dependency") {
+	ScopedPackageProject fixture;
+	Funke::FunkeProject project;
+	project.Name = "PhysicsModules";
+	project.RootDirectory = fixture.Root.string();
+	project.ProjectFilePath = (fixture.Root / "project.json").string();
+	project.Modules.clear();
+	REQUIRE(project.Save());
+	const auto installed = Funke::FunkePackageInstaller::EnableModule(project, "Funke.Physics3D");
+	REQUIRE_MESSAGE(installed.Success, installed.Message);
+	CHECK(project.Modules == std::vector<std::string>{ "Funke.3D", "Funke.Physics3D" });
+	CHECK_FALSE(Funke::FunkePackageInstaller::DisableModule(project, "Funke.3D").Success);
+	CHECK(Funke::FunkePackageInstaller::DisableModule(project, "Funke.Physics3D").Success);
+	CHECK(project.Modules == std::vector<std::string>{ "Funke.3D" });
 }
 
 TEST_CASE("Packages of a project stay project packages when the tools run inside the project") {

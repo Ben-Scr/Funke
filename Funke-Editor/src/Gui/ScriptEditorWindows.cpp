@@ -69,14 +69,14 @@ namespace Funke {
 				item = terminator + 1;
 			}
 			const char* preview = selectedIndex >= 0 && selectedIndex < static_cast<int>(items.size()) ? items[selectedIndex] : "Select...";
-			if (ImGui::BeginCombo(label, preview)) {
+			if (EditorUI::BeginCombo(label, preview)) {
 				for (int index = 0; index < static_cast<int>(items.size()); ++index) {
 					ImGui::PushID(index);
 					if (ImGui::Selectable(items[index], selectedIndex == index)) selectedIndex = index;
 					if (selectedIndex == index) ImGui::SetItemDefaultFocus();
 					ImGui::PopID();
 				}
-				ImGui::EndCombo();
+				EditorUI::EndCombo();
 			}
 			return selectedIndex;
 		}
@@ -84,7 +84,7 @@ namespace Funke {
 			return ImGui::Selectable(label, selected != 0) ? 1 : 0;
 		}
 		float Slider(const char* label, float value, float min, float max, const char* format) {
-			ImGui::SliderFloat(label, &value, min, max, OrDefault(format, "%.3f"));
+			EditorUI::SliderFloat(label, &value, min, max, OrDefault(format, "%.3f"));
 			return value;
 		}
 		float VerticalSlider(const char* label, float width, float height, float value, float min, float max, const char* format) {

@@ -1,4 +1,5 @@
 #include "pch.hpp"
+#include "Core/EngineModules.hpp"
 #include "Project/ProjectTemplate.hpp"
 
 #include "Core/Version.hpp"
@@ -226,11 +227,22 @@ namespace Funke {
 		if (const Json::Value* v = root.FindMember("startupScene")) result.StartupScene = v->AsStringOr(result.StartupScene);
 		if (const Json::Value* v = root.FindMember("sortOrder")) result.SortOrder = v->AsIntOr(0);
 		if (const Json::Value* v = root.FindMember("sourceProjectPath")) result.SourceProjectPath = v->AsStringOr("");
-		if (const Json::Value* v = root.FindMember("modules"); v && v->IsArray()) {
+		int requirementsVersion = 1;
+		if (const auto* version = root.FindMember("moduleRequirementsVersion")) {
+			if (!version->IsNumber() || (version->AsDoubleOr(0) != 1 && version->AsDoubleOr(0) != 2))
+				return fail("moduleRequirementsVersion must be 1 or 2");
+			requirementsVersion = version->AsIntOr(0);
+		}
+		if (const Json::Value* v = root.FindMember("modules")) {
+			if (!v->IsArray()) return fail("modules must be an array");
+			result.HasModuleSelection = true;
 			for (const Json::Value& module : v->GetArray()) {
-				std::string id = module.AsStringOr("");
-				if (!id.empty()) result.Modules.push_back(std::move(id));
+				if (!module.IsString() || !EngineModules::FromId(module.AsStringOr()))
+					return fail("Unknown template engine module");
+				result.Modules.push_back(module.AsStringOr());
 			}
+			result.Modules = requirementsVersion < 2 ? EngineModules::ExpandLegacySelection(result.Modules)
+				: EngineModules::Resolve(result.Modules);
 		}
 
 		if (result.Id.empty()) {
@@ -376,6 +388,7 @@ namespace Funke {
 			modules.Append(module);
 		}
 		manifest.AddMember("modules", std::move(modules));
+		manifest.AddMember("moduleRequirementsVersion", 2);
 		manifest.AddMember("startupScene", project.StartupScene);
 		manifest.AddMember("sourceProject", project.Name);
 		manifest.AddMember("sourceProjectPath", project.RootDirectory);
@@ -521,6 +534,7 @@ namespace Funke {
 			modules.Append(module);
 		}
 		manifest.AddMember("modules", std::move(modules));
+		manifest.AddMember("moduleRequirementsVersion", 2);
 		manifest.AddMember("startupScene", project.StartupScene);
 		manifest.AddMember("sourceProject", project.Name);
 		manifest.AddMember("engineVersion", std::string(FNK_VERSION));

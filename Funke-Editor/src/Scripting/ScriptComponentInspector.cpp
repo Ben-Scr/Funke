@@ -43,6 +43,42 @@
 namespace Funke {
 
 	namespace {
+		bool DrawManagedTypeStatus(const std::string& className) {
+			if (!ScriptEngine::IsInitialized()) {
+				ImGui::TextDisabled("Script host is not ready.");
+				return false;
+			}
+			auto query = ScriptEngine::GetCallbacks().GetClassFieldDefs;
+			Json::Value status;
+			const char* json = query ? query(("status:" + className).c_str()) : nullptr;
+			if (!json || !Json::TryParse(json, status) || !status.IsObject()) {
+				ImGui::TextDisabled("Script metadata is not available.");
+				return false;
+			}
+			const auto* exists = status.FindMember("exists");
+			if (!exists || !exists->AsBoolOr(false)) {
+				ImGui::TextWrapped("Script type '%s' is not available in the loaded assembly. Its attachment and saved values are retained.", className.c_str());
+				if (ImGui::SmallButton("Open Console")) ImGui::SetWindowFocus("Log");
+				const std::string output = ScriptSystem::GetLastRebuildOutput();
+				if (!output.empty() && ImGui::TreeNode("Last build / reload failure")) {
+					ImGui::TextWrapped("%s", output.c_str());
+					ImGui::TreePop();
+				}
+				return false;
+			}
+			const auto* warnings = status.FindMember("warnings");
+			if (warnings && warnings->IsArray() && !warnings->GetArray().empty()
+				&& ImGui::TreeNode("Unsupported Inspector fields")) {
+				for (const auto& warning : warnings->GetArray()) {
+					const auto* path = warning.FindMember("path");
+					const auto* type = warning.FindMember("type");
+					const auto* reason = warning.FindMember("reason");
+					if (path && type && reason) ImGui::TextWrapped("%s (%s): %s", path->AsStringOr().c_str(), type->AsStringOr().c_str(), reason->AsStringOr().c_str());
+				}
+				ImGui::TreePop();
+			}
+			return true;
+		}
 
 		// One inline sub-field of an object list element (itemType == "object").
 		struct EditorItemFieldRecord {
@@ -100,11 +136,13 @@ namespace Funke {
 			std::vector<EditorScriptDiscovery::ScriptEntry> entries;
 			EditorScriptDiscovery::CollectProjectScriptEntries(entries);
 			for (const auto& entry : entries) {
-				if (entry.ClassName == className && predicate(entry)) {
+				if (ScriptEngine::ManagedTypeNamesMatch(entry.ClassName, className) && predicate(entry)) {
 					scriptPath = entry.Path;
 					break;
 				}
 			}
+			std::error_code sourceError;
+			if (!std::filesystem::is_regular_file(scriptPath, sourceError)) scriptPath.clear();
 			const std::string buttonText = scriptPath.empty()
 				? fallbackLabel
 				: scriptPath.filename().string();
@@ -517,7 +555,8 @@ namespace Funke {
 		// For inline object lists (ItemTypeTag == "object") it builds the sub-field
 		// schema into Metadata.ListItemFields and returns None.
 		PropertyType ConfigureListItemMetadata(PropertyDescriptor& d, const EditorFieldRecord& rec) {
-			if (d.Type != PropertyType::List) return PropertyType::None;
+			if (d.Type != PropertyType::List && d.Type != PropertyType::NestedList && d.Type != PropertyType::Dictionary)
+				return PropertyType::None;
 			if (rec.ItemTypeTag == "object") {
 				d.Metadata.ListItemFields.clear();
 				d.Metadata.ListItemFields.reserve(rec.ItemFields.size());
@@ -821,7 +860,10 @@ namespace Funke {
 			else if (callbacks.GetClassFieldDefs) {
 				json = callbacks.GetClassFieldDefs(className.c_str());
 			}
-			if (!json || !*json || (json[0] == '[' && json[1] == ']')) return;
+			if (!json || !*json || (json[0] == '[' && json[1] == ']')) {
+				ImGui::TextDisabled("No displayable Inspector fields.");
+				return;
+			}
 
 			auto records = ParseEditorFields(json);
 			if (records.empty()) return;
@@ -1262,6 +1304,10 @@ namespace Funke {
 	{
 		pass = {};
 		if (entities.empty()) return false;
+		for (Entity entity : entities) {
+			if (entity.HasComponent<ScriptComponent>())
+				entity.GetComponent<ScriptComponent>().MigrateManagedIdentities(ScriptEngine::ResolveManagedTypeName);
+		}
 
 		// Selection may not uniformly carry ScriptComponent (mid-edit add/remove, stale undo); bail rather than trip EnTT's assertion.
 		const Entity& primary = entities[0];
@@ -1303,17 +1349,14 @@ namespace Funke {
 		if (removeRequested) pass.RemoveManagedIndex = i;
 
 		if (open) {
-			DrawOpenScriptButton(className,
-				[](const EditorScriptDiscovery::ScriptEntry& e) {
-					return e.Type == ScriptType::Managed;
-				},
-				className);
+			if (DrawManagedTypeStatus(className)) {
+				DrawOpenScriptButton(className,
+					[](const EditorScriptDiscovery::ScriptEntry& e) {
+						return e.Type == ScriptType::Managed;
+					},
+					className);
 
-			if (ScriptEngine::IsInitialized()) {
 				RenderFieldsForManagedComponent(scriptComp, className, i, pass.Propagation, pass.MultiEdit);
-			}
-			else {
-				ImGui::TextDisabled("Script engine not initialized");
 			}
 			ImGuiUtils::EndComponentSection();
 		}
@@ -1327,10 +1370,12 @@ namespace Funke {
 		if (i >= scriptComp.Scripts.size()) return;
 
 		auto& instance = scriptComp.Scripts[i];
-		// Distinguish EntityScript ("C# Script") from :IComponent struct ("C# Native Component") by checking ComponentRegistry::isDynamic.
 		std::string label;
 		if (instance.GetClassName().empty()) {
 			label = "Script";
+		}
+		else if (instance.GetType() == ScriptType::Native) {
+			label = instance.GetClassName() + " (C++ Script)";
 		}
 		else {
 			const ComponentInfo* dynamicInfo = SceneManager::GetComponentRegistry()
@@ -1348,17 +1393,20 @@ namespace Funke {
 
 		if (open) {
 			const ScriptType instanceType = instance.GetType();
-			DrawOpenScriptButton(instance.GetClassName(),
-				[instanceType](const EditorScriptDiscovery::ScriptEntry& e) {
-					return e.Type == instanceType;
-				},
-				label);
+			const bool ready = instanceType == ScriptType::Native || DrawManagedTypeStatus(instance.GetClassName());
+			if (ready) {
+				DrawOpenScriptButton(instance.GetClassName(),
+					[instanceType](const EditorScriptDiscovery::ScriptEntry& e) {
+						return e.Type == instanceType;
+					},
+					label);
 
-			if (instance.GetType() == ScriptType::Native) {
-				RenderNativeScriptFields(instance, i, pass.Propagation);
-			}
-			else if (ScriptEngine::IsInitialized()) {
-				RenderScriptFieldsForInstance(scriptComp, instance, i, pass.Propagation, pass.MultiEdit);
+				if (instance.GetType() == ScriptType::Native) {
+					RenderNativeScriptFields(instance, i, pass.Propagation);
+				}
+				else if (ScriptEngine::IsInitialized()) {
+					RenderScriptFieldsForInstance(scriptComp, instance, i, pass.Propagation, pass.MultiEdit);
+				}
 			}
 			ImGuiUtils::EndComponentSection();
 		}

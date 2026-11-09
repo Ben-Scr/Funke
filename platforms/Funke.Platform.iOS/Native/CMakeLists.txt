@@ -60,6 +60,5 @@ set_target_properties(FunkeGame PROPERTIES
 
 # Game content and managed assemblies live in the bundle root, next to the executable.
 add_custom_command(TARGET FunkeGame POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory "${FUNKE_CONTENT_DIR}" "$<TARGET_BUNDLE_CONTENT_DIR:FunkeGame>/game"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory "${FUNKE_MANAGED_DIR}" "$<TARGET_BUNDLE_CONTENT_DIR:FunkeGame>/managed"
+    COMMAND /bin/sh "${CMAKE_CURRENT_SOURCE_DIR}/copy_content.sh"
     VERBATIM)

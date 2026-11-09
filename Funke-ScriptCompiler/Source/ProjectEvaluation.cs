@@ -19,6 +19,7 @@ sealed class ProjectEvaluation
     public required IReadOnlyList<(string Source, string Destination)> CopyLocal { get; init; }
     public required Dictionary<string, DateTime> ProjectFiles { get; init; }
     public required HashSet<string> SourceFiles { get; init; }
+    public string BuildDiagnostics { get; init; } = "";
 
     public static ProjectEvaluation Run(string projectPath, CompileRequest request, bool fullBuild = false)
     {
@@ -107,6 +108,7 @@ sealed class ProjectEvaluation
             CopyLocal = copyLocal,
             ProjectFiles = projectFiles,
             SourceFiles = sourceFiles,
+            BuildDiagnostics = fullBuild ? output[..output.IndexOf('{')] + stderr.Result : "",
         };
     }
 
@@ -157,7 +159,7 @@ sealed class ProjectEvaluation
 
     static Dictionary<string, DateTime> SnapshotProjectFiles(string projectDirectory)
     {
-        var files = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+        var files = new Dictionary<string, DateTime>(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
         void Add(string directory)
         {
             if (!Directory.Exists(directory)) return;
@@ -180,7 +182,7 @@ sealed class ProjectEvaluation
 
     static HashSet<string> DiscoverSourceFiles(string projectDirectory)
     {
-        var files = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var files = new HashSet<string>(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
         var pending = new Stack<string>();
         pending.Push(projectDirectory);
         while (pending.Count > 0)

@@ -117,13 +117,14 @@ class EditorScriptToolingSourceTests(unittest.TestCase):
         start = source.index("if (TryTakeTaskResult(m_RebuildTask, result))")
         end = source.index("if (TryTakeTaskResult(m_NativeRebuildTask, result))", start)
         managed_completion = source[start:end]
-        self.assertRegex(
-            managed_completion,
-            r'FNK_ERROR_TAG\("ScriptSystem", "(?:[^"\\]|\\.)*", result\.Output\);',
-        )
+        self.assertIn("std::istringstream compilerOutput(result.Output);", managed_completion)
+        self.assertIn("while (std::getline(compilerOutput, diagnostic))", managed_completion)
+        self.assertRegex(managed_completion,
+                         r'else if \(!result\.Succeeded\(\)\)\s*\{\s*'
+                         r'FNK_ERROR_TAG\("ScriptCompiler", "\{\}", diagnostic\);')
         self.assertNotRegex(
             managed_completion,
-            r'FNK_TRACE_TAG\("ScriptSystem", "(?:[^"\\]|\\.)*", result\.Output\);',
+            r'FNK_TRACE_TAG\("(?:ScriptSystem|ScriptCompiler)", "(?:[^"\\]|\\.)*", (?:result\.Output|diagnostic)\);',
         )
 
     def test_file_watcher_decodes_utf8_targets(self) -> None:

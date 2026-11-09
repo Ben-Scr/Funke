@@ -1,7 +1,7 @@
 #include "pch.hpp"
 #include "Serialization/SceneSerializerStorage.hpp"
 
-#if !(FUNKE_WITH_RENDER && FUNKE_WITH_AUDIO && FUNKE_WITH_PHYSICS && FUNKE_WITH_SCRIPTING)
+#if !(FUNKE_WITH_RENDER && FUNKE_WITH_AUDIO && FUNKE_WITH_SCRIPTING)
 
 #include "Serialization/File.hpp"
 #include "Serialization/Json.hpp"

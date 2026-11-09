@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -13,6 +14,7 @@ from pathlib import Path
 
 
 STABLE_MARKER = "CI smoke test reached a stable frame; requesting graceful shutdown."
+RESOURCE_MARKER = "CI smoke test resources resolved to: "
 FORBIDDEN_MARKERS = (
     "Unhandled exception at app boundary",
     "CI smoke test failed",
@@ -50,6 +52,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Launch a Funke GUI application and require graceful exit.")
     parser.add_argument("--binary", type=Path, required=True)
     parser.add_argument("--timeout", type=float, default=45.0)
+    parser.add_argument("--working-directory", type=Path,
+                        help="Launch from this directory instead of the executable directory.")
     parser.add_argument("--argument", action="append", default=[])
     parser.add_argument(
         "--editor-project",
@@ -59,13 +63,32 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def asset_candidates(binary: Path) -> list[Path]:
+    binary = binary.resolve()
+    directory = binary.parent
+    if (directory.name == "MacOS" and directory.parent.name == "Contents"
+            and (directory.parent / "Info.plist").is_file()):
+        return [directory.parent / "Resources/FunkeAssets"]
+    return [directory / "FunkeAssets", directory.parent / "FunkeAssets"]
+
+
+def resolve_assets(binary: Path) -> Path:
+    candidates = asset_candidates(binary)
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate.resolve()
+    locations = "; ".join(f"{path} ({'not a directory' if path.exists() else 'missing'})"
+                          for path in candidates)
+    raise ValueError(f"FunkeAssets was not found for {binary.resolve()}. Expected locations: {locations}")
+
+
 def stage_editor_project(binary: Path) -> tempfile.TemporaryDirectory[str]:
     temporary = tempfile.TemporaryDirectory(prefix="Funke Editor Prüfung ")
     project = Path(temporary.name)
     scenes = project / "Assets" / "Scenes"
     scenes.mkdir(parents=True)
 
-    metadata_path = binary.parent / "BuildMetadata.json"
+    metadata_path = resolve_assets(binary).parent / "BuildMetadata.json"
     version = "0.0.0-dev"
     if metadata_path.is_file():
         version = str(json.loads(metadata_path.read_text(encoding="utf-8"))["version"])
@@ -110,13 +133,16 @@ def main() -> int:
     if not binary.is_file():
         print(f"Application binary was not found: {binary}", file=sys.stderr)
         return 1
-    if not (binary.parent / "FunkeAssets").is_dir():
-        print(f"FunkeAssets was not found next to: {binary}", file=sys.stderr)
+    try:
+        assets = resolve_assets(binary)
+    except ValueError as error:
+        print(error, file=sys.stderr)
         return 1
+    print(f"Application resource preflight: executable={binary}; FunkeAssets={assets}")
 
     editor_project: tempfile.TemporaryDirectory[str] | None = None
     arguments = list(args.argument)
-    required_markers = [STABLE_MARKER]
+    required_markers = [STABLE_MARKER, RESOURCE_MARKER]
     if args.editor_project:
         editor_project = stage_editor_project(binary)
         arguments.append(f"--project={editor_project.name}")
@@ -127,7 +153,7 @@ def main() -> int:
         command = [xvfb_run, "-a", *command]
 
     kwargs: dict[str, object] = {
-        "cwd": binary.parent,
+        "cwd": args.working_directory.resolve() if args.working_directory else binary.parent,
         "stdout": subprocess.PIPE,
         "stderr": subprocess.STDOUT,
         "text": True,
@@ -167,6 +193,13 @@ def main() -> int:
             print(f"Application log contained failure marker {marker!r}.\n{output}", file=sys.stderr)
             return 1
 
+    resolved = re.findall(re.escape(RESOURCE_MARKER) + r"'([^\r\n]*)'", output)
+    if not resolved or any(Path(path).resolve() != assets for path in resolved):
+        print(f"Application resource mismatch: expected {assets}; native resolver reported {resolved!r}.\n{output}",
+              file=sys.stderr)
+        return 1
+
+    print(f"Application native resources: {resolved[-1]}")
     print(f"Application smoke test passed with graceful exit: {binary}")
     return 0
 

@@ -9,6 +9,9 @@
 #include <span>
 #include <type_traits>
 #include <utility>
+#ifdef FNK_DEBUG
+#include <thread>
+#endif
 
 namespace Funke {
 
@@ -80,7 +83,16 @@ namespace Funke {
 		// don't poke at the bytes directly in normal code.
 		const std::byte* Data() const noexcept { return m_Base; }
 
+#ifdef FNK_DEBUG
+		// Global scratch arenas opt in; independent worker arenas remain unrestricted.
+		void BindToCurrentThread() noexcept { m_OwnerThread = std::this_thread::get_id(); }
+#endif
+
 	private:
+#ifdef FNK_DEBUG
+		bool CheckThreadAccess() const noexcept;
+		std::thread::id m_OwnerThread;
+#endif
 		std::byte*  m_Base     = nullptr;
 		std::size_t m_Capacity = 0;
 		std::size_t m_Offset   = 0;

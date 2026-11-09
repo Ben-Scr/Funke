@@ -64,7 +64,7 @@ internal static class ScriptExceptionLog
         }
         if (ex == null)
         {
-            Log.Error($"Exception in {context}");
+            Log.Error($"Exception in {context}", "", 0);
             return;
         }
 
@@ -101,7 +101,7 @@ internal static class ScriptExceptionLog
             }
         }
 
-        if (message != null) Log.Error(message);
+        if (message != null) Log.Error(message, "", 0);
     }
 
     /// <summary>Reports pending repeat counts and forgets every exception (play-mode exit, assembly unload).</summary>
@@ -118,7 +118,7 @@ internal static class ScriptExceptionLog
             }
             s_Entries.Clear();
         }
-        foreach (string summary in summaries) Log.Error(summary);
+        foreach (string summary in summaries) Log.Error(summary, "", 0);
     }
 
     private static string FormatSummary(Entry entry, double elapsedSeconds) =>

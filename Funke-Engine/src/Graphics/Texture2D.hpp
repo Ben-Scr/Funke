@@ -103,7 +103,7 @@ namespace Funke {
 
 		// Worker-safe; does not access GPU state or change stb's global decode settings.
 		static std::unique_ptr<ImageData> DecodeFileToCpu(const char* path,
-			bool flipVertical = false);
+			bool flipVertical = false, size_t maxPixels = 0);
 		// Drops the cached mip-generation pipelines (and their device ref); called from RenderApi::Shutdown.
 		static void ReleaseMipGenResources();
 		// Returns the raw WGPUTextureView pointer cast to uint64_t — ImGui reinterpret-casts ImTextureID directly to WGPUTextureView, so this must not be a pool index.

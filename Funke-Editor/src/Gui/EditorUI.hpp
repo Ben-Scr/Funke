@@ -52,6 +52,11 @@ namespace Funke::EditorUI {
 	bool SearchField(const char* id, char* buffer, std::size_t bufferSize, const char* hint = "Search...", float width = -1.0f);
 	bool SearchField(const char* id, std::string& value, const char* hint = "Search...", float width = -1.0f);
 
+	bool SliderFloat(const char* label, float* value, float minimum, float maximum, const char* format = "%.3f", ImGuiSliderFlags flags = 0);
+	bool SliderInt(const char* label, int* value, int minimum, int maximum, const char* format = "%d", ImGuiSliderFlags flags = 0);
+	void EndCombo();
+	bool BeginCombo(const char* label, const char* preview, ImGuiComboFlags flags = 0);
+
 	bool CompactSlider(const char* label, float* value, float minimum, float maximum, float step,
 		float width, const char* format = "%.0f");
 
@@ -62,7 +67,7 @@ namespace Funke::EditorUI {
 
 	bool NavigationItem(const char* label, bool selected, const char* iconName = nullptr);
 	// Pair bar/item ends only with true returns; tab padding never reaches the selected content.
-	bool BeginTabBar(const char* id, ImGuiTabBarFlags flags = 0);
+	bool BeginTabBar(const char* id, ImGuiTabBarFlags flags = 0, bool tabListPopup = true);
 	void EndTabBar();
 	bool BeginTabItem(const char* label, bool* open = nullptr, ImGuiTabItemFlags flags = 0);
 	void EndTabItem();

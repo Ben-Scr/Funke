@@ -2,6 +2,11 @@ using System;
 using System.Collections.Concurrent;
 using System.Runtime.InteropServices;
 using System.Threading;
+using System.Threading.Tasks;
+using System.Runtime.CompilerServices;
+using System.Runtime.Loader;
+using System.Reflection;
+using Funke.Jobs.Internal;
 using Funke.Interop;
 using Funke.Jobs;
 using Xunit;
@@ -27,6 +32,7 @@ public unsafe sealed class JobDispatchTests : IDisposable
         public int Begin;
         public int End;
         public volatile bool Complete;
+        public ulong Id;
         private readonly object m_RunLock = new();
 
         public void Run()
@@ -36,7 +42,10 @@ public unsafe sealed class JobDispatchTests : IDisposable
                 if (Complete) return;
                 if (Work != null) Work(Context);
                 else RangeWork(Context, Begin, End);
+                Release(Context);
+                Interlocked.Increment(ref s_Releases);
                 Complete = true;
+                s_Entries.TryRemove(Id, out _);
             }
         }
     }
@@ -62,6 +71,7 @@ public unsafe sealed class JobDispatchTests : IDisposable
 
     public JobDispatchTests()
     {
+        ScriptResourceScope.Resume(false);
         s_Releases = 0;
         s_RunBeforeReturn = false;
         s_BeforeWait = null;
@@ -80,10 +90,12 @@ public unsafe sealed class JobDispatchTests : IDisposable
         foreach (Entry entry in s_Entries.Values)
         {
             // A timed-out callback still owns its context; teardown must not wait on or free it.
-            if (entry.Complete) entry.Release(entry.Context);
+            if (!entry.Complete) entry.Run();
         }
         s_Entries.Clear();
         NativeCallbacks.Bindings = m_Previous;
+        ScriptResourceScope.IsPlaying = null;
+        ScriptResourceScope.Resume(false);
     }
 
     [UnmanagedCallersOnly]
@@ -99,9 +111,10 @@ public unsafe sealed class JobDispatchTests : IDisposable
 
     private static ulong Register(Entry entry)
     {
-        if (s_RunBeforeReturn) entry.Run();
         ulong handle = ++s_NextHandle;
+        entry.Id = handle;
         s_Entries.TryAdd(handle, entry);
+        if (s_RunBeforeReturn) entry.Run();
         return handle;
     }
 
@@ -120,8 +133,7 @@ public unsafe sealed class JobDispatchTests : IDisposable
     [UnmanagedCallersOnly]
     private static void Release(ulong handle)
     {
-        Interlocked.Increment(ref s_Releases);
-        if (s_Entries.TryRemove(handle, out Entry? entry)) entry.Release(entry.Context);
+        if (s_Entries.TryGetValue(handle, out Entry? entry)) entry.Run();
     }
 
     [Theory]
@@ -227,4 +239,191 @@ public unsafe sealed class JobDispatchTests : IDisposable
         Assert.Equal(1, s_Releases);
         Assert.Empty(s_Entries);
     }
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void TenThousandJobsReleaseWithoutComplete(bool discard)
+    {
+        int baseline = JobNativeDispatch.ActiveContextCount;
+        s_RunBeforeReturn = true;
+        for (int i = 0; i < 10_000; ++i)
+        {
+            var handle = Job.Schedule(new EmptyJob());
+            if (!discard) Assert.True(handle.IsComplete);
+        }
+        Assert.Empty(s_Entries);
+        Assert.Equal(10_000, s_Releases);
+        Assert.Equal(baseline, JobNativeDispatch.ActiveContextCount);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static WeakReference SchedulePayload()
+    {
+        var payload = new object();
+        var weak = new WeakReference(payload);
+        Job.ScheduleParallelForRange(0, 1, (_, _) => GC.KeepAlive(payload));
+        return weak;
+    }
+
+    [Fact]
+    public void FinishedDiscardedPayloadIsCollectible()
+    {
+        s_RunBeforeReturn = true;
+        WeakReference payload = SchedulePayload();
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
+        Assert.False(payload.IsAlive);
+        Assert.Equal(0, JobNativeDispatch.ActiveContextCount);
+    }
+
+    [Fact]
+    public void LateFaultObserversAndDependenciesShareReleasedResult()
+    {
+        s_RunBeforeReturn = true;
+        var handle = Job.Schedule(new FailingJob("retained"));
+        Assert.Empty(s_Entries);
+        Assert.True(handle.IsComplete);
+        Assert.True(handle.IsFaulted);
+        Assert.Equal("retained", handle.Exception!.Message);
+        Assert.Equal("retained", Assert.Throws<InvalidOperationException>(() => handle.AsTask().GetAwaiter().GetResult()).Message);
+        Assert.Throws<InvalidOperationException>(() => Job.CombineDependencies(handle, handle).Complete());
+        Assert.Equal(1, s_Releases);
+    }
+
+    [Fact]
+    public void GenerationDrainRejectsNewJobsAndPumpsMainThreadContinuations()
+    {
+        using var entered = new ManualResetEventSlim(false);
+        using var resumed = new ManualResetEventSlim(false);
+        JobHandle running = Job.Schedule(() =>
+        {
+            Funke.Coroutines.FunkeSynchronizationContext.Instance.Post(_ => resumed.Set(), null);
+            entered.Set();
+            resumed.Wait();
+        });
+        Assert.True(entered.Wait(TimeSpan.FromSeconds(5)));
+        Assert.True(ScriptResourceScope.Drain(false));
+        Assert.Equal(0, ScriptResourceScope.ActiveCount);
+        Assert.Throws<InvalidOperationException>(() => Job.Schedule(new EmptyJob()));
+        running.Complete();
+    }
+
+    [Fact]
+    public void DrainTimeoutRetainsRunningContextAndGenerationJobsSurvivePlayStop()
+    {
+        using var entered = new ManualResetEventSlim(false);
+        using var finish = new ManualResetEventSlim(false);
+        JobHandle handle = Job.Schedule(() => { entered.Set(); finish.Wait(); });
+        Assert.True(entered.Wait(TimeSpan.FromSeconds(5)));
+        try
+        {
+            Assert.True(ScriptResourceScope.Drain(true));
+            Assert.False(handle.IsComplete);
+            Assert.False(ScriptResourceScope.Drain(false, 10));
+            Assert.Equal(1, ScriptResourceScope.ActiveCount);
+        }
+        finally { finish.Set(); handle.Complete(); }
+        Assert.True(ScriptResourceScope.Drain(false));
+        Assert.Equal(0, ScriptResourceScope.ActiveCount);
+    }
+
+    private static void CollectibleCallback() { }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static WeakReference RunCollectibleGeneration()
+    {
+        var context = new AssemblyLoadContext("Job generation", isCollectible: true);
+        var assembly = context.LoadFromAssemblyPath(typeof(JobDispatchTests).Assembly.Location);
+        var method = assembly.GetType(typeof(JobDispatchTests).FullName!)!.GetMethod(nameof(CollectibleCallback), BindingFlags.NonPublic | BindingFlags.Static)!;
+        Job.Schedule(method.CreateDelegate<Action>()).Complete();
+        Assert.True(ScriptResourceScope.Drain(false));
+        var weak = new WeakReference(context);
+        context.Unload();
+        return weak;
+    }
+
+    [Fact]
+    public void CompletedGenerationDoesNotRootCollectibleUserCode()
+    {
+        var weak = RunCollectibleGeneration();
+        for (int i = 0; i < 5 && weak.IsAlive; ++i)
+        {
+            GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+        }
+        Assert.False(weak.IsAlive);
+    }
+
+    [UnmanagedCallersOnly]
+    private static int Playing() => 1;
+
+    [Fact]
+    public void PlayDrainWaitsForWorkAndRejectsNestedSubmissionsWhileClosing()
+    {
+        ScriptResourceScope.IsPlaying = &Playing;
+        using var entered = new ManualResetEventSlim(false);
+        using var finish = new ManualResetEventSlim(false);
+        Exception? nestedError = null;
+        var handle = Job.Schedule(() =>
+        {
+            entered.Set();
+            finish.Wait();
+            nestedError = Record.Exception(() => Job.Schedule(new EmptyJob()));
+        });
+        Assert.True(entered.Wait(TimeSpan.FromSeconds(5)));
+        Funke.Coroutines.FunkeSynchronizationContext.Instance.Post(_ => finish.Set(), null);
+        Assert.True(ScriptResourceScope.Drain(true));
+        handle.Complete();
+        Assert.IsType<InvalidOperationException>(nestedError);
+        Assert.Equal(0, ScriptResourceScope.ActiveCount);
+    }
+
+    [UnmanagedCallersOnly]
+    private static ulong Reject(delegate* unmanaged<void*, void> work, void* context, delegate* unmanaged<void*, void> release)
+    { release(context); return 0; }
+
+    [Fact]
+    public void RejectedSubmissionReleasesContextAndReturnsObservableFault()
+    {
+        NativeCallbacks.Bindings.JobSystem_Enqueue = &Reject;
+        var handle = Job.Schedule(new EmptyJob());
+        Assert.True(handle.IsComplete);
+        Assert.True(handle.IsFaulted);
+        Assert.Throws<InvalidOperationException>(() => handle.AsTask().GetAwaiter().GetResult());
+        Assert.Equal(0, JobNativeDispatch.ActiveContextCount);
+        Assert.Equal(0, ScriptResourceScope.ActiveCount);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static WeakReference RunCollectibleTypedGeneration()
+    {
+        var context = new AssemblyLoadContext("Typed job generation", isCollectible: true);
+        var assembly = context.LoadFromAssemblyPath(typeof(JobDispatchTests).Assembly.Location);
+        var jobType = assembly.GetType(typeof(JobDispatchTests).FullName + "+EmptyJob")!;
+        foreach (var method in typeof(Job).GetMethods(BindingFlags.Public | BindingFlags.Static))
+        {
+            if (method.Name != "Schedule" || !method.IsGenericMethodDefinition || method.GetParameters().Length != 2) continue;
+            var handle = (JobHandle)method.MakeGenericMethod(jobType).Invoke(null, new[] { Activator.CreateInstance(jobType), (object)CancellationToken.None })!;
+            handle.Complete();
+            break;
+        }
+        Assert.True(ScriptResourceScope.Drain(false));
+        JobLayoutCache.Clear();
+        var weak = new WeakReference(context);
+        context.Unload();
+        return weak;
+    }
+
+    [Fact]
+    public void PooledTypedJobDoesNotRootCollectibleUserCode()
+    {
+        s_RunBeforeReturn = true;
+        var weak = RunCollectibleTypedGeneration();
+        for (int i = 0; i < 5 && weak.IsAlive; ++i)
+        {
+            GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+        }
+        Assert.False(weak.IsAlive);
+    }
+
 }

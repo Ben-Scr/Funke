@@ -1,4 +1,4 @@
-"""Offline tests for the Android builder's package contributions (manifests, Maven closures, R classes)."""
+"""Evidence: unit_mock. Offline package tests; no real build, runtime or device qualification."""
 
 from __future__ import annotations
 

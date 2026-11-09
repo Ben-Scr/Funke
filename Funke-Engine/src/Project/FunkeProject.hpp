@@ -1,6 +1,7 @@
 #pragma once
 #include "Collections/Vec2.hpp"
 #include "Core/Export.hpp"
+#include "Core/EngineModules.hpp"
 #include "Core/WindowSpecification.hpp"
 #include "Core/GraphicsSettings.hpp"
 #include "Graphics/Text/FontHandle.hpp"
@@ -48,7 +49,7 @@ namespace Funke {
 		std::string SlnPath;
 		std::string ProjectFilePath;
 		std::string EngineVersion;
-		static constexpr int k_CurrentProjectFormatVersion = 1;
+		static constexpr int k_CurrentProjectFormatVersion = 2;
 		int ProjectFormatVersion = k_CurrentProjectFormatVersion;
 		std::string PreservedProjectJson;
 
@@ -119,14 +120,13 @@ namespace Funke {
 		// Empty disables optional packages.
 		std::vector<std::string> Packages;
 
-		// Engine feature modules the project uses ("Funke.2D", "Funke.3D"). The editor offers only these
-		// modules' components and a game build ships a runtime compiled without the others.
-		// Projects without the field predate modules and keep both.
+		// Version 2 selects dimensions and physics independently. Legacy selections expand on load.
+		// Activation includes dependencies; an export may explicitly report a full-runtime fallback.
 		static constexpr std::string_view k_Module2D = "Funke.2D";
 		static constexpr std::string_view k_Module3D = "Funke.3D";
 		std::vector<std::string> Modules{ std::string(k_Module2D), std::string(k_Module3D) };
 		bool HasModule(std::string_view module) const {
-			for (const std::string& entry : Modules) {
+			for (const std::string& entry : EngineModules::Resolve(Modules)) {
 				if (entry == module) return true;
 			}
 			return false;

@@ -67,6 +67,7 @@ namespace Funke {
 
 		// True when a Rigidbody2D or a registered extension drives the entity's world transform.
 		static bool IsTransformOwnedByPhysics(const entt::registry& registry, EntityHandle entity);
+		static void RegisterTransformAdapter(Scene& scene);
 		// Inspector edits only touch Local*; compose the world transform before a body reads it.
 		static void ComposeWorldFromLocal(entt::registry& registry, EntityHandle entity, Transform2DComponent& tf);
 		// Same, first composing every dirty ancestor: right after a load no parent has its world transform yet.

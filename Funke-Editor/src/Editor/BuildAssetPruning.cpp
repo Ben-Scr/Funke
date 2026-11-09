@@ -56,8 +56,7 @@ namespace Funke::BuildAssetPruning {
 				".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tga", ".psd", ".ico", ".webp",
 				".wav", ".mp3", ".ogg", ".opus", ".flac", ".mp4", ".webm", ".mov",
 				".ttf", ".otf", ".ttc", ".dll", ".exe", ".pdb", ".so", ".dylib", ".zip", ".cs",
-				// Binary glTF embeds its buffers; .bin holds a .gltf's geometry.
-				".glb", ".bin",
+				".bin",
 			};
 			return k_Opaque.contains(ext);
 		}
@@ -333,9 +332,28 @@ namespace Funke::BuildAssetPruning {
 						error = "could not scan " + Path::ToUtf8(file.Absolute);
 						return false;
 					}
+					if (ext == ".glb") {
+						const auto u32 = [&](size_t offset) {
+							uint32_t value = 0;
+							for (unsigned i = 0; i < 4; ++i) value |= uint32_t(static_cast<unsigned char>(text[offset + i])) << (8 * i);
+							return value;
+						};
+						if (text.size() < 20 || u32(0) != 0x46546c67 || u32(4) != 2 || u32(8) != text.size()
+							|| u32(16) != 0x4e4f534a || u32(12) > text.size() - 20) {
+							error = "could not scan GLB container " + file.Key;
+							return false;
+						}
+						text = text.substr(20, u32(12));
+					}
 					ScanText(text);
-					// A .gltf names its buffers and images relative to itself.
-					if (ext == ".gltf") ScanRelativeUris(text, file.Key);
+					if (ext == ".gltf" || ext == ".glb") {
+						Json::Value root;
+						if (!Json::TryParse(text, root) || !root.IsObject()) {
+							error = "could not scan glTF JSON " + file.Key;
+							return false;
+						}
+						if (!ScanRelativeUris(text, file.Key, error)) return false;
+					}
 				}
 				return true;
 			}
@@ -426,9 +444,9 @@ namespace Funke::BuildAssetPruning {
 				}
 			}
 
-			void ScanRelativeUris(std::string_view text, std::string_view key) {
+			bool ScanRelativeUris(std::string_view text, std::string_view key, std::string& error) {
 				Json::Value root;
-				if (!Json::TryParse(text, root) || !root.IsObject()) return;
+				if (!Json::TryParse(text, root) || !root.IsObject()) return false;
 				const auto directory = Path::FromUtf8(key).parent_path();
 				for (const char* memberName : { "buffers", "images" }) {
 					const Json::Value* members = root.FindMember(memberName);
@@ -453,12 +471,15 @@ namespace Funke::BuildAssetPruning {
 							decoded.push_back(uri[i]);
 						}
 						const auto relative = Path::FromUtf8(decoded);
-						if (relative.has_root_path()) continue;
+						if (relative.has_root_path()) { error = "absolute glTF dependency: " + decoded; return false; }
 						const auto resolved = (directory / relative).lexically_normal();
-						if (resolved.empty() || *resolved.begin() == "..") continue;
-						MatchReference(Path::ToUtf8(resolved), false);
+						if (resolved.empty() || *resolved.begin() == "..") { error = "glTF dependency escapes Assets: " + decoded; return false; }
+						const std::string dependency = RelKey(resolved);
+						if (!m_ByExactKey.contains(dependency)) { error = "missing glTF dependency: " + dependency; return false; }
+						KeepKey(dependency);
 					}
 				}
+				return true;
 			}
 
 			void ScanText(std::string_view text) {
@@ -595,6 +616,10 @@ namespace Funke::BuildAssetPruning {
 				plan.Error = "project.json could not be read";
 				return plan;
 			}
+			if (const auto* packages = root.FindMember("packages"); packages && packages->IsArray() && !packages->GetArray().empty()) {
+				plan.Error = "package dependencies require conservative asset retention";
+				return plan;
+			}
 			// Build scenes are the enabled subset above; the app icon is staged separately.
 			for (const auto& [key, value] : root.GetObject()) {
 				if (key != "buildScenes" && key != "appIcon") reach.ScanSerialized(value);
@@ -612,7 +637,14 @@ namespace Funke::BuildAssetPruning {
 				if (IsSkippedSourceDirectory(it->path(), inputs.ProjectRoot, inputs.SkippedDirectories)) it.disable_recursion_pending();
 				continue;
 			}
-			if (!it->is_regular_file(entryEc) || ToLower(Path::ToUtf8(it->path().extension())) != ".cs") continue;
+			if (!it->is_regular_file(entryEc)) continue;
+			const std::string extension = ToLower(Path::ToUtf8(it->path().extension()));
+			if (extension == ".cpp" || extension == ".cc" || extension == ".cxx" || extension == ".h" || extension == ".hpp"
+				|| it->path().filename() == "funke-package.lua") {
+				plan.Error = "native source or package dependencies require conservative asset retention";
+				return plan;
+			}
+			if (extension != ".cs") continue;
 			std::string source;
 			if (!ReadFile(it->path(), source)) {
 				plan.Error = "could not scan " + Path::ToUtf8(it->path());

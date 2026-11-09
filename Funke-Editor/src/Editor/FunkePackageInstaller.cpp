@@ -512,9 +512,18 @@ namespace Funke {
 			return result;
 		}
 
-		// The package and its dependencies build on these engine modules; turning them on is part of installing it.
+		const std::vector<std::string> requiredModules = CollectRequiredModules(ToPackageManifests(allManifests), packageName);
+		for (const std::string& id : requiredModules) {
+			const auto status = EngineModules::GetStatus(id, project.Modules);
+			if (status == EngineModules::Status::Unknown || status == EngineModules::Status::NotCompiled) {
+				result.Message = "Cannot install '" + packageName + "': " + EngineModules::GetStatusMessage(id, status);
+				return result;
+			}
+		}
+
+		// Installing a package also enables the compiled modules its dependency graph needs.
 		const std::vector<std::string> previousModules = project.Modules;
-		for (const std::string& module : CollectRequiredModules(ToPackageManifests(allManifests), packageName)) {
+		for (const std::string& module : requiredModules) {
 			if (!project.HasModule(module)) {
 				project.Modules.push_back(module);
 				result.EnabledModules.push_back(module);
@@ -548,9 +557,9 @@ namespace Funke {
 
 	FunkePackageInstaller::InstallResult FunkePackageInstaller::EnableModule(FunkeProject& project, const std::string& moduleId) {
 		InstallResult result;
-		const std::optional<EngineModule> module = EngineModules::FromId(moduleId);
-		if (!module) {
-			result.Message = "'" + moduleId + "' is not an engine module (known: Funke.2D, Funke.3D).";
+		const auto status = EngineModules::GetStatus(moduleId, project.Modules);
+		if (status == EngineModules::Status::Unknown || status == EngineModules::Status::NotCompiled) {
+			result.Message = EngineModules::GetStatusMessage(moduleId, status);
 			return result;
 		}
 		if (project.HasModule(moduleId)) {
@@ -558,14 +567,18 @@ namespace Funke {
 			result.Message = moduleId + " is already enabled.";
 			return result;
 		}
+		const auto previousModules = project.Modules;
 		project.Modules.push_back(moduleId);
+		project.Modules = EngineModules::Resolve(project.Modules);
 		if (!project.Save()) {
-			project.Modules.pop_back();
+			project.Modules = previousModules;
 			result.Message = "Could not save project.json for '" + project.Name + "'; " + moduleId + " was not enabled.";
 			return result;
 		}
 		result.Success = true;
-		result.EnabledModules.push_back(moduleId);
+		for (const auto& id : project.Modules) {
+			if (std::find(previousModules.begin(), previousModules.end(), id) == previousModules.end()) result.EnabledModules.push_back(id);
+		}
 		result.Message = "Enabled " + moduleId + " (applies after an editor reload).";
 		FNK_INFO_TAG("FunkePackages", "{}", result.Message);
 		return result;
@@ -574,7 +587,7 @@ namespace Funke {
 	FunkePackageInstaller::InstallResult FunkePackageInstaller::DisableModule(FunkeProject& project, const std::string& moduleId) {
 		InstallResult result;
 		if (!EngineModules::FromId(moduleId)) {
-			result.Message = "'" + moduleId + "' is not an engine module (known: Funke.2D, Funke.3D).";
+			result.Message = "'" + moduleId + "' is not an engine module (known: Funke.2D, Funke.3D, Funke.Physics2D, Funke.Physics3D).";
 			return result;
 		}
 		if (!project.HasModule(moduleId)) {
@@ -589,6 +602,13 @@ namespace Funke {
 			for (const std::string& name : dependents) names += (names.empty() ? "" : ", ") + name;
 			result.Message = moduleId + " is needed by " + names + ". Remove those packages first.";
 			return result;
+		}
+		for (const auto module : k_AllEngineModules) {
+			const auto dependency = EngineModules::GetDependency(module);
+			if (dependency && EngineModules::GetId(*dependency) == moduleId && project.HasModule(EngineModules::GetId(module))) {
+				result.Message = moduleId + " is needed by " + std::string(EngineModules::GetId(module)) + ". Disable that module first.";
+				return result;
+			}
 		}
 		const std::vector<std::string> previousModules = project.Modules;
 		std::erase(project.Modules, moduleId);

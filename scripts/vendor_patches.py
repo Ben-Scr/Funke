@@ -75,17 +75,22 @@ PATCHES = (
             PatchedFile(
                 "imgui.cpp",
                 "cb73b8dcbbfa4f7dfcc91108561e3c84af08ce2f",
-                "1160dcb24d7ac83289af67113cd0ce2cffdc5023",
+                "bf971d77b4a663369f84e29c3d75e30c3d9e0602",
             ),
             PatchedFile(
                 "imgui.h",
                 "c32a6baf15dea7332cffda09721d272a4a23f673",
-                "32bc6b723606e3e0779cabd00e3631b4bdb7e13c",
+                "9691841812f8623ad15fe570abfcfccda3a6615c",
+            ),
+            PatchedFile(
+                "imgui_internal.h",
+                "a9e2cb18736393a87301a211edef0addeccb3209",
+                "6b2d6dd35a6779126021fdbbdfc66cacad9cc855",
             ),
             PatchedFile(
                 "imgui_widgets.cpp",
                 "abcb02f2bbc5c97e968b3ec30a6aeae8f4cd1df9",
-                "01f5956656b0bbea6f49f0bbf5fdf318bd9ee516",
+                "1382fa1411679614a485502afe4e774f17b7c3d2",
             ),
         ),
     ),

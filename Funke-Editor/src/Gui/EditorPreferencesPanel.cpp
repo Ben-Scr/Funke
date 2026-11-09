@@ -60,7 +60,8 @@ namespace Funke {
 						? "Auto (Light)"
 						: "Auto (Dark)";
 				case EditorThemeMode::Custom:        return "Custom";
-				case EditorThemeMode::Glass:         return "Liquid Glass";
+				case EditorThemeMode::Glass:         return "Liquid Glass Dark";
+				case EditorThemeMode::GlassLight:    return "Liquid Glass Light";
 			}
 			return "Auto (Dark)";
 		}
@@ -131,7 +132,7 @@ namespace Funke {
 				}
 				ImGui::EndChild();
 			}
-			else if (EditorUI::BeginTabBar("##EditorPrefsTabs", ImGuiTabBarFlags_None)) {
+			else if (EditorUI::BeginTabBar("##EditorPrefsTabs", ImGuiTabBarFlags_None, false)) {
 				// Independent scroll regions keep search and tabs pinned.
 				if (EditorUI::BeginTabItem("Appearance")) {
 					if (ImGui::BeginChild("##AppearanceScroll", ImVec2(0, 0), false)) RenderAppearanceTab();
@@ -153,7 +154,7 @@ namespace Funke {
 					ImGui::EndChild();
 					EditorUI::EndTabItem();
 				}
-				if (EditorUI::BeginTabItem("Camera")) {
+				if (EditorUI::BeginTabItem("Editor Camera")) {
 					if (ImGui::BeginChild("##CameraScroll", ImVec2(0, 0), false)) RenderCameraTab();
 					ImGui::EndChild();
 					EditorUI::EndTabItem();
@@ -196,12 +197,13 @@ namespace Funke {
 			if (EditorUI::BeginSection("Theme", ThemeModeLabel(currentMode), true, IsPreferenceSearchActive())) {
 				EditorUI::BeginSettingsRow("Editor theme");
 				ImGui::SetNextItemWidth(-FLT_MIN);
-				if (ImGui::BeginCombo("##EditorThemeCombo", ThemeModeLabel(currentMode))) {
+				if (EditorUI::BeginCombo("##EditorThemeCombo", ThemeModeLabel(currentMode))) {
 					constexpr EditorThemeMode kModes[] = {
 						EditorThemeMode::SystemDefault,
 						EditorThemeMode::Dark,
 						EditorThemeMode::Light,
 						EditorThemeMode::Glass,
+						EditorThemeMode::GlassLight,
 						EditorThemeMode::Custom,
 					};
 					for (EditorThemeMode mode : kModes) {
@@ -210,12 +212,12 @@ namespace Funke {
 							EditorPreferences::SetThemeMode(mode);
 							currentMode = mode;
 						}
-						if (mode == EditorThemeMode::Glass) {
-							EditorUI::Tooltip("Translucent panels over a slowly flowing color backdrop.");
+						if (mode == EditorThemeMode::Glass || mode == EditorThemeMode::GlassLight) {
+							EditorUI::Tooltip("Layered glass with flowing light, pointer reflections and responsive controls.");
 						}
 						if (selected) ImGui::SetItemDefaultFocus();
 					}
-					ImGui::EndCombo();
+					EditorUI::EndCombo();
 				}
 				EditorUI::EndSettingsRow();
 				EditorUI::Tooltip("The theme of the editor ui");
@@ -312,7 +314,7 @@ namespace Funke {
 				int fontZoom = EditorPreferences::GetEditorFontZoomPercent();
 				EditorUI::BeginSettingsRow("Text scale");
 				ImGui::SetNextItemWidth(std::max(1.0f, ImGui::GetContentRegionAvail().x - resetWidth - ImGui::GetStyle().ItemSpacing.x));
-				if (ImGui::BeginCombo("##FontSize", FontZoomLabel(fontZoom))) {
+				if (EditorUI::BeginCombo("##FontSize", FontZoomLabel(fontZoom))) {
 					for (int percent = EditorPreferences::k_MinEditorFontZoomPercent;
 						percent <= EditorPreferences::k_MaxEditorFontZoomPercent;
 						percent += EditorPreferences::k_EditorFontZoomStepPercent)
@@ -324,7 +326,7 @@ namespace Funke {
 						}
 						if (selected) ImGui::SetItemDefaultFocus();
 					}
-					ImGui::EndCombo();
+					EditorUI::EndCombo();
 				}
 				ImGui::SameLine();
 				if (ImGui::Button("Reset##EditorFontZoomReset")) {
@@ -345,7 +347,7 @@ namespace Funke {
 			EditorUI::BeginSettingsRow("Row size");
 			const float resetWidth = ImGui::CalcTextSize("Reset").x + ImGui::GetStyle().FramePadding.x * 2.0f;
 			ImGui::SetNextItemWidth(std::max(1.0f, ImGui::GetContentRegionAvail().x - resetWidth - ImGui::GetStyle().ItemSpacing.x));
-			if (ImGui::SliderFloat("##RowSize", &rowScale,
+			if (EditorUI::SliderFloat("##RowSize", &rowScale,
 					EditorPreferences::k_MinHierarchyRowScale,
 					EditorPreferences::k_MaxHierarchyRowScale,
 					"%.2fx", ImGuiSliderFlags_AlwaysClamp)) {
@@ -386,7 +388,7 @@ namespace Funke {
 				EditorUI::BeginSettingsRow("Open scripts with");
 				const float redetectWidth = ImGui::CalcTextSize("Re-detect").x + ImGui::GetStyle().FramePadding.x * 2.0f;
 				ImGui::SetNextItemWidth(std::max(1.0f, ImGui::GetContentRegionAvail().x - redetectWidth - ImGui::GetStyle().ItemSpacing.x));
-				if (ImGui::BeginCombo("##ExternalEditorCombo", preview)) {
+				if (EditorUI::BeginCombo("##ExternalEditorCombo", preview)) {
 					for (int i = 0; i < static_cast<int>(editors.size()); i++) {
 						const bool isSelected = (i == selected);
 						if (ImGui::Selectable(editors[i].DisplayName.c_str(), isSelected)) {
@@ -394,7 +396,7 @@ namespace Funke {
 						}
 						if (isSelected) ImGui::SetItemDefaultFocus();
 					}
-					ImGui::EndCombo();
+					EditorUI::EndCombo();
 				}
 				ImGui::SameLine();
 				if (ImGui::Button("Re-detect##ScriptEditorRedetect")) {
@@ -418,16 +420,24 @@ namespace Funke {
 			if (EditorUI::SettingsSwitch("Auto-recompile on file changes", &autoRecompile)) {
 				EditorPreferences::SetAutoRecompileScripts(autoRecompile);
 			}
+			EditorUI::Tooltip("Rebuilds changed scripts automatically. In Edit mode, Inspector values are retained. During Play, the stop-on-recompile setting below applies.");
 
 			bool recompileOnPlay = EditorPreferences::GetRecompileScriptsOnPlay();
+			bool resetState = EditorPreferences::GetResetRegisteredStateOnPlay();
+			if (EditorUI::SettingsSwitch("Reset registered game state before Play", &resetState)) {
+				EditorPreferences::SetResetRegisteredStateOnPlay(resetState);
+			}
+			EditorUI::Tooltip("Calls only game methods marked [ResetOnPlay], once before a successful new Play start. Other statics are unchanged. A reset failure prevents Play; earlier reset effects are not rolled back.");
 			if (EditorUI::SettingsSwitch("Recompile before Play Mode", &recompileOnPlay)) {
 				EditorPreferences::SetRecompileScriptsOnPlay(recompileOnPlay);
 			}
+			EditorUI::Tooltip("Waits for compilation before starting Play. Compile or assembly validation failures prevent the start; see Console for details.");
 
 			bool exitOnRecompile = EditorPreferences::GetExitPlayModeOnRecompilation();
 			if (EditorUI::SettingsSwitch("Exit Play Mode on Recompilation", &exitOnRecompile)) {
 				EditorPreferences::SetExitPlayModeOnRecompilation(exitOnRecompile);
 			}
+			EditorUI::Tooltip("On: stops Play when recompilation begins. Off: successful reload replaces script instances, restarts lifecycle callbacks and cancels old coroutines. Runtime fields are not generally preserved.");
 			EditorUI::EndSection();
 		}
 	}
@@ -436,30 +446,20 @@ namespace Funke {
 		if (!PreferenceSectionVisible("Layout Presets", "layout layouts preset save load reset delete")) return;
 		if (!EditorUI::BeginSection("Layout Presets", nullptr, true, IsPreferenceSearchActive())) return;
 
-		const float actionPadding = ImGui::GetStyle().FramePadding.x * 4.0f + ImGui::GetStyle().ItemSpacing.x;
-		const bool actionsFit = ImGui::CalcTextSize("Save Current Layout As...").x
-			+ ImGui::CalcTextSize("Reset to Default").x + actionPadding <= ImGui::GetContentRegionAvail().x;
-		if (ImGui::Button("Save Current Layout As...")) {
+		if (EditorUI::Button("Save Current Layout As...", EditorUI::ButtonVariant::Primary)) {
 			m_SaveLayoutBuffer[0] = '\0';
+			m_LayoutError.clear();
 			m_OpenSaveLayoutRequest = true;
 		}
-		if (actionsFit) ImGui::SameLine();
-		if (ImGui::Button("Reset to Default")) {
-			ImGuiContextLayer::ResetLayoutToDefault();
-		}
-		EditorUI::StatusText(EditorUI::Tone::Neutral, ("Stored under " + LayoutsFolderDisplay() + '.').c_str());
-
 		ImGui::Spacing();
 
 		const std::vector<std::string> presets =
 			ImGuiContextLayer::ListLayoutPresets();
 		if (presets.empty()) {
 			EditorUI::EmptyState("No saved layout presets.", "Use \"Save Current Layout As...\" to create one.");
-			EditorUI::EndSection();
-			return;
 		}
 
-		if (ImGui::BeginTable("##LayoutPresetsTable", 3,
+		if (!presets.empty() && ImGui::BeginTable("##LayoutPresetsTable", 3,
 				ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH)) {
 			ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthStretch);
 			const float actionWidth = ImGui::CalcTextSize("Delete").x + ImGui::GetStyle().FramePadding.x * 2.0f;
@@ -475,11 +475,12 @@ namespace Funke {
 
 				ImGui::TableSetColumnIndex(1);
 				if (ImGui::Button("Load", ImVec2(-FLT_MIN, 0))) {
-					ImGuiContextLayer::LoadLayoutPreset(name);
+					m_LayoutError = ImGuiContextLayer::LoadLayoutPreset(name) ? "" : "Could not load layout preset.";
 				}
 
 				ImGui::TableSetColumnIndex(2);
 				if (EditorUI::Button("Delete", EditorUI::ButtonVariant::Danger, ImVec2(-FLT_MIN, 0))) {
+					m_LayoutError.clear();
 					m_PendingDeleteLayoutName = name;
 					m_OpenDeleteLayoutRequest = true;
 				}
@@ -487,6 +488,12 @@ namespace Funke {
 			}
 			ImGui::EndTable();
 		}
+		ImGui::Spacing();
+		ImGui::Separator();
+		if (EditorUI::Button("Reset to Default")) ImGuiContextLayer::ResetLayoutToDefault();
+		EditorUI::StatusText(EditorUI::Tone::Neutral, ("Stored under " + LayoutsFolderDisplay() + '.').c_str());
+		if (!m_LayoutError.empty()) EditorUI::StatusText(EditorUI::Tone::Error, m_LayoutError.c_str());
+
 		EditorUI::EndSection();
 	}
 
@@ -494,9 +501,9 @@ namespace Funke {
 		const bool showAssetBrowser = PreferenceSectionVisible("Asset Browser", "behavior asset browser file extensions extension rename");
 		const bool showAutoSave = PreferenceSectionVisible("Auto-Save", "behavior auto save autosave scene prefab interval");
 		const bool showEditing = PreferenceSectionVisible("Editing", "behavior editing delete deletion confirm confirmation prompt ask dialog warn entity asset safety");
-		const bool showViewport = PreferenceSectionVisible("Viewport", "behavior viewport ui alignment guides guide smart snap snapping align rect transform");
+		const bool showUIEditing = PreferenceSectionVisible("UI Editing", "behavior viewport ui editing alignment guides guide smart snap snapping align rect transform");
 		const bool showExternalChanges = PreferenceSectionVisible("External Changes", "behavior external changes changed disk reload hot reload scene file watcher ai agent git conflict");
-		if (!showAssetBrowser && !showAutoSave && !showEditing && !showViewport && !showExternalChanges) return;
+		if (!showAssetBrowser && !showAutoSave && !showEditing && !showUIEditing && !showExternalChanges) return;
 
 		const int confirmationCount = static_cast<int>(EditorPreferences::GetConfirmOnDeleteEntity())
 			+ static_cast<int>(EditorPreferences::GetConfirmOnDeleteAsset());
@@ -523,10 +530,10 @@ namespace Funke {
 			EditorUI::EndSection();
 		}
 
-		char viewportSummary[48];
-		std::snprintf(viewportSummary, sizeof(viewportSummary), "Guides %s / %.0f px",
+		char uiEditingSummary[48];
+		std::snprintf(uiEditingSummary, sizeof(uiEditingSummary), "Guides %s / %.0f px",
 			EditorPreferences::GetAlignmentGuidesEnabled() ? "on" : "off", EditorPreferences::GetAlignmentSnapThreshold());
-		if (showViewport && EditorUI::BeginSection("Viewport", viewportSummary, true, IsPreferenceSearchActive())) {
+		if (showUIEditing && EditorUI::BeginSection("UI Editing", uiEditingSummary, true, IsPreferenceSearchActive())) {
 			bool alignGuides = EditorPreferences::GetAlignmentGuidesEnabled();
 			if (EditorUI::SettingsSwitch("UI alignment guides", &alignGuides)) {
 				EditorPreferences::SetAlignmentGuidesEnabled(alignGuides);
@@ -610,18 +617,18 @@ namespace Funke {
 
 	void EditorPreferencesPanel::RenderCameraTab() {
 		const bool showNavigation = PreferenceSectionVisible("Camera Navigation",
-			"camera 3d scene viewport navigation mode orbit fly fps focus controls");
+			"editor camera 3d scene viewport navigation mode orbit fly fps focus controls");
 		const bool showMovement = PreferenceSectionVisible("Camera Movement",
-			"camera 3d scene viewport movement speed fly boost shift distance scale pan world up vertical qe");
+			"editor camera 3d scene viewport movement speed fly boost shift distance scale pan world up vertical qe");
 		const bool showLook = PreferenceSectionVisible("Camera Look & Zoom",
-			"camera 3d scene viewport look sensitivity mouse rotation invert x y zoom wheel field of view fov");
-		const bool showReset = PreferenceSectionVisible("Reset Camera Defaults", "camera 3d scene viewport reset defaults");
+			"editor camera 3d scene viewport look sensitivity mouse rotation invert x y zoom wheel field of view fov");
+		const bool showReset = PreferenceSectionVisible("Reset Editor Camera", "editor camera 3d scene viewport reset defaults");
 		if (!showNavigation && !showMovement && !showLook && !showReset) return;
 
 		EditorCamera3DSettings settings = EditorPreferences::GetCamera3DSettings();
 		bool changed = false;
 		const bool searchActive = IsPreferenceSearchActive();
-		EditorUI::StatusText(EditorUI::Tone::Neutral, "3D scene camera. Changes apply immediately in every project.");
+		EditorUI::StatusText(EditorUI::Tone::Neutral, "3D editor camera. Changes apply immediately in every project.");
 
 		auto floatRow = [&changed](const char* label, float& value, float step, float minimum, float maximum,
 			const char* format, const char* tooltip) {
@@ -634,7 +641,7 @@ namespace Funke {
 		const char* navigationLabel = settings.NavigationMode == EditorCamera3DNavigationMode::Fly ? "Fly (FPS)" : "Orbit";
 		if (showNavigation && EditorUI::BeginSection("Camera Navigation", navigationLabel, true, searchActive)) {
 			EditorUI::BeginSettingsRow("Navigation mode");
-			if (ImGui::BeginCombo("##NavigationMode", navigationLabel)) {
+			if (EditorUI::BeginCombo("##NavigationMode", navigationLabel)) {
 				constexpr EditorCamera3DNavigationMode k_Modes[] = {
 					EditorCamera3DNavigationMode::Orbit, EditorCamera3DNavigationMode::Fly
 				};
@@ -646,7 +653,7 @@ namespace Funke {
 					}
 					if (selected) ImGui::SetItemDefaultFocus();
 				}
-				ImGui::EndCombo();
+				EditorUI::EndCombo();
 			}
 			EditorUI::EndSettingsRow();
 			EditorUI::Tooltip("Orbit rotates around the focus point. Fly looks around from the camera's position.");
@@ -690,13 +697,13 @@ namespace Funke {
 				"How far each mouse-wheel step moves the camera closer to or farther from its focus point.");
 			floatRow("Field of view", settings.FieldOfView, 0.5f,
 				EditorCamera3DSettings::k_MinFieldOfView, EditorCamera3DSettings::k_MaxFieldOfView, "%.1f deg",
-				"Vertical field of view of the 3D scene camera. A larger angle shows more of the scene.");
+				"Vertical field of view of the 3D editor camera. A larger angle shows more of the scene.");
 			EditorUI::EndSection();
 		}
 
 		if (changed) EditorPreferences::SetCamera3DSettings(settings);
-		if (showReset && EditorUI::Button("Reset Camera Defaults")) EditorPreferences::ResetCamera3DSettings();
-		if (showReset) EditorUI::Tooltip("Restore all 3D scene camera preferences to their defaults.");
+		if (showReset && EditorUI::Button("Reset Editor Camera")) EditorPreferences::ResetCamera3DSettings();
+		if (showReset) EditorUI::Tooltip("Restore all 3D editor camera preferences to their defaults.");
 	}
 
 	void EditorPreferencesPanel::RenderLayoutModals() {
@@ -734,11 +741,14 @@ namespace Funke {
 				ImGui::TextDisabled("Stored under %s.", LayoutsFolderDisplay().c_str());
 			}
 
+			if (!m_LayoutError.empty()) EditorUI::StatusText(EditorUI::Tone::Error, m_LayoutError.c_str());
 			const int clicked = EditorUI::DialogFooter({ "Save", "Cancel" }, 0, -1, nameValid ? 0u : 1u);
 			if ((clicked == 0 || enterPressed) && nameValid) {
-				ImGuiContextLayer::SaveLayoutPreset(nameStr);
-				m_SaveLayoutBuffer[0] = '\0';
-				ImGui::CloseCurrentPopup();
+				if (ImGuiContextLayer::SaveLayoutPreset(nameStr)) {
+					m_LayoutError.clear();
+					m_SaveLayoutBuffer[0] = '\0';
+					ImGui::CloseCurrentPopup();
+				} else m_LayoutError = "Could not save layout preset. Check the storage folder and try again.";
 			}
 			else if (clicked == 1 || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
 				m_SaveLayoutBuffer[0] = '\0';
@@ -753,11 +763,14 @@ namespace Funke {
 			ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
 			ImGui::Text("Delete layout preset '%s'?", m_PendingDeleteLayoutName.c_str());
 			ImGui::TextDisabled("This cannot be undone.");
+			if (!m_LayoutError.empty()) EditorUI::StatusText(EditorUI::Tone::Error, m_LayoutError.c_str());
 			const int clicked = EditorUI::DialogFooter({ "Delete", "Cancel" }, -1, 0);
 			if (clicked == 0) {
-				ImGuiContextLayer::DeleteLayoutPreset(m_PendingDeleteLayoutName);
-				m_PendingDeleteLayoutName.clear();
-				ImGui::CloseCurrentPopup();
+				if (ImGuiContextLayer::DeleteLayoutPreset(m_PendingDeleteLayoutName)) {
+					m_LayoutError.clear();
+					m_PendingDeleteLayoutName.clear();
+					ImGui::CloseCurrentPopup();
+				} else m_LayoutError = "Could not delete layout preset.";
 			}
 			else if (clicked == 1 || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
 				m_PendingDeleteLayoutName.clear();

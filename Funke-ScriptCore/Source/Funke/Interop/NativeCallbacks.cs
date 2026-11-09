@@ -59,10 +59,10 @@ internal unsafe struct NativeBindingsStruct
     public delegate* unmanaged<float> Time_GetRealtimeSinceStartup;
 
     // ── Log ──────────────────────────────────────────────────────
-    public delegate* unmanaged<byte*, void> Log_Trace;
-    public delegate* unmanaged<byte*, void> Log_Info;
-    public delegate* unmanaged<byte*, void> Log_Warn;
-    public delegate* unmanaged<byte*, void> Log_Error;
+    public delegate* unmanaged<byte*, byte*, int, void> Log_Trace;
+    public delegate* unmanaged<byte*, byte*, int, void> Log_Info;
+    public delegate* unmanaged<byte*, byte*, int, void> Log_Warn;
+    public delegate* unmanaged<byte*, byte*, int, void> Log_Error;
 
     // ── Input ────────────────────────────────────────────────────
     public delegate* unmanaged<int, int> Input_GetKey;
@@ -1247,6 +1247,7 @@ internal unsafe struct NativeBindingsStruct
     public delegate* unmanaged<ulong, ulong> Scene_PreloadByGuidAsync;
     public delegate* unmanaged<ulong, int, int> Scene_ActivatePreloaded;
     public delegate* unmanaged<ulong, int*, float*, int> Scene_GetLoadProgress;
+    public delegate* unmanaged<ulong, ulong> Entity_GetOwningSceneId;
 }
 
 internal static unsafe class NativeCallbacks

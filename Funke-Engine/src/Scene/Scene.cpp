@@ -10,14 +10,7 @@
 #include "Components/Graphics/Camera2DComponent.hpp"
 #include "Components/Graphics/ParticleSystem2DComponent.hpp"
 #include "Components/Graphics/SpriteRendererComponent.hpp"
-#include "Components/Physics/Rigidbody2DComponent.hpp"
-#include "Components/Physics/BoxCollider2DComponent.hpp"
-#include "Components/Physics/CircleCollider2DComponent.hpp"
-#include "Components/Physics/PolygonCollider2DComponent.hpp"
-#include "Components/Physics/Joint2DComponents.hpp"
 #include "Graphics/Renderer2D.hpp"
-#include "Physics/Box2DWorld.hpp"
-#include "Physics/PhysicsSystem2D.hpp"
 #endif
 #if FUNKE_WITH_3D
 #include "Components/General/Transform3DComponent.hpp"
@@ -54,6 +47,15 @@
 
 namespace Funke {
 	namespace {
+		void EnsureEntityCapacity(size_t current, size_t additional)
+		{
+			constexpr size_t k_MaxEntities = static_cast<size_t>(entt::entt_traits<EntityHandle>::entity_mask);
+			if (current > k_MaxEntities || additional > k_MaxEntities - current) {
+				FNK_THROW(FunkeErrorCode::OutOfRange,
+					"Scene entity cap exceeded. Raise 'entityBits' in project.json and rebuild.");
+			}
+		}
+
 		size_t CheckedReservationSize(size_t current, size_t additional)
 		{
 			if (additional > (std::numeric_limits<size_t>::max)() - current) {
@@ -191,19 +193,14 @@ namespace Funke {
 
 			void OnDestroy(Scene&) override
 			{
-				if (m_Handle == 0) {
-					return;
-				}
-
-				if (m_EnableInvoked) {
-					ScriptEngine::InvokeSceneSystemDisable(m_Handle);
-					m_EnableInvoked = false;
-				}
-				ScriptEngine::InvokeSceneSystemDestroy(m_Handle);
-				ScriptEngine::DestroySceneSystemInstance(m_Handle);
-				m_Handle = 0;
+				const uint32_t handle = std::exchange(m_Handle, 0);
+				const bool wasEnabled = std::exchange(m_EnableInvoked, false);
 				m_StartInvoked = false;
 				m_AwakeInvoked = false;
+				if (handle == 0) return;
+				if (wasEnabled) ScriptEngine::InvokeSceneSystemDisable(handle);
+				ScriptEngine::InvokeSceneSystemDestroy(handle);
+				ScriptEngine::DestroySceneSystemInstance(handle);
 			}
 
 		private:
@@ -237,8 +234,8 @@ namespace Funke {
 			void InvokeAwakeIfNeeded()
 			{
 				if (m_Handle != 0 && !m_AwakeInvoked) {
-					ScriptEngine::InvokeSceneSystemAwake(m_Handle);
 					m_AwakeInvoked = true;
+					ScriptEngine::InvokeSceneSystemAwake(m_Handle);
 				}
 			}
 
@@ -253,8 +250,8 @@ namespace Funke {
 			void InvokeStartIfNeeded()
 			{
 				if (m_Handle != 0 && !m_StartInvoked) {
-					ScriptEngine::InvokeSceneSystemStart(m_Handle);
 					m_StartInvoked = true;
+					ScriptEngine::InvokeSceneSystemStart(m_Handle);
 				}
 			}
 
@@ -772,14 +769,7 @@ namespace Funke {
 		if (n == 0) {
 			return;
 		}
-		// Beyond entity_mask, registry.create() wraps and the next sparse-set write corrupts memory.
-		using EntityTraits = entt::entt_traits<EntityHandle>;
-		constexpr std::size_t kMaxLiveEntities = static_cast<std::size_t>(EntityTraits::entity_mask);
-		if (m_EntityCount > kMaxLiveEntities || n > kMaxLiveEntities - m_EntityCount) {
-			FNK_THROW(FunkeErrorCode::OutOfRange,
-				"Scene::CreateEntitiesBulk: batch would exceed the EnTT entity cap. "
-				"Raise 'entityBits' in project.json and rebuild.");
-		}
+		EnsureEntityCapacity(m_EntityCount, n);
 		if (out.size() < n || out.data() == nullptr) {
 			FNK_THROW(FunkeErrorCode::InvalidArgument,
 				"Scene::CreateEntitiesBulk: output span is smaller than the requested count or null");
@@ -792,6 +782,7 @@ namespace Funke {
 	}
 
 	EntityHandle Scene::CreateEntityHandle(EntityOrigin origin, AssetGUID prefabGuid, AssetGUID sceneGuid, EntityID runtimeId) {
+		EnsureEntityCapacity(m_EntityCount, 1);
 		EntityHandle entityHandle = m_Registry.create();
 		++m_EntityCount;
 		MarkHierarchyStructureDirty();
@@ -1114,7 +1105,9 @@ namespace Funke {
 		return true;
 	}
 
-	void Scene::DestroyEntity(Entity entity) { DestroyEntity(entity.GetHandle()); }
+	void Scene::DestroyEntity(Entity entity) {
+		if (entity.IsValid() && entity.GetScene() == this) DestroyEntity(entity.GetHandle());
+	}
 	void Scene::DestroyEntity(EntityHandle nativeEntity) { DestroyEntityInternal(nativeEntity, true); }
 
 	void Scene::DestroyEntity(EntityHandle nativeEntity, float delay) {
@@ -1339,7 +1332,7 @@ namespace Funke {
 		const std::string className = m_SceneSystemClassNames[index];
 		for (auto it = m_Systems.begin(); it != m_Systems.end(); ++it) {
 			if (auto* managedSystem = dynamic_cast<ManagedSceneSystem*>(it->get());
-				managedSystem && managedSystem->GetClassName() == className) {
+				managedSystem && ScriptEngine::ManagedTypeNamesMatch(managedSystem->GetClassName(), className)) {
 				if (m_IsLoaded && !m_LifecycleSuspended) {
 					SceneExecutionScope executionScope(*this);
 					managedSystem->OnDisable(*this);
@@ -1445,7 +1438,7 @@ namespace Funke {
 	{
 		for (const auto& sysPtr : m_Systems) {
 			const auto* managedSystem = dynamic_cast<const ManagedSceneSystem*>(sysPtr.get());
-			if (managedSystem && managedSystem->GetClassName() == className) {
+			if (managedSystem && ScriptEngine::ManagedTypeNamesMatch(managedSystem->GetClassName(), className)) {
 				return managedSystem->GetHandle();
 			}
 		}
@@ -1477,7 +1470,7 @@ namespace Funke {
 
 		for (const auto& system : m_Systems) {
 			const auto* managedSystem = dynamic_cast<const ManagedSceneSystem*>(system.get());
-			if (managedSystem && managedSystem->GetClassName() == className) {
+			if (managedSystem && ScriptEngine::ManagedTypeNamesMatch(managedSystem->GetClassName(), className)) {
 				return managedSystem->IsEnabled();
 			}
 		}
@@ -1493,7 +1486,7 @@ namespace Funke {
 
 		for (auto& system : m_Systems) {
 			auto* managedSystem = dynamic_cast<ManagedSceneSystem*>(system.get());
-			if (!managedSystem || managedSystem->GetClassName() != className) {
+			if (!managedSystem || !ScriptEngine::ManagedTypeNamesMatch(managedSystem->GetClassName(), className)) {
 				continue;
 			}
 
@@ -1515,6 +1508,14 @@ namespace Funke {
 		return false;
 	}
 
+	void Scene::ResetManagedSceneSystemsForReload()
+	{
+		SceneExecutionScope executionScope(*this);
+		for (const auto& system : m_Systems) {
+			if (system && IsManagedSceneSystem(system)) system->OnDestroy(*this);
+		}
+	}
+
 	void Scene::StartManagedSceneSystemsForPlayMode()
 	{
 		if (m_LifecycleSuspended) return;
@@ -1524,8 +1525,10 @@ namespace Funke {
 				continue;
 			}
 
+			if (!m_IsLoaded || m_LifecycleSuspended) break;
 			SceneSystem* system = systemPointer.get();
 			system->Awake(*this);
+			if (!m_IsLoaded || m_LifecycleSuspended) break;
 			system->Start(*this);
 			if (std::find(m_AwakenedSystems.begin(), m_AwakenedSystems.end(), system) == m_AwakenedSystems.end()) {
 				m_AwakenedSystems.push_back(system);
@@ -1752,24 +1755,6 @@ namespace Funke {
 
 	void Scene::InitializeRuntimeComponentState() {
 #if FUNKE_WITH_2D
-		if (PhysicsSystem2D::IsInitialized()) {
-			for (EntityHandle entity : m_Registry.view<Rigidbody2DComponent>()) {
-				OnRigidBody2DComponentConstruct(m_Registry, entity);
-			}
-			for (EntityHandle entity : m_Registry.view<BoxCollider2DComponent>()) {
-				OnBoxCollider2DComponentConstruct(m_Registry, entity);
-			}
-			for (EntityHandle entity : m_Registry.view<CircleCollider2DComponent>()) {
-				OnCircleCollider2DComponentConstruct(m_Registry, entity);
-			}
-			for (EntityHandle entity : m_Registry.view<PolygonCollider2DComponent>()) {
-				OnPolygonCollider2DComponentConstruct(m_Registry, entity);
-			}
-			for (auto&& [entity, rigidbody] : m_Registry.view<Rigidbody2DComponent>().each()) {
-				(void)entity;
-				rigidbody.RestoreBodyFromState();
-			}
-		}
 		for (EntityHandle entity : m_Registry.view<Camera2DComponent>()) {
 			OnCamera2DComponentConstruct(m_Registry, entity);
 		}
@@ -1905,19 +1890,8 @@ namespace Funke {
 		m_Registry.on_destroy<Transform2DComponent>().connect<&Scene::OnTransform2DComponentDestroy>(this);
 		m_Registry.on_construct<SpriteRendererComponent>().connect<&Scene::OnSpriteRendererComponentConstruct>(this);
 		m_Registry.on_destroy<SpriteRendererComponent>().connect<&Scene::OnSpriteRendererComponentDestroy>(this);
-		m_Registry.on_construct<Rigidbody2DComponent>().connect<&Scene::OnRigidBody2DComponentConstruct>(this);
-		m_Registry.on_construct<BoxCollider2DComponent>().connect<&Scene::OnBoxCollider2DComponentConstruct>(this);
-		m_Registry.on_construct<CircleCollider2DComponent>().connect<&Scene::OnCircleCollider2DComponentConstruct>(this);
-		m_Registry.on_construct<PolygonCollider2DComponent>().connect<&Scene::OnPolygonCollider2DComponentConstruct>(this);
 		m_Registry.on_construct<Camera2DComponent>().connect<&Scene::OnCamera2DComponentConstruct>(this);
 		m_Registry.on_construct<ParticleSystem2DComponent>().connect<&Scene::OnParticleSystem2DComponentConstruct>(this);
-		m_Registry.on_destroy<Rigidbody2DComponent>().connect<&Scene::OnRigidBody2DComponentDestroy>(this);
-		m_Registry.on_destroy<BoxCollider2DComponent>().connect<&Scene::OnBoxCollider2DComponentDestroy>(this);
-		m_Registry.on_destroy<CircleCollider2DComponent>().connect<&Scene::OnCircleCollider2DComponentDestroy>(this);
-		m_Registry.on_destroy<PolygonCollider2DComponent>().connect<&Scene::OnPolygonCollider2DComponentDestroy>(this);
-		m_Registry.on_destroy<RevoluteJoint2DComponent>().connect<&Scene::OnJoint2DComponentDestroy<RevoluteJoint2DComponent>>(this);
-		m_Registry.on_destroy<PrismaticJoint2DComponent>().connect<&Scene::OnJoint2DComponentDestroy<PrismaticJoint2DComponent>>(this);
-		m_Registry.on_destroy<WeldJoint2DComponent>().connect<&Scene::OnJoint2DComponentDestroy<WeldJoint2DComponent>>(this);
 		m_Registry.on_destroy<Camera2DComponent>().connect<&Scene::OnCamera2DComponentDestruct>(this);
 		m_Registry.on_destroy<ParticleSystem2DComponent>().connect<&Scene::OnParticleSystem2DComponentDestruct>(this);
 #endif
@@ -2090,221 +2064,6 @@ namespace Funke {
 		MarkStaticRenderDataDirtyIfStatic(registry, entity);
 	}
 
-	void Scene::OnRigidBody2DComponentConstruct(entt::registry& registry, EntityHandle entity)
-	{
-		// Body adoption invariant: rigidbody adopts an existing collider's b2BodyId; the destroyer that calls b2DestroyBody MUST zero the sibling's m_BodyId to prevent aliasing on ID recycle.
-		// No physics world while the 2D module is off: the component keeps its data but stays inert.
-		if (m_IsDetached || m_LifecycleSuspended || !PhysicsSystem2D::IsInitialized()) return;
-
-		if (!EnsureTransform2D(registry, entity, "Rigidbody2D")) return;
-
-		bool isEnabled = !registry.all_of<DisabledTag>(entity);
-		Rigidbody2DComponent& rb2D = registry.get<Rigidbody2DComponent>(entity);
-
-		// Honor the component's body type instead of forcing Dynamic. For a freshly-added
-		// rigidbody m_BodyType defaults to Dynamic, so editor/runtime/slow-load behavior is
-		// unchanged; only an ECB fast-spawn (which byte-restores m_BodyType before the body
-		// exists) differs — a prefab authored Static now spawns Static instead of Dynamic.
-		if (HasAnyComponent<BoxCollider2DComponent>(entity)
-			&& b2Body_IsValid(GetComponent<BoxCollider2DComponent>(entity).m_BodyId)) {
-			rb2D.m_BodyId = GetComponent<BoxCollider2DComponent>(entity).m_BodyId;
-			rb2D.SetBodyType(rb2D.m_BodyType);
-		}
-		else if (HasAnyComponent<CircleCollider2DComponent>(entity)
-			&& b2Body_IsValid(GetComponent<CircleCollider2DComponent>(entity).m_BodyId)) {
-			rb2D.m_BodyId = GetComponent<CircleCollider2DComponent>(entity).m_BodyId;
-			rb2D.SetBodyType(rb2D.m_BodyType);
-		}
-		else if (HasAnyComponent<PolygonCollider2DComponent>(entity)
-			&& b2Body_IsValid(GetComponent<PolygonCollider2DComponent>(entity).m_BodyId)) {
-			rb2D.m_BodyId = GetComponent<PolygonCollider2DComponent>(entity).m_BodyId;
-			rb2D.SetBodyType(rb2D.m_BodyType);
-		}
-		else {
-			rb2D.m_BodyId = PhysicsSystem2D::GetMainPhysicsWorld().CreateBody(entity, *this, rb2D.m_BodyType);
-		}
-
-		rb2D.SetEnabled(isEnabled);
-	}
-
-	void Scene::OnRigidBody2DComponentDestroy(entt::registry& registry, EntityHandle entity) {
-		if (m_IsDetached) return;
-		auto& rb2D = GetComponent<Rigidbody2DComponent>(entity);
-
-		if (!rb2D.IsValid()) return;
-
-		const bool hasAnyCollider =
-			registry.all_of<BoxCollider2DComponent>(entity) ||
-			registry.all_of<CircleCollider2DComponent>(entity) ||
-			registry.all_of<PolygonCollider2DComponent>(entity);
-
-		if (IsEntityBeingDestroyed(entity)) {
-			if (registry.all_of<BoxCollider2DComponent>(entity)) {
-				registry.get<BoxCollider2DComponent>(entity).Destroy();
-				rb2D.m_BodyId = b2_nullBodyId;
-				return;
-			}
-			if (registry.all_of<CircleCollider2DComponent>(entity)) {
-				registry.get<CircleCollider2DComponent>(entity).Destroy();
-				rb2D.m_BodyId = b2_nullBodyId;
-				return;
-			}
-			if (registry.all_of<PolygonCollider2DComponent>(entity)) {
-				registry.get<PolygonCollider2DComponent>(entity).Destroy();
-				rb2D.m_BodyId = b2_nullBodyId;
-				return;
-			}
-		}
-
-		if (hasAnyCollider) {
-			rb2D.SetBodyType(BodyType::Static);
-		}
-		else {
-			rb2D.Destroy();
-			// Defensive: rb2D.Destroy() destroys the body. Make sure any mirror is
-			// cleared even if the collider branch above didn't run.
-			rb2D.m_BodyId = b2_nullBodyId;
-		}
-	}
-
-	void Scene::OnBoxCollider2DComponentConstruct(entt::registry& registry, EntityHandle entity) {
-		if (m_IsDetached || m_LifecycleSuspended || !PhysicsSystem2D::IsInitialized()) return;
-		if (!EnsureTransform2D(registry, entity, "BoxCollider2D")) return;
-
-		bool isEnabled = !registry.all_of<DisabledTag>(entity);
-		BoxCollider2DComponent& boxCollider = GetComponent<BoxCollider2DComponent>(entity);
-		boxCollider.m_EntityHandle = entity;
-
-		// Reuse existing rigidbody if present, else spawn a static body.
-		if (HasComponent<Rigidbody2DComponent>(entity)) {
-			auto& rb = GetComponent<Rigidbody2DComponent>(entity);
-			boxCollider.m_BodyId = rb.GetBodyHandle();
-		}
-		else {
-			boxCollider.m_BodyId = PhysicsSystem2D::GetMainPhysicsWorld().CreateBody(entity, *this, BodyType::Static);
-		}
-
-		boxCollider.m_ShapeId = PhysicsSystem2D::GetMainPhysicsWorld().CreateShape(entity, *this, boxCollider.m_BodyId, ShapeType::Square);
-		boxCollider.SetEnabled(isEnabled);
-
-		// The shape attach made Box2D recompute mass from density*area; restore an
-		// explicit mass if the rigidbody pinned one.
-		if (HasComponent<Rigidbody2DComponent>(entity)) {
-			GetComponent<Rigidbody2DComponent>(entity).ApplyMassFromState();
-		}
-	}
-
-	void Scene::OnBoxCollider2DComponentDestroy(entt::registry& registry, EntityHandle entity) {
-		if (m_IsDetached) return;
-		auto& boxCollider2D = GetComponent<BoxCollider2DComponent>(entity);
-		// Rigidbody2D owns body lifetime when present; collider must NOT call b2DestroyBody or both hooks double-free on ID recycle.
-		if (registry.all_of<Rigidbody2DComponent>(entity)) {
-			boxCollider2D.DestroyShape(false);
-		}
-		else {
-			boxCollider2D.Destroy();
-		}
-		if (registry.all_of<Rigidbody2DComponent>(entity)) {
-			auto& rb = registry.get<Rigidbody2DComponent>(entity);
-			if (!b2Body_IsValid(rb.m_BodyId)) {
-				rb.m_BodyId = b2_nullBodyId;
-			}
-		}
-	}
-
-	void Scene::OnCircleCollider2DComponentConstruct(entt::registry& registry, EntityHandle entity) {
-		if (m_IsDetached || m_LifecycleSuspended || !PhysicsSystem2D::IsInitialized()) return;
-		if (!EnsureTransform2D(registry, entity, "CircleCollider2D")) return;
-
-		bool isEnabled = !registry.all_of<DisabledTag>(entity);
-		CircleCollider2DComponent& circleCollider = GetComponent<CircleCollider2DComponent>(entity);
-		circleCollider.m_EntityHandle = entity;
-
-		// Reuse existing rigidbody body if present, else spawn a static body —
-		// mirrors BoxCollider2D's body-sharing rules.
-		if (HasComponent<Rigidbody2DComponent>(entity)) {
-			auto& rb = GetComponent<Rigidbody2DComponent>(entity);
-			circleCollider.m_BodyId = rb.GetBodyHandle();
-		}
-		else {
-			circleCollider.m_BodyId = PhysicsSystem2D::GetMainPhysicsWorld().CreateBody(entity, *this, BodyType::Static);
-		}
-
-		circleCollider.m_ShapeId = PhysicsSystem2D::GetMainPhysicsWorld().CreateShape(entity, *this, circleCollider.m_BodyId, ShapeType::Circle);
-		circleCollider.SetEnabled(isEnabled);
-
-		if (HasComponent<Rigidbody2DComponent>(entity)) {
-			GetComponent<Rigidbody2DComponent>(entity).ApplyMassFromState();
-		}
-	}
-
-	void Scene::OnCircleCollider2DComponentDestroy(entt::registry& registry, EntityHandle entity) {
-		if (m_IsDetached) return;
-		auto& circleCollider = GetComponent<CircleCollider2DComponent>(entity);
-		// See OnBoxCollider2DComponentDestroy: collider does NOT own the body when
-		// a Rigidbody2D is present.
-		if (registry.all_of<Rigidbody2DComponent>(entity)) {
-			circleCollider.DestroyShape(false);
-		}
-		else {
-			circleCollider.Destroy();
-		}
-		if (registry.all_of<Rigidbody2DComponent>(entity)) {
-			auto& rb = registry.get<Rigidbody2DComponent>(entity);
-			if (!b2Body_IsValid(rb.m_BodyId)) {
-				rb.m_BodyId = b2_nullBodyId;
-			}
-		}
-	}
-
-	void Scene::OnPolygonCollider2DComponentConstruct(entt::registry& registry, EntityHandle entity) {
-		if (m_IsDetached || m_LifecycleSuspended || !PhysicsSystem2D::IsInitialized()) return;
-		if (!EnsureTransform2D(registry, entity, "PolygonCollider2D")) return;
-
-		bool isEnabled = !registry.all_of<DisabledTag>(entity);
-		PolygonCollider2DComponent& polygonCollider = GetComponent<PolygonCollider2DComponent>(entity);
-		polygonCollider.m_EntityHandle = entity;
-
-		if (HasComponent<Rigidbody2DComponent>(entity)) {
-			auto& rb = GetComponent<Rigidbody2DComponent>(entity);
-			polygonCollider.m_BodyId = rb.GetBodyHandle();
-		}
-		else {
-			polygonCollider.m_BodyId = PhysicsSystem2D::GetMainPhysicsWorld().CreateBody(entity, *this, BodyType::Static);
-		}
-
-		polygonCollider.m_ShapeId = PhysicsSystem2D::GetMainPhysicsWorld().CreateShape(entity, *this, polygonCollider.m_BodyId, ShapeType::Polygon);
-		polygonCollider.SetEnabled(isEnabled);
-
-		if (HasComponent<Rigidbody2DComponent>(entity)) {
-			GetComponent<Rigidbody2DComponent>(entity).ApplyMassFromState();
-		}
-	}
-
-	void Scene::OnPolygonCollider2DComponentDestroy(entt::registry& registry, EntityHandle entity) {
-		if (m_IsDetached) return;
-		auto& polygonCollider = GetComponent<PolygonCollider2DComponent>(entity);
-		// See OnBoxCollider2DComponentDestroy: collider does NOT own the body when
-		// a Rigidbody2D is present.
-		if (registry.all_of<Rigidbody2DComponent>(entity)) {
-			polygonCollider.DestroyShape(false);
-		}
-		else {
-			polygonCollider.Destroy();
-		}
-		if (registry.all_of<Rigidbody2DComponent>(entity)) {
-			auto& rb = registry.get<Rigidbody2DComponent>(entity);
-			if (!b2Body_IsValid(rb.m_BodyId)) {
-				rb.m_BodyId = b2_nullBodyId;
-			}
-		}
-	}
-	template <typename TJoint>
-	void Scene::OnJoint2DComponentDestroy(entt::registry& registry, EntityHandle entity) {
-		if (m_IsDetached) return;
-		auto& joint = registry.get<TJoint>(entity);
-		if (joint.m_Owner == entity) joint.DestroyJoint();
-	}
 #endif
 
 	void Scene::OnAudioSourceComponentDestroy(entt::registry& registry, EntityHandle entity)
@@ -2516,23 +2275,7 @@ namespace Funke {
 			}
 		}
 
-#if FUNKE_WITH_2D
-		if (auto* rigidbody = registry.try_get<Rigidbody2DComponent>(entity); rigidbody && rigidbody->IsValid()) {
-			rigidbody->SetEnabled(enabled);
-		}
-
-		if (auto* collider = registry.try_get<BoxCollider2DComponent>(entity); collider && collider->IsValid()) {
-			collider->SetEnabled(enabled);
-		}
-
-		if (auto* collider = registry.try_get<CircleCollider2DComponent>(entity); collider && collider->IsValid()) {
-			collider->SetEnabled(enabled);
-		}
-
-		if (auto* collider = registry.try_get<PolygonCollider2DComponent>(entity); collider && collider->IsValid()) {
-			collider->SetEnabled(enabled);
-		}
-#endif
+		SceneExtensions::NotifyEntityEnabledChanged(*this, entity, enabled);
 
 		if (registry.all_of<ScriptComponent>(entity)) {
 			ScriptSystem::SetScriptsEnabled(Entity(entity, *this), enabled);

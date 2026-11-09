@@ -13,7 +13,7 @@ namespace Funke.ScriptCompiler;
 public static unsafe class CompilerHost
 {
     static readonly object s_Lock = new();
-    static readonly Dictionary<string, ProjectState> s_Projects = new(StringComparer.OrdinalIgnoreCase);
+    static readonly Dictionary<string, ProjectState> s_Projects = new(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
     static string? s_RoslynDirectory;
 
     internal static readonly JsonSerializerOptions JsonOptions = new()
@@ -49,8 +49,20 @@ public static unsafe class CompilerHost
         {
             response = new CompileResponse { Status = "fallback", Message = $"{e.GetType().Name}: {e.Message}" };
         }
+        response.Diagnostics = LimitDiagnostics(response.Diagnostics);
         response.ElapsedMs = stopwatch.Elapsed.TotalMilliseconds;
         return ToNativeUtf8(JsonSerializer.Serialize(response, JsonOptions));
+    }
+
+    internal static string? LimitDiagnostics(string? output)
+    {
+        if (string.IsNullOrEmpty(output)) return output;
+        string[] lines = output.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        if (lines.Length <= 201 && lines.LastOrDefault()?.Contains("omitted", StringComparison.OrdinalIgnoreCase) == true) return output;
+        if (lines.Length <= 200) return output;
+        var selected = lines.OrderBy(line => line.Contains("error ", StringComparison.OrdinalIgnoreCase) ? 0
+            : line.Contains("warning ", StringComparison.OrdinalIgnoreCase) ? 1 : 2).Take(200);
+        return string.Join("\n", selected) + $"\n{lines.Length - 200} additional build output lines omitted.";
     }
 
     [UnmanagedCallersOnly]
@@ -85,7 +97,8 @@ public static unsafe class CompilerHost
         }
 
         if (fullBuild)
-            return new CompileResponse { Status = "compiled", Evaluated = true, FullBuild = true };
+            return new CompileResponse { Status = "compiled", Evaluated = true, FullBuild = true,
+                Diagnostics = state.Evaluation.BuildDiagnostics };
 
         EnsureRoslyn(state.Evaluation.RoslynDirectory);
         state.Session ??= RoslynBridge.CreateSession(state.Evaluation);
@@ -120,7 +133,7 @@ public static unsafe class CompilerHost
     }
 
     internal static bool PathsEqual(string a, string b) =>
-        string.Equals(Path.GetFullPath(a).TrimEnd('\\', '/'), Path.GetFullPath(b).TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase);
+        string.Equals(Path.GetFullPath(a).TrimEnd('\\', '/'), Path.GetFullPath(b).TrimEnd('\\', '/'), OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
 
     static byte* ToNativeUtf8(string text)
     {

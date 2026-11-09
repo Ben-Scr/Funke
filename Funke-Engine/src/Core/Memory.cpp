@@ -33,8 +33,9 @@ namespace Funke {
 
 		struct ScopedInitGuard
 		{
+			bool Previous = s_InInit;
 			ScopedInitGuard() { s_InInit = true; }
-			~ScopedInitGuard() { s_InInit = false; }
+			~ScopedInitGuard() { s_InInit = Previous; }
 		};
 
 #ifndef FNK_DIST
@@ -47,15 +48,15 @@ namespace Funke {
 #endif
 		}
 
-		void WriteAllocationLeakReport(const AllocatorData& data)
+		void WriteLiveAllocationReport(const AllocatorData& data)
 		{
 			const auto& allocations = data.m_AllocationMap;
 			if (allocations.empty())
 				return;
 
-			size_t totalLeaked = 0;
+			size_t totalLive = 0;
 			for (const auto& [memory, allocation] : allocations)
-				totalLeaked += allocation.Size;
+				totalLive += allocation.Size;
 
 			char buffer[512];
 			std::snprintf(
@@ -63,20 +64,20 @@ namespace Funke {
 				sizeof(buffer),
 				"[Memory] Detected %zu live allocation(s), %zu byte(s), during allocator shutdown.\n",
 				allocations.size(),
-				totalLeaked);
+				totalLive);
 			WriteMemoryReportLine(buffer);
 
-			constexpr size_t k_MaxReportedLeaks = 32;
+			constexpr size_t k_MaxReportedAllocations = 32;
 			size_t reportedAllocations = 0;
 			for (const auto& [memory, allocation] : allocations)
 			{
-				if (reportedAllocations >= k_MaxReportedLeaks)
+				if (reportedAllocations >= k_MaxReportedAllocations)
 					break;
 
 				std::snprintf(
 					buffer,
 					sizeof(buffer),
-					"[Memory]  leak: address=%p size=%zu category=%s\n",
+					"[Memory]  live: address=%p size=%zu category=%s\n",
 					memory,
 					allocation.Size,
 					allocation.Category ? allocation.Category : "<uncategorized>");
@@ -84,13 +85,13 @@ namespace Funke {
 				++reportedAllocations;
 			}
 
-			if (allocations.size() > k_MaxReportedLeaks)
+			if (allocations.size() > k_MaxReportedAllocations)
 			{
 				std::snprintf(
 					buffer,
 					sizeof(buffer),
-					"[Memory]  ... showing first %zu of %zu total leaked allocation(s).\n",
-					k_MaxReportedLeaks,
+					"[Memory]  ... showing first %zu of %zu total live allocation(s).\n",
+					k_MaxReportedAllocations,
 					allocations.size());
 				WriteMemoryReportLine(buffer);
 			}
@@ -106,42 +107,30 @@ namespace Funke {
 
 		std::call_once(s_InitOnce, []() {
 			ScopedInitGuard guard;
-			AllocatorData* data = static_cast<AllocatorData*>(Allocator::AllocateRaw(sizeof(AllocatorData)));
-			new(data) AllocatorData();
+			// Keep the mutex alive for late lockers without orphaning a heap allocation.
+			alignas(AllocatorData) static std::byte storage[sizeof(AllocatorData)];
+			AllocatorData* data = new(storage) AllocatorData();
 			s_Data.store(data, std::memory_order_release);
 		});
 	}
 
 	void Allocator::Shutdown()
 	{
+		// Join a concurrent first initialization before closing its publication gate.
+		Init();
 		AllocatorData* data = s_Data.load(std::memory_order_acquire);
-		if (!data)
-			return;
+		if (!data) return;
 
 		ScopedInitGuard guard;
+		std::scoped_lock<std::mutex> lock(data->m_Mutex);
+		if (s_IsShutdown.exchange(true, std::memory_order_acq_rel)) return;
 #ifndef FNK_DIST
-		{
-			std::scoped_lock<std::mutex> lock(data->m_Mutex);
-			WriteAllocationLeakReport(*data);
-		}
+		WriteLiveAllocationReport(*data);
+		WriteMemoryReportLine("[Memory] Shutdown snapshot includes process/static owners; live does not prove leaked.\n");
 #endif
-		s_IsShutdown.store(true, std::memory_order_release);
 		s_Data.store(nullptr, std::memory_order_release);
-
-		// Drain in-flight lock holders, then INTENTIONALLY LEAK `data`.
-		// A thread that already loaded `data` in Allocate/Free but is still inside
-		// std::malloc has NOT yet reached scoped_lock(data->m_Mutex); destroying and
-		// freeing `data` here would make that later lock a use-after-free. Acquiring
-		// the mutex only serializes threads that hold/will-hold it, so it cannot order
-		// against a thread parked in malloc. Since this is a process-lifetime allocator,
-		// leaking the small AllocatorData is the standard, race-free shutdown: the
-		// mutex stays valid forever and the post-lock s_IsShutdown re-check in
-		// Allocate/Free makes late lockers no-op safely.
-		{
-			std::scoped_lock<std::mutex> quiesceLock(data->m_Mutex);
-			(void)quiesceLock;
-		}
-		// data deliberately not destroyed/freed — see above.
+		data->m_AllocationMap.clear();
+		data->m_AllocationStatsMap.clear();
 	}
 
 	void* Allocator::AllocateRaw(size_t size)
@@ -168,7 +157,7 @@ namespace Funke {
 
 		{
 			std::scoped_lock<std::mutex> lock(data->m_Mutex);
-			// Re-check after lock: Shutdown flips s_IsShutdown before taking mutex, so drain racers still see the closed gate.
+			// Shutdown closes the gate under this mutex before clearing the tracking maps.
 			if (s_IsShutdown.load(std::memory_order_acquire))
 				return memory;
 			Allocation& alloc = data->m_AllocationMap[memory];
@@ -277,7 +266,7 @@ namespace Funke {
 			return;
 
 		AllocatorData* data = s_Data.load(std::memory_order_acquire);
-		if (!data || s_IsShutdown.load(std::memory_order_acquire)) {
+		if (s_InInit || !data || s_IsShutdown.load(std::memory_order_acquire)) {
 			free(memory);
 			return;
 		}
@@ -328,12 +317,14 @@ namespace Funke {
 
 	std::map<std::string, AllocationStats> Allocator::GetAllocationStats()
 	{
+		ScopedInitGuard guard;
 		std::map<std::string, AllocationStats> result;
 		AllocatorData* data = s_Data.load(std::memory_order_acquire);
 		if (!data)
 			return result;
 
 		std::scoped_lock<std::mutex> lock(data->m_Mutex);
+		if (s_IsShutdown.load(std::memory_order_acquire)) return result;
 		for (const auto& [category, stats] : data->m_AllocationStatsMap) {
 			result.emplace(category ? category : "<uncategorized>", stats);
 		}

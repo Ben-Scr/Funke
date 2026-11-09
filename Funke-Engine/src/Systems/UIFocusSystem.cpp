@@ -1,5 +1,6 @@
 #include "pch.hpp"
 #include "Systems/UIFocusSystem.hpp"
+#include "Systems/UIEventSystem.hpp"
 
 #include "Collections/Viewport.hpp"
 #include "Components/General/RectTransform2DComponent.hpp"
@@ -55,6 +56,24 @@ namespace Funke {
 		}
 	}
 
+	std::vector<EntityHandle> UIFocusSystem::NavigationOrder(Scene& scene) {
+		auto& registry = scene.GetRegistry();
+		std::vector<std::pair<EntityHandle, int>> drawOrder;
+		UIDrawOrder::Build(registry, drawOrder);
+		std::vector<EntityHandle> focusables;
+		for (const auto& [entity, index] : drawOrder) {
+			const auto* interact = registry.try_get<InteractableComponent>(entity);
+			if (interact && interact->Focusable && interact->Interactable) focusables.push_back(entity);
+		}
+		return focusables;
+	}
+
+	EntityHandle UIFocusSystem::PickFocusable(Scene& scene, const Vec2& screenUi) {
+		const auto hit = UIEventSystem::PickInteractable(scene, screenUi);
+		const auto* interact = scene.GetRegistry().try_get<InteractableComponent>(hit);
+		return interact && interact->Focusable ? hit : entt::null;
+	}
+
 	void UIFocusSystem::Update(Scene& scene) {
 		Application* app = Application::GetInstance();
 		if (!app) return;
@@ -62,12 +81,13 @@ namespace Funke {
 		Input& input = app->GetInput();
 
 		auto& registry = scene.GetRegistry();
+		const auto focusables = NavigationOrder(scene);
 
 		// ── 1. Validate the persisted focus target ──────────────────
 		auto IsValidFocusTarget = [&](EntityHandle e) {
 			if (e == entt::null) return false;
 			if (!registry.valid(e)) return false;
-			if (registry.all_of<DisabledTag>(e)) return false;
+			if (std::find(focusables.begin(), focusables.end(), e) == focusables.end()) return false;
 			auto* interact = registry.try_get<InteractableComponent>(e);
 			if (!interact) return false;
 			return interact->Focusable && interact->Interactable;
@@ -80,9 +100,8 @@ namespace Funke {
 		// Detect IsFocused writes from scripts/inspector before we overwrite it below: a new IsFocused=true adopts focus; tracked-target IsFocused=false relinquishes it.
 		{
 			EntityHandle externallyFocused = entt::null;
-			auto preScanView = registry.view<InteractableComponent>(entt::exclude<DisabledTag>);
-			for (auto&& [entity, interact] : preScanView.each()) {
-				if (!interact.Focusable || !interact.Interactable) continue;
+			for (EntityHandle entity : focusables) {
+				const auto& interact = registry.get<InteractableComponent>(entity);
 				if (interact.IsFocused && entity != m_FocusedEntity) {
 					externallyFocused = entity;
 					break;
@@ -97,16 +116,6 @@ namespace Funke {
 				{
 					m_FocusedEntity = entt::null;
 				}
-			}
-		}
-
-		// ── 2. Collect focusables in registration order ─────────────
-		std::vector<EntityHandle> focusables;
-		auto focusView = registry.view<InteractableComponent, RectTransform2DComponent>(entt::exclude<DisabledTag>);
-		focusables.reserve(64);
-		for (auto&& [entity, interact, rect] : focusView.each()) {
-			if (interact.Focusable && interact.Interactable) {
-				focusables.push_back(entity);
 			}
 		}
 
@@ -131,16 +140,7 @@ namespace Funke {
 				&& mousePosition.y < static_cast<float>(vpH);
 			if (cursorOverUiSurface) {
 				const Vec2 mouseUi = ScreenPixelToUiSpace(mousePosition, vpW, vpH);
-				EntityHandle hitFocusable = entt::null;
-				for (EntityHandle e : focusables) {
-					const auto& rect = registry.get<RectTransform2DComponent>(e);
-					if (UIDrawOrder::HitTest(registry, e, rect, mouseUi)) {
-						// Last hit wins — same precedence as UIEventSystem's
-						// hit-test (later-iterated entities draw on top, so
-						// they should also receive focus first).
-						hitFocusable = e;
-					}
-				}
+				const EntityHandle hitFocusable = PickFocusable(scene, mouseUi);
 				// A click on anything else lets go: otherwise a focused input field kept its focus (and the phone
 				// keyboard) because UIEventSystem's click-outside defocus was undone here next frame.
 				m_FocusedEntity = hitFocusable;
@@ -230,7 +230,6 @@ namespace Funke {
 		// ── 7. Sync InputField.IsFocused with the navigation focus ──
 		auto fieldView = registry.view<InteractableComponent, InputFieldComponent>();
 		for (auto&& [entity, interact, field] : fieldView.each()) {
-			if (!interact.Focusable) continue;
 			const bool shouldBeFocused = (entity == m_FocusedEntity);
 			if (shouldBeFocused && !field.IsFocused) {
 				field.IsFocused = true;
@@ -248,7 +247,7 @@ namespace Funke {
 
 		// ── 8. Write the IsFocused flag every frame ─────────────────
 		// Reconcile unconditionally to clear stale IsFocused=true if Focusable was flipped off mid-session.
-		for (auto&& [entity, interact, rect] : focusView.each()) {
+		for (auto&& [entity, interact] : registry.view<InteractableComponent>().each()) {
 			const bool nowFocused = interact.Focusable
 				&& interact.Interactable
 				&& (entity == m_FocusedEntity);

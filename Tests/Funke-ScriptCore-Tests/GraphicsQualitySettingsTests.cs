@@ -201,3 +201,89 @@ public unsafe class RenderSettingsQualityBindingTests
     [UnmanagedCallersOnly]
     private static int FakeApplyAnimation(float* values, int count) => (int)GraphicsApplyStatus.Unchanged;
 }
+
+[Collection(NativeCallbacksCollection.Name)]
+public unsafe class RuntimeTextureLifetimeTests
+{
+    private static ulong s_NextId;
+    private static int s_Destroyed;
+    private static int s_Playing;
+    private static readonly System.Collections.Generic.HashSet<ulong> s_Native = new();
+    [UnmanagedCallersOnly] private static int Playing() => s_Playing;
+    [UnmanagedCallersOnly] private static ulong Create(int w, int h, byte* pixels, int filter)
+    {
+        ulong id = ++s_NextId;
+        s_Native.Add(id);
+        return id;
+    }
+    [UnmanagedCallersOnly] private static void Destroy(ulong id)
+    {
+        if (s_Native.Remove(id)) ++s_Destroyed;
+    }
+
+    [Fact]
+    public void ScopeCleanupSharesUuidOwnershipAndInvalidatesAllWrappers()
+    {
+        var saved = NativeCallbacks.Bindings;
+        var playing = Funke.Jobs.ScriptResourceScope.IsPlaying;
+        NativeCallbacks.Bindings.Texture_CreateRuntime = &Create;
+        NativeCallbacks.Bindings.Texture_DestroyRuntime = &Destroy;
+        Funke.Jobs.ScriptResourceScope.IsPlaying = &Playing;
+        Texture? persistent = null;
+        try
+        {
+            s_Native.Clear(); s_Destroyed = 0; s_Playing = 1;
+            Funke.Jobs.ScriptResourceScope.Resume(false);
+            int baseline = Texture.RuntimeBufferCount;
+            long bytes = Texture.RuntimeBufferBytes;
+            Texture.BeforeRuntimeRegistrationForTesting = () => throw new InvalidOperationException("registration probe");
+            Assert.Throws<InvalidOperationException>(() => Texture.Create(2, 2));
+            Assert.Empty(s_Native);
+            Assert.Equal(baseline, Texture.RuntimeBufferCount);
+            Assert.Equal(bytes, Texture.RuntimeBufferBytes);
+            Texture.BeforeRuntimeRegistrationForTesting = null;
+            s_Destroyed = 0;
+            persistent = Texture.Create(2, 2, lifetime: RuntimeTextureLifetime.Manual)!;
+            var generation = Texture.Create(2, 2, lifetime: RuntimeTextureLifetime.ScriptGeneration)!;
+            for (int cycle = 0; cycle < 50; ++cycle)
+            {
+                s_Playing = 1;
+                var texture = Texture.Create(4, 4)!;
+                var copy = new Texture(texture.UUID);
+                Assert.Equal(baseline + 3, Texture.RuntimeBufferCount);
+                Assert.Equal(bytes + 96, Texture.RuntimeBufferBytes);
+                texture.SetPixel(new Vector2Int(1, 1), new Color(1, 0, 0, 1));
+                Assert.Equal(1, copy.GetPixel(new Vector2Int(1, 1)).R);
+                if (cycle % 2 == 0) texture.Dispose();
+                s_Playing = 0;
+                Texture.CleanupRuntimeTextures(true);
+                Funke.Jobs.ScriptResourceScope.EndPlay();
+                Assert.False(copy.IsValid);
+                Assert.Equal(0ul, copy.UUID);
+                Assert.Throws<InvalidOperationException>(() => copy.SetPixel(default, default));
+                copy.Dispose(); texture.Dispose();
+                Assert.Equal(baseline + 2, Texture.RuntimeBufferCount);
+                Assert.Equal(bytes + 32, Texture.RuntimeBufferBytes);
+                Assert.Equal(2, s_Native.Count);
+                Assert.Equal(cycle + 1, s_Destroyed);
+            }
+            Texture.CleanupRuntimeTextures(false);
+            Assert.False(generation.IsValid);
+            Assert.True(persistent.IsValid);
+            Assert.Single(s_Native);
+            persistent.Dispose(); persistent.Dispose();
+            Assert.Equal(baseline, Texture.RuntimeBufferCount);
+            Assert.Equal(bytes, Texture.RuntimeBufferBytes);
+            Assert.Empty(s_Native);
+        }
+        finally
+        {
+            Texture.CleanupRuntimeTextures(false);
+            persistent?.Dispose();
+            Texture.BeforeRuntimeRegistrationForTesting = null;
+            Funke.Jobs.ScriptResourceScope.IsPlaying = playing;
+            Funke.Jobs.ScriptResourceScope.Resume(false);
+            NativeCallbacks.Bindings = saved;
+        }
+    }
+}

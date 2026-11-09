@@ -210,35 +210,26 @@ TEST_CASE("EditorScriptDiscovery::ExtractNativeComponentAttributeName reads the 
 	CHECK(ExtractNativeComponentAttributeName(noAttr).empty());
 }
 
-TEST_CASE("EditorScriptDiscovery::CollectScriptFile classifies managed components") {
-	ScopedTempDir dir;
-	std::vector<ScriptEntry> entries;
-
-	const auto managed = dir.Write("Movement.cs", "public class Movement : Component { }\n");
-	CollectScriptFile(managed, entries);
-
-	REQUIRE(entries.size() == 1);
-	CHECK(entries[0].ClassName == "Movement");
-	CHECK(entries[0].Type == ScriptType::Managed);
-	CHECK(entries[0].IsManagedComponent);
-	CHECK_FALSE(entries[0].IsNativeComponent);
-}
-
-TEST_CASE("EditorScriptDiscovery::CollectScriptFile classifies native-backed (IComponent) scripts") {
-	ScopedTempDir dir;
-	std::vector<ScriptEntry> entries;
-
-	const auto native = dir.Write("Health.cs",
-		"[NativeComponent(\"Health Bar\")]\n"
-		"public class Health : IComponent { }\n");
-	CollectScriptFile(native, entries);
-
-	REQUIRE(entries.size() == 1);
-	CHECK(entries[0].ClassName == "Health");
-	CHECK(entries[0].Type == ScriptType::Managed);   // still a .cs (managed) source file
-	CHECK(entries[0].IsNativeComponent);
-	CHECK_FALSE(entries[0].IsManagedComponent);       // IComponent is mutually exclusive with Component
-	CHECK(entries[0].NativeName == "Health Bar");
+TEST_CASE("EditorScriptDiscovery consumes compiled managed types without guessing from filenames") {
+    ScopedTempDir dir;
+    std::vector<ScriptEntry> entries;
+    const auto source = dir.Write("Misleading.cs", "// EntityScript\npublic class Helper { }\n");
+    CollectScriptFile(source, entries);
+    CHECK(entries.empty());
+    AppendCompiledProjectScriptEntries(R"([{"name":"type:Game.Movement","kind":"component","path":"Shared.cs"},
+        {"name":"type:UI.Movement","kind":"script","path":"Shared.cs"},
+        {"name":"type:Game.Health","kind":"nativeComponent","nativeName":"Health Bar","path":""}])", entries);
+    REQUIRE(entries.size() == 3);
+    CHECK(entries[0].ClassName == "type:Game.Movement");
+    CHECK(entries[0].IsManagedComponent);
+    CHECK_FALSE(entries[0].IsNativeComponent);
+    CHECK(entries[1].ClassName == "type:UI.Movement");
+    CHECK_FALSE(entries[1].IsManagedComponent);
+    CHECK(EntryId(entries[0]) != EntryId(entries[1]));
+    CHECK(MenuLabel(entries[0]) == "Game.Movement  .cs");
+    CHECK(entries[2].IsNativeComponent);
+    CHECK(entries[2].NativeName == "Health Bar");
+    CHECK(entries[2].Path.empty());
 }
 
 TEST_CASE("EditorScriptDiscovery::CollectScriptFile skips the native exports bootstrap TU") {
@@ -252,8 +243,8 @@ TEST_CASE("EditorScriptDiscovery::CollectScriptFile skips the native exports boo
 
 TEST_CASE("EditorScriptDiscovery::CollectScriptFiles walks a directory tree and SortScriptEntries orders by name") {
 	ScopedTempDir dir;
-	dir.Write("Zebra.cs", "public class Zebra : Component { }\n");
-	dir.Write("Alpha.cs", "public class Alpha : Component { }\n");
+	dir.Write("Zebra.cpp", "REGISTER_SCRIPT(Zebra)\n");
+	dir.Write("Alpha.cpp", "REGISTER_SCRIPT(Alpha)\n");
 
 	std::vector<ScriptEntry> entries;
 	CollectScriptFiles(dir.Root, entries);
@@ -314,7 +305,7 @@ TEST_CASE("EditorScriptDiscovery labels and ids work for entries without a file"
 
 	CHECK(MenuLabel(entries[0]) == "Player  .cs");
 	CHECK(MenuLabel(entries[1]) == "Funke.Networking.NetworkObject");
-	CHECK(EntryId(entries[0]) == std::filesystem::path("Assets/Player.cs").string());
+	CHECK(EntryId(entries[0]) == std::filesystem::path("Assets/Player.cs").string() + ":Player");
 	CHECK(EntryId(entries[1]) == "Pkg.Funke.Networking:Funke.Networking.NetworkObject");
 
 	CHECK(ShortClassName("Funke.Networking.NetworkObject") == "NetworkObject");

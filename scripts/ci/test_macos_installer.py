@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import shutil
 import subprocess
 import tarfile
 import tempfile
@@ -16,6 +17,7 @@ from unittest.mock import patch
 
 from scripts import BuildMacInstaller as mac
 from scripts.ci.sdk_test_fixtures import make_bundle, write
+from scripts.ci import application_smoke_test
 
 
 def load_helper(name: str):
@@ -122,6 +124,23 @@ class MacInstallerTests(unittest.TestCase):
         self.assertEqual(plist["LSMinimumSystemVersion"], "15.0")
         with self.assertRaisesRegex(ValueError, "overwrite"):
             mac.stage_app(self.bundle, app, self.metadata)
+
+    def test_relocated_app_resolves_assets_and_metadata_from_real_code_and_alias(self):
+        staged = self.root / "Staged/Funke.app"
+        mac.stage_app(self.bundle, staged, self.metadata)
+        app = self.root / "Relocated Applications Prüfung/Funke.app"
+        shutil.copytree(staged, app, symlinks=True)
+        shutil.rmtree(staged)
+        resources = app / "Contents/Resources"
+        for name in ("Funke-Launcher", "Funke-Editor"):
+            for executable in (resources / name, app / "Contents/MacOS" / name):
+                with self.subTest(executable=executable):
+                    self.assertFalse((executable.resolve().parent / "FunkeAssets").is_dir())
+                    self.assertEqual(application_smoke_test.resolve_assets(executable), resources / "FunkeAssets")
+                    with application_smoke_test.stage_editor_project(executable) as project:
+                        data = json.loads((Path(project) / "project.json").read_text(encoding="utf-8"))
+                        self.assertEqual(data["engineVersion"], self.metadata["version"])
+        mac.sdk_manifest.verify_bundle(resources, require_binary=True, macos_app=True)
 
     def test_app_code_aliases_cannot_escape_or_be_used_in_flat_archives(self):
         app = self.root / "Funke.app"
@@ -356,6 +375,8 @@ class MacInstallerTests(unittest.TestCase):
         self.assertIn(str(payload / "Funke-Editor"), editor.args[0])
         self.assertIn("--editor-project", editor.args[0])
         for call in (launcher, editor):
+            index = call.args[0].index("--working-directory")
+            self.assertEqual(call.args[0][index + 1], str(self.root))
             self.assertEqual(call.args[1], self.root)
             self.assertEqual(call.kwargs["environment"], environment)
 

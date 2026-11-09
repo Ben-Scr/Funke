@@ -2,6 +2,7 @@ using System;
 using System.Buffers;
 using System.Collections;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using Funke.Interop;
 
 namespace Funke;
@@ -131,7 +132,7 @@ public class Scene
         return new Entity(id);
     }
 
-    public bool TryGetSingleton<T>(out T? component) where T : Component, new()
+    public bool TryGetSingleton<T>([NotNullWhen(true)] out T? component) where T : Component, new()
     {
         component = null;
         if (!TryFindSingletonId<T>(out ulong id, warnOnMissing: false, warnOnMultiple: false))
@@ -140,7 +141,7 @@ public class Scene
         return component != null;
     }
 
-    public bool TryGetSingletonEntity<T>(out Entity? entity) where T : Component, new()
+    public bool TryGetSingletonEntity<T>([NotNullWhen(true)] out Entity? entity) where T : Component, new()
     {
         entity = null;
         if (!TryFindSingletonId<T>(out ulong id, warnOnMissing: false, warnOnMultiple: false))
@@ -184,7 +185,7 @@ public class Scene
         if (string.IsNullOrEmpty(Name))
             return false;
 
-        return InternalCalls.Scene_IsSceneSystemEnabled(Name, typeof(T).Name);
+        return InternalCalls.Scene_IsSceneSystemEnabled(Name, ScriptInstanceManager.TypeIdentity(typeof(T)));
     }
 
     private bool SetSystemEnabled<T>(bool enabled) where T : SceneSystem
@@ -192,7 +193,7 @@ public class Scene
         if (string.IsNullOrEmpty(Name))
             return false;
 
-        return InternalCalls.Scene_SetSceneSystemEnabled(Name, typeof(T).Name, enabled);
+        return InternalCalls.Scene_SetSceneSystemEnabled(Name, ScriptInstanceManager.TypeIdentity(typeof(T)), enabled);
     }
 
     // ── Internal helpers (static) ──────────────────────────────

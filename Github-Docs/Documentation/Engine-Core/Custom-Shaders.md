@@ -189,7 +189,13 @@ struct SurfaceInput {
 struct SurfaceOutput { color: vec4<f32> };
 ```
 
-`mainTexture` / `mainSampler` are the sprite's texture, for sampling at other UVs. An optional `fn vertex(v: VertexData) -> VertexData` gets `worldPosition` (vec2), `uv`, `quadUV` and `color`. UI masks still apply. Sprites with different materials are never batched together, so each material adds at least one draw call.
+`mainTexture` / `mainSampler` are the sprite's texture, for sampling at other UVs. An optional `fn vertex(v: VertexData) -> VertexData` gets `worldPosition` (vec2), `uv`, `quadUV` and `color`. UI masks still apply. In the filled sprite pass, consecutive visible sprites batch only while material GUID, texture and mask remain equal. Sorting layer, order and draw index take precedence. A material can therefore appear in several draw calls: an A/B/A sequence is three runs even when A and B use the same shader.
+
+Reuse one `.material` asset when sprites need the same live properties. Repeated references to its GUID already share the library entry and GPU bindings; unchanged packed uniform bytes are not uploaded again. Separate assets with identical values still have separate identities and runs. Sharing a material also shares later edits, so retain separate assets for independently changing states. Shader names or shader identity alone cannot establish equivalent material properties, textures or samplers. Do not reorder transparent sprites merely to group their materials.
+
+The [material batching harness](../../../scripts/benchmarks/material-batching/README.md) compares 10,000 visible sprites at 1280×720 with 1/10/100/1,000 referenced materials, plus shared-asset and interleaved controls. It records actual draw calls, isolated CPU-submit and GPU-pass distributions, raw samples, screenshots and build/device identity using the [benchmark result contract](../Editor/Benchmark-Results.md). It also checks transparent A/B/A compositing and later material mutation. The generated measurement report states the observed limit of the captured device/workload; neither the fixture nor a single device result supplies a general FPS guarantee.
+
+In the [3 November 2026 RX 7800 XT / Direct3D12 measurement](Material-Batching-Measurements.md), 1,000 grouped material instances produced 1,000 draws and **1.764 ms CPU-submit P95**; the shared-material control produced one draw and **0.308 ms P95**, with identical pixels. Interleaving 1,000 instances produced 10,000 draws and **17.201 ms P95**. GPU timestamps had **65.536 µs quantization**, preventing fine comparisons among the small grouped/shared GPU intervals. These are isolated pass measurements, not application FPS.
 
 ### UI
 
@@ -327,4 +333,4 @@ error: Assets/Materials/Lava.material: shader: GUID 123 matches no .meta; the ma
 
 - Editor View picking doesn't run the vertex stage; it widens the mesh bounds by `@displacement` instead.
 - Shaders compile on first use; a large shader can cause a short hitch the first time it appears.
-- Old `.vs`/`.fs`/`.glsl` files are listed as shaders in the Asset Browser but cannot be used; only `.wgsl` works.
+- Only `.wgsl` files are selectable shaders. Legacy `.vs`, `.fs`, `.vert`, `.frag`, `.glsl`, `.hlsl` and `.shader` files remain editable source files, marked **Source only** in the Asset Browser. Dropping them into a shader slot explains that they must be ported to WGSL; Funke does not modify or convert them automatically.

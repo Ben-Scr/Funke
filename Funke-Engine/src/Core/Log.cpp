@@ -123,6 +123,8 @@ namespace Funke {
 
 			Entry entry{};
 			entry.Message = fmt::to_string(msg.payload);
+			entry.SourceFile = msg.source.filename ? msg.source.filename : "";
+			entry.SourceLine = msg.source.line;
 			switch (msg.level) {
 			case spdlog::level::trace: entry.Level = Level::Trace; break;
 			case spdlog::level::info: entry.Level = Level::Info; break;
@@ -228,6 +230,18 @@ namespace Funke {
 		Emit(logger, level, fmt::format("[{}] {}", tag, message));
 	}
 
+	void Log::PrintMessageAt(spdlog::source_loc location, Type type, Level level, std::string_view message) {
+		if (!EnsureInitialized()) return;
+		auto logger = SelectLogger(type);
+		if (!logger || !logger->should_log(ToSpdlogLevel(level))) return;
+		Emit(logger, level, message, location);
+	}
+
+	void Log::PrintMessageTagAt(spdlog::source_loc location, Type type, Level level, std::string_view tag, std::string_view message) {
+		if (!EnsureInitialized() || !ShouldLog(type, level)) return;
+		PrintMessageAt(location, type, level, fmt::format("[{}] {}", tag, message));
+	}
+
 	const char* Log::LevelToString(const Level level) {
 		switch (level) {
 		case Level::Trace: return "Trace";
@@ -283,19 +297,12 @@ namespace Funke {
 		return logger && logger->should_log(ToSpdlogLevel(level));
 	}
 
-	void Log::Emit(std::shared_ptr<spdlog::logger>& logger, const Level level, const std::string_view message) {
+	void Log::Emit(std::shared_ptr<spdlog::logger>& logger, const Level level, const std::string_view message, spdlog::source_loc location) {
 		if (!logger) {
 			return;
 		}
 
-		switch (ToSpdlogLevel(level)) {
-		case spdlog::level::trace: logger->trace(message); break;
-		case spdlog::level::info: logger->info(message); break;
-		case spdlog::level::warn: logger->warn(message); break;
-		case spdlog::level::err: logger->error(message); break;
-		case spdlog::level::critical: logger->critical(message); break;
-		default: logger->info(message); break;
-		}
+		logger->log(location, ToSpdlogLevel(level), spdlog::string_view_t(message.data(), message.size()));
 	}
 
 }

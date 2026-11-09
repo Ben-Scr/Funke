@@ -305,6 +305,8 @@ TEST_CASE("Native script scaffold compiles asset sources with matching engine AB
 	CHECK(cmake.find("FNK_IMPORT_DLL") != std::string::npos);
 	CHECK(cmake.find("Funke-Engine/src/Generated") != std::string::npos);
 	CHECK(cmake.find("MSVC_RUNTIME_LIBRARY") != std::string::npos);
+	CHECK(cmake.find("src/Funke/Scripting.hpp") != std::string::npos);
+	CHECK(cmake.find("FUNKE_NATIVE_USE_PCH") != std::string::npos);
 	CHECK(cmake.find("FUNKE_ENGINE_LIBRARY_DIR") != std::string::npos);
 	CHECK(cmake.find("FUNKE_NATIVE_OUTPUT_ROOT") != std::string::npos);
 	CHECK(cmake.find("capabilities nativeDevelopment") != std::string::npos);

@@ -515,6 +515,7 @@ artifacts/
 	}
 
 	void LauncherLayer::OnPreRender(Application& app) {
+		m_LibraryThumbnails.Pump();
 		ApplyLauncherThemeIfNeeded();
 		// MUST precede Begin/Text calls: NewFrame already ran, so scale takes effect immediately for this frame's metrics.
 		ImGui::GetIO().FontGlobalScale = GetEffectiveFontScale();
@@ -602,6 +603,7 @@ artifacts/
 	}
 
 	void LauncherLayer::OnDetach(Application& app) {
+		m_LibraryThumbnails.Shutdown();
 		(void)app;
 		SaveSettingsLocation();
 		ResetCreateProjectTask();
@@ -798,6 +800,7 @@ artifacts/
 
 	namespace {
 		struct LauncherPalette {
+			ImU32 LogoTint;
 			ImU32 Sidebar;
 			ImU32 SidebarBorder;
 			ImU32 NavHover;
@@ -822,6 +825,7 @@ artifacts/
 			const bool dark = IsLauncherStyleDark();
 			const ImVec4 accent = dark ? ImVec4(0.357f, 0.553f, 0.937f, 1.0f) : ImVec4(0.184f, 0.420f, 0.859f, 1.0f);
 			LauncherPalette p{};
+			p.LogoTint      = dark ? IM_COL32_WHITE : IM_COL32_BLACK;
 			p.Sidebar       = dark ? IM_COL32(22, 23, 26, 255)   : IM_COL32(236, 238, 242, 255);
 			p.SidebarBorder = dark ? IM_COL32(255, 255, 255, 14) : IM_COL32(0, 0, 0, 20);
 			p.NavHover      = dark ? IM_COL32(255, 255, 255, 12) : IM_COL32(0, 0, 0, 12);
@@ -1302,7 +1306,7 @@ artifacts/
 		if (m_LogoTexture.GetHandle() != 0) {
 			dl->AddImage(static_cast<ImTextureID>(static_cast<intptr_t>(m_LogoTexture.GetHandle())),
 				logoPos, ImVec2(logoPos.x + logoSize, logoPos.y + logoSize),
-				ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f));
+				ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f), pal.LogoTint);
 		}
 		else {
 			const ImVec2 c(logoPos.x + logoSize * 0.5f, logoPos.y + logoSize * 0.5f);
@@ -1330,7 +1334,7 @@ artifacts/
 			m_ActivePage == LauncherPage::Projects, pal)) {
 			m_ActivePage = LauncherPage::Projects;
 		}
-		if (SidebarNavItem("##NavTemplates", Icons::Type::Copy, FNK_TR("launcher.nav.templates"),
+		if (SidebarNavItem("##NavTemplates", Icons::Type::Templates, FNK_TR("launcher.nav.templates"),
 			m_ActivePage == LauncherPage::Templates, pal)) {
 			if (m_ActivePage != LauncherPage::Templates) {
 				RefreshProjectTemplates();
@@ -4817,6 +4821,7 @@ artifacts/
 	}
 
 	void LauncherLayer::StartFetchAssetLibraryIndex() {
+		m_LibraryThumbnails.Refresh();
 		{
 			std::scoped_lock lock(m_AssetLibraryTask.Mutex);
 			if (m_AssetLibrary.FetchInFlight) return;
@@ -5298,10 +5303,17 @@ artifacts/
 
 			dl->AddRectFilled(p0, p1, hovered ? pal.CardHover : pal.Card, rounding);
 
-			// Preview band (no thumbnail download yet): name-hashed color + initials.
+			// Keep the fallback visible until a thumbnail is uploaded.
 			dl->AddRectFilled(p0, ImVec2(p1.x, p0.y + previewH), ProjectThumbColor(entry.Name),
 				rounding, ImDrawFlags_RoundCornersTop);
-			dl->AddRect(p0, p1, hovered ? pal.Accent : pal.CardBorder, rounding, 0, hovered ? 1.5f : 1.0f);
+			const Texture2D* thumbnail = ImGui::IsItemVisible() ? m_LibraryThumbnails.Request(entry.ThumbnailUrl, entry.Version) : nullptr;
+			if (thumbnail) {
+				dl->AddRectFilled(p0, ImVec2(p1.x, p0.y + previewH), pal.Card, rounding, ImDrawFlags_RoundCornersTop);
+				const float scale = std::min(tileW / thumbnail->GetWidth(), previewH / thumbnail->GetHeight());
+				const ImVec2 size(thumbnail->GetWidth() * scale, thumbnail->GetHeight() * scale);
+				const ImVec2 start(p0.x + (tileW - size.x) * 0.5f, p0.y + (previewH - size.y) * 0.5f);
+				dl->AddImage(static_cast<ImTextureID>(thumbnail->GetHandle()), start, ImVec2(start.x + size.x, start.y + size.y));
+			} else
 			{
 				const std::string initials = ProjectInitials(entry.Name);
 				ImGui::PushFont(nullptr, BaseFontSize() * 2.0f);
@@ -5310,6 +5322,7 @@ artifacts/
 					IM_COL32(255, 255, 255, 230), initials.c_str());
 				ImGui::PopFont();
 			}
+			dl->AddRect(p0, p1, hovered ? pal.Accent : pal.CardBorder, rounding, 0, hovered ? 1.5f : 1.0f);
 
 			dl->PushClipRect(ImVec2(p0.x + pad, p0.y + previewH), ImVec2(p1.x - pad, p1.y - pad * 0.5f), true);
 			float y = p0.y + previewH + pad * 0.8f;

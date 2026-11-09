@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import functools
+import hashlib
 import http.server
 import json
 import os
@@ -24,6 +25,10 @@ ERROR_PATTERN = re.compile(
 IDENTIFIER = re.compile(r"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+")
 
 
+class UnavailableToolError(RuntimeError):
+    pass
+
+
 def run(command: list[str], *, timeout: float = 30, check: bool = True, **kwargs) -> subprocess.CompletedProcess:
     options = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
     result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace",
@@ -36,7 +41,7 @@ def run(command: list[str], *, timeout: float = 30, check: bool = True, **kwargs
 def require_tool(name: str) -> str:
     found = shutil.which(name)
     if not found:
-        raise RuntimeError(f"Required tool is unavailable: {name}")
+        raise UnavailableToolError(f"Required tool is unavailable: {name}")
     return found
 
 
@@ -55,6 +60,50 @@ def pixel(value: str) -> tuple[float, float, int, int, int]:
         return result
     except ValueError as error:
         raise argparse.ArgumentTypeError("Expected normalized x,y and byte RGB: 0.5,0.5,255,0,255") from error
+
+
+def artifact_identity(args: argparse.Namespace) -> dict:
+    source = {"web": getattr(args, "entry", None), "android": getattr(args, "apk", None),
+              "ios": getattr(args, "app", None)}[args.platform].resolve()
+    if not source.exists():
+        raise FileNotFoundError(source)
+    root = source.parent if args.platform == "web" else source
+    if args.output.resolve().is_relative_to(root):
+        raise ValueError("Evidence output must be outside the exported artifact.")
+    paths = sorted(root.rglob("*")) if root.is_dir() else [root]
+    files = []
+    for path in paths:
+        if path.is_symlink():
+            raise ValueError(f"Artifact evidence requires regular files, found a link: {path}")
+        if not path.is_file():
+            continue
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            while chunk := stream.read(1024 * 1024):
+                digest.update(chunk)
+        files.append({"path": path.relative_to(root).as_posix() if root.is_dir() else path.name,
+                      "bytes": path.stat().st_size, "sha256": digest.hexdigest()})
+    if not files:
+        raise ValueError("The exported artifact is empty.")
+    inventory = json.dumps(files, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return {"root": str(root), "entry": str(source), "algorithm": "sha256-file-inventory-v1",
+            "sha256": hashlib.sha256(inventory).hexdigest(), "files": files}
+
+
+def evidence_result(args: argparse.Namespace) -> dict:
+    target = {"web": {"kind": "browser", "channel": getattr(args, "browser_channel", None),
+                      "executable": str(getattr(args, "browser_executable", None)),
+                      "arguments": getattr(args, "browser_arg", [])},
+              "android": {"kind": "device-or-emulator", "serial": getattr(args, "serial", None)},
+              "ios": {"kind": "simulator", "udid": getattr(args, "device", None)}}[args.platform]
+    return {"formatVersion": 2, "platform": args.platform, "passed": False, "markers": args.expect_log,
+            "pixels": args.expect_pixel, "screenshot": "game.png", "target": target,
+            "sourceCommit": None, "buildToolchain": None, "qualification": "unverified",
+            "evidenceLevels": {
+                "unit_mock": {"status": "unverified", "reason": "Builder tests are a separate check."},
+                "real_build": {"status": "unverified", "reason": "This harness does not run or attest the compiler."},
+                "real_runtime": {"status": "unverified", "reason": "Runtime checks have not completed."},
+                "physical_device": {"status": "unverified", "reason": "Physical hardware is not attested by this harness."}}}
 
 
 def check_log(log: str, markers: list[str]) -> bool:
@@ -126,7 +175,12 @@ def android(args: argparse.Namespace, output: Path) -> None:
         raise FileNotFoundError(args.apk)
     adb = [require_tool(args.adb), "-s", args.serial]
     if run(adb + ["get-state"]).stdout.strip() != "device":
-        raise RuntimeError("The selected Android device is not authorized and online.")
+        raise UnavailableToolError("The selected Android device is not authorized and online.")
+    runtime = {"adb": run([adb[0], "version"]).stdout.strip(), "serial": args.serial,
+               "model": run(adb + ["shell", "getprop", "ro.product.model"]).stdout.strip(),
+               "android": run(adb + ["shell", "getprop", "ro.build.version.release"]).stdout.strip(),
+               "emulator": run(adb + ["shell", "getprop", "ro.kernel.qemu"]).stdout.strip()}
+    (output / "runtime.json").write_text(json.dumps(runtime, indent=2), encoding="utf-8")
     existing = run(adb + ["shell", "pm", "path", args.package], check=False)
     if "package:" in existing.stdout and not args.replace:
         raise RuntimeError("This package is already installed. Use a dedicated test package or explicitly pass --replace.")
@@ -179,7 +233,11 @@ def ios(args: argparse.Namespace, output: Path) -> None:
             raise RuntimeError("The app's bundle identifier does not match --bundle-id.")
     devices = json.loads(run([xcrun, "simctl", "list", "devices", "booted", "--json"]).stdout)["devices"]
     if not any(device["udid"] == args.device for group in devices.values() for device in group):
-        raise RuntimeError("Select an already booted simulator by its exact UDID.")
+        raise UnavailableToolError("Select an already booted simulator by its exact UDID.")
+    runtime = {"xcode": run([xcrun, "xcodebuild", "-version"]).stdout.strip(),
+               "simulator": next({"runtime": name, **device} for name, group in devices.items()
+                                 for device in group if device["udid"] == args.device)}
+    (output / "runtime.json").write_text(json.dumps(runtime, indent=2), encoding="utf-8")
     existing = run([xcrun, "simctl", "get_app_container", args.device, args.bundle_id], check=False)
     if existing.returncode == 0 and not args.replace:
         raise RuntimeError("This app is already installed. Use a dedicated test bundle or explicitly pass --replace.")
@@ -253,25 +311,32 @@ def main(argv=None) -> int:
     args = parse_args(argv)
     output = args.output.resolve()
     try:
-        from PIL import Image  # noqa: F401
-    except ImportError:
-        print("Pixel validation requires Pillow: python -m pip install Pillow", file=sys.stderr)
-        return 2
-    try:
         output.mkdir(parents=True, exist_ok=False)
     except OSError as error:
         print(f"Cannot create a new evidence directory: {error}", file=sys.stderr)
         return 2
-    result = {"platform": args.platform, "passed": False, "markers": args.expect_log,
-              "pixels": args.expect_pixel, "screenshot": "game.png"}
+    result = evidence_result(args)
     try:
+        try:
+            from PIL import Image  # noqa: F401
+        except ImportError as error:
+            raise UnavailableToolError("Pixel validation requires Pillow: python -m pip install Pillow") from error
+        result["artifact"] = artifact_identity(args)
         {"web": web, "android": android, "ios": ios}[args.platform](args, output)
         check_pixels(output / "game.png", args.expect_pixel, args.tolerance)
+        if artifact_identity(args) != result["artifact"]:
+            raise RuntimeError("The exported artifact changed during runtime validation.")
+        runtime = output / "runtime.json"
+        if runtime.is_file():
+            result["runtime"] = json.loads(runtime.read_text(encoding="utf-8"))
         result["passed"] = True
-        print(f"Export smoke passed. Evidence: {output}")
+        result["evidenceLevels"]["real_runtime"] = {"status": "passed", "artifactSha256": result["artifact"]["sha256"]}
+        print(f"Runtime smoke passed; platform qualification remains unverified. Evidence: {output}")
         return 0
     except Exception as error:
         result["error"] = str(error)
+        result["evidenceLevels"]["real_runtime"] = {
+            "status": "blocked" if isinstance(error, UnavailableToolError) else "failed", "reason": str(error)}
         print(f"Export smoke failed: {error}\nEvidence: {output}", file=sys.stderr)
         return 1
     finally:

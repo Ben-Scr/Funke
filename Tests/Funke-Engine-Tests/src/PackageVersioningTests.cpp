@@ -1,17 +1,55 @@
 #include <doctest/doctest.h>
 
 #include "Core/PackageHost.hpp"
+#include "Core/EngineModules.hpp"
 #include "Packages/PackageLock.hpp"
 #include "Packages/PackageManifest.hpp"
 #include "Packages/PackageRegistryIndex.hpp"
 #include "Packages/PackageResolver.hpp"
 #include "Packages/SemanticVersion.hpp"
+#include "Packages/NuGetSource.hpp"
+#include "Serialization/Path.hpp"
+#include "Utils/Process.hpp"
+#include "Core/UUID.hpp"
 
 #include <algorithm>
 #include <chrono>
 #include <filesystem>
+#include <fstream>
+#include <cstdlib>
 
 using namespace Funke;
+
+TEST_CASE("Backlog NuGet targets only the selected project including Unicode paths"
+	* doctest::skip(std::getenv("FUNKE_TEST_NUGET") == nullptr)) {
+	Process::ResetCancellation();
+	const auto root = std::filesystem::temp_directory_path() / Path::FromUtf8("Funke NuGet \xc3\x9c " + std::to_string(uint64_t(UUID())));
+	struct Cleanup { std::filesystem::path Root; ~Cleanup() { std::error_code error; std::filesystem::remove_all(Root, error); } } cleanup{root};
+	std::filesystem::create_directories(root / "package");
+	std::filesystem::create_directories(root / "game");
+	const auto write = [](const std::filesystem::path& path, const std::string& value) { std::ofstream file(path); file << value; };
+	const auto read = [](const std::filesystem::path& path) { std::ifstream file(path); return std::string(std::istreambuf_iterator<char>(file), {}); };
+	const std::string project = "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>";
+	write(root / "package/LocalBacklog.csproj", project);
+	write(root / "package/Value.cs", "public class Value {}\n");
+	const auto packed = Process::Run({"dotnet", "pack", "LocalBacklog.csproj", "-o", Path::ToUtf8(root / "feed"), "--nologo", "-v:q"}, root / "package", std::chrono::minutes(2));
+	REQUIRE_MESSAGE(packed.Succeeded(), packed.Output);
+	write(root / "game/NuGet.Config", "<configuration><packageSources><clear/><add key=\"local\" value=\"../feed\"/></packageSources></configuration>");
+	const auto selected = root / "game" / Path::FromUtf8("Spiel \xc3\x9c.csproj");
+	write(selected, project);
+	NuGetSource source("");
+	for (bool multiple : {false, true}) {
+		if (multiple) write(root / "game/Untouched.csproj", project);
+		const auto installed = source.Install("LocalBacklog", "1.0.0", Path::ToUtf8(selected));
+		REQUIRE_MESSAGE(installed.Success, installed.Message);
+		CHECK(read(selected).find("PackageReference Include=\"LocalBacklog\"") != std::string::npos);
+		if (multiple) CHECK(read(root / "game/Untouched.csproj") == project);
+		const auto removed = source.Remove("LocalBacklog", Path::ToUtf8(selected));
+		REQUIRE_MESSAGE(removed.Success, removed.Message);
+		CHECK(read(selected).find("PackageReference") == std::string::npos);
+		if (multiple) CHECK(read(root / "game/Untouched.csproj") == project);
+	}
+}
 
 namespace {
 	SemanticVersion V(const char* text) {
@@ -347,8 +385,9 @@ TEST_CASE("PackageManifest reads the engine modules a package builds on") {
 	REQUIRE_MESSAGE(PackageManifest::TryParse(R"LUA(
 return { name = "Funke.Tilemap2D", version = "1.0.0", modules = { "Funke.2D", "Funke.2D" } }
 )LUA", manifest, &error), error);
-	REQUIRE(manifest.Modules.size() == 1);
+	REQUIRE(manifest.Modules.size() == 2);
 	CHECK(manifest.Modules[0] == "Funke.2D");
+	CHECK(manifest.Modules[1] == "Funke.Physics2D");
 
 	CHECK_FALSE(PackageManifest::TryParse(R"LUA(return { name = "Funke.A", version = "1.0.0", modules = { "Funke.4D" } })LUA", manifest, &error));
 	CHECK(error.find("Funke.4D") != std::string::npos);
@@ -389,6 +428,36 @@ TEST_CASE("Packages that need a disabled engine module are blocked, with their d
 	CHECK(dependents[0] == "Game.Levels");
 }
 
+TEST_CASE("Packages distinguish unknown and uncompiled module requirements from disabled selection") {
+	const auto previous = EngineModules::GetActiveIds();
+	struct Restore { std::vector<std::string> Ids; ~Restore() { EngineModules::Configure(Ids); } } restore{ previous };
+	EngineModules::Configure({});
+	const std::vector<std::string> selected{ "Funke.2D", "Funke.3D", "Funke.3d" };
+	for (const std::string& id : selected) {
+		CAPTURE(id);
+		PackageManifest required = Manifest("Game.Feature", "1.0.0");
+		required.Modules = { id };
+		const auto dependent = Manifest("Game.Level", "1.0.0", { { "Game.Feature", "*" } });
+		for (const auto& selection : { selected, std::vector<std::string>{} }) {
+			const auto status = EngineModules::GetStatus(id, selection);
+			const auto result = ResolvePackages({ required, dependent }, { "Game.Level" }, V("2026.1.0"), &selection);
+			if (status == EngineModules::Status::Enabled) {
+				CHECK_FALSE(result.HasErrors());
+				CHECK(Contains(result.LoadOrder, "Game.Level"));
+			}
+			else {
+				CHECK(result.IsBlocked("Game.Feature"));
+				CHECK(result.IsBlocked("Game.Level"));
+				CHECK(result.LoadOrder.empty());
+				const auto messages = result.GetMessages("Game.Feature");
+				REQUIRE(messages.size() == 1);
+				CHECK(messages.front() == EngineModules::GetStatusMessage(id, status));
+			}
+			CHECK(EngineModules::GetActiveIds().empty());
+		}
+	}
+}
+
 TEST_CASE("Registry releases carry engine modules; unknown modules can't be installed") {
 	const char* json = R"JSON({ "packages": [
 		{ "name": "Funke.Tilemap2D", "version": "1.0.0", "downloadUrl": "https://example.com/t.zip",
@@ -401,11 +470,20 @@ TEST_CASE("Registry releases carry engine modules; unknown modules can't be inst
 	REQUIRE_MESSAGE(ParseRegistryIndex(json, registry, error), error);
 	REQUIRE(registry.size() == 2);
 	REQUIRE(registry[0].Latest() != nullptr);
-	REQUIRE(registry[0].Latest()->Modules.size() == 1);
-	CHECK(registry[0].Latest()->Modules[0] == "Funke.2D");
+	CHECK(registry[0].Latest()->Modules == std::vector<std::string>{ "Funke.2D", "Funke.Physics2D" });
 
 	const PackageInstallPlan tilemap = PlanRegistryInstall(registry, {}, "Funke.Tilemap2D", "*", V("2026.1.0"), false);
 	CHECK(tilemap.IsValid());
 	const PackageInstallPlan hologram = PlanRegistryInstall(registry, {}, "Funke.Hologram", "*", V("2026.1.0"), false);
 	CHECK_FALSE(hologram.IsValid());
+}
+
+TEST_CASE("PackageManifest version 2 separates rendering from physics and resolves dependencies") {
+	PackageManifest manifest;
+	std::string error;
+	REQUIRE(PackageManifest::TryParse(R"(return { name="Game.Render", version="1.0.0", moduleRequirementsVersion=2, modules={"Funke.2D"} })", manifest, &error));
+	CHECK(manifest.Modules == std::vector<std::string>{ "Funke.2D" });
+	REQUIRE(PackageManifest::TryParse(R"(return { name="Game.Physics", version="1.0.0", moduleRequirementsVersion=2, modules={"Funke.Physics3D"} })", manifest, &error));
+	CHECK(manifest.Modules == std::vector<std::string>{ "Funke.3D", "Funke.Physics3D" });
+	CHECK_FALSE(PackageManifest::TryParse(R"(return { name="Game.Future", version="1.0.0", moduleRequirementsVersion=3 })", manifest, &error));
 }

@@ -1,6 +1,6 @@
 using System;
-using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Threading;
 using Funke.Interop;
 
 namespace Funke.Jobs.Internal;
@@ -9,134 +9,110 @@ internal static unsafe class JobNativeDispatch
 {
     internal interface IJobBox
     {
-        ulong ExceptionKey { get; set; }
-
         void Invoke();
         void OnRelease();
     }
 
     internal interface IJobRangeBox
     {
-        ulong ExceptionKey { get; set; }
-
-        // Invoked concurrently across worker threads; implementations MUST copy the TJob struct locally to avoid concurrent partition trampling.
         void InvokeRange(int lo, int hi);
-
         void OnRelease();
     }
+
+    private sealed class Context
+    {
+        internal readonly object Box;
+        internal readonly NativeJobState State = new();
+        internal readonly ScriptResourceScope.Lease Lease;
+        internal Context(object box)
+        {
+            Box = box;
+            Lease = ScriptResourceScope.Register();
+        }
+    }
+
+    private static int s_ActiveContexts;
+    internal static int ActiveContextCount => Volatile.Read(ref s_ActiveContexts);
 
     [UnmanagedCallersOnly]
     private static void JobEntrypoint(void* ctx)
     {
-        GCHandle gch = GCHandle.FromIntPtr((IntPtr)ctx);
-        if (!gch.IsAllocated) return;
-        IJobBox? box = gch.Target as IJobBox;
-        if (box == null) return;
-
-        try
-        {
-            box.Invoke();
-        }
-        catch (Exception ex)
-        {
-            JobExceptionRegistry.Stash(box.ExceptionKey, ex);
-        }
+        var context = (Context)GCHandle.FromIntPtr((IntPtr)ctx).Target!;
+        using var scope = context.Lease.Enter();
+        try { ((IJobBox)context.Box).Invoke(); }
+        catch (Exception ex) { context.State.SetException(ex); }
     }
 
     [UnmanagedCallersOnly]
     private static void JobRangeEntrypoint(void* ctx, int lo, int hi)
     {
-        GCHandle gch = GCHandle.FromIntPtr((IntPtr)ctx);
-        if (!gch.IsAllocated) return;
-        IJobRangeBox? box = gch.Target as IJobRangeBox;
-        if (box == null) return;
-
-        try
-        {
-            box.InvokeRange(lo, hi);
-        }
-        catch (Exception ex)
-        {
-            JobExceptionRegistry.Stash(box.ExceptionKey, ex);
-        }
+        var context = (Context)GCHandle.FromIntPtr((IntPtr)ctx).Target!;
+        using var scope = context.Lease.Enter();
+        try { ((IJobRangeBox)context.Box).InvokeRange(lo, hi); }
+        catch (Exception ex) { context.State.SetException(ex); }
     }
 
-    // Called by native side on JobSystem_Release — after Wait has
-    // completed and any consumer of the handle has had a chance to
-    // observe the exception via Complete().
     [UnmanagedCallersOnly]
     private static void ReleaseContext(void* ctx)
     {
-        GCHandle gch = GCHandle.FromIntPtr((IntPtr)ctx);
-        if (!gch.IsAllocated) return;
-
-        // Surface unconsumed exceptions before freeing the box — keeps
-        // fire-and-forget paths from silently swallowing faults.
-        // An exception escaping an [UnmanagedCallersOnly] method kills the process, and skipping Free leaks the box.
-        try
-        {
-            ulong exceptionKey = 0;
-            switch (gch.Target)
-            {
-                case IJobBox singleBox:
-                    exceptionKey = singleBox.ExceptionKey;
-                    singleBox.OnRelease();
-                    break;
-                case IJobRangeBox rangeBox:
-                    exceptionKey = rangeBox.ExceptionKey;
-                    rangeBox.OnRelease();
-                    break;
-            }
-            JobExceptionRegistry.DrainOrLog(exceptionKey);
-        }
-        catch (Exception ex)
-        {
-            Log.Error($"Job release failed: {ex}");
-        }
+        GCHandle handle = GCHandle.FromIntPtr((IntPtr)ctx);
+        var context = (Context)handle.Target!;
+        try { ReleaseBox(context.Box); }
+        catch (Exception ex) { context.State.SetException(ex); }
         finally
         {
-            gch.Free();
+            handle.Free();
+            Interlocked.Decrement(ref s_ActiveContexts);
+            context.State.Finish();
+            context.Lease.Dispose();
         }
     }
 
-    internal static JobHandle Schedule(IJobBox box)
+    private static void ReleaseBox(object box)
     {
-        ref NativeBindingsStruct b = ref NativeCallbacks.Bindings;
-        if (b.JobSystem_Enqueue == null)
-        {
-            box.ExceptionKey = 0;
-            try { box.Invoke(); }
-            finally { box.OnRelease(); }
-            return default;
-        }
-
-        ulong exceptionKey = box.ExceptionKey = JobExceptionRegistry.CreateKey();
-        GCHandle gch = GCHandle.Alloc(box);
-        ulong nh = b.JobSystem_Enqueue(
-            &JobEntrypoint,
-            (void*)GCHandle.ToIntPtr(gch),
-            &ReleaseContext);
-        return new JobHandle(nh, exceptionKey);
+        if (box is IJobBox single) single.OnRelease();
+        else ((IJobRangeBox)box).OnRelease();
     }
 
+    internal static JobHandle Schedule(IJobBox box) => Submit(box, 0, 0, 0, false);
     internal static JobHandle ScheduleParallelFor(IJobRangeBox box, int begin, int end, int batchSize)
-    {
-        ref NativeBindingsStruct b = ref NativeCallbacks.Bindings;
-        if (b.JobSystem_ParallelFor == null)
-        {
-            box.ExceptionKey = 0;
-            try { box.InvokeRange(begin, end); }
-            finally { box.OnRelease(); }
-            return default;
-        }
+        => Submit(box, begin, end, batchSize, true);
 
-        ulong exceptionKey = box.ExceptionKey = JobExceptionRegistry.CreateKey();
-        GCHandle gch = GCHandle.Alloc(box);
-        ulong nh = b.JobSystem_ParallelFor(
-            begin, end, batchSize,
-            &JobRangeEntrypoint,
-            (void*)GCHandle.ToIntPtr(gch),
-            &ReleaseContext);
-        return new JobHandle(nh, exceptionKey);
+    private static JobHandle Submit(object box, int begin, int end, int batchSize, bool parallel)
+    {
+        Context context;
+        try { context = new Context(box); }
+        catch { ReleaseBox(box); throw; }
+        GCHandle handle;
+        try { handle = GCHandle.Alloc(context); }
+        catch { context.Lease.Dispose(); ReleaseBox(box); throw; }
+        Interlocked.Increment(ref s_ActiveContexts);
+        void* ptr = (void*)GCHandle.ToIntPtr(handle);
+        ref NativeBindingsStruct bindings = ref NativeCallbacks.Bindings;
+        ulong id;
+        if ((parallel && bindings.JobSystem_ParallelFor == null) || (!parallel && bindings.JobSystem_Enqueue == null))
+        {
+            delegate* unmanaged<void*, void> release = &ReleaseContext;
+            if (parallel) { delegate* unmanaged<void*, int, int, void> run = &JobRangeEntrypoint; run(ptr, begin, end); }
+            else { delegate* unmanaged<void*, void> run = &JobEntrypoint; run(ptr); }
+            release(ptr);
+            id = 0;
+        }
+        else
+        {
+            // Native owns the context even when registration fails and the guarded binding returns zero.
+            id = parallel
+                ? bindings.JobSystem_ParallelFor(begin, end, batchSize, &JobRangeEntrypoint, ptr, &ReleaseContext)
+                : bindings.JobSystem_Enqueue(&JobEntrypoint, ptr, &ReleaseContext);
+            if (id == 0)
+            {
+                var failed = new NativeJobState();
+                failed.SetException(new InvalidOperationException("Native job submission failed."));
+                failed.Finish();
+                return new JobHandle(failed);
+            }
+        }
+        context.State.Handle = id;
+        return new JobHandle(context.State);
     }
 }

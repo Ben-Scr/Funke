@@ -14,6 +14,10 @@
 #include "Components/Physics/CircleCollider2DComponent.hpp"
 #include "Components/Physics/Rigidbody2DComponent.hpp"
 #include "Core/UUID.hpp"
+#include "Core/EngineModules.hpp"
+#include "Components/Physics/PolygonCollider2DComponent.hpp"
+#include "Components/Physics/Joint2DComponents.hpp"
+#include "Components/Physics3D/Collider3DComponents.hpp"
 #include "Core/Application.hpp"
 #include "Graphics/Filter.hpp"
 #include "Project/ProjectManager.hpp"
@@ -191,14 +195,18 @@ TEST_CASE("Collider layer and collision mask survive both serialize ladders")
 	auto& box = src.AddComponent<BoxCollider2DComponent>();
 	box.SetLayer(1ull << 4);
 	box.SetCollisionMask(0b1010);
-	src.AddComponent<CircleCollider2DComponent>(); // untouched: default mask must stay "all layers"
+	Entity circle = scene->CreateEntity("Circle");
+	circle.AddComponent<CircleCollider2DComponent>();
 
 	const Json::Value full = SceneSerializer::SerializeEntityFull(*scene, src.GetHandle());
 	const EntityHandle clone = SceneSerializer::DeserializeEntityFromValue(*scene, full);
 	REQUIRE(clone != entt::null);
 	CHECK(scene->GetComponent<BoxCollider2DComponent>(clone).GetLayer() == (1ull << 4));
 	CHECK(scene->GetComponent<BoxCollider2DComponent>(clone).GetCollisionMask() == 0b1010);
-	CHECK(scene->GetComponent<CircleCollider2DComponent>(clone).GetCollisionMask() == UINT64_MAX);
+	const EntityHandle circleClone = SceneSerializer::DeserializeEntityFromValue(*scene,
+		SceneSerializer::SerializeEntityFull(*scene, circle.GetHandle()));
+	REQUIRE(circleClone != entt::null);
+	CHECK(scene->GetComponent<CircleCollider2DComponent>(circleClone).GetCollisionMask() == UINT64_MAX);
 
 	const Json::Value comp = SceneSerializer::SerializeComponent(*scene, src.GetHandle(), "BoxCollider2D");
 	Entity dst = scene->CreateEntity("Dst");
@@ -1038,4 +1046,47 @@ TEST_CASE("Camera3D post processing round-trips and resets to enabled") {
     CHECK(dst.GetComponent<Camera3DComponent>().PostProcessingEnabled);
     REQUIRE(SceneSerializer::DeserializeComponent(*scene, src.GetHandle(), "Camera3D", Json::Value::MakeObject()));
     CHECK(src.GetComponent<Camera3DComponent>().PostProcessingEnabled);
+}
+
+TEST_CASE("Physics modules retain inactive collider and joint data across entity and component round trips") {
+	struct Restore { ~Restore() { EngineModules::ActivateAllCompiled(); } } restore;
+	EngineModules::ActivateAllCompiled();
+	auto source = Scene::CreateDetachedScene("Physics source");
+	Entity polygonEntity = source->CreateEntity("Polygon");
+	polygonEntity.AddComponent<Rigidbody2DComponent>().SetMass(17.5f);
+	auto& polygon = polygonEntity.AddComponent<PolygonCollider2DComponent>();
+	polygon.SetPaths({ { { -2, 0 }, { 3, 0 }, { 0, 4 } }, { { 5, 0 }, { 7, 0 }, { 6, 2 } } }, *source);
+	polygon.SetCenter({ 0.25f, -0.5f }, *source);
+	auto& joint = polygonEntity.AddComponent<RevoluteJoint2DComponent>();
+	joint.EnableMotor = true;
+	joint.MotorSpeed = 3.25f;
+	joint.MaxMotorTorque = 12.5f;
+	Entity meshEntity = source->CreateEmptyEntity();
+	meshEntity.AddComponent<Transform3DComponent>();
+	auto& mesh = meshEntity.AddComponent<MeshCollider3DComponent>();
+	mesh.CustomMesh = 18446744073709551001ull;
+	mesh.UseMeshRenderer = false;
+	mesh.Convex = true;
+	mesh.Friction = 0.375f;
+	const auto source2D = SceneSerializer::SerializeEntityFull(*source, polygonEntity.GetHandle());
+	const auto source3D = SceneSerializer::SerializeEntityFull(*source, meshEntity.GetHandle());
+	EngineModules::Configure({ "Funke.2D", "Funke.3D" });
+	auto inactive = Scene::CreateDetachedScene("Physics inactive");
+	const auto polygonCopy = SceneSerializer::DeserializeEntityFromValue(*inactive, source2D);
+	const auto meshCopy = SceneSerializer::DeserializeEntityFromValue(*inactive, source3D);
+	REQUIRE(polygonCopy != entt::null); REQUIRE(meshCopy != entt::null);
+	CHECK_FALSE(inactive->GetComponent<Rigidbody2DComponent>(polygonCopy).IsValid());
+	const auto stored2D = SceneSerializer::SerializeEntityFull(*inactive, polygonCopy);
+	for (const std::string key : { "Rigidbody2D", "PolygonCollider2D", "RevoluteJoint2D" }) {
+		CAPTURE(key);
+		REQUIRE(source2D.FindMember(key)); REQUIRE(stored2D.FindMember(key));
+		CHECK(*source2D.FindMember(key) == *stored2D.FindMember(key));
+		CHECK(SceneSerializer::SerializeComponent(*inactive, polygonCopy, key) == *source2D.FindMember(key));
+	}
+	const auto stored3D = SceneSerializer::SerializeEntityFull(*inactive, meshCopy);
+	REQUIRE(stored3D.FindMember("MeshCollider3D"));
+	CHECK(*stored3D.FindMember("MeshCollider3D") == *source3D.FindMember("MeshCollider3D"));
+	EngineModules::ActivateAllCompiled();
+	const auto reactivated = SceneSerializer::DeserializeEntityFromValue(*source, stored3D);
+	CHECK(source->GetComponent<MeshCollider3DComponent>(reactivated).CustomMesh == 18446744073709551001ull);
 }

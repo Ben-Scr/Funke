@@ -1,4 +1,5 @@
 #include <doctest/doctest.h>
+#include "GpuTestEvidence.hpp"
 
 #include "Assets/AssetLoader.hpp"
 #include "Assets/AssetRegistry.hpp"
@@ -7,13 +8,22 @@
 #include "Audio/Backends/MiniaudioBackend.hpp"
 #include "Core/Application.hpp"
 #include "Core/UUID.hpp"
+#include "Components/General/Transform2DComponent.hpp"
+#include "Components/Graphics/SpriteRendererComponent.hpp"
 #include "DevTools/RunAutomation.hpp"
 #include "Graphics/RenderApi.hpp"
+#include "Graphics/Renderer2D.hpp"
 #include "Graphics/Text/FontManager.hpp"
 #include "Graphics/TextureManager.hpp"
 #include "Scripting/ScriptBindings.hpp"
 #include "Serialization/File.hpp"
 #include "Serialization/Path.hpp"
+#include "Scene/Entity.hpp"
+#include "Scene/Scene.hpp"
+#include "Scene/SceneManager.hpp"
+#include "Scripting/ScriptEngine.hpp"
+
+#include <glm/ext/matrix_clip_space.hpp>
 
 #include <array>
 #include <chrono>
@@ -118,17 +128,66 @@ namespace {
 			config.WindowSpecification = WindowSpecification(160, 120, "Funke async asset test", false, true, false);
 			config.SetWindowIcon = false;
 			config.EnableAudio = true;
+			config.EnableScenes = true;
+			config.EnableShaderManager = true;
 			config.RunInBackground = true;
 			config.Vsync = false;
 			config.TargetFrameRate = 240.0f;
 			return config;
 		}
 
+		void ConfigureScenes() override {
+			SceneManager::RegisterScene("Texture lifetime").WithoutDefaultCamera2D().SetAsStartupScene();
+		}
+
 		void Start() override {
 			BackendReady = RenderApi::IsInitialized();
+			AdapterValid = GpuTestEvidence::Adapter("async");
+			if (!AdapterValid) { Application::Quit(); return; }
 			FontManagerReady = FontManager::Initialize();
 			Background = RunAutomation::IsBackground();
 			ScriptBindings::PopulateAssetBindings(m_Bindings);
+			const auto runtimeBaseline = TextureManager::GetRuntimeTextureCount();
+			for (int cycle = 0; cycle < 50; ++cycle) {
+				const auto id = TextureManager::CreateRuntimeTexture(2, 2, k_TexturePixels.data(), Filter::Point, Wrap::Clamp, Wrap::Clamp);
+				REQUIRE(id != 0);
+				CHECK(TextureManager::GetRuntimeTextureCount() == runtimeBaseline + 1);
+				TextureManager::DestroyRuntimeTexture(id);
+				TextureManager::DestroyRuntimeTexture(id);
+				CHECK(TextureManager::GetRuntimeTextureCount() == runtimeBaseline);
+			}
+			const auto sourceBudget = FontManager::GetSourceMemoryBudgetBytes();
+			FontManager::SetSourceMemoryBudgetBytes(0);
+			for (int cycle = 0; cycle < 10; ++cycle) {
+				const auto font = FontManager::LoadFontByUUID(m_Files.Ids[1], 24.0f);
+				REQUIRE(font.IsValid());
+				CHECK(FontManager::GetSourceCacheBytes() > 0);
+				CHECK(FontManager::GetUnusedSourceCacheBytes() == 0);
+				FontManager::UnloadFont(font);
+				CHECK(FontManager::GetSourceCacheBytes() == 0);
+			}
+			FontManager::SetSourceMemoryBudgetBytes(sourceBudget);
+			if (const char* core = std::getenv("FUNKE_TEST_SCRIPTCORE")) {
+				const char* assembly = std::getenv("FUNKE_TEST_RELOAD_ASSEMBLY");
+				REQUIRE(assembly != nullptr);
+				ScriptEngine::LoadCoreAssembly(core);
+				REQUIRE(ScriptEngine::LoadUserAssembly(assembly));
+				const auto scenes = SceneManager::GetLoadedScenes();
+				REQUIRE_FALSE(scenes.empty());
+				auto scene = scenes.front().lock();
+				REQUIRE(scene);
+				for (int cycle = 0; cycle < 50; ++cycle) {
+					Application::SetIsPlaying(true);
+					REQUIRE(scene->AddSceneSystem("Backlog.TextureLifetimeProbe"));
+					CHECK(TextureManager::GetRuntimeTextureCount() == runtimeBaseline + 1);
+					REQUIRE(ScriptEngine::PrepareResourceRelease(true));
+					scene->ClearSceneSystems();
+					Application::SetIsPlaying(false);
+					ScriptEngine::OnPlayModeExited();
+					CHECK(TextureManager::GetRuntimeTextureCount() == runtimeBaseline);
+				}
+			}
+
 			const uint64_t runtime = TextureManager::CreateRuntimeTexture(2, 2, k_TexturePixels.data(),
 				Filter::Point, Wrap::Clamp, Wrap::Clamp);
 			RuntimeTextureAccepted = runtime != 0 && !AssetRegistry::Exists(runtime)
@@ -173,6 +232,7 @@ namespace {
 		}
 
 		bool BackendReady = false;
+		bool AdapterValid = false;
 		bool FontManagerReady = false;
 		bool Background = false;
 		bool Deferred = true;
@@ -186,6 +246,7 @@ namespace {
 		bool TextureCacheShared = false;
 		bool TextureSamplingCorrect = false;
 		bool TexturePixelsCorrect = false;
+		bool TextureGpuPixelsCorrect = false;
 		bool FontCacheShared = false;
 		bool FontAtlasReady = false;
 		bool GlyphUvsValid = false;
@@ -211,6 +272,29 @@ namespace {
 				const auto pixels = texture->GetImageData();
 				TexturePixelsCorrect = pixels && pixels->OwnedPixels.size() == k_TexturePixels.size()
 					&& std::memcmp(pixels->Pixels, k_TexturePixels.data(), k_TexturePixels.size()) == 0;
+				Renderer2D renderer;
+				renderer.Initialize();
+				struct Cleanup { Renderer2D& Value; ~Cleanup() { Value.Shutdown(); } } cleanup{ renderer };
+				renderer.SetPostProcessingEnabled(false);
+				Framebuffer target(64, 64);
+				auto scene = Scene::CreateDetachedScene("Async texture readback");
+				Entity entity = scene->CreateEmptyEntity();
+				entity.AddComponent<Transform2DComponent>(Vec2(0, 0), Vec2(2, 2));
+				entity.AddComponent<SpriteRendererComponent>().TextureHandle = textureHandle;
+				RenderApi::BindFramebuffer(target);
+				RenderApi::SetViewport(0, 0, 64, 64);
+				RenderApi::SetClearColor(Color::Black());
+				RenderApi::Clear(ClearFlags::Color | ClearFlags::Depth);
+				renderer.RenderSceneWithVP(*scene, glm::orthoRH_ZO(-1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f),
+					AABB({ -1, -1 }, { 1, 1 }));
+				std::vector<uint8_t> actual;
+				target.ReadPixelsRGBA8(actual);
+				auto reference = GpuTestEvidence::Solid(64, 64, { 0, 0, 0, 255 });
+				GpuTestEvidence::Rectangle(reference, 64, 0, 0, 32, 32, { 255, 0, 0, 255 });
+				GpuTestEvidence::Rectangle(reference, 64, 32, 0, 64, 32, { 0, 127, 0, 255 });
+				GpuTestEvidence::Rectangle(reference, 64, 0, 32, 32, 64, { 0, 0, 63, 255 });
+				TextureGpuPixelsCorrect = GpuTestEvidence::Compare("async-texture", 64, 64, actual, reference);
+				RenderApi::BindDefaultFramebuffer();
 			}
 			const auto fontHandle = FontManager::FindLoadedFontByUUID(m_Files.Ids[1], 32.0f);
 			if (Font* font = FontManager::GetFont(fontHandle)) {
@@ -238,12 +322,9 @@ namespace {
 
 }
 
-TEST_CASE("Async asset rendering publishes textures fonts and audio through the Application loop") {
-	const char* enabled = std::getenv("FUNKE_TEST_ASYNC_ASSET_GPU");
-	if (!enabled || std::string(enabled) != "1") {
-		MESSAGE("Set FUNKE_TEST_ASYNC_ASSET_GPU=1 to run the background WebGPU integration test.");
-		return;
-	}
+TEST_CASE("Async asset rendering publishes textures fonts and audio through the Application loop"
+	* doctest::skip(!GpuTestEvidence::Requested("FUNKE_TEST_ASYNC_ASSET_GPU"))) {
+	REQUIRE(GpuTestEvidence::Environment("FUNKE_TEST_ASYNC_ASSET_GPU") == "1");
 	const auto fontPath = FindTestFont();
 	REQUIRE_FALSE(fontPath.empty());
 	RenderingAssetFiles files;
@@ -262,6 +343,7 @@ TEST_CASE("Async asset rendering publishes textures fonts and audio through the 
 	AsyncRenderingApplication application(files);
 	CHECK(application.Run() == 0);
 	CHECK(application.BackendReady);
+	CHECK(application.AdapterValid);
 	CHECK(application.FontManagerReady);
 	CHECK(application.Background);
 	CHECK(application.Deferred);
@@ -280,6 +362,7 @@ TEST_CASE("Async asset rendering publishes textures fonts and audio through the 
 	CHECK(application.TextureCacheShared);
 	CHECK(application.TextureSamplingCorrect);
 	CHECK(application.TexturePixelsCorrect);
+	CHECK(application.TextureGpuPixelsCorrect);
 	CHECK(application.FontCacheShared);
 	CHECK(application.FontAtlasReady);
 	CHECK(application.GlyphUvsValid);

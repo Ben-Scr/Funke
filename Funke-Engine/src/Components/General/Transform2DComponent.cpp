@@ -1,7 +1,9 @@
 #include "pch.hpp"
 #include "Components/General/Transform2DComponent.hpp"
 #include "Scene/Scene.hpp"
+#if FUNKE_WITH_PHYSICS2D
 #include <box2d/types.h>
+#endif
 
 namespace Funke {
 
@@ -74,8 +76,10 @@ namespace Funke {
 		return transMat * rotMatrix * scaleMat;
 	}
 
+#if FUNKE_WITH_PHYSICS2D
 	b2Rot Transform2DComponent::GetB2Rotation() const {
 		// No sign flip: both Funke renderer and Box2D use CCW-positive. Previous -Sin variant inverted handedness and caused physics bodies to render backwards.
 		return b2Rot(Cos(Rotation), Sin(Rotation));
 	}
+#endif
 }

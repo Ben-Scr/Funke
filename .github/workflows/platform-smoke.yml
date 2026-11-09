@@ -89,3 +89,20 @@ jobs:
           name: Web-export-smoke-evidence
           path: output/platform-web-smoke
           if-no-files-found: warn
+      - name: Summarize runtime evidence and remaining qualification
+        if: always()
+        shell: python
+        run: |
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path("output/platform-web-smoke/result.json")
+          result = json.loads(path.read_text()) if path.is_file() else {}
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+              summary.write("## Platform evidence\n\n| Level | Status |\n|---|---|\n")
+              for level in ("unit_mock", "real_build", "real_runtime", "physical_device"):
+                  status = result.get("evidenceLevels", {}).get(level, {}).get("status", "unverified")
+                  summary.write(f"| {level} | {status} |\n")
+              summary.write("\nThis runtime check does not attest the export's source commit or compiler. "
+                            "Platform qualification remains **unverified**.\n")

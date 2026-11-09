@@ -15,7 +15,9 @@
 #include "Serialization/SceneSerializerStorage.hpp"
 #include "Utils/Process.hpp"
 #include "Core/Log.hpp"
+#include "Core/EngineModules.hpp"
 #include "Core/Version.hpp"
+#include "Scripting/ScriptEngine.hpp"
 
 #include <algorithm>
 #include <array>
@@ -694,6 +696,8 @@ list(SORT NATIVE_SOURCES))");
     "${FUNKE_DIR}/External/dawn/build/gen/include")");
 			replace("target_compile_definitions(${PROJECT_NAME} PRIVATE\n    FUNKE_ALL_MODULES=1", R"(option(FUNKE_WITH_2D "Match the linked engine's 2D module" ON)
 option(FUNKE_WITH_3D "Match the linked engine's 3D module" ON)
+option(FUNKE_WITH_PHYSICS2D "Match the linked engine's Physics2D module" ${FUNKE_WITH_2D})
+option(FUNKE_WITH_PHYSICS3D "Match the linked engine's Physics3D module" ${FUNKE_WITH_3D})
 if(NOT DEFINED FUNKE_NATIVE_WITH_EDITOR)
     set(FUNKE_NATIVE_WITH_EDITOR "$<NOT:$<CONFIG:Dist>>")
 endif()
@@ -702,6 +706,8 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
     FUNKE_ALL_MODULES=1
     FUNKE_WITH_2D=$<BOOL:${FUNKE_WITH_2D}>
     FUNKE_WITH_3D=$<BOOL:${FUNKE_WITH_3D}>
+    FUNKE_WITH_PHYSICS2D=$<BOOL:${FUNKE_WITH_PHYSICS2D}>
+    FUNKE_WITH_PHYSICS3D=$<BOOL:${FUNKE_WITH_PHYSICS3D}>
     FUNKE_WITH_EDITOR=${FUNKE_NATIVE_WITH_EDITOR})");
 			replace("target_link_directories(${PROJECT_NAME} PRIVATE\n", R"(if(FUNKE_ENGINE_LIBRARY_DIR)
     target_link_directories(${PROJECT_NAME} BEFORE PRIVATE "${FUNKE_ENGINE_LIBRARY_DIR}")
@@ -722,7 +728,7 @@ target_link_directories(${PROJECT_NAME} PRIVATE
 # Opt in only when scripts do not configure SDK headers with per-source macros.
 option(FUNKE_NATIVE_USE_PCH "Precompile the common native script SDK header" OFF)
 if(FUNKE_NATIVE_USE_PCH)
-    target_precompile_headers(${PROJECT_NAME} PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:${FUNKE_DIR}/Funke-Engine/src/Scripting/NativeScript.hpp>")
+    target_precompile_headers(${PROJECT_NAME} PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:${FUNKE_DIR}/Funke-Engine/src/Funke/Scripting.hpp>")
 endif()
 )";
 			replace("set(NATIVE_OUTPUT_ROOT \"${CMAKE_CURRENT_SOURCE_DIR}/../bin\")", R"(if(FUNKE_NATIVE_OUTPUT_ROOT)
@@ -1082,6 +1088,10 @@ endif())");
 	}
 
 	static bool ValidateProjectJsonStructure(const Json::Value& root, int formatVersion, std::string& outError) {
+		if (formatVersion >= 2 && !root.FindMember("modules")) {
+			outError = "Project format 2 requires an explicit 'modules' array (empty is allowed)";
+			return false;
+		}
 		auto require = [&](std::string_view name, auto predicate, std::string_view expected) {
 			const Json::Value* value = root.FindMember(name);
 			if (!value || predicate(*value)) return true;
@@ -1119,7 +1129,7 @@ endif())");
 			"entityBits" }) {
 			if (!require(name, [](const Json::Value& value) { return value.IsNumber(); }, "a number")) return false;
 		}
-		for (std::string_view name : { "buildScenes", "globalSystems", "packages", "customDefines" }) {
+		for (std::string_view name : { "buildScenes", "globalSystems", "packages", "customDefines", "modules" }) {
 			if (!require(name, [](const Json::Value& value) { return value.IsArray(); }, "an array")) return false;
 		}
 		for (std::string_view name : { "cursorHotspot", "uiInteractableCursorHotspot" }) {
@@ -1222,11 +1232,15 @@ endif())");
 			}
 		}
 
-		for (std::string_view arrayName : { "packages", "customDefines" }) {
+		for (std::string_view arrayName : { "packages", "customDefines", "modules" }) {
 			if (const Json::Value* values = root.FindMember(arrayName)) {
 				for (const Json::Value& value : values->GetArray()) {
 					if (!value.IsString()) {
 						outError = "'" + std::string(arrayName) + "' entries must be strings";
+						return false;
+					}
+					if (arrayName == "modules" && !EngineModules::FromId(value.AsStringOr())) {
+						outError = EngineModules::GetStatusMessage(value.AsStringOr(), EngineModules::Status::Unknown);
 						return false;
 					}
 				}
@@ -1356,7 +1370,10 @@ endif())");
 			}
 
 			Json::Value systemValue = Json::Value::MakeObject();
-			systemValue.AddMember("className", registration.ClassName);
+			const std::string canonical = ScriptEngine::ResolveManagedTypeName(registration.ClassName);
+			const bool collision = std::any_of(project.GlobalSystems.begin(), project.GlobalSystems.end(),
+				[&](const auto& other) { return &other != &registration && other.ClassName == canonical; });
+			systemValue.AddMember("className", canonical.empty() || collision ? registration.ClassName : canonical);
 			systemValue.AddMember("active", registration.Active);
 			globalSystems.Append(std::move(systemValue));
 		}
@@ -1376,9 +1393,7 @@ endif())");
 		{
 			Json::Value modules = Json::Value::MakeArray();
 			for (const std::string& module : project.Modules) {
-				if (!module.empty()) {
-					modules.Append(module);
-				}
+				modules.Append(module);
 			}
 			root.AddMember("modules", std::move(modules));
 		}
@@ -2659,6 +2674,10 @@ endif())");
 
 		ResolvePaths(project);
 
+		if (sourceFormatVersion < 2) {
+			project.Modules = EngineModules::ExpandLegacySelection(project.Modules);
+		}
+
 		if (performMigrations && sourceFormatVersion < FunkeProject::k_CurrentProjectFormatVersion) {
 			const std::filesystem::path backupPath = GetMigrationBackupPath(Path::FromUtf8(configPath), sourceFormatVersion);
 			const std::string backupPathUtf8 = Path::ToUtf8(backupPath);
@@ -2984,7 +3003,7 @@ endif())");
 			project.AssetSerializationFormat = ProjectAssetSerializationFormat::Json;
 		}
 		if (projectTemplate) {
-			if (!projectTemplate->Modules.empty()) {
+			if (projectTemplate->HasModuleSelection || !projectTemplate->Modules.empty()) {
 				project.Modules = projectTemplate->Modules;
 			}
 			project.StartupScene = projectTemplate->StartupScene;

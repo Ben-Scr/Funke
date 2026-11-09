@@ -46,10 +46,10 @@ public readonly struct JobHandle
         m_NativeState = null;
     }
 
-    internal JobHandle(ulong nativeHandle, ulong exceptionKey)
+    internal JobHandle(NativeJobState state)
     {
         m_Task = null;
-        m_NativeState = nativeHandle == 0 ? null : new NativeJobState(nativeHandle, exceptionKey);
+        m_NativeState = state;
     }
 
     internal Task? InnerTask => m_Task;
@@ -82,7 +82,7 @@ public readonly struct JobHandle
 
     public TaskAwaiter GetAwaiter() => AsTask().GetAwaiter();
 
-    /// <summary>Opt in to fire-and-forget fault logging and native-handle cleanup.</summary>
+    /// <summary>Opt in to fire-and-forget fault logging; execution resources are released automatically.</summary>
     public JobHandle ObserveFaults()
     {
         if (IsValid) Job.AttachFaultLogger(AsTask());
@@ -92,69 +92,31 @@ public readonly struct JobHandle
 
 internal sealed class NativeJobState
 {
-    private readonly ulong m_Handle;
-    private readonly ulong m_ExceptionKey;
-    private readonly ManualResetEventSlim m_Completed = new(false);
-    private readonly object m_TaskLock = new();
-    private Task? m_Task;
+    private readonly TaskCompletionSource m_Completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private ExceptionDispatchInfo? m_Exception;
-    private int m_CompletionStarted;
+    internal ulong Handle { get; set; }
+    internal bool IsComplete => m_Completion.Task.IsCompleted;
+    internal bool IsFaulted => Volatile.Read(ref m_Exception) != null;
+    internal Exception? Exception => Volatile.Read(ref m_Exception)?.SourceException;
 
-    internal NativeJobState(ulong handle, ulong exceptionKey)
+    internal void SetException(Exception exception)
+        => Interlocked.CompareExchange(ref m_Exception, ExceptionDispatchInfo.Capture(exception), null);
+
+    internal void Finish()
     {
-        m_Handle = handle;
-        m_ExceptionKey = exceptionKey;
-    }
-
-    internal ulong Handle => m_Handle;
-    internal bool IsFaulted => m_Exception != null;
-    internal Exception? Exception => m_Exception?.SourceException;
-
-    internal unsafe bool IsComplete
-    {
-        get
-        {
-            if (m_Completed.IsSet) return true;
-            var fn = NativeCallbacks.Bindings.JobSystem_IsComplete;
-            return fn == null || fn(m_Handle) != 0;
-        }
+        if (m_Exception is { } exception) m_Completion.TrySetException(exception.SourceException);
+        else m_Completion.TrySetResult();
     }
 
     internal void Complete()
     {
-        // Native waiting may run a queued callback that completes this same handle.
-        if (!m_Completed.IsSet) Job.WaitNativeHandle(m_Handle);
-
-        if (Interlocked.CompareExchange(ref m_CompletionStarted, 1, 0) == 0)
-        {
-            try
-            {
-                Job.CompleteNativeHandle(m_Handle, m_ExceptionKey);
-            }
-            catch (Exception ex)
-            {
-                m_Exception = ExceptionDispatchInfo.Capture(ex);
-            }
-            finally
-            {
-                m_Completed.Set();
-            }
-        }
-        else
-        {
-            m_Completed.Wait();
-        }
-
-        m_Exception?.Throw();
+        // Wait may steal a callback that recursively completes this same handle.
+        if (!IsComplete) Job.WaitNativeHandle(Handle);
+        m_Completion.Task.GetAwaiter().GetResult();
+        Volatile.Read(ref m_Exception)?.Throw();
     }
 
-    internal Task AsTask()
-    {
-        lock (m_TaskLock)
-        {
-            return m_Task ??= Task.Run(Complete);
-        }
-    }
+    internal Task AsTask() => m_Completion.Task;
 }
 
 public static class JobSystem
@@ -277,7 +239,7 @@ public static class Job
         // Native pool has no dependency primitive; stay on the Task path when a dependency is present.
         if (dependency.IsValid)
         {
-            return ToHandle(StartScheduled(box.ExecuteAction, GetDependencyTask(dependency), cancellationToken));
+            return ToHandle(StartScheduled(box.Invoke, GetDependencyTask(dependency), cancellationToken, box.OnRelease));
         }
 
         return Internal.JobNativeDispatch.Schedule(box);
@@ -316,7 +278,7 @@ public static class Job
 
         if (dependency.IsValid)
         {
-            return ToHandle(StartScheduled(box.ExecuteAction, GetDependencyTask(dependency), cancellationToken));
+            return ToHandle(StartScheduled(box.Invoke, GetDependencyTask(dependency), cancellationToken, box.OnRelease));
         }
 
         return Internal.JobNativeDispatch.Schedule(box);
@@ -404,7 +366,7 @@ public static class Job
 
         if (dependency.IsValid)
         {
-            return ToHandle(StartScheduled(box.ExecuteAction, GetDependencyTask(dependency), cancellationToken));
+            return ToHandle(StartScheduled(() => RunParallelForFromBox(box), GetDependencyTask(dependency), cancellationToken, box.OnRelease));
         }
 
         return Internal.JobNativeDispatch.ScheduleParallelFor(box, 0, length, batchSize);
@@ -490,19 +452,6 @@ public static class Job
         if (wait != null) wait(nativeHandle);
     }
 
-    internal static unsafe void CompleteNativeHandle(ulong nativeHandle, ulong exceptionKey)
-    {
-        try
-        {
-            JobExceptionRegistry.RethrowIfPresent(exceptionKey);
-        }
-        finally
-        {
-            var release = NativeCallbacks.Bindings.JobSystem_Release;
-            if (release != null) release(nativeHandle);
-        }
-    }
-
     public static bool IsComplete(JobHandle handle) => handle.IsComplete;
 
     public static JobHandle CombineDependencies(params JobHandle[] handles)
@@ -557,41 +506,29 @@ public static class Job
         return dependency.IsValid ? dependency.AsTask() : null;
     }
 
-    private static Task StartScheduled(Action run, Task? dependency, CancellationToken cancellationToken)
+    private static Task StartScheduled(Action run, Task? dependency, CancellationToken cancellationToken, Action? release = null)
     {
-        if (dependency == null && !cancellationToken.CanBeCanceled)
+        ScriptResourceScope.Lease lease;
+        try { lease = ScriptResourceScope.Register(); }
+        catch { release?.Invoke(); throw; }
+        try
         {
-            return Task.Factory.StartNew(
-                run,
-                CancellationToken.None,
-                TaskCreationOptions.DenyChildAttach,
-                TaskScheduler.Default);
-        }
-
-        if (dependency == null || dependency.IsCompleted)
-        {
-            return Task.Factory.StartNew(
-                () =>
-                {
-                    dependency?.GetAwaiter().GetResult();
-                    cancellationToken.ThrowIfCancellationRequested();
-                    run();
-                },
-                cancellationToken,
-                TaskCreationOptions.DenyChildAttach,
-                TaskScheduler.Default);
-        }
-
-        return dependency.ContinueWith(
-            completedDependency =>
+            return Task.Run(async () =>
             {
-                completedDependency.GetAwaiter().GetResult();
-                cancellationToken.ThrowIfCancellationRequested();
-                run();
-            },
-            CancellationToken.None,
-            TaskContinuationOptions.DenyChildAttach,
-            TaskScheduler.Default);
+                using (lease)
+                using (lease.Enter())
+                {
+                    try
+                    {
+                        if (dependency != null) await dependency.ConfigureAwait(false);
+                        cancellationToken.ThrowIfCancellationRequested();
+                        run();
+                    }
+                    finally { release?.Invoke(); }
+                }
+            });
+        }
+        catch { lease.Dispose(); release?.Invoke(); throw; }
     }
 
     private static JobHandle ToHandle(Task task)
@@ -753,4 +690,134 @@ public static class ParallelFor
     public static void Run<TJob>(TJob job, int length, int batchSize = 0)
         where TJob : struct, IJobFor
         => Job.ParallelFor(job, length, batchSize);
+}
+
+internal enum ScriptResourceKind { Play, Generation, Persistent }
+
+internal static unsafe class ScriptResourceScope
+{
+    private sealed class Scope
+    {
+        internal readonly ScriptResourceKind Kind;
+        internal readonly long Generation;
+        internal readonly long Session;
+        internal volatile bool Closing;
+        internal int Active;
+        internal Scope(ScriptResourceKind kind, long generation, long session)
+        { Kind = kind; Generation = generation; Session = session; }
+    }
+
+    private static readonly object s_Gate = new();
+    private static readonly AsyncLocal<Scope?> s_Ambient = new();
+    private static long s_Generation = 1;
+    private static long s_Session = 1;
+    private static Scope s_Play = new(ScriptResourceKind.Play, 1, 1);
+    private static Scope s_Global = new(ScriptResourceKind.Generation, 1, 0);
+    internal static delegate* unmanaged<int> IsPlaying;
+    private static Scope Current => s_Ambient.Value ?? (s_Play.Closing || (IsPlaying != null && IsPlaying() != 0) ? s_Play : s_Global);
+    internal static ScriptResourceKind CurrentKind => Current.Kind;
+    internal static long CurrentGeneration => Current.Generation;
+    internal static long CurrentPlaySession => Current.Session;
+    internal static long Generation => Volatile.Read(ref s_Generation);
+    internal static long PlaySession => Volatile.Read(ref s_Session);
+
+    internal sealed class Lease : IDisposable
+    {
+        private readonly Scope m_Scope;
+        private int m_Released;
+        private Lease(Scope scope) { m_Scope = scope; }
+        internal IDisposable Enter() => new Ambient(m_Scope);
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref m_Released, 1) != 0) return;
+            lock (s_Gate) { --m_Scope.Active; Monitor.PulseAll(s_Gate); }
+        }
+        internal static Lease Create()
+        {
+            lock (s_Gate)
+            {
+                Scope scope = Current;
+                if (scope.Closing) throw new InvalidOperationException($"Script {scope.Kind} scope is closing.");
+                var lease = new Lease(scope);
+                ++scope.Active;
+                return lease;
+            }
+        }
+    }
+
+    private sealed class Ambient : IDisposable
+    {
+        private readonly Scope? m_Previous;
+        internal Ambient(Scope scope) { m_Previous = s_Ambient.Value; s_Ambient.Value = scope; }
+        public void Dispose() => s_Ambient.Value = m_Previous;
+    }
+
+    internal static IDisposable EnterGeneration() => new Ambient(s_Global);
+    internal static Lease Register() => Lease.Create();
+    internal static void EnsureAccepting()
+    {
+        lock (s_Gate)
+            if (Current.Closing) throw new InvalidOperationException($"Script {Current.Kind} scope is closing.");
+    }
+    internal static int ActiveCount { get { lock (s_Gate) return s_Play.Active + s_Global.Active; } }
+
+    internal static bool Drain(bool playOnly, int timeoutMilliseconds = 5000)
+    {
+        Scope play;
+        Scope global;
+        lock (s_Gate)
+        {
+            play = s_Play;
+            global = s_Global;
+            play.Closing = true;
+            if (!playOnly) global.Closing = true;
+        }
+        long deadline = Environment.TickCount64 + (timeoutMilliseconds < 0 ? 5000 : timeoutMilliseconds);
+        bool reported = false;
+        for (;;)
+        {
+            lock (s_Gate)
+            {
+                if (play.Active == 0 && (playOnly || global.Active == 0)) return true;
+                if (timeoutMilliseconds >= 0 && Environment.TickCount64 >= deadline)
+                {
+                    play.Closing = false;
+                    if (!playOnly) global.Closing = false;
+                    return false;
+                }
+            }
+            if (timeoutMilliseconds < 0 && !reported && Environment.TickCount64 >= deadline)
+            {
+                reported = true;
+                Log.Warn($"Shutdown waiting for {ActiveCount} script jobs; resources remain alive until they finish.");
+            }
+            Funke.Coroutines.FunkeSynchronizationContext.Instance.Pump();
+            lock (s_Gate) Monitor.Wait(s_Gate, 1);
+        }
+    }
+
+    internal static void Resume(bool playOnly)
+    {
+        lock (s_Gate) { s_Play.Closing = false; if (!playOnly) s_Global.Closing = false; }
+    }
+
+    internal static void EndPlay()
+    {
+        lock (s_Gate)
+        {
+            s_Play.Closing = true;
+            s_Play = new Scope(ScriptResourceKind.Play, s_Generation, ++s_Session);
+        }
+    }
+
+    internal static void NextGeneration()
+    {
+        lock (s_Gate)
+        {
+            s_Play.Closing = s_Global.Closing = true;
+            ++s_Generation;
+            s_Play = new Scope(ScriptResourceKind.Play, s_Generation, ++s_Session);
+            s_Global = new Scope(ScriptResourceKind.Generation, s_Generation, 0);
+        }
+    }
 }

@@ -344,7 +344,8 @@ namespace Funke {
 			JPH::IndexedTriangleList triangles;
 			triangles.reserve(mesh.Indices.size() / 3);
 			for (size_t i = 0; i + 2 < mesh.Indices.size(); i += 3) {
-				triangles.push_back(JPH::IndexedTriangle(mesh.Indices[i], mesh.Indices[i + 1], mesh.Indices[i + 2], 0));
+				const bool reflected = (scale.x < 0) ^ (scale.y < 0) ^ (scale.z < 0);
+				triangles.push_back(JPH::IndexedTriangle(mesh.Indices[i], mesh.Indices[i + (reflected ? 2 : 1)], mesh.Indices[i + (reflected ? 1 : 2)], 0));
 			}
 			return CreateOrNull(JPH::MeshShapeSettings(std::move(vertices), std::move(triangles)), c.Entity, "mesh");
 		}
@@ -374,7 +375,7 @@ namespace Funke {
 				return CreateOrNull(JPH::CapsuleShapeSettings(halfCylinder, radius), c.Entity, "capsule");
 			}
 			case ColliderKind::Mesh:
-				return CreateMeshShape(c, scale, dynamic);
+				return CreateMeshShape(c, c.Scale, dynamic);
 			}
 			return nullptr;
 		}

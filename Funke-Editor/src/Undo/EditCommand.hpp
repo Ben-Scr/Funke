@@ -15,6 +15,7 @@ namespace Funke {
 		virtual ~EditCommand() = default;
 
 		virtual bool IsAvailable() const { return true; }
+		virtual std::string GetUnavailableReason() const { return "The command's scene is no longer available."; }
 		virtual void RebindScene(const std::weak_ptr<Scene>&, const std::shared_ptr<Scene>&) {}
 		virtual void Undo(Scene& scene) = 0;
 		virtual void Redo(Scene& scene) = 0;

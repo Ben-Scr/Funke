@@ -89,6 +89,7 @@ namespace Funke {
 
         // No arithmetic operators — composing whole transforms has no well-defined semantics.
     private:
+        friend struct ScriptComponentLayoutAccess;
         bool m_Dirty = true;
         Scene* m_OwnerScene = nullptr;
         EntityHandle m_OwnerEntity = entt::null;

@@ -75,6 +75,7 @@ namespace Funke {
 			bool ShowFileExtensions = false;
 			bool AutoRecompileScripts = true;
 			bool RecompileScriptsOnPlay = false;
+			bool ResetRegisteredStateOnPlay = false;
 			bool ExitPlayModeOnRecompilation = true;
 			bool AutoSaveScenes = false;
 			float AutoSaveIntervalSeconds = 120.0f;
@@ -128,6 +129,7 @@ namespace Funke {
 				case EditorThemeMode::SystemDefault: return "SystemDefault";
 				case EditorThemeMode::Custom:        return "Custom";
 				case EditorThemeMode::Glass:         return "Glass";
+				case EditorThemeMode::GlassLight:    return "GlassLight";
 			}
 			return "SystemDefault";
 		}
@@ -139,6 +141,7 @@ namespace Funke {
 			if (value == "SystemDefault") return EditorThemeMode::SystemDefault;
 			if (value == "Custom")        return EditorThemeMode::Custom;
 			if (value == "Glass")         return EditorThemeMode::Glass;
+			if (value == "GlassLight")    return EditorThemeMode::GlassLight;
 			return EditorThemeMode::SystemDefault;
 		}
 
@@ -154,7 +157,8 @@ namespace Funke {
 			if (name == "auto")        mode = EditorThemeMode::SystemDefault;
 			else if (name == "dark")   mode = EditorThemeMode::Dark;
 			else if (name == "light")  mode = EditorThemeMode::Light;
-			else if (name == "glass")  mode = EditorThemeMode::Glass;
+			else if (name == "glass" || name == "glass-dark") mode = EditorThemeMode::Glass;
+			else if (name == "glass-light") mode = EditorThemeMode::GlassLight;
 			else if (name == "custom") mode = EditorThemeMode::Custom;
 			else {
 				FNK_CORE_WARN_TAG("EditorPrefs", "Ignoring unknown FUNKE_EDITOR_THEME '{}'.", value);
@@ -332,6 +336,9 @@ namespace Funke {
 		if (const Json::Value* v = root.FindMember("RecompileScriptsOnPlay")) {
 			s.RecompileScriptsOnPlay = v->AsBoolOr(false);
 		}
+		if (const Json::Value* v = root.FindMember("ResetRegisteredStateOnPlay")) {
+			s.ResetRegisteredStateOnPlay = v->AsBoolOr(false);
+		}
 		if (const Json::Value* v = root.FindMember("ExitPlayModeOnRecompilation")) {
 			s.ExitPlayModeOnRecompilation = v->AsBoolOr(true);
 		}
@@ -486,6 +493,7 @@ namespace Funke {
 		root.AddMember("ShowFileExtensions", Json::Value(s.ShowFileExtensions));
 		root.AddMember("AutoRecompileScripts", Json::Value(s.AutoRecompileScripts));
 		root.AddMember("RecompileScriptsOnPlay", Json::Value(s.RecompileScriptsOnPlay));
+		root.AddMember("ResetRegisteredStateOnPlay", Json::Value(s.ResetRegisteredStateOnPlay));
 		root.AddMember("ExitPlayModeOnRecompilation", Json::Value(s.ExitPlayModeOnRecompilation));
 		root.AddMember("AutoSaveScenes", Json::Value(s.AutoSaveScenes));
 		root.AddMember("AutoSaveIntervalSeconds", Json::Value(static_cast<double>(s.AutoSaveIntervalSeconds)));
@@ -555,11 +563,12 @@ namespace Funke {
 
 	void EditorPreferences::ApplyTheme() {
 		const EditorThemeMode resolved = ResolveTheme(S().Theme);
-		ImGuiContextLayer::ApplyThemeRounding(/*glass=*/resolved == EditorThemeMode::Glass);
+		ImGuiContextLayer::ApplyThemeRounding(/*glass=*/resolved == EditorThemeMode::Glass || resolved == EditorThemeMode::GlassLight);
 
 		switch (resolved) {
 			case EditorThemeMode::Glass:
-				ImGuiContextLayer::ApplyGlassThemeColors();
+			case EditorThemeMode::GlassLight:
+				ImGuiContextLayer::ApplyGlassThemeColors(resolved == EditorThemeMode::Glass);
 				MarkThemeApplied(resolved);
 				ApplyNativeTitlebarFromStyle(/*glass=*/true);
 				return;
@@ -724,6 +733,13 @@ namespace Funke {
 
 	bool EditorPreferences::GetRecompileScriptsOnPlay() {
 		return S().RecompileScriptsOnPlay;
+	}
+
+	bool EditorPreferences::GetResetRegisteredStateOnPlay() { return S().ResetRegisteredStateOnPlay; }
+	void EditorPreferences::SetResetRegisteredStateOnPlay(bool value) {
+		if (S().ResetRegisteredStateOnPlay == value) return;
+		S().ResetRegisteredStateOnPlay = value;
+		Save();
 	}
 
 	void EditorPreferences::SetRecompileScriptsOnPlay(bool value) {

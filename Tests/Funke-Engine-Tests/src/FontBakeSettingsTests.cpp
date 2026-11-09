@@ -369,3 +369,87 @@ TEST_CASE("Unicode font rasterization supports Greek Cyrillic and CJK when the f
 	}
 	WARN("No system font for the optional Greek/Cyrillic/CJK rasterization test; bundled Latin Extended font is covered separately.");
 }
+
+namespace Funke {
+	struct FontManagerTestAccess {
+		static auto Read(uint64_t id, const std::string& path) { return FontManager::GetSharedTtf(id, path); }
+	};
+}
+
+TEST_CASE("Font source cache bounds unused bytes and preserves active readers") {
+	const auto root = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path();
+	const auto path = Path::ToUtf8(root / "Funke-Runtime/FunkeAssets/Fonts/IBMPlexSansCondensed-Regular.ttf");
+	const auto oldBudget = FontManager::GetSourceMemoryBudgetBytes();
+	struct Restore {
+		size_t Budget;
+		~Restore() { FontManager::ClearSourceCache(); FontManager::SetSourceMemoryBudgetBytes(Budget); }
+	} restore{ oldBudget };
+	FontManager::ClearSourceCache();
+	FontManager::SetSourceMemoryBudgetBytes(0);
+	auto active = FontManagerTestAccess::Read(91001, path);
+	REQUIRE(active != nullptr);
+	REQUIRE_FALSE(active->empty());
+	CHECK(FontManagerTestAccess::Read(91001, path) == active);
+	CHECK(FontManager::GetSourceCacheBytes() == active->size());
+	CHECK(FontManager::GetUnusedSourceCacheBytes() == 0);
+	for (uint64_t id = 91002; id < 91052; ++id) {
+		auto bytes = FontManagerTestAccess::Read(id, path);
+		REQUIRE(bytes != nullptr);
+		bytes.reset();
+		FontManager::EnforceMemoryBudget();
+		CHECK(FontManager::GetSourceCacheBytes() == active->size());
+	}
+	FontManager::ClearSourceCache();
+	CHECK(FontManager::GetSourceCacheBytes() == 0);
+	FontRaster::Glyph glyph;
+	CHECK(FontRaster::Rasterize(*active, 32.0f, 'A', glyph));
+	active.reset();
+	FontManager::SetSourceMemoryBudgetBytes(2 * File::ReadAllBytes(path).size());
+	for (uint64_t id = 92000; id < 92050; ++id) {
+		auto bytes = FontManagerTestAccess::Read(id, path);
+		REQUIRE(bytes != nullptr);
+		bytes.reset();
+		FontManager::EnforceMemoryBudget();
+		CHECK(FontManager::GetSourceCacheBytes() <= FontManager::GetSourceMemoryBudgetBytes());
+	}
+	FontManager::UnloadAll();
+	CHECK(FontManager::GetSourceCacheBytes() == 0);
+}
+
+TEST_CASE("Font source cache replaces paths and invalidates changed files") {
+	const auto root = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path();
+	const auto source = root / "Funke-Runtime/FunkeAssets/Fonts/IBMPlexSansCondensed-Regular.ttf";
+	const auto directory = std::filesystem::temp_directory_path() / ("funke-font-cache-" +
+		std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+	std::filesystem::create_directories(directory);
+	struct Cleanup {
+		std::filesystem::path Directory;
+		bool WasInitialized;
+		~Cleanup() {
+			FontManager::ClearSourceCache();
+			if (!WasInitialized) FontManager::Shutdown();
+			std::error_code error;
+			std::filesystem::remove_all(Directory, error);
+		}
+	} cleanup{ directory, FontManager::IsInitialized() };
+	FontManager::Initialize();
+	FontManager::ClearSourceCache();
+	const auto firstPath = directory / "first.ttf";
+	const auto secondPath = directory / "second.ttf";
+	std::filesystem::copy_file(source, firstPath);
+	auto bytes = File::ReadAllBytes(Path::ToUtf8(source));
+	bytes.push_back(0);
+	REQUIRE(File::WriteAllBytes(Path::ToUtf8(secondPath), bytes));
+	auto first = FontManagerTestAccess::Read(93000, Path::ToUtf8(firstPath));
+	auto second = FontManagerTestAccess::Read(93000, Path::ToUtf8(secondPath));
+	REQUIRE(first);
+	REQUIRE(second);
+	CHECK(first != second);
+	CHECK(FontManager::GetSourceCacheBytes() == bytes.size());
+	std::filesystem::last_write_time(secondPath, std::filesystem::last_write_time(secondPath) + std::chrono::seconds(2));
+	CHECK(FontManager::ReloadChangedFromDisk() == 1);
+	CHECK(FontManager::GetSourceCacheBytes() == 0);
+	FontRaster::Glyph glyph;
+	CHECK(FontRaster::Rasterize(*first, 32.0f, 'A', glyph));
+	CHECK(FontRaster::Rasterize(*second, 32.0f, 'A', glyph));
+}

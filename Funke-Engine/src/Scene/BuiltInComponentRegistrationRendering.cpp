@@ -14,7 +14,9 @@
 #include "Components/Graphics/ParticleSystem2DComponent.hpp"
 #include "Components/Graphics/SpriteRendererComponent.hpp"
 #include "Components/Graphics/TerrainRenderer2DComponent.hpp"
+#if FUNKE_WITH_PHYSICS2D
 #include "Physics/PhysicsTypes.hpp"
+#endif
 #endif
 
 #include <cmath>

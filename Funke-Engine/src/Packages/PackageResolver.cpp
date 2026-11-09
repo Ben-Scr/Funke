@@ -1,5 +1,6 @@
 #include "pch.hpp"
 #include "Packages/PackageResolver.hpp"
+#include "Core/EngineModules.hpp"
 
 #include <algorithm>
 #include <functional>
@@ -86,9 +87,9 @@ namespace Funke {
 			}
 			if (enabledModules) {
 				for (const std::string& module : manifest.Modules) {
-					if (std::find(enabledModules->begin(), enabledModules->end(), module) == enabledModules->end()) {
-						addIssue(PackageIssue::Severity::Error, name, "needs the engine module " + module
-							+ ", which the project does not enable (Package Manager > Engine Modules)");
+					const EngineModules::Status status = EngineModules::GetStatus(module, *enabledModules);
+					if (status != EngineModules::Status::Enabled) {
+						addIssue(PackageIssue::Severity::Error, name, EngineModules::GetStatusMessage(module, status));
 						ok = false;
 					}
 				}

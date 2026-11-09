@@ -438,19 +438,39 @@ local function ValidateManifest(manifest, manifestPath)
         PackageError("Package '" .. manifest.name .. "' has invalid 'dependencies' field; expected a table or nil.")
     end
 
+    local requirementsVersion = manifest.moduleRequirementsVersion or 1
+    if requirementsVersion ~= 1 and requirementsVersion ~= 2 then
+        PackageError("moduleRequirementsVersion must be 1 or 2")
+    end
     -- Engine modules (Funke-Engine/EngineModules.json) the package builds on; the editor enables them on install.
     if manifest.modules ~= nil then
         if type(manifest.modules) ~= "table" then
             PackageError("Package '" .. manifest.name .. "' has invalid 'modules' field; expected a list such as { \"Funke.2D\" }.")
         end
-        local known = { ["Funke.2D"] = true, ["Funke.3D"] = true }
+        local known = { ["Funke.2D"] = true, ["Funke.3D"] = true, ["Funke.Physics2D"] = true, ["Funke.Physics3D"] = true }
         for _, module in ipairs(manifest.modules) do
             if type(module) ~= "string" or not known[module] then
                 PackageError("Package '" .. manifest.name .. "' lists unknown engine module '" .. tostring(module) ..
-                    "' in 'modules' (known: Funke.2D, Funke.3D).")
+                    "' in 'modules' (known: Funke.2D, Funke.3D, Funke.Physics2D, Funke.Physics3D).")
             end
         end
     end
+    local selected = {}
+    for _, id in ipairs(manifest.modules or {}) do
+        selected[id] = true
+        if requirementsVersion == 1 then
+            if id == "Funke.2D" then selected["Funke.Physics2D"] = true end
+            if id == "Funke.3D" then selected["Funke.Physics3D"] = true end
+        end
+    end
+    if selected["Funke.Physics2D"] then selected["Funke.2D"] = true end
+    if selected["Funke.Physics3D"] then selected["Funke.3D"] = true end
+    manifest.modules = {}
+    for _, id in ipairs({ "Funke.2D", "Funke.3D", "Funke.Physics2D", "Funke.Physics3D" }) do
+        if selected[id] then table.insert(manifest.modules, id) end
+    end
+    manifest.moduleRequirementsVersion = 2
+
 end
 
 -- Rewrites `dependencies` into a plain name list (what the rest of the loader reads) and keeps the

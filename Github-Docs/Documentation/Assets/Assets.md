@@ -178,6 +178,32 @@ if (operation != 0) {
 
 `GetResult()` supplies the asset ID, status and an error message when available. Call `Release()` for every accepted request, including failed or cancelled ones; releasing pending work cancels that observer. `Cancel()` marks a pending request cancelled without releasing its result. `Shutdown()` cancels pending requests and waits for CPU preparation to finish before asset managers and the renderer are destroyed; workers never publish resources during teardown.
 
+The native operation ID belongs to one observer, even when CPU preparation is
+shared. The managed pending-task table owns that observer until completion or
+assembly unload. A script unload cancels and releases its pending observers on
+the engine thread before discarding the table. Late completions cannot complete
+tasks from the new assembly; restarting the native loader does not reuse old IDs.
+
+```mermaid
+flowchart TD
+    A[Main-thread request] --> B[Unique operation ID and managed pending task]
+    B --> C[Shared CPU preparation]
+    C --> D[Main-thread publication and completion batch]
+    D --> E[Remove pending task and release native observer]
+    E --> F[Success: asset reference / Failed: null]
+    B --> G[Cancel or assembly unload]
+    G --> H[Cancel task and release observer on engine thread]
+    H --> I[Other observers may still publish]
+    G --> J[Late callback: no matching task, ignore]
+    A --> K[Unsupported type/module: NotSupportedException]
+```
+
+Cancellation-token callbacks can originate on another thread; they queue the
+native cancellation for the engine thread. Reload tests cover a completion from
+the old assembly arriving after a new request, and cancellation/release of old
+IDs after native shutdown/reinitialization. A native caller still owns and must
+release its terminal result; shutdown is not an excuse to omit that ownership step.
+
 ---
 
 ## Loading, caching, and handles
@@ -267,3 +293,44 @@ Builds prune unreachable assets and convert scenes, prefabs and Data Assets to b
 - [Scenes](../Engine-Core/Scenes.md) — scenes and prefabs are assets too, and they store the GUIDs of the assets they use.
 - [Scripting](../Scripting/Scripting.md) — loading and referencing assets from C#.
 - [Editor](../Editor/Editor.md) — the Asset Browser and the build process.
+
+
+## Procedural texture ownership
+
+`Texture.Create` owns one native texture and one shared CPU pixel buffer per UUID. Keep the texture alive for its rendering lifetime and call `Dispose()` when that ownership ends. Disposing any wrapper for that UUID invalidates every existing wrapper; repeated disposal is safe. A wrapper's garbage collection does not destroy the shared resource.
+
+```csharp
+public class PaintedIcon : EntityScript
+{
+    private Texture? icon;
+
+    public override void OnStart()
+    {
+        icon = Texture.Create(16, 16);
+        if (icon == null) return;
+        icon.SetPixel(new Vector2Int(8, 8), new Color(1, 0, 0, 1));
+        icon.Apply();
+        GetComponent<SpriteRenderer>()!.Texture = icon;
+    }
+
+    public override void OnDestroy()
+    {
+        icon?.Dispose();
+        icon = null;
+    }
+}
+```
+
+Creation and disposal run on the engine thread. Automatic lifetime follows the caller: Play resources are reclaimed after Play teardown, editor/global script resources at assembly-generation unload. Jobs are drained before their owners are torn down. `RuntimeTextureLifetime.ScriptGeneration` explicitly survives Play stop; `Manual` also survives assembly reload and requires explicit disposal. `SetLifetime(...)` transfers the shared resource, including every UUID wrapper, to that lifetime. Native engine previews are outside this script-owned registry. Cleanup clears CPU buffers and uses the normal native/deferred GPU destruction path; driver memory need not fall immediately.
+
+## Font source cache
+
+Font atlases and CPU source files have separate budgets. The source cache defaults to **16 MiB**, enough for several typical UI fonts while bounding unused files. `FontManager::SetSourceMemoryBudgetBytes` changes it; zero retains no unused source data. Least-recently-used entries are evicted only when no font or asynchronous bake still owns the bytes. A live working set may exceed the budget. `GetSourceCacheBytes()` and `GetUnusedSourceCacheBytes()` distinguish held source bytes and the evictable subset; neither measures GPU atlases or externally retained data removed from the cache.
+
+`UnloadFont` releases that baked font and immediately enforces the source budget. `PollAsync`/`EnforceMemoryBudget` also trim completed work. `UnloadAll` additionally clears the source cache. `ClearSourceCache` drops cache ownership without invalidating live fonts or running bakes. A UUID/path change replaces the cache entry; existing readers keep their original shared bytes safely.
+
+## Allocator shutdown diagnostics
+
+The allocator's shutdown report is a snapshot of live allocations, including owners whose static destructors have not run yet. It is not proof that every listed allocation is lost. Tracking maps are cleared under their mutex after closing the allocation gate. `AllocatorData` is constructed once in aligned static storage and intentionally remains alive until process exit so a thread that already fetched its address can safely acquire the mutex. This control block does not leave an orphaned heap allocation. Late frees still release user memory; repeated initialization after shutdown does not create more trackers.
+
+Global allocation interception is enabled only for Windows Debug builds with `FNK_TRACK_MEMORY`. It does not account for all GPU, managed, driver, or third-party allocations. Use the resource-specific tests and counters alongside sanitizer runs.

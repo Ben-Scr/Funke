@@ -342,6 +342,37 @@ def require_clean_log(path: Path, label: str):
             tail = data[-overlap:]
 
 
+def wait_for_editor_ready(editor, query_status, timeout: float):
+    deadline = time.monotonic() + timeout
+    last_status = None
+    while True:
+        if editor.poll() is not None:
+            raise RuntimeError(f"Editor pid {editor.pid} exited before becoming ready")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError(f"Editor pid {editor.pid} readiness timeout; last status: {last_status}")
+        exit_code, status = query_status(min(5.0, remaining))
+        last_status = status
+        if editor.poll() is not None:
+            raise RuntimeError(f"Editor pid {editor.pid} exited while checking readiness")
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"Editor pid {editor.pid} readiness timeout; last status: {last_status}")
+        if not isinstance(status, dict):
+            raise RuntimeError(f"Invalid editor status: {status}")
+        if exit_code == 0:
+            if status.get("pid") != editor.pid or "busy" not in status or status.get("state") != "edit":
+                raise RuntimeError(f"Unexpected setup editor status: {status}")
+            if status["busy"] is None:
+                return status
+            if not isinstance(status["busy"], str) or not status["busy"]:
+                raise RuntimeError(f"Invalid editor busy state: {status}")
+        elif not (exit_code == 3 and status.get("busy") is True
+                  and status.get("code") == "busy_or_timeout"
+                  and str(status.get("error", "")).startswith("busy:")):
+            raise RuntimeError(f"Editor status failed ({exit_code}): {status}")
+        time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
+
+
 def editor_roundtrip(harness: Harness, install: Path, project: Path, tween: bool):
     marker = harness.root / "editor-probe.txt"
     environment = harness.env | {"STANDALONE_PROBE_FILE": str(marker), "FUNKE_EDITOR_BRIDGE": "1"}
@@ -362,12 +393,19 @@ def editor_roundtrip(harness: Harness, install: Path, project: Path, tween: bool
             while True:
                 if editor.poll() is not None:
                     raise RuntimeError(f"Editor exited before its bridge became ready; see {log}")
-                output = bridge("status", allowed=(0, 1, 3, 4), timeout=5)
+                output = bridge("status", allowed=(0, 3, 4), timeout=5)
                 if harness.evidence["phases"][-1]["exitCode"] == 0:
                     break
                 if time.monotonic() >= deadline:
                     raise RuntimeError(f"Editor bridge unavailable; see {log} and status logs")
                 time.sleep(1)
+            def query_status(budget):
+                output = harness.run("editor-readiness-status", [str(install / "funke.exe"), "editor", "status",
+                    "--pid", str(editor.pid), "--project", str(project), "--json", "--timeout", str(budget)],
+                    env=environment, allowed=(0, 3), timeout=budget)
+                return harness.evidence["phases"][-1]["exitCode"], json.loads(output)
+
+            wait_for_editor_ready(editor, query_status, max(0.0, deadline - time.monotonic()))
             for revision in ("V1", "V2"):
                 write_probe(project, revision, tween)
                 marker.unlink(missing_ok=True)

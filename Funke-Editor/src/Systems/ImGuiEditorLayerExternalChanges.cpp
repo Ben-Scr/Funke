@@ -182,7 +182,7 @@ namespace Funke {
 		m_EditorOwnedSceneDefinitions.insert(stagedDefinition);
 		m_EditorSceneDefinitionsBySceneName[sceneName] = stagedDefinition;
 
-		ForgetUndoHistory(oldScene.get());
+		ForgetUndoHistory(oldScene.get(), "Scene '" + sceneName + "' was reloaded from " + path + ". Its undo/redo history was discarded.");
 		if (!inPrefabEdit && wasEditingScene) {
 			m_GizmoDragActive = false;
 			m_GizmoDragBefore.clear();
@@ -241,6 +241,7 @@ namespace Funke {
 				ImGui::TextWrapped("It also has unsaved changes in the editor. Reloading discards them.");
 			}
 			ImGui::TextDisabled("Keeping the editor version overwrites the file on the next save.");
+			ImGui::TextWrapped("Reloading ends this scene's undo/redo history, including saved edits.");
 			if (m_ExternalSceneConflicts.size() > 1) {
 				ImGui::TextDisabled("%zu more scene(s) changed.", m_ExternalSceneConflicts.size() - 1);
 			}
@@ -440,6 +441,7 @@ namespace Funke {
 				ImGui::TextWrapped("It also has unsaved changes in the editor. Reloading discards them.");
 			}
 			ImGui::TextDisabled("Keeping the editor version overwrites the file on the next save.");
+			ImGui::TextWrapped("Reloading ends this prefab's undo/redo history, including saved edits.");
 			ImGui::Spacing();
 
 			const int choice = EditorUI::DialogFooter({ "Reload from Disk", "Keep Editor Version" },

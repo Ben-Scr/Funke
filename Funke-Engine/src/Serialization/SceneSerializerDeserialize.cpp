@@ -15,7 +15,7 @@
 #include "Components/General/Transform2DComponent.hpp"
 #endif
 #include "Components/Graphics/TextRendererComponent.hpp"
-#if FUNKE_WITH_2D
+#if FUNKE_WITH_PHYSICS2D
 #include "Components/Physics/Rigidbody2DComponent.hpp"
 #include "Components/Physics/BoxCollider2DComponent.hpp"
 #include "Components/Physics/CircleCollider2DComponent.hpp"
@@ -85,7 +85,7 @@ namespace Funke {
 		return s_NewSceneRollbackFailure == m_Target;
 	}
 
-#if FUNKE_WITH_2D
+#if FUNKE_WITH_PHYSICS2D
 	namespace {
 		// "points" is path 0; "paths" holds further paths as flat [x0, y0, x1, y1, ...] arrays.
 		void ReadPolygonColliderPaths(const Json::Value& value, PolygonCollider2DComponent& collider, Scene& scene) {
@@ -2157,6 +2157,13 @@ namespace Funke {
 			scene.AddComponent<NameComponent>(entity, name);
 		}
 		EntityRollbackGuard rollback(scene, entity, wasDirty, wasUiDirty);
+		for (const auto& [key, value] : entityValue.GetObject()) {
+			if (const auto module = EngineModules::GetSerializedPhysicsModule(key); module && !EngineModules::IsCompiled(*module)) {
+				scene.GetRegistry().ctx().insert_or_assign<Detail::UnavailableModuleData>({ key });
+				FNK_CORE_WARN_TAG("SceneSerializer", "{} requires {}; this scene cannot be saved by this reduced build.", key, EngineModules::GetId(*module));
+			}
+		}
+
 
 		uint64_t savedSceneGuid = GetUInt64Member(entityValue, "SceneGUID", 0);
 		if (savedSceneGuid == 0) {
@@ -2226,7 +2233,7 @@ namespace Funke {
 			text.ResolvedFont = FontHandle{};
 		}
 
-#if FUNKE_WITH_2D
+#if FUNKE_WITH_PHYSICS2D
 		if (const Value* rigidbodyValue = GetObjectMember(entityValue, "Rigidbody2D")) {
 			auto& rigidbody = scene.AddComponent<Rigidbody2DComponent>(entity);
 			rigidbody.SetBodyType(static_cast<BodyType>(GetIntMember(*rigidbodyValue, "bodyType", static_cast<int>(BodyType::Dynamic))));
@@ -2822,7 +2829,7 @@ namespace Funke {
 			return true;
 		}
 
-#if FUNKE_WITH_2D
+#if FUNKE_WITH_PHYSICS2D
 		if (component == "Rigidbody2D") {
 			auto& rigidbody = scene.HasComponent<Rigidbody2DComponent>(entity)
 				? scene.GetComponent<Rigidbody2DComponent>(entity)

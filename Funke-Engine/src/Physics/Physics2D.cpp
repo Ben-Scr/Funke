@@ -12,6 +12,8 @@
 #include <box2d/box2d.h>
 #include <box2d/types.h>
 #include <box2d/collision.h>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace Funke {
 	namespace {
@@ -120,11 +122,12 @@ namespace Funke {
 			struct QueryContext {
 				Box2DWorld* phys = nullptr;
 				std::vector<PhysicsBodyRef2D>* out;
+				std::unordered_map<Scene*, std::unordered_set<EntityHandle>> seen;
 				static bool Report(b2ShapeId shapeId, void* ctx) {
 					auto* self = static_cast<QueryContext*>(ctx);
 					PhysicsBodyRef2D ref = ResolveBodyRefFromShape(*self->phys, shapeId);
 					if (IsValidRef(ref)) {
-						self->out->push_back(ref);
+						if (self->seen[ref.scene].insert(ref.entity).second) self->out->push_back(ref);
 					}
 					return true;
 				}
@@ -207,13 +210,14 @@ namespace Funke {
 				Vec2 point;
 				Box2DWorld* phys = nullptr;
 				std::vector<PhysicsBodyRef2D>* out;
+				std::unordered_map<Scene*, std::unordered_set<EntityHandle>> seen;
 
 				static bool Report(b2ShapeId shapeId, void* ctx) {
 					auto* self = static_cast<QueryContext*>(ctx);
 					if (b2Shape_TestPoint(shapeId, { self->point.x, self->point.y })) {
 						PhysicsBodyRef2D ref = ResolveBodyRefFromShape(*self->phys, shapeId);
 						if (IsValidRef(ref)) {
-							self->out->push_back(ref);
+							if (self->seen[ref.scene].insert(ref.entity).second) self->out->push_back(ref);
 						}
 					}
 					return true;
@@ -300,7 +304,9 @@ namespace Funke {
 
 		// Reject zero direction up-front — Normalized below would otherwise
 		// produce NaN, which Box2D would happily ray-cast to garbage.
-		if (direction.x == 0.0f && direction.y == 0.0f) {
+		if (!std::isfinite(origin.x) || !std::isfinite(origin.y)
+			|| !std::isfinite(direction.x) || !std::isfinite(direction.y) || std::isnan(maxDistance)
+			|| (direction.x == 0.0f && direction.y == 0.0f)) {
 			return std::nullopt;
 		}
 
@@ -308,7 +314,10 @@ namespace Funke {
 		b2WorldId world = phys.GetWorldID();
 
 		b2Vec2 o{ origin.x, origin.y };
-		Vec2 nd = Vector::Normalized(direction);
+		// Queries are bounded to one million world units, including the unbounded overload.
+		maxDistance = std::min(maxDistance, k_MaxRaycastDistance);
+		const double length = std::hypot(static_cast<double>(direction.x), static_cast<double>(direction.y));
+		Vec2 nd{ static_cast<float>(direction.x / length), static_cast<float>(direction.y / length) };
 		b2Vec2 t{ nd.x * maxDistance, nd.y * maxDistance };
 
 		b2QueryFilter filter = MakeQueryFilter();

@@ -475,6 +475,35 @@ public sealed class AssetLoadingTests : IDisposable
         Assert.Equal(3, s_NativeCalls);
     }
 
+    [UnmanagedCallersOnly]
+    private static void UnregisterComponents() { }
+
+    [Fact]
+    public async Task AssemblyUnloadCancelsPendingAssetsAndLateCallbacksCannotCompleteNewRequests()
+    {
+        SynchronizationContext.SetSynchronizationContext(FunkeSynchronizationContext.Instance);
+        using var cancellation = new CancellationTokenSource();
+        Task<Texture?> old = AssetManager.LoadByGUIDAsync<Texture>(1001, cancellation.Token);
+        cancellation.Cancel();
+        unsafe
+        {
+            NativeCallbacks.Bindings.Component_UnregisterAllDynamic = &UnregisterComponents;
+            delegate* unmanaged<void> unload = &ScriptInstanceManager.UnloadUserAssembly;
+            unload();
+        }
+        Assert.True(old.IsCanceled);
+        Assert.Equal(new[] { 101UL }, s_Releases);
+        Task<Texture?> fresh = AssetManager.LoadByGUIDAsync<Texture>(1001);
+        Complete((101, 2));
+        Assert.False(fresh.IsCompleted);
+        AssetManager.PumpAssetLoadRequests();
+        Assert.Equal(new[] { 101UL }, s_Cancellations);
+        Complete((102, 2));
+        Assert.True(fresh.IsCompletedSuccessfully);
+        Assert.Equal(1001UL, (await fresh)!.UUID);
+        Assert.Equal(0, s_OffThreadCalls);
+    }
+
     [Fact]
     public void WorkerRequestsFailBeforeAnyNativeAccess()
     {

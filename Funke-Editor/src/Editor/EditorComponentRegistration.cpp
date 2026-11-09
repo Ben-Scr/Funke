@@ -4,6 +4,8 @@
 #include "Gui/ComponentInspectors.hpp"
 #include "Inspector/PropertyDrawer.hpp"
 #include "Scene/ComponentInfo.hpp"
+#include "Core/EngineModules.hpp"
+#include <imgui.h>
 #include "Scene/SceneManager.hpp"
 #include "Scripting/ScriptComponent.hpp"
 #include "Scripting/ScriptComponentInspector.hpp"
@@ -58,13 +60,15 @@ namespace Funke {
 	}
 
 	void DispatchComponentInspector(const ComponentInfo& info, std::span<const Entity> entities) {
-		if (info.drawInspector) {
-			info.drawInspector(entities);
-			return;
+		const bool inactive = !info.IsModuleActive();
+		if (inactive && info.engineModule) {
+			const std::string module(EngineModules::GetId(*info.engineModule));
+			ImGui::TextWrapped("%s is inactive. These settings are preserved. Enable the module in Package Manager to use this component.", module.c_str());
 		}
-		if (!info.properties.empty()) {
-			PropertyDrawer::DrawAll(entities, info.properties, info.displayName);
-		}
+		ImGui::BeginDisabled(inactive);
+		if (info.drawInspector) info.drawInspector(entities);
+		else if (!info.properties.empty()) PropertyDrawer::DrawAll(entities, info.properties, info.displayName);
+		ImGui::EndDisabled();
 	}
 
 	void RegisterEditorComponentInspectors(ComponentRegistry& registry) {

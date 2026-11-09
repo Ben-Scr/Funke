@@ -4,6 +4,7 @@
 #include "Assets/AssetKind.hpp"
 
 #include <functional>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <utility>
@@ -13,7 +14,15 @@ namespace Funke {
 
 	class Entity;
 
+	enum class RotationProperty : uint8_t {
+		None,
+		EulerDegrees,
+		// Vec4 channels are x, y, z, w.
+		Quaternion
+	};
+
 	struct PropertyMetadata {
+		RotationProperty Rotation = RotationProperty::None;
 		// Hover tooltip text (empty = no tooltip).
 		std::string Tooltip;
 
@@ -126,6 +135,10 @@ namespace Funke {
 		}
 		PropertyMetadata& WithAxisLabels(bool show = true) {
 			ShowAxisLabels = show;
+			return *this;
+		}
+		PropertyMetadata& WithRotation(RotationProperty rotation = RotationProperty::EulerDegrees) {
+			Rotation = rotation;
 			return *this;
 		}
 		PropertyMetadata& WithHeader(std::string content, int size = 5) {

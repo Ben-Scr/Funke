@@ -798,7 +798,7 @@ namespace Funke {
 			const auto allowed = FunkeBuildProfile::AllowedBackends(profile.Platform);
 			ImGui::PushID("RenderBackend");
 			ImGuiUtils::BeginInspectorFieldRow("Rendering API");
-			if (ImGui::BeginCombo("##Value", RenderBackendLabel(profile.RenderBackend))) {
+			if (EditorUI::BeginCombo("##Value", RenderBackendLabel(profile.RenderBackend))) {
 				for (FunkeProject::RenderBackend backend : allowed) {
 					const bool selected = (profile.RenderBackend == backend);
 					if (ImGui::Selectable(RenderBackendLabel(backend), selected)) {
@@ -809,7 +809,7 @@ namespace Funke {
 					}
 					if (selected) ImGui::SetItemDefaultFocus();
 				}
-				ImGui::EndCombo();
+				EditorUI::EndCombo();
 			}
 			ImGui::PopID();
 		}
@@ -862,7 +862,7 @@ namespace Funke {
 		ImGuiUtils::BeginInspectorFieldRow("Configuration");
 		const char* configurationLabel = profile.Configuration
 			? FunkeProject::BuildProfileToString(*profile.Configuration) : "Project Default";
-		if (ImGui::BeginCombo("##Value", configurationLabel)) {
+		if (EditorUI::BeginCombo("##Value", configurationLabel)) {
 			if (ImGui::Selectable("Project Default", !profile.Configuration) && profile.Configuration) {
 				profile.Configuration.reset();
 				SaveSelected();
@@ -875,7 +875,7 @@ namespace Funke {
 					SaveSelected();
 				}
 			}
-			ImGui::EndCombo();
+			EditorUI::EndCombo();
 		}
 		EditorUI::Tooltip("Project Default uses the Configuration chosen in the Build window.\n"
 			"Debug ships debug binaries and symbols so a debugger can attach (needs the engine sources).");
@@ -910,11 +910,11 @@ namespace Funke {
 			ImGui::PushID(id);
 			ImGuiUtils::BeginInspectorFieldRow(label);
 			const char* current = !value ? "Project Default" : (*value ? "On" : "Off");
-			if (ImGui::BeginCombo("##Value", current)) {
+			if (EditorUI::BeginCombo("##Value", current)) {
 				if (ImGui::Selectable("Project Default", !value) && value) { value.reset(); SaveSelected(); }
 				if (ImGui::Selectable("On", value == true) && value != true) { value = true; SaveSelected(); }
 				if (ImGui::Selectable("Off", value == false) && value != false) { value = false; SaveSelected(); }
-				ImGui::EndCombo();
+				EditorUI::EndCombo();
 			}
 			EditorUI::Tooltip(tooltip);
 			ImGui::PopID();

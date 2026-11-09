@@ -4,19 +4,26 @@
 #include "Core/Application.hpp"
 #include "Scene/Scene.hpp"
 #include "Scene/SceneManager.hpp"
+#if FUNKE_WITH_PHYSICS2D
+#include "Physics/PhysicsScene2D.hpp"
+#endif
 
 #include <algorithm>
 #include <vector>
 
 namespace Funke::SceneExtensions {
 	namespace {
-		std::vector<SceneExtension>& Extensions() {
-			static std::vector<SceneExtension> s_Extensions;
+		std::shared_ptr<const std::vector<SceneExtension>>& Extensions() {
+			static std::shared_ptr<const std::vector<SceneExtension>> s_Extensions = std::make_shared<const std::vector<SceneExtension>>(std::initializer_list<SceneExtension>{
+#if FUNKE_WITH_PHYSICS2D
+				PhysicsScene2D::Extension(),
+#endif
+			});
 			return s_Extensions;
 		}
 
-		// Copy before calling out: a hook may register or unregister an extension.
-		std::vector<SceneExtension> Snapshot() {
+		// Retain the current list during callbacks; registration publishes a new list.
+		std::shared_ptr<const std::vector<SceneExtension>> Snapshot() {
 			return Extensions();
 		}
 
@@ -32,7 +39,9 @@ namespace Funke::SceneExtensions {
 
 	void Register(SceneExtension extension) {
 		Unregister(extension.Name);
-		Extensions().push_back(extension);
+		auto next = std::make_shared<std::vector<SceneExtension>>(*Extensions());
+		next->push_back(extension);
+		Extensions() = std::move(next);
 
 		if (!Application::GetInstance() || !Application::GetInstance()->GetSceneManager()) {
 			return;
@@ -46,34 +55,47 @@ namespace Funke::SceneExtensions {
 	}
 
 	void Unregister(std::string_view name) {
-		auto& extensions = Extensions();
+		const auto snapshot = Snapshot();
+		const auto& extensions = *snapshot;
 		const auto it = std::find_if(extensions.begin(), extensions.end(),
 			[&](const SceneExtension& e) { return e.Name == name; });
 		if (it == extensions.end()) {
 			return;
 		}
 		const SceneExtension extension = *it;
-		extensions.erase(it);
+		auto next = std::make_shared<std::vector<SceneExtension>>(extensions);
+		next->erase(next->begin() + std::distance(extensions.begin(), it));
+		Extensions() = std::move(next);
 
 		if (extension.OnSceneDestroyed && Application::GetInstance() && Application::GetInstance()->GetSceneManager()) {
 			ForEachLoadedScene([&](Scene& scene) { extension.OnSceneDestroyed(scene); });
 		}
 	}
 
+	void NotifyEntityEnabledChanged(Scene& scene, EntityHandle entity, bool enabled) {
+		const auto snapshot = Snapshot();
+		for (const SceneExtension& extension : *snapshot) {
+			if (extension.OnEntityEnabledChanged) extension.OnEntityEnabledChanged(scene, entity, enabled);
+		}
+	}
+
 	void NotifySceneCreated(Scene& scene) {
-		for (const SceneExtension& extension : Snapshot()) {
+		const auto snapshot = Snapshot();
+		for (const SceneExtension& extension : *snapshot) {
 			if (extension.OnSceneCreated) extension.OnSceneCreated(scene);
 		}
 	}
 
 	void NotifyRuntimeStateInitialized(Scene& scene) {
-		for (const SceneExtension& extension : Snapshot()) {
+		const auto snapshot = Snapshot();
+		for (const SceneExtension& extension : *snapshot) {
 			if (extension.OnRuntimeStateInitialized) extension.OnRuntimeStateInitialized(scene);
 		}
 	}
 
 	void NotifySceneDestroyed(Scene& scene) {
-		for (const SceneExtension& extension : Snapshot()) {
+		const auto snapshot = Snapshot();
+		for (const SceneExtension& extension : *snapshot) {
 			if (extension.OnSceneDestroyed) extension.OnSceneDestroyed(scene);
 		}
 	}

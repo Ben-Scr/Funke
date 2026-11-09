@@ -11,17 +11,56 @@
 #include <string>
 
 namespace Funke {
+	namespace {
+		size_t g_ActiveTimers = 0;
+		GpuTimer::Status g_UnavailableStatus = GpuTimer::Status::Uninitialized;
+
+		bool IsDeviceLost(const wgpu::Instance& instance, wgpu::Future future) {
+			if (!instance || future.id == 0) return true;
+			wgpu::FutureWaitInfo waitInfo{};
+			waitInfo.future = future;
+			return instance.WaitAny(1, &waitInfo, 0) == wgpu::WaitStatus::Success && waitInfo.completed;
+		}
+	}
 
 	GpuTimer::GpuTimer() = default;
 	GpuTimer::~GpuTimer() { Shutdown(); }
 
-	void GpuTimer::Initialize() {
-		if (m_Initialized) return;
-		if (!WebGPUBackend::IsInitialized()) return;
-		if (!WebGPUBackend::HasTimestampQuery()) return;
+	bool GpuTimer::IsSupported() {
+		if (!WebGPUBackend::IsInitialized() || !WebGPUBackend::HasTimestampQuery()) return false;
+		const auto device = WebGPUBackend::GetDevice();
+		return device && !IsDeviceLost(WebGPUBackend::GetInstance(), device.GetLostFuture());
+	}
 
-		wgpu::Device device = WebGPUBackend::GetDevice();
-		if (!device) return;
+	const char* GpuTimer::GetUnavailableReason() {
+		if (g_ActiveTimers > 0) return nullptr;
+		switch (g_UnavailableStatus) {
+			case Status::Unsupported: return "Timestamp queries are unsupported";
+			case Status::ReadbackError: return "GPU readback failed; see log";
+			case Status::DeviceLost: return "GPU device was lost";
+			default: return "GPU timer is not initialized";
+		}
+	}
+
+	void GpuTimer::Initialize() {
+		if (!WebGPUBackend::IsInitialized()) return;
+		Initialize(WebGPUBackend::GetInstance(), WebGPUBackend::GetDevice());
+	}
+
+	void GpuTimer::Initialize(wgpu::Instance instance, wgpu::Device device) {
+		if (m_Status == Status::Ready) return;
+		Shutdown();
+		if (!instance || !device) return;
+		if (IsDeviceLost(instance, device.GetLostFuture())) {
+			Disable(Status::DeviceLost, "GPU device was lost before timer initialization");
+			return;
+		}
+		if (!device.HasFeature(wgpu::FeatureName::TimestampQuery)) {
+			Disable(Status::Unsupported, "Timestamp queries are unsupported on this device");
+			return;
+		}
+		m_Instance = std::move(instance);
+		m_DeviceLostFuture = device.GetLostFuture();
 
 		wgpu::QuerySetDescriptor qsDesc{};
 		qsDesc.type  = wgpu::QueryType::Timestamp;
@@ -29,9 +68,7 @@ namespace Funke {
 		qsDesc.label = "gpu-timer-queryset";
 		m_QuerySet = device.CreateQuerySet(&qsDesc);
 		if (!m_QuerySet) {
-			FNK_CORE_WARN_TAG("GpuTimer",
-				"CreateQuerySet(Timestamp, count={}) failed — GPU module stays at N/A",
-				qsDesc.count);
+			Disable(Status::ReadbackError, "Failed to create timestamp query set");
 			return;
 		}
 
@@ -42,8 +79,7 @@ namespace Funke {
 		resolveDesc.label = "gpu-timer-resolve";
 		m_ResolveBuffer = device.CreateBuffer(&resolveDesc);
 		if (!m_ResolveBuffer) {
-			FNK_CORE_WARN_TAG("GpuTimer", "Failed to create resolve buffer");
-			m_QuerySet = nullptr;
+			Disable(Status::ReadbackError, "Failed to create resolve buffer");
 			return;
 		}
 
@@ -57,26 +93,27 @@ namespace Funke {
 			m_Slots[i].Readback = device.CreateBuffer(&rbDesc);
 			m_Slots[i].State    = SlotState::Empty;
 			if (!m_Slots[i].Readback) {
-				FNK_CORE_WARN_TAG("GpuTimer", "Failed to create readback buffer {}", i);
-				m_QuerySet      = nullptr;
-				m_ResolveBuffer = nullptr;
-				for (auto& s : m_Slots) s.Readback = nullptr;
+				Disable(Status::ReadbackError, "Failed to create readback buffer");
 				return;
 			}
 		}
 
 		m_CurrentSlot       = 0;
 		m_FrameWritesIssued = false;
-		m_Initialized       = true;
+		m_Status            = Status::Ready;
+		++g_ActiveTimers;
 	}
 
 	void GpuTimer::Shutdown() {
+		if (m_Status == Status::Ready && --g_ActiveTimers == 0) {
+			g_UnavailableStatus = Status::Uninitialized;
+		}
+		m_Status = Status::Uninitialized;
 		m_QuerySet      = nullptr;
 		m_ResolveBuffer = nullptr;
 		for (auto& s : m_Slots) {
-			// Defensive unmap — a slot still in AwaitingMap at shutdown
-			// would otherwise leak the Dawn-internal map state. Unmap is
-			// a no-op on an unmapped buffer.
+			// Late callbacks own only their detached result, never the slot or timer.
+			s.Result.reset();
 			if (s.Readback) {
 				s.Readback.Unmap();
 			}
@@ -85,12 +122,27 @@ namespace Funke {
 		}
 		m_CurrentSlot       = 0;
 		m_FrameWritesIssued = false;
-		m_Initialized       = false;
+		m_DeviceLostFuture  = {};
+		m_Instance          = nullptr;
+	}
+
+	void GpuTimer::Disable(Status status, const char* reason) {
+		Shutdown();
+		m_Status = status;
+		g_UnavailableStatus = status;
+		FNK_CORE_WARN_TAG("GpuTimer", "GPU timing unavailable: {}", reason);
+	}
+
+	bool GpuTimer::CheckDevice() {
+		if (m_Status != Status::Ready) return false;
+		if (!IsDeviceLost(m_Instance, m_DeviceLostFuture)) return true;
+		Disable(Status::DeviceLost, "GPU device was lost; pending timestamp readbacks discarded");
+		return false;
 	}
 
 	GpuTimer::FrameSlots GpuTimer::BeginFrameWrites() {
 		FrameSlots out;
-		if (!m_Initialized) return out;
+		if (!CheckDevice()) return out;
 		if (m_Slots[m_CurrentSlot].State != SlotState::Empty) {
 			return out;
 		}
@@ -103,7 +155,7 @@ namespace Funke {
 	}
 
 	void GpuTimer::ResolveCurrentFrame(wgpu::CommandEncoder encoder) {
-		if (!m_Initialized || !m_FrameWritesIssued || !encoder) return;
+		if (!CheckDevice() || !m_FrameWritesIssued || !encoder) return;
 
 		const uint32_t firstQuery    = static_cast<uint32_t>(m_CurrentSlot * k_QueriesPerFrame);
 		// MUST use k_ResolveSlotStride (256), not payload size (16) — Dawn validates destinationOffset%256==0.
@@ -124,37 +176,63 @@ namespace Funke {
 	}
 
 	void GpuTimer::OnFrameStart() {
-		if (!m_Initialized) return;
+		if (!CheckDevice()) return;
 		for (auto& s : m_Slots) {
 			if (s.State != SlotState::AwaitingSubmit) continue;
-			if (!s.Readback) continue;
+			s.Result = std::make_shared<ReadbackResult>();
+			s.State = SlotState::AwaitingMap;
 			s.Readback.MapAsync(
 				wgpu::MapMode::Read, 0,
 				static_cast<size_t>(k_BytesPerFrame),
-				wgpu::CallbackMode::AllowSpontaneous,
-				[](wgpu::MapAsyncStatus /*status*/, wgpu::StringView /*msg*/) {});
-			s.State = SlotState::AwaitingMap;
+				wgpu::CallbackMode::AllowProcessEvents,
+				[result = s.Result](wgpu::MapAsyncStatus status, wgpu::StringView message) {
+					CompleteReadback(result, status, message);
+				});
 		}
 	}
 
+	void GpuTimer::CompleteReadback(const std::shared_ptr<ReadbackResult>& result,
+		wgpu::MapAsyncStatus status, wgpu::StringView message) {
+		result->Status = status;
+		if (message.data && message.length > 0) {
+			result->Message.assign(message.data,
+				message.length == WGPU_STRLEN ? std::strlen(message.data) : message.length);
+		}
+		result->Completed.store(true, std::memory_order_release);
+	}
+
 	void GpuTimer::PollAndPublish() {
-		if (!m_Initialized) return;
+		if (!CheckDevice()) return;
+		m_Instance.ProcessEvents();
+		if (!CheckDevice()) return;
 
 		for (auto& s : m_Slots) {
 			if (s.State != SlotState::AwaitingMap) continue;
-			if (!s.Readback) continue;
-			if (s.Readback.GetMapState() != wgpu::BufferMapState::Mapped) continue;
+			if (!s.Result->Completed.load(std::memory_order_acquire)) continue;
+			if (s.Result->Status != wgpu::MapAsyncStatus::Success) {
+				FNK_CORE_WARN_TAG("GpuTimer", "MapAsync failed (status {}): {}",
+					static_cast<uint32_t>(s.Result->Status), s.Result->Message);
+				Disable(Status::ReadbackError, "Timestamp readback failed; timer disabled until reinitialized");
+				return;
+			}
+			if (!s.Readback || s.Readback.GetMapState() != wgpu::BufferMapState::Mapped) {
+				Disable(Status::ReadbackError, "Successful timestamp readback is no longer mapped");
+				return;
+			}
 
 			const void* mapped = s.Readback.GetConstMappedRange(0, k_BytesPerFrame);
-			if (mapped) {
-				uint64_t ts[2] = { 0, 0 };
-				std::memcpy(ts, mapped, sizeof(ts));
-				const uint64_t deltaNs = ts[1] > ts[0] ? ts[1] - ts[0] : 0;
-				const float    deltaMs = static_cast<float>(deltaNs) * 1.0e-6f;
-				Profiler::PushSample("GPU", deltaMs);
-				TracyPlot("GPU.ms", double(deltaMs));
+			if (!mapped) {
+				Disable(Status::ReadbackError, "Timestamp readback has no mapped range");
+				return;
 			}
+			uint64_t ts[2] = { 0, 0 };
+			std::memcpy(ts, mapped, sizeof(ts));
+			const uint64_t deltaNs = ts[1] > ts[0] ? ts[1] - ts[0] : 0;
+			const float deltaMs = static_cast<float>(deltaNs) * 1.0e-6f;
+			Profiler::PushSample("GPU", deltaMs);
+			TracyPlot("GPU.ms", double(deltaMs));
 			s.Readback.Unmap();
+			s.Result.reset();
 			s.State = SlotState::Empty;
 		}
 	}

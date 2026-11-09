@@ -93,7 +93,7 @@ TEST_CASE("PolygonCollider2D paths and collider density survive both serialize l
 		{ { 0, 1 }, { 1, 1 }, { 1, 2 }, { 0.5f, 2.5f }, { 0, 2 } } };
 	poly.SetPaths(paths, *scene);
 	poly.SetDensity(2.5f);
-	e.AddComponent<BoxCollider2DComponent>();
+	CHECK_THROWS_AS(e.AddComponent<BoxCollider2DComponent>(), FunkeException);
 	REQUIRE(poly.GetPathCount() == 2);
 
 	const Json::Value value = SceneSerializer::SerializeEntityFull(*scene, e.GetHandle());

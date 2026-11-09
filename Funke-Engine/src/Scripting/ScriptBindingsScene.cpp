@@ -744,10 +744,10 @@ namespace Funke {
 	// via std::char_traits::length (strlen) on nullptr -> AV read at 0x0. C# normally
 	// coalesces null (InternalCalls.CallStringBinding does `message ??= ""`), but native
 	// scripts/packages can call these directly, so never strlen an unchecked boundary pointer.
-	static void Funke_Log_Trace(const char* message) { Log::PrintMessageTag(Log::Type::Client, Log::Level::Trace, "Script", message ? message : ""); }
-	static void Funke_Log_Info(const char* message)  { Log::PrintMessageTag(Log::Type::Client, Log::Level::Info, "Script", message ? message : ""); }
-	static void Funke_Log_Warn(const char* message)  { Log::PrintMessageTag(Log::Type::Client, Log::Level::Warn, "Script", message ? message : ""); }
-	static void Funke_Log_Error(const char* message) { Log::PrintMessageTag(Log::Type::Client, Log::Level::Error, "Script", message ? message : ""); }
+	static void Funke_Log_Trace(const char* message, const char* file, int line) { Log::PrintMessageTagAt({file, line, ""}, Log::Type::Client, Log::Level::Trace, "Script", message ? message : ""); }
+	static void Funke_Log_Info(const char* message, const char* file, int line)  { Log::PrintMessageTagAt({file, line, ""}, Log::Type::Client, Log::Level::Info, "Script", message ? message : ""); }
+	static void Funke_Log_Warn(const char* message, const char* file, int line)  { Log::PrintMessageTagAt({file, line, ""}, Log::Type::Client, Log::Level::Warn, "Script", message ? message : ""); }
+	static void Funke_Log_Error(const char* message, const char* file, int line) { Log::PrintMessageTagAt({file, line, ""}, Log::Type::Client, Log::Level::Error, "Script", message ? message : ""); }
 
 	// ── Input Bindings ──────────────────────────────────────────────────
 

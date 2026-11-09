@@ -388,7 +388,8 @@ namespace Funke::PackageBuildCache {
 			bool foundCompiler = false, foundLinker = false;
 			for (std::filesystem::recursive_directory_iterator it(root, error), end; !error && it != end; it.increment(error)) {
 				const auto name = Path::ToUtf8(it->path().filename());
-				if (name != "CL.read.1.tlog" && name != "link.read.1.tlog") continue;
+				const bool compilerLog = name == "CL.read.1.tlog" || name == "Microsoft.Build.CPPTasks.CL.read.1.tlog";
+				if (!compilerLog && name != "link.read.1.tlog") continue;
 				const auto relative = it->path().lexically_relative(root);
 				if (relative.begin() == relative.end()) continue;
 				const std::string targetDirectory = Path::ToUtf8(*relative.begin());
@@ -398,7 +399,7 @@ namespace Funke::PackageBuildCache {
 					const std::string_view version(targetDirectory.data() + prefix.size(), targetDirectory.size() - prefix.size());
 					if (version.find_first_not_of("0123456789.") != std::string_view::npos) continue;
 				}
-				if (name == "CL.read.1.tlog") foundCompiler = true; else foundLinker = true;
+				if (compilerLog) foundCompiler = true; else foundLinker = true;
 				unique.insert(Path::ToUtf8(it->path()));
 				const auto bytes = File::ReadAllBytes(Path::ToUtf8(it->path()));
 				if (bytes.size() < 2 || bytes[0] != 0xff || bytes[1] != 0xfe || bytes.size() % 2 != 0) return false;

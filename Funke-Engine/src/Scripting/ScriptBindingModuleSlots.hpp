@@ -1,9 +1,6 @@
 #pragma once
 
-// NativeBindings slots owned by each engine feature module. A build or project without the module
-// fills them with signature-matched stubs (ScriptBindingsModuleStubs.cpp) so the managed table keeps
-// its layout. Keep in sync with Populate2DBindings / Populate3DBindings / PopulatePhysics3DBindings;
-// the EngineModules test fails when a populated slot is missing here.
+// Slot ownership only; NativeBindings retains its positional ABI.
 
 #define FNK_FOR_EACH_2D_BINDING(X) \
 	X(Transform2D_GetPosition) \
@@ -40,6 +37,40 @@
 	X(Camera2D_GetViewportHeight) \
 	X(Camera2D_GetMainEntity) \
 	X(Camera2D_GetFrustum) \
+	X(ParticleSystem2D_Play) \
+	X(ParticleSystem2D_Pause) \
+	X(ParticleSystem2D_Stop) \
+	X(ParticleSystem2D_IsPlaying) \
+	X(ParticleSystem2D_GetPlayOnAwake) \
+	X(ParticleSystem2D_SetPlayOnAwake) \
+	X(ParticleSystem2D_GetColor) \
+	X(ParticleSystem2D_SetColor) \
+	X(ParticleSystem2D_GetLifeTime) \
+	X(ParticleSystem2D_SetLifeTime) \
+	X(ParticleSystem2D_GetSpeed) \
+	X(ParticleSystem2D_SetSpeed) \
+	X(ParticleSystem2D_GetScale) \
+	X(ParticleSystem2D_SetScale) \
+	X(ParticleSystem2D_GetEmitOverTime) \
+	X(ParticleSystem2D_SetEmitOverTime) \
+	X(ParticleSystem2D_Emit) \
+	X(EntityPicker_TryPickEntity) \
+	X(SpriteRenderer_GetFilter) \
+	X(SpriteRenderer_SetFilter) \
+	X(SpriteRenderer_GetSpriteNameBuffer) \
+	X(SpriteRenderer_SetSpriteName) \
+	X(SpriteRenderer_GetMaterial) \
+	X(SpriteRenderer_SetMaterial) \
+	X(ParticleSystem2D_GetTexture) \
+	X(ParticleSystem2D_SetTexture) \
+	X(TerrainRenderer2D_Get) \
+	X(TerrainRenderer2D_Set) \
+	X(TerrainRenderer2D_GetPoints) \
+	X(TerrainRenderer2D_SetPoints) \
+	X(TerrainRenderer2D_GetTexture) \
+	X(TerrainRenderer2D_SetTexture)
+
+#define FNK_FOR_EACH_PHYSICS2D_BINDING(X) \
 	X(Rigidbody2D_ApplyForce) \
 	X(Rigidbody2D_ApplyImpulse) \
 	X(Rigidbody2D_GetLinearVelocity) \
@@ -69,23 +100,6 @@
 	X(PolygonCollider2D_GetSize) \
 	X(PolygonCollider2D_SetSize) \
 	X(PolygonCollider2D_SetEnabled) \
-	X(ParticleSystem2D_Play) \
-	X(ParticleSystem2D_Pause) \
-	X(ParticleSystem2D_Stop) \
-	X(ParticleSystem2D_IsPlaying) \
-	X(ParticleSystem2D_GetPlayOnAwake) \
-	X(ParticleSystem2D_SetPlayOnAwake) \
-	X(ParticleSystem2D_GetColor) \
-	X(ParticleSystem2D_SetColor) \
-	X(ParticleSystem2D_GetLifeTime) \
-	X(ParticleSystem2D_SetLifeTime) \
-	X(ParticleSystem2D_GetSpeed) \
-	X(ParticleSystem2D_SetSpeed) \
-	X(ParticleSystem2D_GetScale) \
-	X(ParticleSystem2D_SetScale) \
-	X(ParticleSystem2D_GetEmitOverTime) \
-	X(ParticleSystem2D_SetEmitOverTime) \
-	X(ParticleSystem2D_Emit) \
 	X(Physics2D_Raycast) \
 	X(Physics2D_SetQueryLayerMask) \
 	X(Collider2D_GetSensor) \
@@ -106,21 +120,12 @@
 	X(Physics2D_OverlapPolygonAll) \
 	X(Physics2D_ContainsPoint) \
 	X(Physics2D_ContainsPointAll) \
-	X(EntityPicker_TryPickEntity) \
-	X(SpriteRenderer_GetFilter) \
-	X(SpriteRenderer_SetFilter) \
-	X(SpriteRenderer_GetSpriteNameBuffer) \
-	X(SpriteRenderer_SetSpriteName) \
-	X(SpriteRenderer_GetMaterial) \
-	X(SpriteRenderer_SetMaterial) \
 	X(Rigidbody2D_GetFreezePositionX) \
 	X(Rigidbody2D_SetFreezePositionX) \
 	X(Rigidbody2D_GetFreezePositionY) \
 	X(Rigidbody2D_SetFreezePositionY) \
 	X(Rigidbody2D_GetFreezeRotation) \
 	X(Rigidbody2D_SetFreezeRotation) \
-	X(ParticleSystem2D_GetTexture) \
-	X(ParticleSystem2D_SetTexture) \
 	X(Joint2D_Get) \
 	X(Joint2D_Set) \
 	X(Joint2D_GetConnectedBody) \
@@ -133,12 +138,6 @@
 	X(PolygonCollider2D_SetPaths) \
 	X(Physics2D_GetGravity) \
 	X(Physics2D_SetGravity) \
-	X(TerrainRenderer2D_Get) \
-	X(TerrainRenderer2D_Set) \
-	X(TerrainRenderer2D_GetPoints) \
-	X(TerrainRenderer2D_SetPoints) \
-	X(TerrainRenderer2D_GetTexture) \
-	X(TerrainRenderer2D_SetTexture) \
 	X(Rigidbody2D_GetDynamics) \
 	X(Rigidbody2D_SetDynamics) \
 	X(Rigidbody2D_ApplyAtPoint) \
@@ -216,6 +215,19 @@
 	X(Camera3D_SetSkyboxMaterial) \
 	X(Camera3D_ScreenPointToRay) \
 	X(Camera3D_WorldToScreenPoint) \
+	X(SkinnedMeshRenderer_Get) \
+	X(SkinnedMeshRenderer_Set) \
+	X(SkinnedMeshRenderer_GetAsset) \
+	X(SkinnedMeshRenderer_SetAsset) \
+	X(SkinnedMeshRenderer_Play) \
+	X(SkinnedMeshRenderer_Control) \
+	X(SkinnedMeshRenderer_GetClip) \
+	X(SkinnedMeshRenderer_GetClipCount) \
+	X(SkinnedMeshRenderer_GetClipName) \
+	X(SkinnedMeshRenderer_GetClipDuration) \
+	X(SkinnedMeshRenderer_GetBone)
+
+#define FNK_FOR_EACH_PHYSICS3D_BINDING(X) \
 	X(Rigidbody3D_Get) \
 	X(Rigidbody3D_Set) \
 	X(Rigidbody3D_GetVelocity) \
@@ -229,15 +241,4 @@
 	X(Physics3D_GetGravity) \
 	X(Physics3D_SetGravity) \
 	X(MeshCollider3D_GetCustomMesh) \
-	X(MeshCollider3D_SetCustomMesh) \
-	X(SkinnedMeshRenderer_Get) \
-	X(SkinnedMeshRenderer_Set) \
-	X(SkinnedMeshRenderer_GetAsset) \
-	X(SkinnedMeshRenderer_SetAsset) \
-	X(SkinnedMeshRenderer_Play) \
-	X(SkinnedMeshRenderer_Control) \
-	X(SkinnedMeshRenderer_GetClip) \
-	X(SkinnedMeshRenderer_GetClipCount) \
-	X(SkinnedMeshRenderer_GetClipName) \
-	X(SkinnedMeshRenderer_GetClipDuration) \
-	X(SkinnedMeshRenderer_GetBone)
+	X(MeshCollider3D_SetCustomMesh)

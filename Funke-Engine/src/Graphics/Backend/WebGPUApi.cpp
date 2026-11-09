@@ -42,6 +42,7 @@ namespace Funke {
 		std::string g_VersionString;
 		std::string g_VendorString;
 		std::string g_RendererString;
+		std::string g_DriverDescription;
 		GraphicsApi g_GraphicsApi = GraphicsApi::Unknown;
 		GpuVendor   g_GpuVendor = GpuVendor::Unknown;
 
@@ -379,7 +380,7 @@ namespace Funke {
 		}
 
 #if defined(FNK_PLATFORM_WINDOWS)
-		bool TryGetPreferredAdapterLuid(LUID& luid) {
+		bool TryGetPreferredAdapterLuid(LUID& luid, bool software = false) {
 			FUNKE_PROFILE_SCOPE("WebGPU.SelectPreferredAdapter");
 			static const HMODULE dxgi = ::LoadLibraryExW(L"dxgi.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
 			if (!dxgi) return false;
@@ -389,10 +390,13 @@ namespace Funke {
 			Microsoft::WRL::ComPtr<IDXGIFactory6> factory;
 			if (FAILED(createFactory(0, IID_PPV_ARGS(&factory)))) return false;
 			Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
-			if (FAILED(factory->EnumAdapterByGpuPreference(0, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
+			if (software) {
+				if (FAILED(factory->EnumWarpAdapter(IID_PPV_ARGS(&adapter)))) return false;
+			} else if (FAILED(factory->EnumAdapterByGpuPreference(0, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
 				IID_PPV_ARGS(&adapter)))) return false;
 			DXGI_ADAPTER_DESC1 description{};
-			if (FAILED(adapter->GetDesc1(&description)) || (description.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)) return false;
+			if (FAILED(adapter->GetDesc1(&description))
+				|| bool(description.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != software) return false;
 			luid = description.AdapterLuid;
 			return true;
 		}
@@ -407,6 +411,7 @@ namespace Funke {
 			opts.compatibleSurface = g_Surface;
 			opts.powerPreference   = wgpu::PowerPreference::HighPerformance;
 			opts.backendType       = backendType;
+			const char* testAdapter = std::getenv("FUNKE_TEST_GPU_ADAPTER");
 
 #if defined(FNK_PLATFORM_ANDROID)
 			// Mali drivers (seen on G715) cache a subpass for every distinct VkRenderingInfo and never free it;
@@ -455,6 +460,18 @@ namespace Funke {
 				outError = std::move(ctx.Error);
 				return false;
 			}
+			if (testAdapter) {
+				wgpu::AdapterInfo info{};
+				ctx.Adapter.GetInfo(&info);
+				const bool software = info.adapterType == wgpu::AdapterType::CPU;
+				const bool hardware = info.adapterType == wgpu::AdapterType::DiscreteGPU
+					|| info.adapterType == wgpu::AdapterType::IntegratedGPU;
+				if ((std::string_view(testAdapter) == "software" && !software)
+					|| (std::string_view(testAdapter) == "hardware" && !hardware)) {
+					outError = "Adapter does not match FUNKE_TEST_GPU_ADAPTER";
+					return false;
+				}
+			}
 			outAdapter = std::move(ctx.Adapter);
 			return true;
 		}
@@ -463,13 +480,32 @@ namespace Funke {
 			FUNKE_PROFILE_SCOPE("WebGPU.AdapterInitialization");
 			wgpu::Adapter adapter;
 			std::string error;
+			const char* testAdapter = std::getenv("FUNKE_TEST_GPU_ADAPTER");
+			if (testAdapter && std::string_view(testAdapter) != "software" && std::string_view(testAdapter) != "hardware") {
+				FNK_CORE_ERROR_TAG("WebGPUApi", "FUNKE_TEST_GPU_ADAPTER must be software or hardware");
+				return false;
+			}
+			auto candidates = BackendCandidates();
+			if (const char* testBackend = std::getenv("FUNKE_TEST_GPU_BACKEND")) {
+				const std::string_view name(testBackend);
+				wgpu::BackendType backend = wgpu::BackendType::Undefined;
+				if (name == "Vulkan") backend = wgpu::BackendType::Vulkan;
+				else if (name == "Direct3D12") backend = wgpu::BackendType::D3D12;
+				else if (name == "Metal") backend = wgpu::BackendType::Metal;
+				if (backend == wgpu::BackendType::Undefined) {
+					FNK_CORE_ERROR_TAG("WebGPUApi", "Invalid FUNKE_TEST_GPU_BACKEND");
+					return false;
+				}
+				candidates = { backend };
+			}
 #if defined(FNK_PLATFORM_WINDOWS)
 			const char* disabled = std::getenv("FUNKE_DISABLE_GPU_ADAPTER_FAST_PATH");
-			const bool useFastPath = !disabled || std::string_view(disabled) != "1";
+			const bool software = testAdapter && std::string_view(testAdapter) == "software";
+			const bool useFastPath = software || !disabled || std::string_view(disabled) != "1";
 			if (!useFastPath) timings.AdapterPath = "disabled";
 #endif
 
-			for (wgpu::BackendType backend : BackendCandidates()) {
+			for (wgpu::BackendType backend : candidates) {
 				{
 					FUNKE_PROFILE_SCOPE("WebGPU.PrepareRuntime");
 					Timer timer;
@@ -480,11 +516,11 @@ namespace Funke {
 				if (useFastPath && (backend == wgpu::BackendType::D3D11 || backend == wgpu::BackendType::D3D12)) {
 					dawn::native::d3d::RequestAdapterOptionsLUID luidOptions;
 					Timer timer;
-					const bool foundPreferred = TryGetPreferredAdapterLuid(luidOptions.adapterLUID);
+					const bool foundPreferred = TryGetPreferredAdapterLuid(luidOptions.adapterLUID, software);
 					timings.AdapterSelection += timer.ElapsedMilliseconds();
 					// Dawn preserves DXGI preference order for D3D but otherwise initializes every GPU.
 					if (foundPreferred && TryRequestAdapter(backend, adapter, error, timings, &luidOptions)) {
-						timings.AdapterPath = "preferred-luid";
+						timings.AdapterPath = software ? "test-warp-luid" : "preferred-luid";
 						g_Adapter = std::move(adapter);
 						return true;
 					}
@@ -1236,6 +1272,7 @@ namespace Funke {
 		g_Adapter.GetInfo(&info);
 		g_VendorString   = FromStringView(info.vendor);
 		g_RendererString = FromStringView(info.device);
+		g_DriverDescription = FromStringView(info.description);
 		g_GraphicsApi    = MapGraphicsApi(info.backendType);
 		g_GpuVendor      = MapGpuVendor(info.vendorID, g_VendorString, g_RendererString);
 		g_VersionString  = std::string("WebGPU (Dawn) / ") + BackendTypeName(info.backendType)
@@ -1284,6 +1321,7 @@ namespace Funke {
 		g_VersionString.clear();
 		g_VendorString.clear();
 		g_RendererString.clear();
+		g_DriverDescription.clear();
 		g_GraphicsApi = GraphicsApi::Unknown;
 		g_GpuVendor = GpuVendor::Unknown;
 		g_SurfaceFormat = wgpu::TextureFormat::Undefined;
@@ -1304,6 +1342,7 @@ namespace Funke {
 	const std::string& RenderApi::GetVersionString() noexcept  { return g_VersionString; }
 	const std::string& RenderApi::GetVendorString() noexcept   { return g_VendorString; }
 	const std::string& RenderApi::GetRendererString() noexcept { return g_RendererString; }
+	const std::string& RenderApi::GetDriverDescription() noexcept { return g_DriverDescription; }
 
 	// ── Per-frame state ─────────────────────────────────────────────────────
 

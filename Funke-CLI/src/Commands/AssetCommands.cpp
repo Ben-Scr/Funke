@@ -904,9 +904,9 @@ namespace Funke::Cli {
 
 	int RunValidate(Args& args) {
 		std::string error;
-		FunkeProject* project = OpenProject(args, error);
 		const bool strict = args.Flag("strict");
 		if (!args.Finish(error)) return Fail(error, k_ExitUsage);
+		FunkeProject* project = OpenProject(args, error, false);
 		if (!project) return Fail(error);
 		RegisterBuiltInAssets();
 

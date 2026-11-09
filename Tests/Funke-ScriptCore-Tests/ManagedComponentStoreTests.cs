@@ -11,6 +11,8 @@ namespace FunkeScriptCoreTests;
 [Collection(NativeCallbacksCollection.Name)]
 public unsafe class ManagedComponentStoreTests
 {
+    public static class LeftPackage { public class Mover : EntityScript { } }
+    public static class RightPackage { public class Mover : EntityScript { } }
     public sealed class RegisteredComponent : Component { }
     public sealed class ManagedData : Component
     {
@@ -59,7 +61,7 @@ public unsafe class ManagedComponentStoreTests
         if (value.SequenceEqual("Sprite Renderer"u8)) return k_SpriteType;
         if (value.SequenceEqual("Cache Test First"u8)) return 31;
         if (value.SequenceEqual("Cache Test Second"u8)) return 32;
-        if (value.SequenceEqual("ManagedData"u8)) return s_ManagedType;
+        if (Marshal.PtrToStringUTF8((nint)name) == "type:" + typeof(ManagedData).FullName) return s_ManagedType;
         return 0;
     }
 
@@ -117,6 +119,18 @@ public unsafe class ManagedComponentStoreTests
             ? sizeof(NativeTransformMirror) : 0;
 
     [UnmanagedCallersOnly]
+    private static int GetComponentLayout(byte* name, byte* output, int capacity)
+    {
+        ReadOnlySpan<byte> json = "{\"version\":1,\"dynamic\":false,\"size\":1,\"managedSize\":1,\"fields\":[{\"path\":\"Value\",\"type\":\"u8\",\"offset\":0,\"size\":1}]}"u8;
+        if (output != null && capacity > json.Length)
+        {
+            json.CopyTo(new Span<byte>(output, json.Length));
+            output[json.Length] = 0;
+        }
+        return json.Length;
+    }
+
+    [UnmanagedCallersOnly]
     private static int HasComponent(ulong id, uint typeId)
     {
         s_HasCalls++;
@@ -145,6 +159,7 @@ public unsafe class ManagedComponentStoreTests
     private static void WithBindings(Action body)
     {
         NativeBindingsStruct previous = NativeCallbacks.Bindings;
+        var previousLayout = ComponentTypes.NativeLayoutQuery;
         Entity.ClearManagedComponentStore();
         s_Components.Clear();
         s_ManagedComponents.Clear();
@@ -174,6 +189,7 @@ public unsafe class ManagedComponentStoreTests
             bindings.Entity_Destroy = &DestroyEntity;
             bindings.Entity_Create = &CreateEntity;
             NativeCallbacks.Bindings = bindings;
+            ComponentTypes.NativeLayoutQuery = &GetComponentLayout;
             body();
         }
         finally
@@ -183,7 +199,34 @@ public unsafe class ManagedComponentStoreTests
             s_ManagedComponents.Clear();
             s_CreatedName = null;
             NativeCallbacks.Bindings = previous;
+            ComponentTypes.NativeLayoutQuery = previousLayout;
         }
+    }
+
+    [Fact]
+    public void ScriptSlotsUseFullNamesAndRecognizeLegacyNames()
+    {
+        WithBindings(() => {
+            var bindings = NativeCallbacks.Bindings;
+            bindings.Entity_AddScript = &AddManagedComponent;
+            bindings.Entity_HasScript = &HasManagedComponent;
+            bindings.Entity_RemoveScript = &RemoveManagedComponent;
+            NativeCallbacks.Bindings = bindings;
+            var entity = Create(9123);
+            string canonical = "type:" + typeof(TestScript).FullName!;
+            entity.AddComponent<TestScript>();
+            Assert.Contains((entity.ID, canonical), s_ManagedComponents);
+            Assert.True(entity.HasComponent<TestScript>());
+            entity.AddComponent<TestScript>();
+            Assert.Single(s_ManagedComponents);
+            Assert.True(entity.RemoveComponent<TestScript>());
+            s_ManagedComponents.Add((entity.ID, nameof(TestScript)));
+            Assert.True(entity.HasComponent<TestScript>());
+            entity.AddComponent<TestScript>();
+            Assert.Single(s_ManagedComponents);
+            Assert.True(entity.RemoveComponent<TestScript>());
+            Assert.Empty(s_ManagedComponents);
+        });
     }
 
     private static Entity Create(ulong id)
@@ -191,6 +234,34 @@ public unsafe class ManagedComponentStoreTests
         s_Components.Add((id, s_TransformType));
         s_Components.Add((id, k_SpriteType));
         return Entity.FromID(id);
+    }
+
+    [Fact]
+    public void SameShortScriptNamesKeepIndependentCanonicalSlots()
+    {
+        WithBindings(() => {
+            var bindings = NativeCallbacks.Bindings;
+            bindings.Entity_AddScript = &AddManagedComponent;
+            bindings.Entity_HasScript = &HasManagedComponent;
+            bindings.Entity_RemoveScript = &RemoveManagedComponent;
+            NativeCallbacks.Bindings = bindings;
+            var entity = Create(9124);
+            entity.AddComponent<LeftPackage.Mover>();
+            entity.AddComponent<RightPackage.Mover>();
+            entity.AddComponent<LeftPackage.Mover>();
+            Assert.Equal(2, s_ManagedComponents.Count);
+            Assert.Contains((entity.ID, "type:" + typeof(LeftPackage.Mover).FullName), s_ManagedComponents);
+            Assert.Contains((entity.ID, "type:" + typeof(RightPackage.Mover).FullName), s_ManagedComponents);
+            Assert.True(entity.HasComponent<LeftPackage.Mover>());
+            Assert.True(entity.HasComponent<RightPackage.Mover>());
+            Assert.True(entity.RemoveComponent<LeftPackage.Mover>());
+            Assert.False(entity.HasComponent<LeftPackage.Mover>());
+            Assert.True(entity.HasComponent<RightPackage.Mover>());
+            Assert.True(entity.RemoveComponent<RightPackage.Mover>());
+            s_ManagedComponents.Add((entity.ID, "Mover"));
+            Assert.False(entity.HasComponent<LeftPackage.Mover>());
+            Assert.False(entity.HasComponent<RightPackage.Mover>());
+        });
     }
 
     [Theory]

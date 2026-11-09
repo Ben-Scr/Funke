@@ -1,4 +1,5 @@
 #include <doctest/doctest.h>
+#include "Components/General/NameComponent.hpp"
 
 #include "Animation/AnimationClip.hpp"
 #include "Animation/AnimationCulling.hpp"
@@ -256,12 +257,15 @@ TEST_CASE("3D animation bounds are culled against the camera frustum") {
 
 TEST_CASE("Animators far from the camera update every 4th frame and keep their tempo") {
 	auto scene = Scene::CreateDetachedScene("AnimatorDistanceRate");
-	Entity camera = scene->CreateEntity("Camera");
+	Entity camera = scene->CreateEmptyEntity();
+	camera.AddComponent<NameComponent>("Camera");
 	camera.AddComponent<Transform3DComponent>();
 	camera.AddComponent<Camera3DComponent>();
-	Entity root = scene->CreateEntity("Walker");
+	Entity root = scene->CreateEmptyEntity();
+	root.AddComponent<NameComponent>("Walker");
 	root.AddComponent<Transform3DComponent>().Position = { 0.0f, 0.0f, -100.0f };
-	Entity body = scene->CreateEntity("Body");
+	Entity body = scene->CreateEmptyEntity();
+	body.AddComponent<NameComponent>("Body");
 	body.AddComponent<Transform3DComponent>();
 	body.SetParent(root);
 	Transform3DHierarchySystem::Propagate(*scene);
@@ -339,13 +343,16 @@ TEST_CASE("Animators far from the camera update every 4th frame and keep their t
 
 TEST_CASE("Culled Animators keep their clock off screen and show the caught-up pose in view") {
 	auto scene = Scene::CreateDetachedScene("AnimatorCulling");
-	Entity camera = scene->CreateEntity("Camera");
+	Entity camera = scene->CreateEmptyEntity();
+	camera.AddComponent<NameComponent>("Camera");
 	camera.AddComponent<Transform3DComponent>();
 	camera.AddComponent<Camera3DComponent>();
-	Entity root = scene->CreateEntity("Walker");
+	Entity root = scene->CreateEmptyEntity();
+	root.AddComponent<NameComponent>("Walker");
 	// Behind the camera.
 	root.AddComponent<Transform3DComponent>().Position = { 0.0f, 0.0f, 20.0f };
-	Entity body = scene->CreateEntity("Body");
+	Entity body = scene->CreateEmptyEntity();
+	body.AddComponent<NameComponent>("Body");
 	body.AddComponent<Transform3DComponent>();
 	body.AddComponent<MeshRendererComponent>();
 	body.SetParent(root);
@@ -480,7 +487,8 @@ TEST_CASE("Skinned Mesh Renderer culling fields round-trip and are only written 
 	const ComponentInfo* info = SceneManager::GetComponentRegistryOrBuiltIn().FindBySerializedName("SkinnedMeshRenderer");
 	REQUIRE(info);
 	auto scene = Scene::CreateDetachedScene("SkinnedCullingSerialize");
-	Entity source = scene->CreateEntity("Source");
+	Entity source = scene->CreateEmptyEntity();
+	source.AddComponent<NameComponent>("Source");
 	source.AddComponent<Transform3DComponent>();
 	SkinnedMeshRendererComponent& renderer = source.AddComponent<SkinnedMeshRendererComponent>();
 	CHECK(info->serialize(source).FindMember("cullingMode") == nullptr);
@@ -490,7 +498,8 @@ TEST_CASE("Skinned Mesh Renderer culling fields round-trip and are only written 
 	renderer.QuarterRateDistance = 80.0f;
 	const Json::Value json = info->serialize(source);
 	CHECK(json.FindMember("halfRateDistance") == nullptr);
-	Entity target = scene->CreateEntity("Target");
+	Entity target = scene->CreateEmptyEntity();
+	target.AddComponent<NameComponent>("Target");
 	target.AddComponent<Transform3DComponent>();
 	target.AddComponent<SkinnedMeshRendererComponent>();
 	info->deserialize(target, Json::Parse(Json::Stringify(json)));

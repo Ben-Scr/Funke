@@ -10,6 +10,8 @@
 #include "Gui/ColorPickerEyedropper.hpp"
 #include "Gui/ImGuiContextSetup.hpp"
 #include "Gui/EditorTheme.hpp"
+#include "Gui/GlassBackdrop.hpp"
+#include "Gui/EditorWindowIcons.hpp"
 #include "Gui/ImGuiFonts.hpp"
 #include "Serialization/Path.hpp"
 #include "Utils/ExpressionEvaluator.hpp"
@@ -183,6 +185,7 @@ namespace Funke {
 
 		// Numeric fields accept arithmetic ("5/2", "/2", …) via this evaluator hook.
 		ImGui::SetScalarExpressionHook(&ScalarExpressionHook);
+		ImGui::GetPlatformIO().WindowTitleIcon = &EditorWindowIcons::Draw;
 		ColorPickerEyedropper::Initialize();
 
 		EditorRuntime::ImGuiContextSetup::PublishImGuiContextToPackages();
@@ -194,6 +197,7 @@ namespace Funke {
 		io.IniSavingRate = 1.0f;
 		// Docking/viewport flags MUST precede LoadIniSettingsFromDisk: the [Docking][Data] and [Viewport] sections only parse through handlers registered by these flags; loading first silently destroys the persisted layout.
 		EditorRuntime::ImGuiContextSetup::ApplyCommonIoConfigFlags(io);
+		io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 		std::error_code loadEc;
 		const bool iniFileExists = std::filesystem::is_regular_file(m_IniFilePath, loadEc);
 		const std::uintmax_t iniFileSize = iniFileExists
@@ -305,6 +309,7 @@ namespace Funke {
 		if (!m_IsInitialized) {
 			return;
 		}
+		GlassBackdrop::DrawWindowEdges();
 		EditorRuntime::ImGuiContextSetup::RenderAndPresent();
 
 		FlushSettingsIfDirtyOrPeriodic();
@@ -625,33 +630,30 @@ namespace Funke {
 		c[ImGuiCol_ModalWindowDimBg]     = pick(ImVec4(0, 0, 0, 0.55f), ImVec4(0.12f, 0.15f, 0.20f, 0.30f));
 	}
 
-	// Docked panels stack on the dockspace host window, so the backdrop shows through two WindowBg layers (~45%).
-	// Windows in their own OS window get WindowBg/PopupBg forced opaque by ImGui, hence the navy RGB that matches
-	// their tinted caption. Surfaces keep a plausible opaque RGB because some widgets reuse them with their own alpha.
-	void ImGuiContextLayer::ApplyGlassThemeColors() {
-		ApplyFunkeThemeColors(/*dark=*/true);
+	void ImGuiContextLayer::ApplyGlassThemeColors(bool dark) {
+		ApplyFunkeThemeColors(dark);
 
 		ImVec4* c = ImGui::GetStyle().Colors;
-		const ImVec4 accent    = EditorTheme::Colors::AccentFor(true);
+		const ImVec4 accent    = EditorTheme::Colors::AccentFor(dark);
 
-		const ImVec4 surface   (0.36f, 0.42f, 0.56f, 0.22f);
-		const ImVec4 surfaceHi (0.42f, 0.48f, 0.64f, 0.32f);
-		const ImVec4 surfaceAct(0.48f, 0.55f, 0.72f, 0.42f);
-		const ImVec4 chrome    (0.035f, 0.045f, 0.095f, 0.40f);
-		const ImVec4 edge      (0.78f, 0.86f, 1.00f, 0.16f);
+		const ImVec4 surface = dark ? ImVec4(0.40f, 0.49f, 0.65f, 0.22f) : ImVec4(1.0f, 1.0f, 1.0f, 0.48f);
+		const ImVec4 surfaceHi = dark ? ImVec4(0.56f, 0.66f, 0.82f, 0.32f) : ImVec4(0.88f, 0.95f, 1.0f, 0.72f);
+		const ImVec4 surfaceAct = dark ? ImVec4(0.30f, 0.44f, 0.66f, 0.50f) : ImVec4(0.56f, 0.72f, 0.90f, 0.38f);
+		const ImVec4 chrome = dark ? ImVec4(0.035f, 0.055f, 0.11f, 0.48f) : ImVec4(0.88f, 0.93f, 0.99f, 0.52f);
+		const ImVec4 edge = dark ? ImVec4(0.78f, 0.89f, 1.0f, 0.24f) : ImVec4(0.28f, 0.43f, 0.62f, 0.24f);
 		const ImVec4 clear     (0.0f, 0.0f, 0.0f, 0.0f);
 
-		c[ImGuiCol_WindowBg]             = ImVec4(0.05f, 0.065f, 0.13f, 0.34f);
-		c[ImGuiCol_ChildBg]              = ImVec4(0.55f, 0.62f, 0.80f, 0.03f);
-		c[ImGuiCol_PopupBg]              = ImVec4(0.07f, 0.085f, 0.16f, 0.90f);
+		c[ImGuiCol_WindowBg]             = dark ? ImVec4(0.045f, 0.07f, 0.13f, 0.48f) : ImVec4(0.94f, 0.97f, 1.0f, 0.52f);
+		c[ImGuiCol_ChildBg]              = dark ? ImVec4(0.55f, 0.68f, 0.85f, 0.04f) : ImVec4(1, 1, 1, 0.08f);
+		c[ImGuiCol_PopupBg]              = dark ? ImVec4(0.07f, 0.10f, 0.17f, 0.96f) : ImVec4(0.94f, 0.97f, 1.0f, 0.97f);
 
 		c[ImGuiCol_Border]               = edge;
 		c[ImGuiCol_Separator]            = ImVec4(edge.x, edge.y, edge.z, 0.12f);
 		c[ImGuiCol_TableBorderStrong]    = edge;
 		c[ImGuiCol_TableBorderLight]     = ImVec4(edge.x, edge.y, edge.z, 0.08f);
 
-		c[ImGuiCol_Text]                 = ImVec4(0.93f, 0.94f, 0.96f, 1.00f);
-		c[ImGuiCol_TextDisabled]         = ImVec4(0.60f, 0.64f, 0.72f, 1.00f);
+		c[ImGuiCol_Text]                 = dark ? ImVec4(0.95f, 0.97f, 1.0f, 1) : ImVec4(0.08f, 0.13f, 0.21f, 1);
+		c[ImGuiCol_TextDisabled]         = dark ? ImVec4(0.68f, 0.75f, 0.84f, 1) : ImVec4(0.32f, 0.40f, 0.50f, 1);
 
 		c[ImGuiCol_FrameBg]              = surface;
 		c[ImGuiCol_FrameBgHovered]       = surfaceHi;
@@ -667,12 +669,12 @@ namespace Funke {
 		c[ImGuiCol_TitleBgActive]        = chrome;
 		c[ImGuiCol_TitleBgCollapsed]     = ImVec4(chrome.x, chrome.y, chrome.z, 0.30f);
 		c[ImGuiCol_MenuBarBg]            = chrome;
-		c[ImGuiCol_TableHeaderBg]        = ImVec4(0.55f, 0.62f, 0.80f, 0.06f);
-		c[ImGuiCol_TableRowBgAlt]        = ImVec4(1.0f, 1.0f, 1.0f, 0.03f);
+		c[ImGuiCol_TableHeaderBg]        = surface;
+		c[ImGuiCol_TableRowBgAlt]        = dark ? ImVec4(1, 1, 1, 0.03f) : ImVec4(0.12f, 0.25f, 0.40f, 0.03f);
 
-		c[ImGuiCol_ScrollbarGrab]        = ImVec4(0.70f, 0.78f, 0.95f, 0.22f);
-		c[ImGuiCol_ScrollbarGrabHovered] = ImVec4(0.70f, 0.78f, 0.95f, 0.32f);
-		c[ImGuiCol_ScrollbarGrabActive]  = ImVec4(0.70f, 0.78f, 0.95f, 0.42f);
+		c[ImGuiCol_ScrollbarGrab]        = ImVec4(edge.x, edge.y, edge.z, 0.22f);
+		c[ImGuiCol_ScrollbarGrabHovered] = ImVec4(edge.x, edge.y, edge.z, 0.32f);
+		c[ImGuiCol_ScrollbarGrabActive]  = ImVec4(edge.x, edge.y, edge.z, 0.42f);
 
 		// Unselected tabs sit on the TitleBg strip; a fill of their own would double its tint.
 		c[ImGuiCol_Tab]                  = clear;
@@ -684,7 +686,7 @@ namespace Funke {
 		c[ImGuiCol_TabDimmedSelectedOverline] = ImVec4(accent.x, accent.y, accent.z, 0.55f);
 
 		c[ImGuiCol_SliderGrab]           = ImVec4(accent.x, accent.y, accent.z, 0.85f);
-		c[ImGuiCol_DockingEmptyBg]       = ImVec4(0.0f, 0.0f, 0.0f, 0.20f);
+		c[ImGuiCol_DockingEmptyBg]       = dark ? ImVec4(0, 0, 0, 0.20f) : ImVec4(1, 1, 1, 0.20f);
 		c[ImGuiCol_ModalWindowDimBg]     = ImVec4(0.02f, 0.03f, 0.06f, 0.50f);
 	}
 

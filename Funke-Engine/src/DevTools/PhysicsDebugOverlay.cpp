@@ -2,14 +2,15 @@
 #include "DevTools/PhysicsDebugOverlay.hpp"
 
 #include "Core/Application.hpp"
+#include "Core/EngineModules.hpp"
 #include "Core/Window.hpp"
 #include "Scene/Scene.hpp"
 #include "Scene/SceneManager.hpp"
-#if FUNKE_WITH_PHYSICS && FUNKE_WITH_2D
+#if FUNKE_WITH_PHYSICS2D
 #include "Components/Graphics/Camera2DComponent.hpp"
 #include "Physics/PhysicsDebugDraw2D.hpp"
 #endif
-#if FUNKE_WITH_PHYSICS && FUNKE_WITH_3D
+#if FUNKE_WITH_PHYSICS3D
 #include "Graphics/Renderer3D.hpp"
 #include "Physics3D/PhysicsDebugDraw3D.hpp"
 #endif
@@ -33,23 +34,23 @@ namespace Funke {
 		Application* app = Application::GetInstance();
 		if (!app) return;
 
-#if FUNKE_WITH_PHYSICS && FUNKE_WITH_2D
+#if FUNKE_WITH_PHYSICS2D
 		float worldPerPixel = 0.01f;
 		if (const Camera2DComponent* camera = Camera2DComponent::GetMain()) {
 			const int height = app->GetWindow() ? std::max(1, app->GetWindow()->GetHeight()) : 1;
 			worldPerPixel = camera->GetViewportAABB().Scale().y / static_cast<float>(height);
 		}
 #endif
-#if FUNKE_WITH_PHYSICS && FUNKE_WITH_3D
+#if FUNKE_WITH_PHYSICS3D
 		Renderer3D* renderer3D = app->GetRenderer3D();
 #endif
 
 		SceneManager::ForeachLoadedScene([&](Scene& scene) {
-#if FUNKE_WITH_PHYSICS && FUNKE_WITH_2D
-			PhysicsDebugDraw2D::DrawScene(scene, g_ShowContacts, worldPerPixel);
+#if FUNKE_WITH_PHYSICS2D
+			if (EngineModules::IsActive(EngineModule::Physics2D)) PhysicsDebugDraw2D::DrawScene(scene, g_ShowContacts, worldPerPixel);
 #endif
-#if FUNKE_WITH_PHYSICS && FUNKE_WITH_3D
-			if (renderer3D) PhysicsDebugDraw3D::DrawScene(*renderer3D, scene, g_ShowContacts);
+#if FUNKE_WITH_PHYSICS3D
+			if (renderer3D && EngineModules::IsActive(EngineModule::Physics3D)) PhysicsDebugDraw3D::DrawScene(*renderer3D, scene, g_ShowContacts);
 #endif
 			(void)scene;
 		});

@@ -298,3 +298,33 @@ TEST_CASE("The registry manifest only lists shipped files") {
 	BuildAssetPruning::Plan invalid;
 	CHECK(BuildAssetPruning::FilterRegistryManifest(manifest, invalid) == manifest);
 }
+
+TEST_CASE("Backlog native dependencies conservatively disable pruning") {
+	ScopedPruningFixture f;
+	f.AddAsset("NativeOnly.png", 123456789);
+	f.Write(f.Project / "NativeScripts/Source/Constants.hpp", "constexpr auto texture = 123456789;");
+	const auto plan = f.Compute();
+	CHECK_FALSE(plan.Valid);
+	CHECK_FALSE(plan.Error.empty());
+}
+
+TEST_CASE("Backlog GLB JSON retains relative external buffers") {
+	ScopedPruningFixture f;
+	std::string json = R"({"asset":{"version":"2.0"},"buffers":[{"uri":"sub/external%20data.bin","byteLength":4}]})";
+	while (json.size() % 4) json += ' ';
+	std::string glb;
+	const auto append = [&](uint32_t value) {
+		for (int i = 0; i < 4; ++i) glb += static_cast<char>((value >> (8*i)) & 255);
+	};
+	append(0x46546c67); append(2); append(static_cast<uint32_t>(20 + json.size()));
+	append(static_cast<uint32_t>(json.size())); append(0x4e4f534a); glb += json;
+	f.AddAsset("Models/ship.glb", 123456789, glb);
+	f.AddAsset("Models/sub/external data.bin", 234567890, "data");
+	f.AddAsset("unused.bin", 345678901, "data");
+	f.Write(f.Assets / "Scenes/Main.scene", R"({"mesh":"123456789"})");
+	const auto plan = f.Compute();
+	REQUIRE(plan.Valid);
+	CHECK(plan.KeepsProjectFile("Models/ship.glb"));
+	CHECK(plan.KeepsProjectFile("Models/sub/external data.bin"));
+	CHECK_FALSE(plan.KeepsProjectFile("unused.bin"));
+}

@@ -31,6 +31,18 @@ class SdkManifestTests(unittest.TestCase):
         self.assertFalse((self.sdk / "Funke-Engine").exists())
         self.assertFalse(list(self.sdk.rglob("*.csproj")))
 
+    def test_only_known_module_variants_and_existing_payloads_are_accepted(self):
+        for variant in sdk_manifest.RUNTIME_VARIANTS:
+            with self.subTest(variant=variant):
+                self.change(lambda m: m.update(runtimeVariants={variant: {"Release": "Runtime-Dist"}}))
+                sdk_manifest.validate_sdk(self.sdk)
+        self.change(lambda m: m.update(runtimeVariants={"v2-physics2d": {"Release": "Runtime-Dist"}}))
+        with self.assertRaisesRegex(ValueError, "variant"):
+            sdk_manifest.validate_sdk(self.sdk)
+        self.change(lambda m: m.update(runtimeVariants={"v2-2d": {"Release": "Missing-Variant"}}))
+        with self.assertRaisesRegex(ValueError, "missing"):
+            sdk_manifest.validate_sdk(self.sdk)
+
     def test_all_desktop_runtime_payloads_are_checked(self):
         for platform in sdk_manifest.PLATFORMS:
             with self.subTest(platform=platform):

@@ -6,7 +6,7 @@ Funke is a lightweight, modular game engine with **C++ and C# support** for game
 
 > **Beta.** The editor and launcher run on **Windows x64**, **Linux x64** and **macOS** (Apple Silicon and Intel), and each exports games for its own desktop platform. Android, iOS and Web exports come from platform packages. See [Known Limitations](Github-Docs/Documentation/Known-Limitations.md).
 
-**Making a game?** Download the installer for Windows x64, Linux x64 or macOS Apple Silicon from [Releases](https://github.com/Ben-Scr/Funke/releases) and follow **[Your First Game](Github-Docs/Documentation/Getting-Started.md)**. Windows setup includes the .NET 10 SDK prerequisite; on Linux and macOS, install the [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0) separately. You do not need to clone the engine repository for ordinary C# projects. See [Desktop installers](installer/README.md) for requirements.
+**Making a game?** As of 3 November 2026, [Releases](https://github.com/Ben-Scr/Funke/releases) has no public engine release. Start with the [source build instructions below](#getting-started), then follow **[Your First Game](Github-Docs/Documentation/Getting-Started.md)**. Successful [CI runs](https://github.com/Ben-Scr/Funke/actions/workflows/ci.yml) may provide temporary test bundles and installers; these require GitHub access and are not a published release. See [Desktop installers](installer/README.md) for artifact names and prerequisites.
 
 **License:** Funke is free and open source under the [MIT License](LICENSE.txt). Use it for any project, commercial or not; just keep the license notice with copies of the engine (game builds already include it in their `Licenses` folder).
 
@@ -48,7 +48,7 @@ Check the package documentation and Asset Library alongside [Known Limitations](
 Clone with submodules:
 
 ```bash
-git clone --recurse-submodules https://github.com/Ben-Scr/Index.git Funke
+git clone --recurse-submodules https://github.com/Ben-Scr/Funke.git Funke
 cd Funke
 ```
 

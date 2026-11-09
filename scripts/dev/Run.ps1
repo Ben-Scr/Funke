@@ -78,7 +78,7 @@ param(
     [ValidateSet("", "triangle", "mixed")]
     [string]$DrawMode = "",
     # Editor only: show this theme for the run without saving it to the user's preferences (FUNKE_EDITOR_THEME).
-    [ValidateSet("", "auto", "dark", "light", "glass", "custom")]
+    [ValidateSet("", "auto", "dark", "light", "glass", "glass-dark", "glass-light", "custom")]
     [string]$Theme = "",
     # Launcher only: start on this page (FUNKE_LAUNCHER_PAGE).
     [ValidateSet("", "templates", "assets", "settings")]

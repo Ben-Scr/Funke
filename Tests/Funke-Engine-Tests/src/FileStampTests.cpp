@@ -57,6 +57,61 @@ TEST_CASE("KnownFileStamps tells external edits apart from recorded state")
 	CHECK_FALSE(KnownFileStamps::HasChangedOnDisk(path));
 }
 
+TEST_CASE("FileStamp preserves filesystem results and observes each new file state")
+{
+	TempDir dir("FunkeStampSnapshot");
+	const auto reference = [](const fs::path& path) {
+		FileStamp stamp;
+		std::error_code error;
+		stamp.WriteTime = fs::last_write_time(path, error);
+		if (error) return FileStamp{};
+		stamp.Size = fs::file_size(path, error);
+		if (error) return FileStamp{};
+		stamp.Exists = true;
+		return stamp;
+	};
+	const auto check = [&](const fs::path& path) {
+		CHECK(FileStamp::Read(Path::ToUtf8(path)) == reference(path));
+	};
+	const auto file = dir.Root / Path::FromUtf8("größe.txt");
+	CHECK(FileStamp::Read("") == FileStamp{});
+	check(file);
+	check(dir.Root);
+	REQUIRE(File::WriteAllText(Path::ToUtf8(file), "one"));
+	check(file);
+	const auto before = FileStamp::Read(Path::ToUtf8(file));
+	REQUIRE(before.Exists);
+	CHECK(before.Size == 3);
+	REQUIRE(File::WriteAllText(Path::ToUtf8(file), "longer contents"));
+	fs::last_write_time(file, before.WriteTime);
+	check(file);
+	CHECK(FileStamp::Read(Path::ToUtf8(file)) != before);
+	const auto replacement = dir.Root / "replacement.txt";
+	REQUIRE(File::WriteAllText(Path::ToUtf8(replacement), "replacement"));
+	fs::remove(file);
+	fs::rename(replacement, file);
+	check(file);
+	const auto alias = dir.Root / "alias.txt";
+	fs::create_hard_link(file, alias);
+	check(alias);
+	CHECK(FileStamp::Read(Path::ToUtf8(alias)) == FileStamp::Read(Path::ToUtf8(file)));
+	std::error_code error;
+	const auto link = dir.Root / "symbolic.txt";
+	fs::create_symlink(file, link, error);
+	if (!error) {
+		check(link);
+		CHECK(FileStamp::Read(Path::ToUtf8(link)) == FileStamp::Read(Path::ToUtf8(file)));
+		fs::remove(file);
+		check(link);
+	}
+	else {
+		MESSAGE("Symbolic-link check unavailable: " << error.message());
+		fs::remove(file);
+	}
+	check(file);
+	check(alias);
+}
+
 TEST_CASE("Scene save and load record the file stamp; external writes show up as changes")
 {
 	TempDir dir("FunkeSceneStampTest");

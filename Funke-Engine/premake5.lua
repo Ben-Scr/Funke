@@ -46,7 +46,7 @@ project "Funke-Engine"
     end
 
     -- These integration units still aggregate multiple optional modules.
-    RemoveFilesUnlessModulesEnabled({ "Render", "Audio", "Physics", "Scripting", "Editor" },
+    RemoveFilesUnlessModulesEnabled({ "Render", "Audio", "Scripting", "Editor" },
         {
             "src/Animation/AnimationBinding.*",
             "src/Animation/AnimationViewer.*",
@@ -69,13 +69,8 @@ project "Funke-Engine"
         }
     )
 
-    RemoveFilesUnlessModulesEnabled({ "Physics" },
-        {
-            "src/Components/General/Transform2DComponent.cpp"
-        }
-    )
 
-    RemoveFilesUnlessModulesEnabled({ "Render", "Audio", "Physics", "Scripting" },
+    RemoveFilesUnlessModulesEnabled({ "Render", "Audio", "Scripting" },
         {
             -- Glob: covers the per-category slices as well as the orchestrator.
             "src/Inspector/PropertyValidation.cpp",
@@ -136,8 +131,7 @@ project "Funke-Engine"
             "src/Components/Physics/**",
             "src/Components/Physics3D/**",
             "src/Physics/**",
-            "src/Physics3D/**",
-            "src/Systems/TransformHierarchySystem.*"
+            "src/Physics3D/**"
         }
     )
 
@@ -149,7 +143,7 @@ project "Funke-Engine"
 
     -- Engine feature modules (Funke.2D / Funke.3D): source lists in EngineModules.json.
     for _, featureModule in ipairs(FunkeFeatureModules) do
-        RemoveFilesIfModuleDisabled(FunkeModules.Render and FunkeModules.Physics and featureModule.Enabled,
+        RemoveFilesIfModuleDisabled(FunkeModules.Render and featureModule.Enabled,
             featureModule.sources)
     end
 
@@ -254,7 +248,7 @@ project "Funke-Engine"
         )
     end
 
-    if FunkeModules.Physics then
+    if FunkeModules.Physics2D then
         AddPrivateIncludes(
             {
                 "src/Core/Application.cpp",

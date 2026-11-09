@@ -1402,7 +1402,7 @@ namespace Funke {
 				RegisterRegistryAssetTree(targetPath);
 				FinishFileEdit(edit);
 				pastedPaths.push_back(targetPath.string());
-				m_Thumbnails.Invalidate(sourcePath.string());
+				if (m_AssetClipboardCut) m_Thumbnails.Invalidate(sourcePath.string());
 				m_Thumbnails.Invalidate(targetPath.string());
 			}
 		}
@@ -2308,6 +2308,11 @@ namespace Funke {
 				ThumbnailCache::DrawAssetIcon(type, iconPos, m_TileSize);
 				ImGui::Dummy(ImVec2(m_TileSize, m_TileSize));
 			}
+			if (type == AssetType::ShaderSource) {
+				const ImVec2 marker(iconPos.x + 2.0f, iconPos.y + m_TileSize - ImGui::GetFontSize() - 4.0f);
+				const std::string sourceLabel = ImGuiUtils::Ellipsize("Source only", m_TileSize - 4.0f);
+				ImGui::GetWindowDrawList()->AddText(marker, ImGui::GetColorU32(EditorTheme::Colors::Warning()), sourceLabel.c_str());
+			}
 		}
 
 		if (IsRenamingEntry(entry.Path)) {
@@ -2350,6 +2355,10 @@ namespace Funke {
 		if (!m_PendingScrollToPath.empty() && entry.Path == m_PendingScrollToPath) {
 			ImGui::SetScrollHereY(0.5f);
 			m_PendingScrollToPath.clear();
+		}
+		if (!entry.IsDirectory && ImGui::IsItemHovered()
+			&& ThumbnailCache::GetAssetType(std::filesystem::path(entry.Path).extension().string()) == AssetType::ShaderSource) {
+			ImGui::SetTooltip("%s\nSource only: Funke shader slots require .wgsl. Open this file to edit or port its source.", entry.Name.c_str());
 		}
 
 		if (isCut) {
@@ -2554,9 +2563,6 @@ namespace Funke {
 			}
 
 			if (ImGui::BeginMenu("Create")) {
-				if (ImGui::MenuItem("EntityScript")) {
-					CreateScript(m_CurrentDirectory);
-				}
 
 				ImGui::Separator();
 
@@ -2591,16 +2597,9 @@ namespace Funke {
 					ImGui::EndMenu();
 				}
 
-				if (ImGui::BeginMenu("Scripting")) {
+				if (ImGui::BeginMenu("C# Scripting")) {
 					if (ImGui::MenuItem("EntityScript")) {
 						CreateScript(m_CurrentDirectory);
-					}
-					const bool canCreateCppScript = ProjectManager::GetCurrentProject() != nullptr;
-					if (ImGui::MenuItem("C++ Script", nullptr, false, canCreateCppScript)) {
-						CreateCppScript(m_CurrentDirectory);
-					}
-					if (!canCreateCppScript && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-						ImGui::SetTooltip("Open or create a project to add C++ scripts.");
 					}
 					if (ImGui::MenuItem("SceneSystem")) {
 						CreateSceneSystem(m_CurrentDirectory);
@@ -2621,6 +2620,17 @@ namespace Funke {
 					ImGui::Separator();
 					if (ImGui::MenuItem("DataAsset")) {
 						CreateDataAssetScript(m_CurrentDirectory);
+					}
+					ImGui::EndMenu();
+				}
+
+				if (ImGui::BeginMenu("C++ Scripting")) {
+					const bool canCreateCppScript = ProjectManager::GetCurrentProject() != nullptr;
+					if (ImGui::MenuItem("C++ Script", nullptr, false, canCreateCppScript)) {
+						CreateCppScript(m_CurrentDirectory);
+					}
+					if (!canCreateCppScript && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+						ImGui::SetTooltip("Open or create a project to add C++ scripts.");
 					}
 					ImGui::EndMenu();
 				}

@@ -23,9 +23,14 @@ namespace Funke {
 
 		static void LoadCoreAssembly(const std::string& path);
 		static bool LoadUserAssembly(const std::string& path);
+		static bool PrepareUserAssembly(const std::string& path = {});
+		static bool PrepareResourceRelease(bool playOnly, bool waitForCompletion = false);
+		static void ResumeResourceScope(bool playOnly);
+		static const std::string& GetLastAssemblyError();
 		static bool HasUserAssembly();
 		// Live scenes must use ScriptSystem::ReloadManagedAssemblies() to retire handles before a successful swap.
 		static bool ReloadAssemblies();
+		static void SnapshotDynamicComponentsForScene(Scene& scene);
 		static std::size_t RestoreDynamicComponentsForScene(Scene& scene);
 
 		static void SetScene(Scene* scene);
@@ -47,6 +52,8 @@ namespace Funke {
 		static void InvokeTrigger2D(uint32_t handle, int32_t phase, uint64_t selfEntityID, uint64_t otherEntityID, uint64_t entityAID, uint64_t entityBID);
 		static void InvokeCollision3D(uint32_t handle, int32_t phase, bool isTrigger, uint64_t selfEntityID, uint64_t otherEntityID, const Vec3& contactPoint, const Vec3& normal);
 		static bool ClassExists(const std::string& className);
+		static bool ManagedTypeNamesMatch(const std::string& left, const std::string& right);
+		static std::string ResolveManagedTypeName(const std::string& className);
 
 		static void RaiseApplicationStart();
 		static void RaiseApplicationPaused();
@@ -74,6 +81,10 @@ namespace Funke {
 
 		// Strips static-event subscribers from the user assembly; safe to call from runtime (no-op when uninitialized).
 		static void OnPlayModeExited();
+		static bool ResetRegisteredPlayState();
+		static bool CaptureReloadState();
+		static void ClearReloadState();
+		static void DiscardPreparedAssembly();
 
 		// Native→managed: drop cached C# component wrappers for a destroyed entity (UUID). No-op when scripting is uninitialized.
 		static void NotifyEntityDestroyed(uint64_t entityID);

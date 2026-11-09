@@ -1,3 +1,5 @@
+newoption { trigger = "module-validation", description = "Include backend-independent module smoke tests in this workspace." }
+
 newoption
 {
     trigger = "core-validation",
@@ -21,20 +23,23 @@ for _, featureModule in ipairs(FunkeFeatureModules) do
 end
 
 local function ResolveFunkeEngineVariant()
-    local included = {}
-    local excludedAny = false
+    local byId = {}
     for _, featureModule in ipairs(FunkeFeatureModules) do
         featureModule.Enabled = not _OPTIONS["without-" .. featureModule.option]
-        if featureModule.Enabled then
-            table.insert(included, featureModule.option)
-        else
-            excludedAny = true
+        byId[featureModule.id] = featureModule
+    end
+    for _, featureModule in ipairs(FunkeFeatureModules) do
+        for _, dependency in ipairs(featureModule.dependencies or {}) do
+            if not byId[dependency].Enabled then featureModule.Enabled = false end
         end
     end
-    if not excludedAny then
-        return nil
+    local included, excludedAny = {}, false
+    for _, featureModule in ipairs(FunkeFeatureModules) do
+        if featureModule.Enabled then table.insert(included, featureModule.option)
+        else excludedAny = true end
     end
-    return #included > 0 and table.concat(included, "-") or "nomodules"
+    if not excludedAny then return nil end
+    return "v2-" .. (#included > 0 and table.concat(included, "-") or "nomodules")
 end
 
 -- A variant only builds the engine + runtime a game ships, into its own workspace and output
@@ -298,9 +303,11 @@ local function ResolveFunkeModules()
     end
 
     -- Feature modules sit on top of the application surface; a core build has neither.
-    local hasApplicationSurface = modules.Render and modules.Physics
+    local hasApplicationSurface = modules.Render
     modules.TwoD = hasApplicationSurface and IsFunkeFeatureModuleEnabled("Funke.2D")
     modules.ThreeD = hasApplicationSurface and IsFunkeFeatureModuleEnabled("Funke.3D")
+    modules.Physics2D = modules.Physics and modules.TwoD and IsFunkeFeatureModuleEnabled("Funke.Physics2D")
+    modules.Physics3D = modules.Physics and modules.ThreeD and IsFunkeFeatureModuleEnabled("Funke.Physics3D")
 
     return modules
 end
@@ -323,8 +330,8 @@ Dependency.EngineSelectedModules = MergeDependencySets(
     FunkeModules.Render and Dependency.EngineCoreEditor or nil,
     FunkeModules.Render and Dependency.EngineCoreRender or nil,
     FunkeModules.Audio and Dependency.EngineCoreAudio or nil,
-    FunkeModules.Physics and FunkeModules.TwoD and Dependency.EngineCorePhysics2D or nil,
-    FunkeModules.Physics and FunkeModules.ThreeD and Dependency.EngineCorePhysics3D or nil,
+    FunkeModules.Physics2D and Dependency.EngineCorePhysics2D or nil,
+    FunkeModules.Physics3D and Dependency.EngineCorePhysics3D or nil,
     FunkeModules.Scripting and Dependency.EngineCoreScripting or nil,
     Dependency.EngineCoreLinuxSystem
 )
@@ -471,7 +478,6 @@ ApplyFunkeVendorPatches()
 function GetFunkeModuleDefines()
     local hasApplication = FunkeModules.Render
         and FunkeModules.Audio
-        and FunkeModules.Physics
         and FunkeModules.Scripting
         and FunkeModules.Editor
 
@@ -489,6 +495,8 @@ function GetFunkeModuleDefines()
         "FUNKE_WITH_APPLICATION=" .. (hasApplication and "1" or "0"),
         "FUNKE_WITH_2D=" .. (FunkeModules.TwoD and "1" or "0"),
         "FUNKE_WITH_3D=" .. (FunkeModules.ThreeD and "1" or "0"),
+        "FUNKE_WITH_PHYSICS2D=" .. (FunkeModules.Physics2D and "1" or "0"),
+        "FUNKE_WITH_PHYSICS3D=" .. (FunkeModules.Physics3D and "1" or "0"),
         "FUNKE_ENTITY_BITS=" .. tostring(GetFunkeEntityBits()),
         -- Shrink magic_enum's default reflection window [-128, 127] -> [-1, 64].
         -- All engine-side reflected enums are small `enum class : uint8_t`
@@ -974,10 +982,10 @@ end
 -- Dawn (WebGPU) and SDL3 are built out-of-band by scripts/dawn/SetupDawn.* and
 -- scripts/sdl/SetupSDL.py; premake only links them (see dawn.lua / sdl3.lua).
 
-if FunkeModules.Physics and FunkeModules.TwoD then
+if FunkeModules.Physics2D then
     include "premake/dependencies/box2d.lua"
 end
-if FunkeModules.Physics and FunkeModules.ThreeD then
+if FunkeModules.Physics3D then
     include "premake/dependencies/jolt.lua"
 end
 
@@ -1042,6 +1050,12 @@ if not FunkeIsolatedRoot then
     group "Tests"
         include "Tests/Funke-Engine-Tests"
         include "Tests/Funke-Editor-Tests"
+    group ""
+end
+
+if _OPTIONS["module-validation"] and not FunkeCoreValidationRoot then
+    group "Tests"
+        include "Tests/Funke-Module-Tests"
     group ""
 end
 

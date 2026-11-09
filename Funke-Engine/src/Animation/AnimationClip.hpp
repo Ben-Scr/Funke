@@ -9,6 +9,12 @@
 
 namespace Funke {
 
+	enum class RotationInterpolation : uint8_t {
+		EulerMultiTurn = 0,
+		ShortestAngle = 1,
+		Quaternion = 2
+	};
+
 	// Serialized by name ("linear", "step", "bezier"); the interpolation of a key applies to the segment after it.
 	enum class KeyInterpolation : uint8_t {
 		Linear = 0,
@@ -31,7 +37,7 @@ namespace Funke {
 		// Sorted by Time; Evaluate clamps outside the first and last key.
 		std::vector<Keyframe> Keys;
 
-		float Evaluate(float time) const;
+		float Evaluate(float time, RotationInterpolation rotation = RotationInterpolation::EulerMultiTurn) const;
 		bool Empty() const { return Keys.empty(); }
 		float GetEndTime() const { return Keys.empty() ? 0.0f : Keys.back().Time; }
 
@@ -64,6 +70,7 @@ namespace Funke {
 		// Numeric tracks use Curve; asset/string/enum tracks use DiscreteKeys. A track never has both.
 		AnimationCurve Curve;
 		std::vector<DiscreteKeyframe> DiscreteKeys;
+		RotationInterpolation RotationMode = RotationInterpolation::EulerMultiTurn;
 
 		bool IsDiscrete() const { return !DiscreteKeys.empty(); }
 		float GetEndTime() const;
@@ -104,6 +111,8 @@ namespace Funke {
 
 	FUNKE_API const char* KeyInterpolationToString(KeyInterpolation interpolation);
 	FUNKE_API KeyInterpolation KeyInterpolationFromString(const std::string& name);
+	FUNKE_API const char* RotationInterpolationToString(RotationInterpolation mode);
+	FUNKE_API RotationInterpolation RotationInterpolationFromString(const std::string& name);
 
 	// Missing keys keep the defaults; keys and events are sorted on load so hand-written files work.
 	FUNKE_API Json::Value AnimationClipToJson(const AnimationClip& clip);

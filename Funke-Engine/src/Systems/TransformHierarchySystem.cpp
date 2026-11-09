@@ -3,13 +3,9 @@
 #include "Scene/Scene.hpp"
 #include "Components/General/Transform2DComponent.hpp"
 #include "Components/General/HierarchyComponent.hpp"
-#include "Components/Physics/BoxCollider2DComponent.hpp"
-#include "Components/Physics/CircleCollider2DComponent.hpp"
-#include "Components/Physics/PolygonCollider2DComponent.hpp"
-#include "Components/Physics/Rigidbody2DComponent.hpp"
-#include "Physics/PhysicsSystem2D.hpp"
-#include "Components/Tags.hpp"
 #include "Profiling/Profiler.hpp"
+
+#include <entt/container/dense_set.hpp>
 
 namespace Funke {
 	namespace {
@@ -22,7 +18,8 @@ namespace Funke {
 		};
 
 		void ProcessSubtree(entt::registry& registry, EntityHandle entity,
-			const Transform2DComponent* parentWorld, int depth, Transform2DPropagationStats& stats)
+			const Transform2DComponent* parentWorld, int depth, Transform2DPropagationStats& stats,
+			const Transform2DExternalAdapter& adapter)
 		{
 			if (depth > kMaxHierarchyDepth) return;
 			if (!registry.valid(entity)) return;
@@ -31,10 +28,10 @@ namespace Funke {
 			if (!tr) return;
 			++stats.TransformsVisited;
 
-			const bool ownedByPhysics = PhysicsSystem2D::IsTransformOwnedByPhysics(registry, entity);
+			const auto external = adapter.GetState ? adapter.GetState(registry, entity) : Transform2DExternalState{};
 			// A body's pending local edit (load, instantiation under a moved parent) gets its world pose now so scripts
 			// read it before the physics sync; the dirty flag stays set for that sync to move the body.
-			if (!ownedByPhysics || tr->IsDirty()) {
+			if (!external.OwnsWorldTransform || tr->IsDirty()) {
 				const Vec2 previousPosition = tr->Position;
 				const Vec2 previousScale = tr->Scale;
 				const float previousRotation = tr->Rotation;
@@ -50,7 +47,7 @@ namespace Funke {
 					tr->Scale = tr->LocalScale;
 				}
 				if (!tr->IsDirty()
-					&& registry.any_of<BoxCollider2DComponent, CircleCollider2DComponent, PolygonCollider2DComponent>(entity)
+					&& external.RetainsDirtyFlag
 					&& (tr->Position != previousPosition || tr->Scale != previousScale || tr->Rotation != previousRotation)) {
 					tr->MarkDirty();
 				}
@@ -60,53 +57,35 @@ namespace Funke {
 			for (size_t i = 0;; ++i) {
 				const HierarchyComponent* hierarchy = registry.try_get<HierarchyComponent>(entity);
 				if (!hierarchy || i >= hierarchy->Children.size()) break;
-				ProcessSubtree(registry, hierarchy->Children[i], tr, depth + 1, stats);
+				ProcessSubtree(registry, hierarchy->Children[i], tr, depth + 1, stats, adapter);
 			}
 
-			if (!ownedByPhysics
-				&& !registry.any_of<BoxCollider2DComponent, CircleCollider2DComponent, PolygonCollider2DComponent>(entity)) {
+			if (!external.OwnsWorldTransform && !external.RetainsDirtyFlag) {
 				tr->ClearDirty();
 			}
 		}
 
-		void ProcessRootTransform(entt::registry& registry, EntityHandle entity, Transform2DPropagationStats& stats) {
+		void ProcessRootTransform(entt::registry& registry, EntityHandle entity, Transform2DPropagationStats& stats,
+			const Transform2DExternalAdapter& adapter) {
 			if (!registry.valid(entity)) return;
 			auto* tr = registry.try_get<Transform2DComponent>(entity);
 			if (!tr) return;
 			++stats.TransformsVisited;
 
-			const bool ownedByPhysics = PhysicsSystem2D::IsTransformOwnedByPhysics(registry, entity);
-			if (!ownedByPhysics) {
+			const auto external = adapter.GetState ? adapter.GetState(registry, entity) : Transform2DExternalState{};
+			if (!external.OwnsWorldTransform) {
 				tr->Position = tr->LocalPosition;
 				tr->Rotation = tr->LocalRotation;
 				tr->Scale = tr->LocalScale;
 			}
 
-			if (!ownedByPhysics
-				&& !registry.any_of<BoxCollider2DComponent, CircleCollider2DComponent, PolygonCollider2DComponent>(entity)) {
+			if (!external.OwnsWorldTransform && !external.RetainsDirtyFlag) {
 				tr->ClearDirty();
 			}
 		}
 
-		void CollectBodyDrivenRoots(entt::registry& registry, std::vector<EntityHandle>& roots) {
-			auto rigidbodyView = registry.view<Rigidbody2DComponent, HierarchyComponent, Transform2DComponent>(entt::exclude<DisabledTag>);
-			for (auto entity : rigidbodyView) {
-				if (!registry.get<HierarchyComponent>(entity).Children.empty()) roots.push_back(entity);
-			}
-
-			for (const PhysicsExtension2D& extension : PhysicsSystem2D::GetExtensions()) {
-				const auto* bodies = extension.BodyComponent != 0 ? registry.storage(extension.BodyComponent) : nullptr;
-				if (!bodies) continue;
-				for (const EntityHandle entity : *bodies) {
-					if (registry.all_of<DisabledTag>(entity) || !registry.all_of<Transform2DComponent>(entity)) continue;
-					const HierarchyComponent* hierarchy = registry.try_get<HierarchyComponent>(entity);
-					if (hierarchy && !hierarchy->Children.empty()) roots.push_back(entity);
-				}
-			}
-		}
-
 		bool HasDirtyAncestor(const entt::registry& registry, EntityHandle entity,
-			const std::unordered_set<EntityHandle>& dirty)
+			const entt::dense_set<EntityHandle>& dirty)
 		{
 			int depth = 0;
 			const HierarchyComponent* hierarchy = registry.try_get<HierarchyComponent>(entity);
@@ -119,9 +98,10 @@ namespace Funke {
 
 		// Re-derives only the subtrees under dirty transforms; the topmost dirty ancestor covers its descendants.
 		void PropagateDirtySubtrees(entt::registry& registry, std::vector<EntityHandle>& dirtyTransforms,
-			Transform2DPropagationStats& stats) {
-			thread_local std::unordered_set<EntityHandle> t_DirtySet;
+			Transform2DPropagationStats& stats, const Transform2DExternalAdapter& adapter) {
+			thread_local entt::dense_set<EntityHandle> t_DirtySet;
 			t_DirtySet.clear();
+			t_DirtySet.reserve(dirtyTransforms.size());
 			std::erase_if(dirtyTransforms, [](EntityHandle entity) { return !t_DirtySet.insert(entity).second; });
 
 			for (EntityHandle entity : dirtyTransforms) {
@@ -133,12 +113,14 @@ namespace Funke {
 				{
 					parentWorld = registry.try_get<Transform2DComponent>(hierarchy->Parent);
 				}
-				ProcessSubtree(registry, entity, parentWorld, 0, stats);
+				ProcessSubtree(registry, entity, parentWorld, 0, stats, adapter);
 			}
 		}
 
 		void RunPropagation(Scene& scene) {
 			auto& registry = scene.GetRegistry();
+			const auto* registeredAdapter = registry.ctx().find<Transform2DExternalAdapter>();
+			const auto adapter = registeredAdapter ? *registeredAdapter : Transform2DExternalAdapter{};
 			auto* state = registry.ctx().find<PropagationState>();
 			if (!state) state = &registry.ctx().emplace<PropagationState>();
 			state->Stats = {};
@@ -146,8 +128,8 @@ namespace Funke {
 
 			const bool hasHierarchy = registry.view<HierarchyComponent>().size() > 0;
 			const bool dirtyAll = scene.IsTransformDirtyAll();
-			if (hasHierarchy && !dirtyAll) {
-				CollectBodyDrivenRoots(registry, state->Roots);
+			if (hasHierarchy && !dirtyAll && adapter.CollectDrivenRoots) {
+				adapter.CollectDrivenRoots(registry, state->Roots);
 				state->Stats.PhysicsRoots = state->Roots.size();
 			}
 			if (!scene.HasDirtyTransforms() && state->Roots.empty()) {
@@ -163,12 +145,12 @@ namespace Funke {
 				if (dirtyAll) {
 					auto all = registry.view<Transform2DComponent>();
 					for (auto entity : all) {
-						ProcessRootTransform(registry, entity, state->Stats);
+						ProcessRootTransform(registry, entity, state->Stats, adapter);
 					}
 				}
 				else {
 					for (EntityHandle entity : dirtyTransforms) {
-						ProcessRootTransform(registry, entity, state->Stats);
+						ProcessRootTransform(registry, entity, state->Stats, adapter);
 					}
 				}
 				return;
@@ -176,13 +158,13 @@ namespace Funke {
 
 			if (!dirtyAll) {
 				state->Roots.insert(state->Roots.end(), dirtyTransforms.begin(), dirtyTransforms.end());
-				PropagateDirtySubtrees(registry, state->Roots, state->Stats);
+				PropagateDirtySubtrees(registry, state->Roots, state->Stats, adapter);
 				return;
 			}
 
 			auto orphanRoots = registry.view<Transform2DComponent>(entt::exclude<HierarchyComponent>);
 			for (auto entity : orphanRoots) {
-				ProcessSubtree(registry, entity, nullptr, 0, state->Stats);
+				ProcessSubtree(registry, entity, nullptr, 0, state->Stats, adapter);
 			}
 
 			auto parented = registry.view<Transform2DComponent, HierarchyComponent>();
@@ -190,7 +172,7 @@ namespace Funke {
 				if (parented.get<HierarchyComponent>(entity).Parent != entt::null) {
 					continue;
 				}
-				ProcessSubtree(registry, entity, nullptr, 0, state->Stats);
+				ProcessSubtree(registry, entity, nullptr, 0, state->Stats, adapter);
 			}
 		}
 	}

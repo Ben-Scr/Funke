@@ -1,5 +1,6 @@
 #pragma once
 #include "Core/Export.hpp"
+#include "Scene/EntityHandle.hpp"
 
 #include <string>
 #include <string_view>
@@ -20,6 +21,7 @@ namespace Funke {
 		// The scene is being unloaded or destroyed: drop everything keyed by it and
 		// disconnect registry signals. May be called more than once per scene.
 		void (*OnSceneDestroyed)(Scene& scene) = nullptr;
+		void (*OnEntityEnabledChanged)(Scene& scene, EntityHandle entity, bool enabled) = nullptr;
 	};
 
 	namespace SceneExtensions {
@@ -30,6 +32,7 @@ namespace Funke {
 		FUNKE_API void Unregister(std::string_view name);
 
 		void NotifySceneCreated(Scene& scene);
+		void NotifyEntityEnabledChanged(Scene& scene, EntityHandle entity, bool enabled);
 		void NotifyRuntimeStateInitialized(Scene& scene);
 		void NotifySceneDestroyed(Scene& scene);
 	}

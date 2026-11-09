@@ -162,7 +162,10 @@ namespace Funke::EngineSdk {
 		if (const auto* variants = document.FindMember("runtimeVariants")) {
 			if (!variants->IsObject()) return fail("runtimeVariants must be an object.");
 			for (const auto& [id, profiles] : variants->GetObject()) {
-				if (id != "2d" && id != "3d" && id != "nomodules") return fail("Unknown runtime variant: " + id);
+				if (id != "2d" && id != "3d" && id != "nomodules"
+					&& id != "v2-nomodules" && id != "v2-2d" && id != "v2-3d" && id != "v2-2d-3d"
+					&& id != "v2-2d-physics2d" && id != "v2-3d-physics3d"
+					&& id != "v2-2d-3d-physics2d" && id != "v2-2d-3d-physics3d") return fail("Unknown runtime variant: " + id);
 				if (!ReadRuntimePaths(profiles, result.Root, result.RuntimeVariants[id], runtimeError, false)) return fail(id + ": " + runtimeError);
 			}
 		}

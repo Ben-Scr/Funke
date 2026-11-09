@@ -40,6 +40,7 @@ namespace Funke::Icons {
 		OpenFolder,
 		FileManager,
 		Copy,
+		Templates,
 		Info,
 		Download,
 	};
@@ -68,6 +69,7 @@ namespace Funke::Icons {
 			case Type::OpenFolder:  return "open_folder";
 			case Type::FileManager: return "file_manager";
 			case Type::Copy:        return "copy";
+			case Type::Templates:   return "templates";
 			case Type::Info:        return "info";
 			case Type::Download:    return "download";
 			}

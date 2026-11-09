@@ -20,9 +20,7 @@ namespace Funke {
 		size_t TotalFreed = 0;
 	};
 
-	// Plain-value snapshot for diagnostic readers. Returned by value under the
-	// stats mutex so the diagnostic panel can't tear-read while a worker thread
-	// is mid-update.
+	// Both counters are copied under the same lock.
 	struct AllocationStatsSnapshot
 	{
 		size_t TotalAllocated = 0;
@@ -38,8 +36,7 @@ namespace Funke {
 
 	namespace Memory
 	{
-		// Reference-returning legacy accessor: kept for source compatibility but
-		// races with concurrent allocations. Prefer GetAllocationStatsSnapshot.
+		[[deprecated("Races with concurrent allocations; use GetAllocationStatsSnapshot().")]]
 		FUNKE_API const AllocationStats& GetAllocationStats();
 		FUNKE_API AllocationStatsSnapshot GetAllocationStatsSnapshot();
 	}
@@ -84,7 +81,7 @@ namespace Funke {
 	};
 
 
-	class Allocator
+	class FUNKE_API Allocator
 	{
 	public:
 		static void Init();

@@ -289,6 +289,8 @@ namespace Funke {
 		auto command = std::make_unique<SceneTransferCommand>();
 		command->m_Source = source;
 		command->m_Target = target;
+		command->m_SourceName = source->GetName();
+		command->m_TargetName = target->GetName();
 		command->m_Before = { CaptureTopLevel(*source, roots), RootIds(*source), CaptureStructureReferences(*source) };
 		if (command->m_Before.Roots.empty()) return nullptr;
 		command->m_After.Roots = command->m_Before.Roots;
@@ -328,6 +330,16 @@ namespace Funke {
 		const auto target = m_Target.lock();
 		return source && target && (source->IsDetached() || source->IsLoaded())
 			&& (target->IsDetached() || target->IsLoaded());
+	}
+
+	std::string SceneTransferCommand::GetUnavailableReason() const {
+		for (const auto& [owner, name] : { std::pair{ m_Source, m_SourceName }, std::pair{ m_Target, m_TargetName } }) {
+			const auto scene = owner.lock();
+			if (!scene || (!scene->IsDetached() && !scene->IsLoaded())) {
+				return "Scene '" + name + "' is no longer open. Reopening creates a new scene instance; this linked step needs the original histories.";
+			}
+		}
+		return {};
 	}
 
 	void SceneTransferCommand::Undo(Scene&) {

@@ -36,6 +36,8 @@ namespace Funke {
 			std::string Message;
 			Level Level = Level::Info;
 			Type Source = Type::Core;
+			std::string SourceFile;
+			int SourceLine = 0;
 		};
 
 		static void Initialize();
@@ -79,6 +81,23 @@ namespace Funke {
 		static void PrintMessage(Type type, Level level, std::string_view message);
 		static void PrintMessageTag(Type type, Level level, std::string_view tag, std::string_view message);
 
+		static void PrintMessageAt(spdlog::source_loc location, Type type, Level level, std::string_view message);
+		static void PrintMessageTagAt(spdlog::source_loc location, Type type, Level level, std::string_view tag, std::string_view message);
+
+		template <typename... Args>
+		static void PrintMessageAt(spdlog::source_loc location, Type type, Level level, fmt::format_string<Args...> format, Args&&... args) {
+			if (!EnsureInitialized() || !ShouldLog(type, level)) return;
+			const std::string message = fmt::format(format, std::forward<Args>(args)...);
+			PrintMessageAt(location, type, level, std::string_view(message));
+		}
+
+		template <typename... Args>
+		static void PrintMessageTagAt(spdlog::source_loc location, Type type, Level level, std::string_view tag, fmt::format_string<Args...> format, Args&&... args) {
+			if (!EnsureInitialized() || !ShouldLog(type, level)) return;
+			const std::string message = fmt::format(format, std::forward<Args>(args)...);
+			PrintMessageTagAt(location, type, level, tag, std::string_view(message));
+		}
+
 		static const char* LevelToString(Level level);
 
 	private:
@@ -86,7 +105,7 @@ namespace Funke {
 		static std::shared_ptr<spdlog::logger> SelectLogger(Type type);
 		static spdlog::level::level_enum ToSpdlogLevel(Level level);
 		static bool ShouldLog(Type type, Level level);
-		static void Emit(std::shared_ptr<spdlog::logger>& logger, Level level, std::string_view message);
+		static void Emit(std::shared_ptr<spdlog::logger>& logger, Level level, std::string_view message, spdlog::source_loc location = {});
 
 		// Out-of-line in Log.cpp: inline-static would give the editor EXE and engine DLL separate logger instances across the DLL boundary.
 		static std::mutex s_StateMutex;
@@ -98,32 +117,32 @@ namespace Funke {
 
 } // namespace Funke
 
-#define FNK_CORE_TRACE(...) ::Funke::Log::PrintMessage(::Funke::Log::Type::Core, ::Funke::Log::Level::Trace, __VA_ARGS__)
-#define FNK_CORE_INFO(...) ::Funke::Log::PrintMessage(::Funke::Log::Type::Core, ::Funke::Log::Level::Info, __VA_ARGS__)
-#define FNK_CORE_WARN(...) ::Funke::Log::PrintMessage(::Funke::Log::Type::Core, ::Funke::Log::Level::Warn, __VA_ARGS__)
-#define FNK_CORE_ERROR(...) ::Funke::Log::PrintMessage(::Funke::Log::Type::Core, ::Funke::Log::Level::Error, __VA_ARGS__)
-#define FNK_CORE_FATAL(...) ::Funke::Log::PrintMessage(::Funke::Log::Type::Core, ::Funke::Log::Level::Critical, __VA_ARGS__)
+#define FNK_CORE_TRACE(...) ::Funke::Log::PrintMessageAt({__FILE__, __LINE__, __func__}, ::Funke::Log::Type::Core, ::Funke::Log::Level::Trace, __VA_ARGS__)
+#define FNK_CORE_INFO(...) ::Funke::Log::PrintMessageAt({__FILE__, __LINE__, __func__}, ::Funke::Log::Type::Core, ::Funke::Log::Level::Info, __VA_ARGS__)
+#define FNK_CORE_WARN(...) ::Funke::Log::PrintMessageAt({__FILE__, __LINE__, __func__}, ::Funke::Log::Type::Core, ::Funke::Log::Level::Warn, __VA_ARGS__)
+#define FNK_CORE_ERROR(...) ::Funke::Log::PrintMessageAt({__FILE__, __LINE__, __func__}, ::Funke::Log::Type::Core, ::Funke::Log::Level::Error, __VA_ARGS__)
+#define FNK_CORE_FATAL(...) ::Funke::Log::PrintMessageAt({__FILE__, __LINE__, __func__}, ::Funke::Log::Type::Core, ::Funke::Log::Level::Critical, __VA_ARGS__)
 
-#define FNK_TRACE(...) ::Funke::Log::PrintMessage(::Funke::Log::Type::Client, ::Funke::Log::Level::Trace, __VA_ARGS__)
-#define FNK_INFO(...) ::Funke::Log::PrintMessage(::Funke::Log::Type::Client, ::Funke::Log::Level::Info, __VA_ARGS__)
-#define FNK_WARN(...) ::Funke::Log::PrintMessage(::Funke::Log::Type::Client, ::Funke::Log::Level::Warn, __VA_ARGS__)
-#define FNK_ERROR(...) ::Funke::Log::PrintMessage(::Funke::Log::Type::Client, ::Funke::Log::Level::Error, __VA_ARGS__)
-#define FNK_FATAL(...) ::Funke::Log::PrintMessage(::Funke::Log::Type::Client, ::Funke::Log::Level::Critical, __VA_ARGS__)
+#define FNK_TRACE(...) ::Funke::Log::PrintMessageAt({__FILE__, __LINE__, __func__}, ::Funke::Log::Type::Client, ::Funke::Log::Level::Trace, __VA_ARGS__)
+#define FNK_INFO(...) ::Funke::Log::PrintMessageAt({__FILE__, __LINE__, __func__}, ::Funke::Log::Type::Client, ::Funke::Log::Level::Info, __VA_ARGS__)
+#define FNK_WARN(...) ::Funke::Log::PrintMessageAt({__FILE__, __LINE__, __func__}, ::Funke::Log::Type::Client, ::Funke::Log::Level::Warn, __VA_ARGS__)
+#define FNK_ERROR(...) ::Funke::Log::PrintMessageAt({__FILE__, __LINE__, __func__}, ::Funke::Log::Type::Client, ::Funke::Log::Level::Error, __VA_ARGS__)
+#define FNK_FATAL(...) ::Funke::Log::PrintMessageAt({__FILE__, __LINE__, __func__}, ::Funke::Log::Type::Client, ::Funke::Log::Level::Critical, __VA_ARGS__)
 
-#define FNK_CORE_TRACE_TAG(tag, ...) ::Funke::Log::PrintMessageTag(::Funke::Log::Type::Core, ::Funke::Log::Level::Trace, tag, __VA_ARGS__)
-#define FNK_CORE_INFO_TAG(tag, ...) ::Funke::Log::PrintMessageTag(::Funke::Log::Type::Core, ::Funke::Log::Level::Info, tag, __VA_ARGS__)
-#define FNK_CORE_WARN_TAG(tag, ...) ::Funke::Log::PrintMessageTag(::Funke::Log::Type::Core, ::Funke::Log::Level::Warn, tag, __VA_ARGS__)
-#define FNK_CORE_ERROR_TAG(tag, ...) ::Funke::Log::PrintMessageTag(::Funke::Log::Type::Core, ::Funke::Log::Level::Error, tag, __VA_ARGS__)
-#define FNK_CORE_FATAL_TAG(tag, ...) ::Funke::Log::PrintMessageTag(::Funke::Log::Type::Core, ::Funke::Log::Level::Critical, tag, __VA_ARGS__)
+#define FNK_CORE_TRACE_TAG(tag, ...) ::Funke::Log::PrintMessageTagAt({__FILE__, __LINE__, __func__}, ::Funke::Log::Type::Core, ::Funke::Log::Level::Trace, tag, __VA_ARGS__)
+#define FNK_CORE_INFO_TAG(tag, ...) ::Funke::Log::PrintMessageTagAt({__FILE__, __LINE__, __func__}, ::Funke::Log::Type::Core, ::Funke::Log::Level::Info, tag, __VA_ARGS__)
+#define FNK_CORE_WARN_TAG(tag, ...) ::Funke::Log::PrintMessageTagAt({__FILE__, __LINE__, __func__}, ::Funke::Log::Type::Core, ::Funke::Log::Level::Warn, tag, __VA_ARGS__)
+#define FNK_CORE_ERROR_TAG(tag, ...) ::Funke::Log::PrintMessageTagAt({__FILE__, __LINE__, __func__}, ::Funke::Log::Type::Core, ::Funke::Log::Level::Error, tag, __VA_ARGS__)
+#define FNK_CORE_FATAL_TAG(tag, ...) ::Funke::Log::PrintMessageTagAt({__FILE__, __LINE__, __func__}, ::Funke::Log::Type::Core, ::Funke::Log::Level::Critical, tag, __VA_ARGS__)
 
-#define FNK_TRACE_TAG(tag, ...) ::Funke::Log::PrintMessageTag(::Funke::Log::Type::Client, ::Funke::Log::Level::Trace, tag, __VA_ARGS__)
-#define FNK_INFO_TAG(tag, ...) ::Funke::Log::PrintMessageTag(::Funke::Log::Type::Client, ::Funke::Log::Level::Info, tag, __VA_ARGS__)
-#define FNK_WARN_TAG(tag, ...) ::Funke::Log::PrintMessageTag(::Funke::Log::Type::Client, ::Funke::Log::Level::Warn, tag, __VA_ARGS__)
-#define FNK_ERROR_TAG(tag, ...) ::Funke::Log::PrintMessageTag(::Funke::Log::Type::Client, ::Funke::Log::Level::Error, tag, __VA_ARGS__)
-#define FNK_FATAL_TAG(tag, ...) ::Funke::Log::PrintMessageTag(::Funke::Log::Type::Client, ::Funke::Log::Level::Critical, tag, __VA_ARGS__)
+#define FNK_TRACE_TAG(tag, ...) ::Funke::Log::PrintMessageTagAt({__FILE__, __LINE__, __func__}, ::Funke::Log::Type::Client, ::Funke::Log::Level::Trace, tag, __VA_ARGS__)
+#define FNK_INFO_TAG(tag, ...) ::Funke::Log::PrintMessageTagAt({__FILE__, __LINE__, __func__}, ::Funke::Log::Type::Client, ::Funke::Log::Level::Info, tag, __VA_ARGS__)
+#define FNK_WARN_TAG(tag, ...) ::Funke::Log::PrintMessageTagAt({__FILE__, __LINE__, __func__}, ::Funke::Log::Type::Client, ::Funke::Log::Level::Warn, tag, __VA_ARGS__)
+#define FNK_ERROR_TAG(tag, ...) ::Funke::Log::PrintMessageTagAt({__FILE__, __LINE__, __func__}, ::Funke::Log::Type::Client, ::Funke::Log::Level::Error, tag, __VA_ARGS__)
+#define FNK_FATAL_TAG(tag, ...) ::Funke::Log::PrintMessageTagAt({__FILE__, __LINE__, __func__}, ::Funke::Log::Type::Client, ::Funke::Log::Level::Critical, tag, __VA_ARGS__)
 
-#define FNK_CONSOLE_LOG_TRACE(...) ::Funke::Log::PrintMessage(::Funke::Log::Type::EditorConsole, ::Funke::Log::Level::Trace, __VA_ARGS__)
-#define FNK_CONSOLE_LOG_INFO(...) ::Funke::Log::PrintMessage(::Funke::Log::Type::EditorConsole, ::Funke::Log::Level::Info, __VA_ARGS__)
-#define FNK_CONSOLE_LOG_WARN(...) ::Funke::Log::PrintMessage(::Funke::Log::Type::EditorConsole, ::Funke::Log::Level::Warn, __VA_ARGS__)
-#define FNK_CONSOLE_LOG_ERROR(...) ::Funke::Log::PrintMessage(::Funke::Log::Type::EditorConsole, ::Funke::Log::Level::Error, __VA_ARGS__)
-#define FNK_CONSOLE_LOG_FATAL(...) ::Funke::Log::PrintMessage(::Funke::Log::Type::EditorConsole, ::Funke::Log::Level::Critical, __VA_ARGS__)
+#define FNK_CONSOLE_LOG_TRACE(...) ::Funke::Log::PrintMessageAt({__FILE__, __LINE__, __func__}, ::Funke::Log::Type::EditorConsole, ::Funke::Log::Level::Trace, __VA_ARGS__)
+#define FNK_CONSOLE_LOG_INFO(...) ::Funke::Log::PrintMessageAt({__FILE__, __LINE__, __func__}, ::Funke::Log::Type::EditorConsole, ::Funke::Log::Level::Info, __VA_ARGS__)
+#define FNK_CONSOLE_LOG_WARN(...) ::Funke::Log::PrintMessageAt({__FILE__, __LINE__, __func__}, ::Funke::Log::Type::EditorConsole, ::Funke::Log::Level::Warn, __VA_ARGS__)
+#define FNK_CONSOLE_LOG_ERROR(...) ::Funke::Log::PrintMessageAt({__FILE__, __LINE__, __func__}, ::Funke::Log::Type::EditorConsole, ::Funke::Log::Level::Error, __VA_ARGS__)
+#define FNK_CONSOLE_LOG_FATAL(...) ::Funke::Log::PrintMessageAt({__FILE__, __LINE__, __func__}, ::Funke::Log::Type::EditorConsole, ::Funke::Log::Level::Critical, __VA_ARGS__)

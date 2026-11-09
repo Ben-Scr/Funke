@@ -124,6 +124,7 @@ namespace Funke {
             // True when the UUID is in the reserved runtime range (lets the
             // asset layer skip file-path resolution for these).
             static bool IsRuntimeTextureUUID(uint64_t uuid);
+		static size_t GetRuntimeTextureCount();
 
 		private:
 			static TextureHandle FindTextureByPath(const std::string& path, Filter filter, Wrap u, Wrap v);

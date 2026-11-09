@@ -1,4 +1,5 @@
 #include <doctest/doctest.h>
+#include "Components/General/NameComponent.hpp"
 
 #include "Audio/AudioManager.hpp"
 #include "Audio/AudioSpatial.hpp"
@@ -550,7 +551,9 @@ TEST_CASE("The audio listener follows the main Camera3D") {
 	AudioListenerState listener;
 	CHECK_FALSE(AudioUpdateSystem::FindListener(*scene, listener));
 
-	Entity camera = scene->CreateEntity("Camera");
+	Entity camera = scene->CreateEmptyEntity();
+
+	camera.AddComponent<NameComponent>("Camera");
 	auto& transform = camera.AddComponent<Transform3DComponent>();
 	transform.Position = { 1.0f, 2.0f, 3.0f };
 	transform.Rotation = { 0.0f, 90.0f, 0.0f };
@@ -569,7 +572,7 @@ TEST_CASE("The audio listener follows the main Camera3D") {
 
 TEST_CASE("Spatial AudioSources take their entity's position and velocity") {
 	auto scene = Scene::CreateDetachedScene("SpatialAudioSync");
-	Entity entity = scene->CreateEntity("Minecart");
+	Entity entity = scene->CreateEmptyEntity();
 	auto& transform = entity.AddComponent<Transform3DComponent>();
 	auto& audio = entity.AddComponent<AudioSourceComponent>();
 	transform.Position = { 1.0f, 0.0f, 0.0f };

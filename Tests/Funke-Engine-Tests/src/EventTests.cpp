@@ -1,12 +1,65 @@
 #include <doctest/doctest.h>
 
 #include "Utils/Event.hpp"
+#include "Events/EventBus.hpp"
+#include "Events/ScenePostStartEvent.hpp"
 
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 using namespace Funke;
+
+namespace Funke {
+	struct EventBusTestAccess {
+		static void Publish(EventBus& bus) {
+			ScenePostStartEvent event("Event regression");
+			bus.Publish(event);
+		}
+	};
+}
+
+TEST_CASE("Backlog EventBus keeps callback state through nested dispatch and subscription changes") {
+	EventBus bus;
+	std::vector<int> calls;
+	EventId self, later;
+	self = bus.Subscribe([&, count = 0](FunkeEvent&) mutable {
+		calls.push_back(++count);
+		if (count == 1) {
+			for (int i = 0; i < 64; ++i) bus.Subscribe([](FunkeEvent&) {});
+			bus.Unsubscribe(later);
+			EventBusTestAccess::Publish(bus);
+		} else {
+			bus.Unsubscribe(self);
+		}
+	});
+	later = bus.Subscribe([&](FunkeEvent&) { calls.push_back(99); });
+	EventBusTestAccess::Publish(bus);
+	EventBusTestAccess::Publish(bus);
+	CHECK(calls == std::vector<int>{1, 2});
+}
+
+TEST_CASE("Backlog EventBus clears listeners and recovers ownership after a throwing callback") {
+	EventBus bus;
+	auto owner = std::make_shared<int>(7);
+	std::weak_ptr<int> lifetime = owner;
+	int calls = 0;
+	bus.Subscribe([&, owner](FunkeEvent&) {
+		bus.Clear();
+		CHECK_FALSE(lifetime.expired());
+		bus.Subscribe([&](FunkeEvent&) { ++calls; });
+		throw std::runtime_error("expected callback failure");
+	});
+	owner.reset();
+	bus.Subscribe([&](FunkeEvent&) { calls += 100; });
+	CHECK_THROWS_AS(EventBusTestAccess::Publish(bus), std::runtime_error);
+	CHECK(lifetime.expired());
+	EventBusTestAccess::Publish(bus);
+	CHECK(calls == 1);
+	bus.Clear();
+	EventBusTestAccess::Publish(bus);
+	CHECK(calls == 1);
+}
 
 TEST_CASE("A subscribed handler fires on Invoke with the right argument") {
 	Event<int> event;

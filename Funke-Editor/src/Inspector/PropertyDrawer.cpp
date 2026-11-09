@@ -14,6 +14,7 @@
 #include "Gui/SpriteSliceDragPayload.hpp"
 #include "Inspector/PropertyType.hpp"
 #include "Inspector/PropertyValue.hpp"
+#include "Inspector/ScriptCollectionValue.hpp"
 #include "Inspector/PropertyJson.hpp"
 #include "Inspector/PropertyValidation.hpp"
 #include "Inspector/ReferencePicker.hpp"
@@ -376,8 +377,15 @@ namespace Funke::PropertyDrawer {
 				}
 			}
 
-			if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ASSET_BROWSER_ITEM")) {
+			if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ASSET_BROWSER_ITEM",
+				kind == AssetKind::Shader ? ImGuiDragDropFlags_AcceptBeforeDelivery : 0)) {
 				const uint64_t assetId = ResolveDroppedAssetId(payload);
+				if (kind == AssetKind::Shader && (assetId == 0 || AssetRegistry::GetKind(assetId) != AssetKind::Shader)) {
+					ImGui::SetTooltip("Shader slots require a .wgsl file. Other shader sources must be ported to WGSL first.");
+					if (payload->IsDelivery()) FNK_CORE_WARN_TAG("Inspector", "Shader assignment rejected: select a .wgsl file; other shader sources must be ported to WGSL first.");
+					return false;
+				}
+				if (!payload->IsDelivery()) return false;
 				if (assetId != 0 && AssetRegistry::GetKind(assetId) == kind) {
 					outValue.UIntValue = assetId;
 					// Plain texture drops must clear stale slice UVs from the previous reference.
@@ -895,7 +903,7 @@ namespace Funke::PropertyDrawer {
 			bool changed = false;
 			ImGui::PushID(d.Name.c_str());
 			ImGuiUtils::BeginInspectorFieldRow(d.DisplayName.c_str());
-			if (ImGui::BeginCombo("##Value", preview)) {
+			if (EditorUI::BeginCombo("##Value", preview)) {
 				for (const auto& opt : d.Metadata.Enum->Options) {
 					const bool isSelected = uniform && (v.IntValue == opt.Value);
 					if (ImGui::Selectable(opt.Name.c_str(), isSelected)) {
@@ -907,7 +915,7 @@ namespace Funke::PropertyDrawer {
 					}
 					if (isSelected) ImGui::SetItemDefaultFocus();
 				}
-				ImGui::EndCombo();
+				EditorUI::EndCombo();
 			}
 			ImGui::PopID();
 			return changed;
@@ -966,7 +974,7 @@ namespace Funke::PropertyDrawer {
 			bool changed = false;
 			ImGui::PushID(d.Name.c_str());
 			ImGuiUtils::BeginInspectorFieldRow(d.DisplayName.c_str());
-			if (ImGui::BeginCombo("##Value", preview.c_str())) {
+			if (EditorUI::BeginCombo("##Value", preview.c_str())) {
 				for (std::size_t b = 0; b < d.Metadata.Enum->Options.size(); ++b) {
 					const auto& opt = d.Metadata.Enum->Options[b];
 					if (opt.Value == 0) continue;
@@ -993,7 +1001,7 @@ namespace Funke::PropertyDrawer {
 					if (bitMixed[b]) ImGui::PopItemFlag();
 					ImGui::PopID();
 				}
-				ImGui::EndCombo();
+				EditorUI::EndCombo();
 			}
 			ImGui::PopID();
 			(void)sampleAll;
@@ -1346,12 +1354,7 @@ namespace Funke::PropertyDrawer {
 				}
 				else {
 					const AssetKind kind = assetKindFor();
-					if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ASSET_BROWSER_ITEM")) {
-						const uint64_t assetId = ResolveDroppedAssetId(payload);
-						if (assetId != 0 && AssetRegistry::GetKind(assetId) == kind) {
-							item.UIntValue = assetId; item.StringValue.clear(); changed = true;
-						}
-					}
+					changed |= AcceptAssetReferencePayload(kind, item, !meta.SuppressTextureSlices);
 				}
 				ImGui::EndDragDropTarget();
 			}
@@ -1388,9 +1391,10 @@ namespace Funke::PropertyDrawer {
 		// A list row's drag handle (left gutter): click selects (Ctrl toggles,
 		// Shift selects a range from the anchor); dragging it reorders. Shared by
 		// scalar/reference rows and object-element headers.
-		void DrawListRowHandle(int idx, ListSelectionState& sel, int count,
+		void DrawListRowHandle(ImGuiID listId, int idx, ListSelectionState& sel, int count,
 			float handleW, float rowH, ImDrawList* dl, int& moveFrom, int& moveTo)
 		{
+			struct ReorderPayload { ImGuiID Owner; int Index; };
 			ImGui::InvisibleButton("##handle", ImVec2(handleW, rowH));
 			if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
 				const ImGuiIO& io = ImGui::GetIO();
@@ -1411,7 +1415,8 @@ namespace Funke::PropertyDrawer {
 				}
 			}
 			if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None)) {
-				ImGui::SetDragDropPayload("LIST_ITEM_REORDER", &idx, sizeof(int));
+				const ReorderPayload item{ listId, idx };
+				ImGui::SetDragDropPayload("LIST_ITEM_REORDER", &item, sizeof(item));
 				if (const uint64_t moveIcon = EditorIcons::Get("move", 16)) {
 						ImGui::Image(static_cast<ImTextureID>(static_cast<intptr_t>(moveIcon)), ImVec2(14, 14), ImVec2(0, 1), ImVec2(1, 0));
 						ImGui::SameLine();
@@ -1421,8 +1426,10 @@ namespace Funke::PropertyDrawer {
 			}
 			if (ImGui::BeginDragDropTarget()) {
 				if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload("LIST_ITEM_REORDER")) {
-					moveFrom = *static_cast<const int*>(p->Data);
-					moveTo = idx;
+					if (p->DataSize == sizeof(ReorderPayload)) {
+						const auto& item = *static_cast<const ReorderPayload*>(p->Data);
+						if (item.Owner == listId) { moveFrom = item.Index; moveTo = idx; }
+					}
 				}
 				ImGui::EndDragDropTarget();
 			}
@@ -1513,9 +1520,15 @@ namespace Funke::PropertyDrawer {
 				break;
 			}
 			case PropertyType::String: {
-				char buf[1024]{};
-				std::snprintf(buf, sizeof(buf), "%s", item.StringValue.c_str());
-				if (ImGui::InputText("##v", buf, sizeof(buf))) { item.StringValue = buf; changed = true; }
+				std::vector<char> buffer(std::max<size_t>(1024, item.StringValue.size() + 1024), 0);
+				std::copy(item.StringValue.begin(), item.StringValue.end(), buffer.begin());
+				const bool hasNullCharacter = item.StringValue.find('\0') != std::string::npos;
+				if (hasNullCharacter) ImGui::BeginDisabled();
+				if (ImGui::InputText("##v", buffer.data(), buffer.size())) { item.StringValue = buffer.data(); changed = true; }
+				if (hasNullCharacter) {
+					ImGui::EndDisabled();
+					if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Text contains a null character; the stored value is preserved.");
+				}
 				break;
 			}
 			case PropertyType::Vec2: {
@@ -1546,13 +1559,13 @@ namespace Funke::PropertyDrawer {
 					for (const auto& opt : meta.Enum->Options) {
 						if (opt.Value == item.IntValue) { preview = opt.Name.c_str(); break; }
 					}
-					if (ImGui::BeginCombo("##v", preview)) {
+					if (EditorUI::BeginCombo("##v", preview)) {
 						for (const auto& opt : meta.Enum->Options) {
 							const bool isSelected = (opt.Value == item.IntValue);
 							if (ImGui::Selectable(opt.Name.c_str(), isSelected)) { item.IntValue = opt.Value; changed = true; }
 							if (isSelected) ImGui::SetItemDefaultFocus();
 						}
-						ImGui::EndCombo();
+						EditorUI::EndCombo();
 					}
 				}
 				break;
@@ -1570,7 +1583,7 @@ namespace Funke::PropertyDrawer {
 						}
 					}
 					if (preview.empty()) preview = "None";
-					if (ImGui::BeginCombo("##v", preview.c_str())) {
+					if (EditorUI::BeginCombo("##v", preview.c_str())) {
 						for (const auto& opt : meta.Enum->Options) {
 							if (opt.Value == 0) continue;
 							bool on = (item.IntValue & opt.Value) == opt.Value;
@@ -1581,7 +1594,7 @@ namespace Funke::PropertyDrawer {
 								changed = true;
 							}
 						}
-						ImGui::EndCombo();
+						EditorUI::EndCombo();
 					}
 				}
 				break;
@@ -1656,7 +1669,7 @@ namespace Funke::PropertyDrawer {
 		}
 
 		bool DrawList(std::span<const Entity> entities, const PropertyDescriptor& d,
-			const std::string& fieldKey) {
+			const std::string& fieldKey, bool recordUndo = true, bool nullableStrings = false) {
 			PropertyValue v;
 			const bool uniform = SampleUniform(entities, d, v);
 			std::vector<PropertyValue> items = v.ListValue;
@@ -1725,6 +1738,7 @@ namespace Funke::PropertyDrawer {
 			const float rowH = ImGui::GetFrameHeight();
 			const float handleW = ImGui::GetFrameHeight();
 			const bool isObjectList = !d.Metadata.ListItemFields.empty();
+			const ImGuiID listId = ImGui::GetID("##listOwner");
 
 			for (std::size_t i = 0; i < items.size(); ++i) {
 				ImGui::PushID(static_cast<int>(i));
@@ -1750,7 +1764,7 @@ namespace Funke::PropertyDrawer {
 					const ImVec2 slotMin = ImGui::GetCursorScreenPos();
 					const float slotW = ImGui::GetContentRegionAvail().x;
 					ImGui::BeginGroup();
-					DrawListRowHandle(idx, sel, static_cast<int>(items.size()), handleW, rowH, dl, moveFrom, moveTo);
+					DrawListRowHandle(listId, idx, sel, static_cast<int>(items.size()), handleW, rowH, dl, moveFrom, moveTo);
 					ImGui::SameLine(0.0f, style.ItemSpacing.x);
 
 					const std::string header = "Element " + std::to_string(i) + "##el";
@@ -1818,7 +1832,7 @@ namespace Funke::PropertyDrawer {
 					dl->AddRect(rowMin, rowMax, colCardBorder, rounding, 0, 1.0f);
 				// (selection outline drawn AFTER the value widget below so it can't be clipped)
 
-				DrawListRowHandle(idx, sel, static_cast<int>(items.size()), handleW, rowH, dl, moveFrom, moveTo);
+				DrawListRowHandle(listId, idx, sel, static_cast<int>(items.size()), handleW, rowH, dl, moveFrom, moveTo);
 				DrawListElementContextMenu("##elemCtx", items, idx, itemType, d.Metadata, duplicateIdx, pasteIdx);
 
 				ImGui::SameLine(0.0f, style.ItemSpacing.x);
@@ -1826,7 +1840,17 @@ namespace Funke::PropertyDrawer {
 
 				const std::string rowKey = fieldKey + "/" + std::to_string(i);
 				PropertyValue& item = items[i];
-				if (DrawListItemValue(itemType, d.Metadata, item, rowKey, widgetWidth)) changed = true;
+				bool nullItem = item.Type == PropertyType::None;
+				if (nullableStrings && itemType == PropertyType::String) {
+					if (ImGui::Checkbox("Null", &nullItem)) {
+						item = PropertyValue{};
+						item.Type = nullItem ? PropertyType::None : PropertyType::String;
+						changed = true;
+					}
+					ImGui::SameLine();
+				}
+				if (!nullItem && DrawListItemValue(itemType, d.Metadata, item, rowKey,
+					std::min(widgetWidth, ImGui::GetContentRegionAvail().x))) changed = true;
 
 				if (isSel) dl->AddRect(rowMin, rowMax, colSelBorder, rounding, 0, 1.5f);
 
@@ -1914,7 +1938,155 @@ namespace Funke::PropertyDrawer {
 				PropertyValue out;
 				out.Type = PropertyType::List;
 				out.ListValue = std::move(items);
-				WriteAll(entities, d, out);
+				if (recordUndo) WriteAll(entities, d, out);
+				else for (const Entity& e : entities) d.Set(const_cast<Entity&>(e), out);
+			}
+			return changed;
+		}
+
+		bool DrawStructuredCollection(std::span<const Entity> entities, const PropertyDescriptor& d, const std::string& fieldKey) {
+			PropertyValue original;
+			const bool uniform = SampleUniform(entities, d, original);
+			ImGui::PushID(d.Name.c_str());
+			if (!ImGui::TreeNodeEx(d.DisplayName.c_str(), ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_Framed)) {
+				ImGui::PopID();
+				return false;
+			}
+			Json::Value root;
+			std::string error;
+			const PropertyType leaf = d.Metadata.ListItemType;
+			if (!uniform || !ScriptCollectionValue::Decode(d.Type, original.StringValue, leaf, root, error)) {
+				ImGui::TextWrapped("%s", uniform ? error.c_str() : "Mixed collections. Select one object to edit.");
+				ImGui::TreePop();
+				ImGui::PopID();
+				return false;
+			}
+			auto& items = *root.FindMember("items");
+			bool changed = false;
+			bool isNull = items.IsNull();
+			if (ImGui::Checkbox("Null", &isNull)) {
+				items = isNull ? Json::Value() : Json::Value::MakeArray();
+				changed = true;
+			}
+			if (!isNull) {
+				auto& rows = items.GetArray();
+				int remove = -1, moveFrom = -1, moveTo = -1;
+				const float buttonSize = ImGui::GetFrameHeight();
+				const float buttonWidth = std::max(buttonSize, ImGui::GetFontSize() + 2.0f * ImGui::GetStyle().FramePadding.x);
+				const float gap = ImGui::GetStyle().ItemSpacing.x;
+				const ImGuiID duplicateError = ImGui::GetID("##duplicateKey");
+				const std::string selectionKey = fieldKey + "@" + std::to_string(ImGui::GetID("outer"));
+				const ImGuiID listId = ImGui::GetID("outer");
+				ListSelectionState& selection = s_ListSelection.Get(selectionKey);
+				for (size_t i = 0; i < rows.size(); ++i) {
+					ImGui::PushID(static_cast<int>(i));
+					const std::string rowKey = fieldKey + "/" + std::to_string(i);
+					if (d.Type == PropertyType::NestedList) {
+						DrawListRowHandle(listId, static_cast<int>(i), selection, static_cast<int>(rows.size()), buttonSize,
+							buttonSize, ImGui::GetWindowDrawList(), moveFrom, moveTo);
+						ImGui::SameLine();
+						ImGui::Text("List %zu", i);
+						ImGui::SameLine();
+						bool rowNull = rows[i].IsNull();
+						if (ImGui::Checkbox("Null", &rowNull)) {
+							rows[i] = rowNull ? Json::Value() : Json::Value::MakeArray();
+							changed = true;
+						}
+						ImGui::SameLine();
+						if (IconButton("##remove", "minus", buttonSize, true)) remove = static_cast<int>(i);
+						if (ImGui::IsItemHovered()) ImGui::SetTooltip("Remove inner list");
+						if (!rowNull) {
+							PropertyValue inner;
+							inner.Type = PropertyType::List;
+							for (const auto& value : rows[i].GetArray()) inner.ListValue.push_back(value.IsNull()
+								? PropertyValue{} : PropertyValue::FromString(leaf, value.AsStringOr()));
+							PropertyDescriptor innerDescriptor;
+							innerDescriptor.Name = "items";
+							innerDescriptor.DisplayName = "Values";
+							innerDescriptor.Type = PropertyType::List;
+							innerDescriptor.Metadata = d.Metadata;
+							innerDescriptor.Get = [&inner](const Entity&) { return inner; };
+							innerDescriptor.Set = [&inner](Entity&, const PropertyValue& value) { inner = value; };
+							// Only the enclosing descriptor may capture undo; these lambdas borrow frame-local data.
+							if (DrawList(entities, innerDescriptor, rowKey, false, true)) {
+								rows[i] = Json::Value::MakeArray();
+								for (const auto& value : inner.ListValue) rows[i].Append(value.Type == PropertyType::None
+									? Json::Value() : Json::Value(value.ToString()));
+								changed = true;
+							}
+						}
+					}
+					else {
+						auto& pair = rows[i].GetArray();
+						const std::string key = pair[0].AsStringOr();
+						std::vector<char> buffer(std::max<size_t>(1024, key.size() + 1024), 0);
+						std::copy(key.begin(), key.end(), buffer.begin());
+						const float width = std::max(40.0f, (ImGui::GetContentRegionAvail().x - buttonWidth - gap * 2) * 0.5f);
+						ImGui::SetNextItemWidth(width);
+						const bool hasNullCharacter = key.find('\0') != std::string::npos;
+						if (hasNullCharacter) ImGui::BeginDisabled();
+						bool commit = ImGui::InputTextWithHint("##key", "Empty key", buffer.data(), buffer.size(), ImGuiInputTextFlags_EnterReturnsTrue);
+						commit |= ImGui::IsItemDeactivatedAfterEdit();
+						if (hasNullCharacter) ImGui::EndDisabled();
+						const std::string candidate(buffer.data());
+						const bool duplicate = candidate != key && std::any_of(rows.begin(), rows.end(), [&](const auto& row) {
+							return row.GetArray()[0].AsStringOr() == candidate;
+						});
+						if (commit) ImGui::GetStateStorage()->SetInt(duplicateError, duplicate ? 1 : 0);
+						if (commit && !duplicate && !hasNullCharacter && candidate != key) { pair[0] = candidate; changed = true; }
+						ImGui::SameLine();
+						if (leaf == PropertyType::String) {
+							bool valueNull = pair[1].IsNull();
+							if (ImGui::Checkbox("Null##value", &valueNull)) { pair[1] = valueNull ? Json::Value() : Json::Value(""); changed = true; }
+							if (!valueNull) ImGui::SameLine();
+						}
+						if (!pair[1].IsNull()) {
+							PropertyValue value = PropertyValue::FromString(leaf, pair[1].AsStringOr());
+							if (DrawListItemValue(leaf, d.Metadata, value, rowKey, std::max(40.0f, ImGui::GetContentRegionAvail().x - buttonWidth - gap))) {
+								pair[1] = value.ToString();
+								changed = true;
+							}
+						}
+						ImGui::SameLine();
+						if (IconButton("##remove", "minus", buttonSize, true)) remove = static_cast<int>(i);
+						if (ImGui::IsItemHovered()) ImGui::SetTooltip("Remove entry");
+						if (hasNullCharacter) ImGui::TextDisabled("Key contains a null character; text editing is unavailable.");
+					}
+					ImGui::PopID();
+				}
+				if (moveFrom >= 0 && moveTo >= 0 && moveFrom != moveTo && moveFrom < static_cast<int>(rows.size()) && moveTo < static_cast<int>(rows.size())) {
+					if (moveFrom < moveTo) std::rotate(rows.begin() + moveFrom, rows.begin() + moveFrom + 1, rows.begin() + moveTo + 1);
+					else std::rotate(rows.begin() + moveTo, rows.begin() + moveFrom, rows.begin() + moveFrom + 1);
+					changed = true;
+				}
+				else if (remove >= 0) { rows.erase(rows.begin() + remove); changed = true; ImGui::GetStateStorage()->SetInt(duplicateError, 0); }
+				if (d.Type == PropertyType::Dictionary && ImGui::GetStateStorage()->GetInt(duplicateError) != 0)
+					ImGui::TextWrapped("Key already exists. The previous key and values are kept.");
+				if (IconButton("##add", "plus", buttonSize, true)) {
+					if (d.Type == PropertyType::NestedList) items.Append(Json::Value::MakeArray());
+					else {
+						std::string key = "Key";
+						int suffix = 1;
+						while (std::any_of(rows.begin(), rows.end(), [&](const auto& row) { return row.GetArray()[0].AsStringOr() == key; }))
+							key = "Key " + std::to_string(suffix++);
+						PropertyValue value;
+						value.Type = leaf;
+						auto entry = Json::Value::MakeArray();
+						entry.Append(key);
+						entry.Append(value.ToString());
+						items.Append(std::move(entry));
+					}
+					changed = true;
+				}
+				if (ImGui::IsItemHovered()) ImGui::SetTooltip(d.Type == PropertyType::NestedList ? "Add inner list" : "Add entry");
+			}
+			ImGui::TreePop();
+			ImGui::PopID();
+			if (changed) {
+				PropertyValue updated = PropertyValue::FromString(d.Type, ScriptCollectionValue::Encode(std::move(root)));
+				Json::Value verified;
+				if (!ScriptCollectionValue::Decode(d.Type, updated.StringValue, leaf, verified, error)) return false;
+				WriteAll(entities, d, updated);
 			}
 			return changed;
 		}
@@ -2079,6 +2251,8 @@ namespace Funke::PropertyDrawer {
 		case PropertyType::String:  changed = DrawString(entities, d); break;
 		case PropertyType::StringList: changed = DrawStringList(entities, d); break;
 		case PropertyType::List:    changed = DrawList(entities, d, fieldKey); break;
+		case PropertyType::NestedList:
+		case PropertyType::Dictionary: changed = DrawStructuredCollection(entities, d, fieldKey); break;
 		case PropertyType::Vec2:    changed = DrawFloatVec<2>(entities, d); break;
 		case PropertyType::Vec3:    changed = DrawFloatVec<3>(entities, d); break;
 		case PropertyType::Vec4:    changed = DrawFloatVec<4>(entities, d); break;

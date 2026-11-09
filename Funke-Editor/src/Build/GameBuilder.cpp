@@ -351,6 +351,7 @@ namespace Funke::GameBuilder {
 			}
 			if (variant.PremakeOptions.empty()) return std::nullopt;
 			if (variant.Id.empty()) variant.Id = "nomodules";
+			variant.Id = "v2-" + variant.Id;
 			return variant;
 		}
 
@@ -378,8 +379,9 @@ namespace Funke::GameBuilder {
 					for (const auto& [memberName, memberValue] : entity.GetObject()) {
 						(void)memberValue;
 						const ComponentInfo* info = registry.FindBySerializedName(memberName);
-						if (!info || !info->engineModule) continue;
-						const std::string_view moduleId = EngineModules::GetId(*info->engineModule);
+						const auto module = info ? info->engineModule : EngineModules::GetSerializedPhysicsModule(memberName);
+						if (!module) continue;
+						const std::string_view moduleId = EngineModules::GetId(*module);
 						if (project.HasModule(moduleId)) continue;
 						const Json::Value* name = entity.FindMember("name");
 						findings.push_back(Path::ToGenericUtf8(std::filesystem::relative(it->path(), assetsDirectory, ec))
@@ -933,7 +935,7 @@ namespace Funke::GameBuilder {
 	}
 
 	InstalledRuntime SelectInstalledRuntime(const EngineSdk::Installation& installation,
-		FunkeProject::BuildProfile profile, std::string_view preferredVariant) {
+		FunkeProject::BuildProfile profile, std::string_view preferredVariant, bool requireExactModules) {
 		InstalledRuntime result;
 		if (!installation.IsValid() || !installation.ManifestPresent) {
 			result.Error = installation.Error.empty() ? "A valid installed Funke SDK is required." : installation.Error;
@@ -951,6 +953,11 @@ namespace Funke::GameBuilder {
 			}
 		}
 		if (result.Directory.empty()) {
+			if (requireExactModules && !preferredVariant.empty()) {
+				result.Error = "Exact module export unavailable: this SDK does not include " + std::string(preferredVariant)
+					+ " for " + profileName + ". A full runtime would retain disabled modules.";
+				return result;
+			}
 			const auto runtime = installation.Runtimes.find(profileName);
 			if (runtime == installation.Runtimes.end()) {
 				result.Error = "This Funke installation does not include a " + profileName + " runtime. Install that runtime or choose an included configuration.";
@@ -1613,10 +1620,10 @@ namespace Funke::GameBuilder {
 			runtimeVariant = ResolveRuntimeVariant(*project);
 			if (hasNativePackages || hasNativeScripts) runtimeVariant.reset();
 			const auto selected = SelectInstalledRuntime(installation, project->ActiveBuildProfile,
-				runtimeVariant ? runtimeVariant->Id : std::string{});
+				runtimeVariant ? runtimeVariant->Id : std::string{}, request.RequireExactModules);
 			if (!selected.Succeeded()) {
 				FNK_ERROR_TAG("Build", "{}", selected.Error);
-				failBuild("Installed runtime unavailable");
+				failBuild(selected.Error);
 				return result;
 			}
 			installedRuntimeDirectory = selected.Directory;
@@ -1626,9 +1633,9 @@ namespace Funke::GameBuilder {
 		}
 		else if (!platformPackageBuild && !engineRoot.empty() && installation.SourceBuild) {
 			runtimeVariant = ResolveRuntimeVariant(*project);
-			if (runtimeVariant && !engineNativePackageTargets.empty()) {
+			if (runtimeVariant && (!engineNativePackageTargets.empty() || hasNativeScripts)) {
 				// Native packages are linked against the full engine binary; PackageHost would reject them.
-				FNK_WARN_TAG("Build", "The project uses native packages, so the build ships the full engine instead of "
+				FNK_WARN_TAG("Build", "The project uses native scripts or engine-linked packages, so the build ships the full engine instead of "
 					"the '{}' runtime variant.", runtimeVariant->Id);
 				runtimeVariant.reset();
 			}
@@ -1638,6 +1645,17 @@ namespace Funke::GameBuilder {
 					FNK_WARN_TAG("Build", "Shipping the full engine instead of the '{}' runtime variant.", runtimeVariant->Id);
 					runtimeVariant.reset();
 				}
+			}
+		}
+		if (!platformPackageBuild) {
+			result.FullRuntimeFallback = !runtimeVariant && ResolveRuntimeVariant(*project).has_value();
+			result.RuntimeVariant = runtimeVariant ? runtimeVariant->Id : "full";
+			if (result.FullRuntimeFallback) {
+				if (request.RequireExactModules) {
+					failBuild("Exact module export unavailable: the required runtime variant cannot be used. A full runtime would retain disabled backends.");
+					return result;
+				}
+				FNK_WARN_TAG("Build", "Full runtime fallback: inactive modules stay compiled into the shipped binary. This export does not remove their physics backends.");
 			}
 		}
 		const std::filesystem::path runtimeWorkspace = runtimeVariant
@@ -1760,7 +1778,9 @@ namespace Funke::GameBuilder {
 			std::vector<std::string> options = {
 				"-DFUNKE_NATIVE_OUTPUT_ROOT=" + Path::ToUtf8(nativeOutputRoot),
 				std::string("-DFUNKE_WITH_2D=") + (!runtimeVariant || project->HasModule("Funke.2D") ? "ON" : "OFF"),
-				std::string("-DFUNKE_WITH_3D=") + (!runtimeVariant || project->HasModule("Funke.3D") ? "ON" : "OFF")
+				std::string("-DFUNKE_WITH_3D=") + (!runtimeVariant || project->HasModule("Funke.3D") ? "ON" : "OFF"),
+				std::string("-DFUNKE_WITH_PHYSICS2D=") + (!runtimeVariant || project->HasModule("Funke.Physics2D") ? "ON" : "OFF"),
+				std::string("-DFUNKE_WITH_PHYSICS3D=") + (!runtimeVariant || project->HasModule("Funke.Physics3D") ? "ON" : "OFF")
 			};
 			const auto engineLinkDirectory = runtimeOutputDirectory.parent_path() / "Funke-Engine";
 			if (std::filesystem::is_directory(engineLinkDirectory)) {
@@ -2210,7 +2230,7 @@ namespace Funke::GameBuilder {
 			platformRequest.Version = project->BuildVersion.empty() ? std::string("1.0.0") : project->BuildVersion;
 			platformRequest.Company = project->BuildCompany;
 			platformRequest.EntityBits = project->EntityBits;
-			platformRequest.Modules = project->Modules;
+			platformRequest.Modules = EngineModules::Resolve(project->Modules);
 			platformRequest.Options = std::move(request.PlatformOptions);
 			platformRequest.AppId = project->GetApplicationIdentifier();
 			if (hasStagedAppIcon) platformRequest.IconPath = stagedAppIcon;

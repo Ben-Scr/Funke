@@ -35,7 +35,7 @@ The Animator runs after the scripts each frame, so parameters a script sets in `
 - **Sprite-sheet slices:** the **Texture** property of a Sprite Renderer or Image holds the texture together with its slice, so a Texture track switches between slices of one sheet. With **Record** on, pick another slice in the Inspector's Texture field (it shows `Sheet > Slice`); each pick becomes a key.
 - **Rect Transform 2D:** Anchored Position, Size, Pivot, anchors, Rotation (degrees) and Scale.
 - **C# script fields:** the public or `[ShowInEditor]` fields of scripts on the animated entities (`float`, `int`, `bool`, `Vector2/3/4`, `Color`). The script must be on the entity when the Animator starts.
-- **Rotations** are animated as Euler angles in degrees, per axis.
+- **Rotations** use explicit Euler Multi-turn, Shortest Angle or Quaternion interpolation (see below).
 
 Tracks address their entity by a path of child names from the Animator's entity (`"Arm/Hand"`; empty for the Animator's own entity). Renaming a child breaks the path: the Animator then skips that track and logs one warning, and the Animation window shows the track in the warning color.
 
@@ -163,6 +163,24 @@ Tips:
 
 Sprite animations played by an Animator (Texture tracks) also use its culling and distance rate.
 
+## Rotation interpolation
+
+Right-click a rotation track in the Animation window and choose **Rotation Mode**. The choice applies to every channel of that property in the clip, including undo/redo and saving.
+
+| Mode | Key sampling and crossfades | Use |
+| --- | --- | --- |
+| **Euler Multi-turn** (`eulerMultiTurn`) | Numeric interpolation of each degree channel, including values outside ±360°. | Spinning wheels, full turns, and existing clips. A 0→1080° segment completes three revolutions. |
+| **Shortest Angle** (`shortestAngle`) | Each degree channel uses its shortest signed difference modulo 360°. | Independent axes: 350→10° passes through 360°; -179→179° passes through -180°. |
+| **Quaternion** (`quaternion`) | Rotation channels form one orientation; normalized, shortest-arc SLERP samples segments and blends poses. | Coupled 3D rotations with mixed axes. Full-turn counts are discarded. |
+
+All rotation channels within one property/clip must select the same mode. During a crossfade, each clip samples its own mode; the **destination clip** chooses how the two sampled orientations blend. If only one clip animates the property, its mode blends against the property's current value. Unanimated Euler channels use their current values. Quaternion interpolation may change all three displayed Euler angles because they represent one orientation.
+
+Quaternion mode requires all channels (Euler xyz, quaternion xyzw, or the single 2D angle) with matching key times and matching Linear or Constant interpolation. **Add Key**, the K shortcut, and a timeline double-click insert all quaternion channels together using the sampled orientation. Bezier keys are rejected with a binding diagnostic; their independent tangents do not define a quaternion curve. Shortest Angle supports Bezier tangents in degrees/second, so deliberately large tangents can still overshoot. Exact 180° ties follow the signed remainder; Shortest Angle values may wrap numerically at a key boundary while retaining the same orientation.
+
+`Transform2D.Rotation`, `RectTransform2D.Rotation` and `Transform3D.Rotation` carry `PropertyMetadata::WithRotation()` (`RotationProperty::EulerDegrees`). Native component authors can use this metadata for Float/Double degrees or a Vec3 of Euler degrees. A Vec4 containing quaternion **x,y,z,w** must use `WithRotation(RotationProperty::Quaternion)`: all four keyed channels are required, normalized and SLERPed, including when old tracks omit a mode. Zero-length or non-finite quaternions fall back to identity. Ordinary Vec4 properties retain numeric interpolation. Non-default rotation modes on properties without rotation metadata are rejected; C# script fields currently have no rotation metadata attribute.
+
+Old `.anim` files omit `rotationMode` and keep **Euler Multi-turn** for Euler properties. Missing or unknown mode values load with that same default; no asset rewrite or format-version change is required. Skeletal animation and imported glTF clips keep their separate quaternion interpolation and crossfade implementation.
+
 ## File formats
 
 Both are JSON with a GUID in their `.meta`, like other assets, and can be written by hand or by tools. `funke validate` checks them: tracks need a component and a property, controller states must point at `.anim` files, transitions at existing states, and conditions at parameters. It also checks that an Animator's `controllerAsset` / `clipAsset` point at the right kind of file.
@@ -183,6 +201,7 @@ Both are JSON with a GUID in their `.meta`, like other assets, and can be writte
 
 - `component` is the serialized component name (`Transform3D`, `Transform2D`, `RectTransform2D`, `SpriteRenderer`, `MeshRenderer`, `Image`, `PointLight` ...) or a C# script class name. `property` is the Inspector property name (case-insensitive), with `.x/.y/.z/.w` or `.r/.g/.b/.a` for one channel.
 - `interp` is `linear` (default), `step` or `bezier`; `in` / `out` are the bezier tangents (value per second) and default to 0 (flat).
+- A numeric rotation track may add `"rotationMode": "shortestAngle"` or `"rotationMode": "quaternion"`. The default `"eulerMultiTurn"` is omitted when saving.
 - Discrete values are written as in the Inspector's text form: asset GUIDs as decimal strings, a sprite-sheet slice as `"<texture GUID>|slice|<slice name>"` (a bare GUID shows the whole texture), enum values as numbers, vectors as `"x,y"`. The value field next to a discrete track in the Animation window shows and edits the same text. Sprite Renderer and Image have no separate `SpriteName` property; the slice is part of `Texture`.
 
 ```json
@@ -212,4 +231,4 @@ In a scene the component is written as `"Animator": { "controllerAsset": "<guid>
 
 - One layer per controller; there are no blend trees, avatar masks or root motion yet.
 - Fields of C# `IComponent` structs can't be animated (fields of `EntityScript`s and managed `Component`s can).
-- Crossfades blend each rotation axis separately (Euler angles), which can take a long way around when the angles differ by more than 180°.
+- Euler Multi-turn deliberately preserves the numeric rotation path. Choose Shortest Angle or Quaternion explicitly for shortest-arc transitions; quaternion tracks require aligned Linear/Constant keys.

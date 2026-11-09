@@ -41,14 +41,14 @@
 
 #if FUNKE_WITH_2D
 #include "Components/Graphics/Camera2DComponent.hpp"
-#include "Physics/Box2DWorld.hpp"
-#include "Physics/PhysicsSystem2D.hpp"
 #include "Systems/ParticleUpdateSystem.hpp"
 #include "Systems/TransformHierarchySystem.hpp"
 #endif
 #if FUNKE_WITH_3D
 #include "Components/Graphics/Camera3DComponent.hpp"
+#if FUNKE_WITH_PHYSICS3D
 #include "Physics3D/PhysicsSystem3D.hpp"
+#endif
 #include "Systems/Particle3DUpdateSystem.hpp"
 #include "Systems/SkinnedMeshAnimationSystem.hpp"
 #include "Systems/Transform3DHierarchySystem.hpp"
@@ -195,7 +195,9 @@ namespace Funke {
 #if FUNKE_WITH_3D
 			if (with3D) {
 				definition.AddSystem<Transform3DHierarchySystem>();
-				definition.AddSystem<PhysicsInterpolationSystem3D>();
+#if FUNKE_WITH_PHYSICS3D
+				if (EngineModules::IsActive(EngineModule::Physics3D)) definition.AddSystem<PhysicsInterpolationSystem3D>();
+#endif
 			}
 #endif
 
@@ -222,10 +224,10 @@ namespace Funke {
 			// After the scripts so parameters they set apply this frame; before 3D physics reads kinematic bodies.
 			definition.AddSystem<AnimatorSystem>();
 
-#if FUNKE_WITH_3D
+#if FUNKE_WITH_PHYSICS3D
 			// After ScriptSystem: forces applied in OnFixedUpdate land in the same step. Idle (no world)
 			// until play mode finds a 3D physics component.
-			if (with3D) definition.AddSystem<PhysicsSystem3D>();
+			if (EngineModules::IsActive(EngineModule::Physics3D)) definition.AddSystem<PhysicsSystem3D>();
 #endif
 
 			if (config.EnableAudio) {
@@ -1464,16 +1466,6 @@ namespace Funke {
 			FNK_CORE_ERROR_TAG("SceneManager", "Rollback entity cleanup failed for '{}'", sceneName);
 		}
 
-#if FUNKE_WITH_2D
-		if (PhysicsSystem2D::IsInitialized()) {
-			try {
-				PhysicsSystem2D::GetMainPhysicsWorld().DestroyAllBodiesForScene(scene.get());
-			}
-			catch (...) {
-				FNK_CORE_ERROR_TAG("SceneManager", "Rollback Box2D body cleanup for '{}' failed", sceneName);
-			}
-		}
-#endif
 		try {
 			SceneExtensions::NotifySceneDestroyed(*scene);
 		}
@@ -1685,16 +1677,6 @@ namespace Funke {
 		scene.m_LifecycleSuspended = false;
 
 		// Force-purge physics bodies even if ClearEntities threw mid-way, to prevent dangling Scene* in the global physics worlds.
-#if FUNKE_WITH_2D
-		if (PhysicsSystem2D::IsInitialized()) {
-			try {
-				PhysicsSystem2D::GetMainPhysicsWorld().DestroyAllBodiesForScene(&scene);
-			}
-			catch (...) {
-				FNK_CORE_ERROR_TAG("SceneManager", "Box2D body cleanup for unloaded scene '{}' failed", sceneName);
-			}
-		}
-#endif
 		try {
 			SceneExtensions::NotifySceneDestroyed(scene);
 		}
@@ -1856,22 +1838,22 @@ namespace Funke {
 	}
 
 	void SceneManager::UpdateScenes() {
-		for (size_t i = 0; i < m_LoadedScenes.size(); ++i) {
-			auto scene = m_LoadedScenes[i];
+		const auto scenes = m_LoadedScenes;
+		for (const auto& scene : scenes) {
 			if (scene && scene->IsLoaded() && !scene->IsLifecycleSuspended()) scene->UpdateSystems();
 		}
 	}
 
 	void SceneManager::OnPreRenderScenes() {
-		for (size_t i = 0; i < m_LoadedScenes.size(); ++i) {
-			auto scene = m_LoadedScenes[i];
+		const auto scenes = m_LoadedScenes;
+		for (const auto& scene : scenes) {
 			if (scene && scene->IsLoaded() && !scene->IsLifecycleSuspended()) scene->OnPreRenderSystems();
 		}
 	}
 
 	void SceneManager::FixedUpdateScenes() {
-		for (size_t i = 0; i < m_LoadedScenes.size(); ++i) {
-			auto scene = m_LoadedScenes[i];
+		const auto scenes = m_LoadedScenes;
+		for (const auto& scene : scenes) {
 			if (scene && scene->IsLoaded() && !scene->IsLifecycleSuspended()) scene->FixedUpdateSystems();
 		}
 	}

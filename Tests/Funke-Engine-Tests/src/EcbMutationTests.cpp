@@ -1,4 +1,5 @@
 #include <doctest/doctest.h>
+#include "Scripting/ScriptEngine.hpp"
 #include <entt/signal/sigh.hpp>
 
 #include "Components/General/Transform2DComponent.hpp"
@@ -6,6 +7,7 @@
 #include "Components/General/HierarchyComponent.hpp"
 #include "Components/General/UUIDComponent.hpp"
 #include "Components/Graphics/SpriteRendererComponent.hpp"
+#include "Components/Physics/BoxCollider2DComponent.hpp"
 #include "Components/Tags.hpp"
 #include "Core/Application.hpp"
 #include "Scene/BuiltInComponentRegistration.hpp"
@@ -19,18 +21,186 @@
 #include "Scripting/ScriptBindings.hpp"
 #include "Scripting/ScriptComponent.hpp"
 #include "Scripting/ScriptGlue.hpp"
+#include "Serialization/Path.hpp"
+#include "Serialization/File.hpp"
 
 #include <array>
+#include <cstdlib>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <cstdlib>
+#include <fstream>
 #include <limits>
 #include <span>
 #include <unordered_set>
 #include <utility>
 #include <vector>
+#include <chrono>
+#include <thread>
+
+namespace Funke { FUNKE_API size_t GetScriptJobRegistrationCount(); }
+
+namespace {
+	class ReloadIntegrationApplication final : public Funke::Application {
+	public:
+		Funke::ApplicationConfig GetConfiguration() const override {
+			auto config = Funke::ApplicationConfig::Headless();
+			config.EnableAudio = false;
+			config.EnablePhysics2D = true;
+			config.EnableScripting = false;
+			config.EnablePackageHost = false;
+			config.JobSystemWorkerCount = 1;
+			return config;
+		}
+		void ConfigureScenes() override {
+			for (const char* name : { "Reload first", "Reload second" })
+				Funke::SceneManager::RegisterScene(name).WithoutDefaultCamera2D().SetAsStartupScene();
+		}
+		void Start() override {
+			using namespace Funke;
+			ScriptEngine::LoadCoreAssembly(std::getenv("FUNKE_TEST_SCRIPTCORE"));
+			REQUIRE(ScriptEngine::IsInitialized());
+			REQUIRE(ScriptEngine::LoadUserAssembly(std::getenv("FUNKE_TEST_RELOAD_ASSEMBLY")));
+			const auto scenes = SceneManager::GetLoadedScenes();
+			{
+				auto scene = scenes.front().lock();
+				REQUIRE(scene);
+				auto target = scene->CreateEntity("Ray target");
+				target.GetComponent<Transform2DComponent>().SetPosition({5, 0});
+				target.AddComponent<BoxCollider2DComponent>();
+				REQUIRE(scene->AddSceneSystem("Backlog.RaycastProbe"));
+				const auto* info = SceneManager::GetComponentRegistry().FindBySerializedName("type:Backlog.RaycastProbeStats");
+				REQUIRE(info);
+				bool verified = false;
+				for (auto entity : scene->GetRegistry().view<ScriptComponent>()) {
+					auto current = scene->GetEntity(entity);
+					if (!info->has(current)) continue;
+					CHECK(*static_cast<float*>(info->getRaw(current)) == doctest::Approx(4.5f));
+					verified = true;
+				}
+				REQUIRE(verified);
+			}
+			{
+				auto scene = scenes.front().lock();
+				REQUIRE(scene);
+				REQUIRE(scene->AddSceneSystem("Backlog.JobLifetimeProbe"));
+				const auto* info = SceneManager::GetComponentRegistry().FindBySerializedName("type:Backlog.JobLifetimeStats");
+				REQUIRE(info);
+				bool verified = false;
+				for (auto handle : scene->GetRegistry().view<ScriptComponent>()) {
+					auto entity = scene->GetEntity(handle);
+					if (!info->has(entity)) continue;
+					CHECK(*static_cast<int*>(info->getRaw(entity)) == 20000);
+					verified = true;
+				}
+				REQUIRE(verified);
+				const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+				while (GetScriptJobRegistrationCount() != 0 && std::chrono::steady_clock::now() < deadline)
+					std::this_thread::yield();
+				CHECK(GetScriptJobRegistrationCount() == 0);
+			}
+
+			int seed = 75;
+			for (const auto& weak : scenes) {
+				auto scene = weak.lock();
+				REQUIRE(scene);
+				scene->SetSceneSystemFieldValue("Backlog.ReloadProbe", "Seed", std::to_string(seed));
+				REQUIRE(scene->AddSceneSystem("Backlog.ReloadProbe"));
+				seed += 23;
+			}
+			for (int iteration = 0; iteration < 3; ++iteration) {
+				int expected = 75 + iteration * 11;
+				std::vector<uint32_t> oldHandles;
+				for (const auto& weak : scenes) {
+					auto scene = weak.lock();
+					REQUIRE(scene);
+					const auto* info = SceneManager::GetComponentRegistry().FindBySerializedName("type:Backlog.ReloadStats");
+					REQUIRE(info);
+					auto view = scene->GetRegistry().view<ScriptComponent>();
+					REQUIRE_FALSE(view.empty());
+					Entity entity = Entity::Null;
+					for (auto candidate : view) {
+						auto current = scene->GetEntity(candidate);
+						if (info->has(current)) { entity = current; break; }
+					}
+					REQUIRE(entity.IsValid());
+					REQUIRE(info->has(entity));
+					CHECK(*static_cast<int*>(info->getRaw(entity)) == expected);
+					const auto handle = scene->GetSceneSystemHandle("Backlog.ReloadProbe");
+					REQUIRE(handle != 0);
+					oldHandles.push_back(handle);
+					SceneExecutionScope scope(*scene);
+					ScriptEngine::InvokeSceneSystemUpdate(handle);
+					ScriptEngine::InvokeSceneSystemFixedUpdate(handle);
+					CHECK(*static_cast<int*>(info->getRaw(entity)) == expected + 11);
+					expected += 23;
+				}
+				REQUIRE(ScriptEngine::ReloadAssemblies());
+				for (size_t i = 0; i < scenes.size(); ++i) {
+					auto scene = scenes[i].lock();
+					REQUIRE(scene);
+					CHECK(scene->GetSceneSystemHandle("Backlog.ReloadProbe") != oldHandles[i]);
+				}
+			}
+			auto second = scenes.back().lock();
+			REQUIRE(second);
+			REQUIRE(second->SetSceneSystemEnabled("Backlog.ReloadProbe", false));
+			REQUIRE(ScriptEngine::ReloadAssemblies());
+			CHECK_FALSE(second->IsSceneSystemEnabled("Backlog.ReloadProbe"));
+			CHECK(second->GetSceneSystemHandle("Backlog.ReloadProbe") == 0);
+			REQUIRE(second->SetSceneSystemEnabled("Backlog.ReloadProbe", true));
+			const auto handle = second->GetSceneSystemHandle("Backlog.ReloadProbe");
+			REQUIRE(handle != 0);
+			const auto invalid = Path::FromUtf8(std::getenv("FUNKE_TEST_RELOAD_ASSEMBLY")).parent_path() / "invalid-reload.dll";
+			{ std::ofstream file(invalid, std::ios::binary); file << "not an assembly"; }
+			CHECK_FALSE(ScriptEngine::LoadUserAssembly(Path::ToUtf8(invalid)));
+			std::filesystem::remove(invalid);
+			CHECK(ScriptEngine::HasUserAssembly());
+			CHECK(second->GetSceneSystemHandle("Backlog.ReloadProbe") == handle);
+			const auto* info = SceneManager::GetComponentRegistry().FindBySerializedName("type:Backlog.ReloadStats");
+			REQUIRE(info);
+			auto entity = second->GetEntity(second->GetRegistry().view<ScriptComponent>().front());
+			CHECK(*static_cast<int*>(info->getRaw(entity)) == 131);
+			Completed = true;
+			Application::Quit();
+		}
+		bool Completed = false;
+	};
+}
 
 using namespace Funke;
+
+#if FUNKE_WITH_2D
+TEST_CASE("Native component layout contracts expose compiled field offsets") {
+	Application app;
+	RegisterBuiltInComponents(SceneManager::GetComponentRegistry());
+	const auto read = [](const char* name) {
+		const int size = ScriptBindings::GetComponentLayoutBuffer(name, nullptr, 0);
+		REQUIRE(size > 0);
+		std::string buffer(static_cast<size_t>(size) + 1, '\0');
+		CHECK(ScriptBindings::GetComponentLayoutBuffer(name, buffer.data(), static_cast<int>(buffer.size())) == size);
+		if (const char* directory = std::getenv("FUNKE_TEST_COMPONENT_LAYOUT_REPORT"))
+			CHECK(File::WriteAllText(std::string(directory) + "/" + name + ".json", buffer.c_str()));
+		return Json::Parse(buffer.c_str());
+	};
+	const auto transform = read("Transform 2D");
+	CHECK(transform.FindMember("managedSize")->AsUInt64Or(0) == sizeof(Transform2DComponent));
+	CHECK(transform.FindMember("fields")->GetArray().size() == 13);
+	const auto sprite = read("Sprite Renderer");
+	CHECK(sprite.FindMember("size")->AsUInt64Or(0) == sizeof(SpriteRendererComponent));
+	CHECK(sprite.FindMember("managedSize")->AsUInt64Or(0) == offsetof(SpriteRendererComponent, SpriteName));
+	bool foundFlipY = false;
+	for (const auto& field : sprite.FindMember("fields")->GetArray()) {
+		if (field.FindMember("path")->AsStringOr() != "FlipY") continue;
+		foundFlipY = true;
+		CHECK(field.FindMember("offset")->AsUInt64Or(0) == offsetof(SpriteRendererComponent, FlipY));
+		CHECK(field.FindMember("size")->AsUInt64Or(0) == sizeof(bool));
+		CHECK(field.FindMember("type")->AsStringOr() == "bool");
+	}
+	CHECK(foundFlipY);
+}
+#endif
 
 namespace {
 
@@ -1235,3 +1405,43 @@ TEST_CASE("ECB bulk construct hooks preserve deferred static invalidation and tr
 	}
 }
 #endif
+
+TEST_CASE("Backlog dynamic component snapshots survive storage replacement in two scenes") {
+	Application app;
+	auto first = Scene::CreateDetachedScene("First reload scene");
+	auto second = Scene::CreateDetachedScene("Second reload scene");
+	auto a = first->CreateEmptyEntity();
+	auto b = second->CreateEmptyEntity();
+	auto& registry = SceneManager::GetComponentRegistry();
+	const auto registerType = [&] {
+		return registry.RegisterDynamic("Reload Stats", "ReloadStats", "", ComponentCategory::Component, sizeof(int), alignof(int));
+	};
+	uint32_t id = registerType();
+	const auto* info = registry.GetByTypeId(id);
+	REQUIRE(info);
+	info->add(a); info->add(b);
+	a.AddComponent<ScriptComponent>().AddScript("ReloadStats");
+	b.AddComponent<ScriptComponent>().AddScript("ReloadStats");
+	for (int iteration = 0; iteration < 3; ++iteration) {
+		*static_cast<int*>(info->getRaw(a)) = 75 + iteration;
+		*static_cast<int*>(info->getRaw(b)) = 98 + iteration;
+		ScriptEngine::SnapshotDynamicComponentsForScene(*first);
+		ScriptEngine::SnapshotDynamicComponentsForScene(*second);
+		registry.UnregisterAllDynamic();
+		id = registerType();
+		info = registry.GetByTypeId(id);
+		REQUIRE(info);
+		ScriptEngine::RestoreDynamicComponentsForScene(*first);
+		ScriptEngine::RestoreDynamicComponentsForScene(*second);
+		REQUIRE(info->has(a)); REQUIRE(info->has(b));
+		CHECK(*static_cast<int*>(info->getRaw(a)) == 75 + iteration);
+		CHECK(*static_cast<int*>(info->getRaw(b)) == 98 + iteration);
+	}
+}
+
+TEST_CASE("Backlog managed reload preserves live rows and restarts scene systems in two scenes"
+	* doctest::skip(std::getenv("FUNKE_TEST_RELOAD_ASSEMBLY") == nullptr || std::getenv("FUNKE_TEST_SCRIPTCORE") == nullptr)) {
+	ReloadIntegrationApplication app;
+	CHECK(app.Run() == 0);
+	CHECK(app.Completed);
+}

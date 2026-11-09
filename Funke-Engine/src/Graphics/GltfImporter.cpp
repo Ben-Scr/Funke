@@ -180,13 +180,18 @@ namespace Funke {
 				}
 				const int64_t count = IntMember(accessor, "count", 0);
 				if (count < 0 || count > (int64_t(1) << 28)) return Fail("accessor " + std::to_string(index) + " has an invalid count");
+				if (static_cast<uint64_t>(count) > out.max_size() / static_cast<size_t>(components))
+					return Fail("accessor output is too large");
 				const bool normalized = !rawIntegers && Member(accessor, "normalized") && Member(accessor, "normalized")->AsBoolOr(false);
 				outComponents = components;
-				out.assign(static_cast<size_t>(count) * static_cast<size_t>(components), 0.0);
+
 				if (Member(accessor, "sparse")) FNK_CORE_WARN_TAG("Mesh", "glTF sparse accessors are not supported; accessor {} reads its base values", index);
 
 				const Value* viewIndex = Member(accessor, "bufferView");
-				if (!viewIndex) return true;
+				if (!viewIndex) {
+					out.assign(static_cast<size_t>(count) * static_cast<size_t>(components), 0.0);
+					return true;
+				}
 				const Value::Array& views = ArrayMember(m_Root, "bufferViews");
 				const int64_t viewId = viewIndex->AsInt64Or(-1);
 				if (viewId < 0 || static_cast<size_t>(viewId) >= views.size()) return Fail("bufferView " + std::to_string(viewId) + " does not exist");
@@ -196,14 +201,26 @@ namespace Funke {
 				const std::vector<uint8_t>& buffer = m_Buffers[static_cast<size_t>(bufferId)];
 
 				const size_t elementSize = componentSize * static_cast<size_t>(components);
-				const size_t viewOffset = static_cast<size_t>(std::max<int64_t>(IntMember(view, "byteOffset", 0), 0));
-				const size_t viewLength = static_cast<size_t>(std::max<int64_t>(IntMember(view, "byteLength", 0), 0));
-				const size_t stride = std::max<size_t>(static_cast<size_t>(std::max<int64_t>(IntMember(view, "byteStride", 0), 0)), elementSize);
-				const size_t offset = static_cast<size_t>(std::max<int64_t>(IntMember(accessor, "byteOffset", 0), 0));
-				if (viewOffset + viewLength > buffer.size()) return Fail("bufferView " + std::to_string(viewId) + " exceeds its buffer");
-				if (count > 0 && offset + stride * static_cast<size_t>(count - 1) + elementSize > viewLength) {
-					return Fail("accessor " + std::to_string(index) + " exceeds its bufferView");
-				}
+				const int64_t rawViewOffset = IntMember(view, "byteOffset", 0);
+				const int64_t rawViewLength = IntMember(view, "byteLength", 0);
+				const int64_t rawStride = IntMember(view, "byteStride", 0);
+				const int64_t rawOffset = IntMember(accessor, "byteOffset", 0);
+				if (rawViewOffset < 0 || rawViewLength < 0 || rawOffset < 0 || rawStride < 0
+					|| static_cast<uint64_t>(rawViewOffset) > buffer.size()
+					|| static_cast<uint64_t>(rawViewLength) > buffer.size() - static_cast<size_t>(rawViewOffset))
+					return Fail("invalid bufferView range");
+				if (rawStride != 0 && (rawStride < 4 || rawStride > 252 || rawStride % 4 != 0 || rawStride < elementSize))
+					return Fail("invalid accessor stride");
+				const size_t viewOffset = static_cast<size_t>(rawViewOffset);
+				const size_t viewLength = static_cast<size_t>(rawViewLength);
+				const size_t stride = rawStride == 0 ? elementSize : static_cast<size_t>(rawStride);
+				if (static_cast<uint64_t>(rawOffset) > viewLength) return Fail("accessor offset exceeds its bufferView");
+				const size_t offset = static_cast<size_t>(rawOffset);
+				if (count > 0 && (elementSize > viewLength - offset
+					|| static_cast<uint64_t>(count - 1) > (viewLength - offset - elementSize) / stride))
+					return Fail("accessor exceeds its bufferView");
+				out.assign(static_cast<size_t>(count) * static_cast<size_t>(components), 0.0);
+				if (count == 0) return true;
 
 				const uint8_t* base = buffer.data() + viewOffset + offset;
 				for (size_t e = 0; e < static_cast<size_t>(count); ++e) {

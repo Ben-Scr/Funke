@@ -1,5 +1,73 @@
 # Test Builds and Debug Tools
 
+For reproducible performance measurements and compatible FunkeBench exports, use the [benchmark result contract](Benchmark-Results.md).
+
+## Engine CI evidence
+
+The `ci-evidence` job runs with `always()` and publishes `Funke-CI-Evidence/ci-evidence.json`,
+including failures. Each matrix execution first uploads a separate `Funke-CI-Lane-*` report.
+Reports identify the commit, workflow run and attempt; missing, duplicate, incompatible or
+stale reports fail the gate. Rerun **all jobs** to obtain a complete report for a new attempt;
+artifacts from an earlier attempt are intentionally not substituted for current evidence.
+
+| Capability | Required evidence in the selected desktop scope |
+|---|---|
+| Python/builders | Per-platform unittest cases, outcomes and skip reasons; builder coverage is `unit_mock` |
+| Managed | Per-platform ScriptCore TRX cases; these use managed binding stubs |
+| Native | Release/Debug Engine and Editor step outcomes on Windows/Linux; Engine/Editor on macOS |
+| Runtime | Desktop runtime steps; Linux also checks Debug and Dist |
+| GPU | The Linux software-Vulkan readback runner; hardware GPU coverage remains separate |
+| Installer / installed SDK | Platform installer/app steps and the Windows standalone authoring steps |
+| Sanitizers / coverage | Independent Linux matrix executions, each with its own required steps |
+| Physical devices | Not run by this workflow; see [platform qualification](Platform-Export-Testing.md) |
+
+`passed`, `failed`, `skipped`, `blocked` (cancelled), and `not_run` are distinct outcomes.
+Every required lane and capability must pass, even when the surrounding GitHub job is green.
+Failed step **outcomes** cannot be hidden by `continue-on-error`. A core-only run proves only
+the core build; unselected jobs and absent hardware/device qualification remain visible.
+
+Suite counts distinguish unique case identities, suite executions and executed cases. For
+example, the same 589 ScriptCore cases on three platforms represent 589 unique cases and three
+suite executions, with up to 1,767 executed cases. Skips retain their case names and reasons;
+an empty or entirely unexecuted suite is rejected. Expected failures are recorded separately
+from passes, with their reason and execution flag. Assertion counts are `null` when not
+provided by the runner. Native/smoke step success does not invent per-case or assertion counts;
+their detailed logs and GPU evidence remain in the existing artifacts.
+
+Local Python verification uses the same discovery as before, with a structured report:
+
+```powershell
+python scripts/ci/run_script_tests.py --output artifacts/ci-python.json
+```
+
+Workflow integration still needs a real CI run after source changes. Local parser tests and
+synthetic cancellation cases verify the gate logic, not a Linux, macOS or physical-device pass.
+
+## C# scripting regression checks
+
+Use the managed suite for component helpers and nullable/ref contracts, type identities, compiler diagnostics, collection serialization and reload/reset behavior:
+
+```powershell
+dotnet test Tests/Funke-ScriptCore-Tests/Funke-ScriptCore-Tests.csproj -c Release --no-restore
+```
+
+Run from the repository root after restoring dependencies. For a focused change, select the affected test classes with `--filter`. Native scene/prefab coverage lives in `Tests/Funke-Engine-Tests/src/EntityTests.cpp`; collection validation and Inspector undo coverage lives in `Tests/Funke-Editor-Tests/src/UndoTests.cpp`. The corresponding native filters are `Managed canonical*` and `Structured collections:*`. Script discovery and C# asset rename/undo checks use `*ScriptDiscovery*,Asset history: CSharp*` in the editor suite.
+
+The repository also provides two integration runners using the actual editor and versioned fixtures in `Tests/Fixtures/CSharpScripting/`:
+
+```powershell
+python scripts/ci/csharp_scripting_acceptance.py --cli bin/Release-windows-x86_64/Funke-CLI/funke.exe --editor bin/Release-windows-x86_64/Funke-Editor/Funke-Editor.exe --root bin-int/_agent/scripting-check
+python scripts/ci/csharp_collections_acceptance.py --cli bin/Release-windows-x86_64/Funke-CLI/funke.exe --editor bin/Release-windows-x86_64/Funke-Editor/Funke-Editor.exe --root bin-int/_agent/collections-check
+```
+
+Use a new, nonexistent `--root` for each run and matching CLI, Editor, Engine and ScriptCore binaries. The runners create private projects and user-data directories, retain `report.json`, editor logs and individual command output, and stop only the editor they started. These commands were exercised on Windows x64 Release; they do not establish other-platform coverage.
+
+`csharp_scripting_acceptance.py` checks failed and successful Play starts, canonical identities and legacy migration, missing-script recovery, explicit transforms/spawns, reload state, registered Play resets and source-file renaming. `csharp_collections_acceptance.py` checks `List<List<int>>`, `float[][]`, integer/float dictionaries, null versus empty lists, Unicode/empty keys and legacy lists through Play, edit-mode recompile and scene saving.
+
+Inspector interaction needs separate acceptance: add/remove/edit/reorder inner and outer lists, reject duplicate dictionary keys without replacing values, exercise Undo/Redo, and inspect unsupported-type/comparer messages. Save and recompile after those edits, then compare the resulting values. `--keep-open` on the collections runner leaves its private editor open after a successful run for this purpose; close that owned editor when finished. The automated runner alone does not verify mouse interactions or Console source navigation. See the [scripting contracts](../Scripting/Scripting.md) for expected behavior and supported limits.
+
+## Game testing tools
+
 These tools are for testing a game without changing its code. You can:
 
 - build your own test, demo or QA variants with build profiles,

@@ -1,9 +1,21 @@
 #include "pch.hpp"
 #include "Scene/ComponentRegistry.hpp"
+#include "Scene/SceneManager.hpp"
 
 #include <algorithm>
 
 namespace Funke {
+	void ComponentUtils::ValidateAddition(const entt::registry& registry, EntityHandle entity, const std::type_info& type) {
+		const auto& components = SceneManager::GetComponentRegistryOrBuiltIn();
+		const auto found = components.All().find(type);
+		if (found == components.All().end()) return;
+		if (const auto* conflict = components.FindConflict(registry, entity, found->second)) {
+			FNK_THROW(FunkeErrorCode::InvalidArgument, fmt::format(
+				"Cannot add '{}' to entity {}: conflicts with '{}'.",
+				found->second.serializedName, static_cast<uint64_t>(entity), conflict->serializedName));
+		}
+	}
+
     namespace {
         bool HasAddedComponent(const Entity& entity, const ComponentInfo& info) {
             const auto* registry = entity.GetRegistry();

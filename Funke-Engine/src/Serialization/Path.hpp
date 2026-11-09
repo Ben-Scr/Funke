@@ -36,14 +36,11 @@ namespace Funke {
 			return ToUtf8(std::filesystem::current_path());
 		}
 
-		// The game's content root: next to the executable, or the directory a platform set with
-		// SetExecutableDirOverride (Android extracts the APK payload, the Web preloads a virtual FS).
+		// Content base: executable directory, macOS bundle Resources, or a platform override.
 		static std::string ExecutableDir();
 		static void SetExecutableDirOverride(const std::string& directory);
 
-		/// Resolves a FunkeAssets subdirectory (e.g. "Textures", "Shader").
-		/// Checks: exeDir/FunkeAssets/<sub> (packaged), then exeDir/../FunkeAssets/<sub> (dev layout).
-		/// Returns empty string if not found.
+		// Relative to the content base or its parent (dev layout); empty when absent.
 		static std::string ResolveFunkeAssets(const std::string& subdirectory);
 
 		/// Converts an absolute path to a display-friendly relative string (project root, FunkeAssets, or filename-only). Always uses forward slashes.

@@ -10,6 +10,7 @@
 #include "Scene/SceneExecutionContext.hpp"
 #include "Scene/SceneManager.hpp"
 #include "Scripting/EntityCommandBufferWire.hpp"
+#include "Scripting/EntityCommandBufferParallel.hpp"
 #include "Scripting/NativeEntityCommandBuffer.hpp"
 #include "Scripting/ParallelEntityCommandBuffer.hpp"
 #include "Scripting/ScriptBindings.hpp"
@@ -42,6 +43,22 @@ using namespace Funke;
 namespace {
 
 	constexpr uint32_t k_ParallelCount = 8193;
+
+	class PlaybackTrace {
+	public:
+		PlaybackTrace() : m_Subscription(Log::OnLog.Add([this](const Log::Entry& entry) {
+			if (entry.Message.starts_with("[EcbParallel]")) m_Last = entry.Message;
+		})) {}
+		~PlaybackTrace() { Log::OnLog.Remove(m_Subscription); }
+		void Expect(const std::string& selection) const {
+			if (!EcbParallelDiagnosticsEnabled()) return;
+			CAPTURE(m_Last);
+			CHECK(m_Last.find(selection) != std::string::npos);
+		}
+	private:
+		EventId m_Subscription;
+		std::string m_Last;
+	};
 
 	class ScopedEcbWorkers {
 	public:
@@ -337,7 +354,10 @@ TEST_CASE("Public native ECB preserves mixed command order and custom callbacks"
 		commands.RemoveComponent<SpriteRendererComponent>(local);
 		commands.AddComponent<SpriteRendererComponent>(local);
 		commands.SetEnabled(local, false);
+		PlaybackTrace trace;
 		REQUIRE(commands.Playback(*scene, mode) == 1);
+		trace.Expect(mode == EntityCommandBufferPlaybackMode::Sequential
+			? "path=ordered reason=sequential_requested" : "path=ordered reason=native_custom_command");
 		const auto handle = commands.GetCreatedEntity(0);
 		Entity entity = scene->GetEntity(handle);
 		CHECK(entity.GetComponent<NativeEcbCustomValue>().Value == 7);
@@ -437,13 +457,34 @@ TEST_CASE("Public native ECB falls back atomically for an unregistered default c
 	NativeEntityCommandBuffer commands;
 	for (int index = 0; index < 513; ++index)
 		commands.CreateWith<Transform2DComponent, SpriteRendererComponent, NativeEcbCustomValue>();
+	PlaybackTrace trace;
 	REQUIRE(commands.Playback(*scene, EntityCommandBufferPlaybackMode::Parallel) == 513);
+	trace.Expect("path=ordered reason=native_component_not_serializable");
 	CHECK(scene->GetEntityCount() == 513);
 	for (int index = 0; index < 513; ++index) {
 		const auto handle = commands.GetCreatedEntity(index);
 		REQUIRE(scene->IsValid(handle));
 		CHECK(scene->GetRegistry().all_of<Transform2DComponent, SpriteRendererComponent, NativeEcbCustomValue>(handle));
 		CHECK(scene->GetRegistry().get<NativeEcbCustomValue>(handle).Value == 7);
+	}
+}
+
+TEST_CASE("Public native ECB modes preserve custom callback exceptions and release playback guard")
+{
+	Application app;
+	RegisterParallelTypes();
+	for (auto mode : { EntityCommandBufferPlaybackMode::Auto, EntityCommandBufferPlaybackMode::Sequential, EntityCommandBufferPlaybackMode::Parallel }) {
+		auto scene = Scene::CreateDetachedScene("Native ECB Custom Error");
+		NativeEntityCommandBuffer commands;
+		const auto local = commands.CreateEntity();
+		commands.AddComponent<NativeEcbCustomValue>(local, [](auto&) { throw std::runtime_error("ECB custom regression callback"); });
+		CHECK_THROWS_AS(commands.Playback(*scene, mode), std::runtime_error);
+		CHECK(scene->GetEntityCount() == 1);
+		CHECK_NOTHROW(commands.Clear());
+		CHECK(commands.EntityCount() == 0);
+		CHECK(commands.CommandCount() == 0);
+		CHECK(commands.GetCreatedEntity(0) == entt::null);
+		CHECK(commands.Playback(*scene, mode) == 0);
 	}
 }
 
@@ -554,8 +595,10 @@ TEST_CASE("ECB parallel and sequential playback preserve large default and paylo
 			CAPTURE(mode);
 			auto scene = Scene::CreateDetachedScene("ECB Parallel Equivalence");
 			SceneExecutionScope scope(*scene);
+			PlaybackTrace trace;
 			std::vector<uint64_t> ids(k_ParallelCount);
 			REQUIRE(create.Play(bindings, mode, ids) == k_ParallelCount);
+			trace.Expect(mode == 1 ? "path=ordered reason=sequential_requested" : "path=staged");
 			CHECK(scene->GetEntityCount() == k_ParallelCount);
 			std::unordered_set<uint64_t> unique(ids.begin(), ids.end());
 			CHECK(unique.size() == k_ParallelCount);
@@ -649,6 +692,7 @@ TEST_CASE("ECB parallel mode falls back for external signals and preserves obser
 	auto scene = Scene::CreateDetachedScene("ECB Signal Fallback");
 	SceneExecutionScope scope(*scene);
 	ParallelSignalObserver constructed{ *scene }, removed{ *scene }, destroyed{ *scene };
+	PlaybackTrace trace;
 	entt::scoped_connection onConstruct = scene->GetRegistry().on_construct<SpriteRendererComponent>()
 		.connect<&ParallelSignalObserver::Observe>(&constructed);
 	entt::scoped_connection onRemove = scene->GetRegistry().on_destroy<SpriteRendererComponent>()
@@ -657,6 +701,7 @@ TEST_CASE("ECB parallel mode falls back for external signals and preserves obser
 		.connect<&ParallelSignalObserver::Observe>(&destroyed);
 	std::vector<uint64_t> ids(k_ParallelCount);
 	REQUIRE(CreationBuffer(k_ParallelCount, types, false).Play(bindings, 2, ids) == k_ParallelCount);
+	trace.Expect("path=ordered reason=creation_signals");
 	REQUIRE(constructed.Order.size() == k_ParallelCount);
 	CHECK(constructed.MainThread);
 	ParallelTestBuffer remove, destroy;
@@ -669,6 +714,7 @@ TEST_CASE("ECB parallel mode falls back for external signals and preserves obser
 		destroy.Live(Ecb_DestroyEntity, ids[k_ParallelCount - index - 1]);
 	}
 	REQUIRE(remove.Play(bindings, 2) == 0);
+	trace.Expect("path=ordered reason=component_signals");
 	REQUIRE(removed.Order.size() == k_ParallelCount);
 	CHECK(removed.MainThread);
 	for (uint32_t index = 0; index < k_ParallelCount; ++index) {
@@ -677,6 +723,7 @@ TEST_CASE("ECB parallel mode falls back for external signals and preserves obser
 		CHECK(removed.TransformCounts[index] == k_ParallelCount);
 	}
 	REQUIRE(destroy.Play(bindings, 2) == 0);
+	trace.Expect("path=ordered reason=destroy_lifecycle_or_storage");
 	REQUIRE(destroyed.Order.size() == k_ParallelCount);
 	CHECK(destroyed.MainThread);
 	for (uint32_t index = 0; index < k_ParallelCount; ++index)
@@ -819,12 +866,180 @@ TEST_CASE("ECB parallel mode completes safely without a native worker pool")
 	const NativeBindings bindings = ParallelBindings();
 	auto scene = Scene::CreateDetachedScene("ECB Inline Parallel Fallback");
 	SceneExecutionScope scope(*scene);
+	PlaybackTrace trace;
 	std::vector<uint64_t> ids(k_ParallelCount);
 	REQUIRE(CreationBuffer(k_ParallelCount, types, true).Play(bindings, 2, ids) == k_ParallelCount);
+	trace.Expect("path=staged execution=inline reason=workers_unavailable");
 	CHECK_FALSE(JobSystem::IsInitialized());
 	for (uint32_t index = 0; index < k_ParallelCount; ++index)
 		CheckParallelValues(*scene, ResolveParallelEntity(*scene, ids[index]), index, true);
 	CHECK(scene->GetEntityCount() == k_ParallelCount);
+}
+
+TEST_CASE("ECB playback mode thresholds preserve metadata only creation")
+{
+	Application app;
+	ScopedEcbWorkers workers(0);
+	const NativeBindings bindings = ParallelBindings();
+	for (uint32_t count : { 511u, 512u, 8191u, 8192u }) {
+		for (int mode : { 0, 1, 2 }) {
+			CAPTURE(count);
+			CAPTURE(mode);
+			auto scene = Scene::CreateDetachedScene("ECB Selection Thresholds");
+			SceneExecutionScope scope(*scene);
+			PlaybackTrace trace;
+			std::vector<uint64_t> ids(count);
+			REQUIRE(ParallelTestBuffer(count).Play(bindings, mode, ids) == count);
+			trace.Expect("mode=" + std::to_string(mode));
+			if (mode == 1) trace.Expect("path=ordered reason=sequential_requested");
+			else if (mode == 0 && count < 512) trace.Expect("path=ordered reason=auto_below_threshold");
+			else trace.Expect(mode == 0 && count < 8192
+				? "path=staged execution=inline reason=auto_inline_threshold"
+				: "path=staged execution=inline reason=workers_unavailable");
+			CHECK(scene->GetEntityCount() == count);
+			CHECK(std::unordered_set<uint64_t>(ids.begin(), ids.end()).size() == count);
+			for (uint64_t id : ids) {
+				const auto handle = ResolveParallelEntity(*scene, id);
+				CHECK(scene->GetEntityPersistentID(handle) == id);
+				CHECK_FALSE(scene->GetRegistry().all_of<Transform2DComponent>(handle));
+				CHECK_FALSE(scene->GetRegistry().all_of<SpriteRendererComponent>(handle));
+			}
+		}
+	}
+}
+
+TEST_CASE("ECB playback modes preserve ordered duplicate and mixed mutations")
+{
+	int scenario = 0;
+	SUBCASE("duplicate payload replaces the earlier default") { scenario = 0; }
+	SUBCASE("duplicate default retains the earlier payload") { scenario = 1; }
+	SUBCASE("destroy after creation leaves a zero output slot") { scenario = 2; }
+	Application app;
+	const auto types = RegisterParallelTypes();
+	const NativeBindings bindings = ParallelBindings();
+	for (int mode : { 0, 1, 2 }) {
+		CAPTURE(mode);
+		auto scene = Scene::CreateDetachedScene("ECB Ordered Mutation Matrix");
+		SceneExecutionScope scope(*scene);
+		PlaybackTrace trace;
+		auto buffer = CreationBuffer(512, types, false, false);
+		const char* reason = "duplicate_component";
+		bool destroyed = false;
+		float expectedPosition = 0.0f;
+		if (scenario == 0) {
+			const auto transform = ParallelTransform(23);
+			buffer.Append(Ecb_AddComponent, 0, types.Transform, &transform, sizeof(transform));
+			expectedPosition = 23.0f;
+		}
+		else if (scenario == 1) {
+			buffer = CreationBuffer(512, types, true, false);
+			buffer.Append(Ecb_DefaultConstructComponent, 0, types.Transform);
+		}
+		else {
+			buffer.Append(Ecb_DestroyEntity, 0, 0);
+			reason = "mixed_operations";
+			destroyed = true;
+		}
+		std::vector<uint64_t> ids(512, 123);
+		REQUIRE(buffer.Play(bindings, mode, ids) == 512);
+		trace.Expect(std::string("path=ordered reason=") + (mode == 1 ? "sequential_requested" : reason));
+		CHECK(scene->GetEntityCount() == (destroyed ? 511 : 512));
+		if (destroyed) CHECK(ids[0] == 0);
+		else CHECK(scene->GetRegistry().get<Transform2DComponent>(ResolveParallelEntity(*scene, ids[0])).LocalPosition.x == expectedPosition);
+		for (size_t index = 1; index < ids.size(); ++index) ResolveParallelEntity(*scene, ids[index]);
+	}
+}
+
+TEST_CASE("ECB playback modes preserve missing and already present component semantics")
+{
+	int scenario = 0;
+	SUBCASE("payload replaces existing component") { scenario = 0; }
+	SUBCASE("default add retains existing component") { scenario = 1; }
+	SUBCASE("missing removal is a no op but later removals still execute") { scenario = 2; }
+	Application app;
+	const auto types = RegisterParallelTypes();
+	const NativeBindings bindings = ParallelBindings();
+	for (int mode : { 0, 1, 2 }) {
+		CAPTURE(mode);
+		auto scene = Scene::CreateDetachedScene("ECB Existing Component Matrix");
+		SceneExecutionScope scope(*scene);
+		std::vector<uint64_t> ids(512);
+		REQUIRE(CreationBuffer(512, types, true).Play(bindings, 1, ids) == 512);
+		const auto first = ResolveParallelEntity(*scene, ids[0]);
+		ParallelTestBuffer buffer;
+		const char* reason = "component_already_present";
+		bool removed = false;
+		float expectedPosition = 0.0f;
+		if (scenario == 0) {
+			for (uint64_t id : ids) {
+				const auto value = ParallelTransform(31);
+				buffer.Live(Ecb_AddComponent, id, types.Transform, &value, sizeof(value));
+			}
+			expectedPosition = 31.0f;
+		}
+		else if (scenario == 1) {
+			for (uint64_t id : ids) buffer.Live(Ecb_DefaultConstructComponent, id, types.Transform);
+		}
+		else {
+			scene->GetRegistry().remove<Transform2DComponent>(first);
+			for (uint64_t id : ids) buffer.Live(Ecb_RemoveComponent, id, types.Transform);
+			reason = "component_missing";
+			removed = true;
+		}
+		PlaybackTrace trace;
+		REQUIRE(buffer.Play(bindings, mode) == 0);
+		trace.Expect(std::string("path=ordered reason=") + (mode == 1 ? "sequential_requested" : reason));
+		CHECK(scene->GetEntityCount() == 512);
+		if (!removed) {
+			CHECK(scene->GetRegistry().get<Transform2DComponent>(first).LocalPosition.x == expectedPosition);
+			CHECK(scene->GetRegistry().get<Transform2DComponent>(first).LocalScale.x == 2.0f);
+		}
+		for (uint64_t id : ids) {
+			const auto handle = ResolveParallelEntity(*scene, id);
+			CHECK(scene->GetRegistry().all_of<Transform2DComponent>(handle) == !removed);
+			CHECK(scene->GetRegistry().all_of<SpriteRendererComponent>(handle));
+		}
+	}
+}
+
+TEST_CASE("ECB playback modes return identical component validation and callback errors")
+{
+	int scenario = 0;
+	SUBCASE("unknown type after valid commands") { scenario = 0; }
+	SUBCASE("wrong payload after valid commands") { scenario = 1; }
+	SUBCASE("overridden callback throws through the guarded backend") { scenario = 2; }
+	Application app;
+	const auto types = RegisterParallelTypes();
+	const NativeBindings bindings = ParallelBindings();
+	auto& info = *SceneManager::GetComponentRegistry().GetInfo<Transform2DComponent>();
+	RestoreParallelComponentInfo restore(info);
+	for (int mode : { 0, 1, 2 }) {
+		CAPTURE(mode);
+		auto scene = Scene::CreateDetachedScene("ECB Error Equivalence");
+		SceneExecutionScope scope(*scene);
+		auto buffer = CreationBuffer(512, types, false, false);
+		int expectedError = kEcbErrorUnknownComponent;
+		bool executionStarted = false;
+		if (scenario == 0) {
+			buffer.Append(Ecb_DefaultConstructComponent, 0, UINT32_MAX);
+		}
+		else if (scenario == 1) {
+			const uint8_t byte = 0;
+			buffer.Append(Ecb_AddComponent, 0, types.Transform, &byte, sizeof(byte));
+			expectedError = kEcbErrorTruncated;
+		}
+		else {
+			info.defaultEmplace = [](entt::registry&, EntityHandle) { throw std::runtime_error("ECB regression callback"); };
+			expectedError = kEcbErrorInternal;
+			executionStarted = true;
+		}
+		PlaybackTrace trace;
+		std::vector<uint64_t> ids(512, 123);
+		CHECK(buffer.Play(bindings, mode, ids) == expectedError);
+		CHECK(scene->GetEntityCount() == (executionStarted ? 512 : 0));
+		CHECK(std::all_of(ids.begin(), ids.end(), [](uint64_t id) { return id == 123; }));
+		if (executionStarted) trace.Expect(mode == 1 ? "reason=sequential_requested" : "reason=uncertified_component");
+	}
 }
 
 TEST_CASE("ECB parallel plan certifies default and payload commands independently")

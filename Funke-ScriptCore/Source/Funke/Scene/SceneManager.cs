@@ -346,7 +346,7 @@ public static class SceneManager
 
     private static void SetGlobalSystemEnabled<T>(bool enabled) where T : GlobalSystem
     {
-        InternalCalls.Scene_SetGlobalSystemEnabled(typeof(T).Name, enabled);
+        InternalCalls.Scene_SetGlobalSystemEnabled(ScriptInstanceManager.TypeIdentity(typeof(T)), enabled);
     }
 
     /// <summary>

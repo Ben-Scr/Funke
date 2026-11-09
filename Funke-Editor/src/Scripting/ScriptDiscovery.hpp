@@ -40,14 +40,15 @@ namespace Funke::EditorScriptDiscovery {
 
 	inline std::string MenuLabel(const ScriptEntry& entry)
 	{
-		return entry.Extension.empty() ? entry.ClassName : entry.ClassName + "  " + entry.Extension;
+		const std::string name = entry.ClassName.starts_with("type:") ? entry.ClassName.substr(5) : entry.ClassName;
+		return entry.Extension.empty() ? name : name + "  " + entry.Extension;
 	}
 
 	// ImGui id that stays unique for entries without a file.
 	inline std::string EntryId(const ScriptEntry& entry)
 	{
 		if (entry.Path.empty()) return entry.Package + ":" + entry.ClassName;
-		return entry.Type == ScriptType::Native ? entry.Path.string() + ":" + entry.ClassName : entry.Path.string();
+		return entry.Path.string() + ":" + entry.ClassName;
 	}
 
 	// "Funke.Networking.NetworkObject" -> "NetworkObject".
@@ -123,9 +124,11 @@ namespace Funke::EditorScriptDiscovery {
 
 	inline std::string BuildNativeScriptSource(const std::string& className)
 	{
-		return "#include <Scripting/NativeScript.hpp>\n"
+		return "#include <Funke/Scripting.hpp>\n"
 			"\n"
-			"class " + className + " : public Funke::NativeScript {\n"
+			"using namespace Funke;\n"
+			"\n"
+			"class " + className + " : public NativeScript {\n"
 			"public:\n"
 			"    void Start() override\n"
 			"    {\n"
@@ -383,29 +386,19 @@ namespace Funke::EditorScriptDiscovery {
 		return classes;
 	}
 
+	inline void AppendCompiledProjectScripts(std::vector<ScriptEntry>& entries);
+
 	inline void CollectScriptFile(const std::filesystem::path& filePath, std::vector<ScriptEntry>& entries)
 	{
 		std::string extension = ToLowerCopy(filePath.extension().string());
 		if (IsCSharpScriptExtension(extension)) {
-			const std::string compactSource = ReadSourceWithoutWhitespace(filePath);
-			// IComponent check must precede Component: ":Component" would otherwise fire on ":IComponent" too (substring match).
-			const bool isNativeComponent = SourceHasBaseClass(compactSource, "IComponent")
-				|| SourceHasBaseClass(compactSource, "Components.IComponent");
-			const bool isManagedComponent = !isNativeComponent
-				&& (SourceHasBaseClass(compactSource, "Component")
-					|| SourceHasBaseClass(compactSource, "Funke.Component"));
-			std::string nativeName;
-			if (isNativeComponent) {
-				nativeName = ExtractNativeComponentAttributeName(filePath);
-				if (nativeName.empty()) {
-					nativeName = filePath.stem().string();
-				}
+			std::vector<ScriptEntry> compiled;
+			AppendCompiledProjectScripts(compiled);
+			for (auto& entry : compiled) {
+				std::error_code ec;
+				if (!entry.Path.empty() && std::filesystem::equivalent(entry.Path, filePath, ec)
+					&& !ContainsScriptEntry(entries, entry.ClassName, entry.Type)) entries.push_back(std::move(entry));
 			}
-			const bool isSceneSystem = SourceHasBaseClass(compactSource, "SceneSystem");
-			const bool isGlobalSystem = SourceHasBaseClass(compactSource, "GlobalSystem");
-			AppendScriptEntry(entries, filePath.stem().string(), filePath, extension, ScriptType::Managed,
-				isManagedComponent, isNativeComponent, std::move(nativeName),
-				isSceneSystem, isGlobalSystem);
 			return;
 		}
 
@@ -438,7 +431,7 @@ namespace Funke::EditorScriptDiscovery {
 				continue;
 			}
 
-			CollectScriptFile(it->path(), entries);
+			if (!IsCSharpScriptExtension(it->path().extension().string())) CollectScriptFile(it->path(), entries);
 		}
 	}
 
@@ -501,6 +494,31 @@ namespace Funke::EditorScriptDiscovery {
 		detail::s_Dirty.store(true, std::memory_order_release);
 	}
 
+	inline void AppendCompiledProjectScriptEntries(const char* json, std::vector<ScriptEntry>& entries)
+	{
+		Json::Value root;
+		if (!json || !Json::TryParse(json, root) || !root.IsArray()) return;
+		for (const auto& item : root.GetArray()) {
+			const auto* name = item.FindMember("name");
+			const auto* kind = item.FindMember("kind");
+			const auto* path = item.FindMember("path");
+			const auto* nativeName = item.FindMember("nativeName");
+			if (!name || !kind) continue;
+			const std::string category = kind->AsStringOr();
+			if (category == "dataAsset") continue;
+			AppendScriptEntry(entries, name->AsStringOr(), path ? Path::FromUtf8(path->AsStringOr()) : std::filesystem::path{},
+				".cs", ScriptType::Managed, category == "component", category == "nativeComponent",
+				nativeName ? nativeName->AsStringOr() : "", category == "sceneSystem", category == "globalSystem");
+		}
+	}
+
+	inline void AppendCompiledProjectScripts(std::vector<ScriptEntry>& entries)
+	{
+		if (!ScriptEngine::IsInitialized()) return;
+		auto query = ScriptEngine::GetCallbacks().GetClassFieldDefs;
+		AppendCompiledProjectScriptEntries(query ? query("catalog:") : nullptr, entries);
+	}
+
 	inline void CollectProjectScriptEntries(std::vector<ScriptEntry>& entries)
 	{
 		using namespace std::chrono;
@@ -530,6 +548,7 @@ namespace Funke::EditorScriptDiscovery {
 			CollectScriptFiles(base / ".." / ".." / ".." / "Funke-NativeScripts" / "Source", rebuilt);
 		}
 		// Package sources aren't in the project, so the loaded assemblies are asked instead.
+		AppendCompiledProjectScripts(rebuilt);
 		AppendPackageScriptEntries(ScriptEngine::GetPackageScriptTypes(), rebuilt);
 		SortScriptEntries(rebuilt);
 

@@ -25,6 +25,12 @@ namespace Funke {
 
 	class DynamicComponentStorage;
 	class ComponentRegistry;
+	struct ComponentLayoutField {
+		std::string Path;
+		std::string Type;
+		size_t Offset = 0;
+		size_t Size = 0;
+	};
 	namespace Codegen {
 		template <typename T> void RegisterPrefixByteEmplacer(ComponentRegistry&, std::size_t);
 	}
@@ -197,8 +203,11 @@ namespace Funke {
 		// Bulk pointer fill for IJobQuery; returns total count so the managed caller can retry with a larger buffer if count > maxRows.
 		InlineFunction<int(entt::registry& registry, void** outPointers, int maxRows, int enableFilter)> fillRawPointers;
 
-		// sizeof(T); mismatching the C# struct mirror hard-fails assembly load to prevent silent memory corruption.
+		// Bounds only; managedFields supplies the field-level ref-API contract.
 		size_t rawSize = 0;
+		// Codegen/package registrations use native offsets and primitive leaf paths, including private mirror fields.
+		std::vector<ComponentLayoutField> managedFields;
+		size_t managedSize = 0;
 
 		// Monotonic u32 ID for the ECB wire format (4-byte component name). NOT persisted — scenes key on serializedName. Zero = unassigned.
 		uint32_t typeIdU32 = 0;

@@ -360,7 +360,9 @@ namespace Funke {
 			if (const auto* transform = registry.try_get<Transform3DComponent>(selected)) {
 				const LocalBounds3D bounds = EntityPicker3D::GetHierarchyBounds(scene, selected);
 				renderer.DrawWireBox(transform->WorldMatrix * glm::translate(glm::mat4(1.0f), bounds.Center), bounds.HalfExtents * 1.02f, k_SelectionColor);
-				PhysicsDebugDraw3D::DrawColliders(renderer, scene, selected, transform->WorldMatrix);
+				if (EngineModules::IsActive(EngineModule::Physics3D)) {
+					PhysicsDebugDraw3D::DrawColliders(renderer, scene, selected, transform->WorldMatrix);
+				}
 				if (const auto* particles = registry.try_get<ParticleSystem3DComponent>(selected)) {
 					DrawParticleShapeGizmo(renderer, transform->WorldMatrix, *particles);
 				}
@@ -400,7 +402,8 @@ namespace Funke {
 		cameraInput.Pan = s_PanActive && !s_LookActive;
 		cameraInput.MouseDelta = (cameraInput.Look || cameraInput.Pan) ? glm::vec2(io.MouseDelta.x, io.MouseDelta.y) : glm::vec2(0.0f);
 		cameraInput.Scroll = hovered ? io.MouseWheel : 0.0f;
-		if (s_LookActive) {
+		if (s_LookActive && !io.WantTextInput && !ImGui::IsAnyItemActive()
+			&& ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)) {
 			cameraInput.Fly = {
 				(ImGui::IsKeyDown(ImGuiKey_D) ? 1.0f : 0.0f) - (ImGui::IsKeyDown(ImGuiKey_A) ? 1.0f : 0.0f),
 				(ImGui::IsKeyDown(ImGuiKey_E) ? 1.0f : 0.0f) - (ImGui::IsKeyDown(ImGuiKey_Q) ? 1.0f : 0.0f),

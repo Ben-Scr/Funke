@@ -470,7 +470,7 @@ namespace Funke {
 				const int current = data->FindClip(renderer.Clip);
 				const char* preview = renderer.Clip.empty() ? data->Clips.front().Name.c_str()
 					: (current >= 0 ? renderer.Clip.c_str() : "(missing clip)");
-				if (ImGui::BeginCombo("Pick Clip", preview)) {
+				if (EditorUI::BeginCombo("Pick Clip", preview)) {
 					for (size_t i = 0; i < data->Clips.size(); ++i) {
 						const SkeletalClip& clip = data->Clips[i];
 						char label[160];
@@ -481,7 +481,7 @@ namespace Funke {
 							ImGuiUtils::MarkSelectionDirty(entities);
 						}
 					}
-					ImGui::EndCombo();
+					EditorUI::EndCombo();
 				}
 			}
 			ImGui::TextDisabled("%zu vertices, %zu nodes, %zu joints, %zu clip(s)", data->BindVertices.size(), data->Nodes.size(),
@@ -1163,7 +1163,7 @@ namespace Funke {
 					? (classes.empty() ? "<no scripts>" : "<select>")
 					: row.ScriptClassName.c_str();
 				ImGui::SetNextItemWidth(fieldWidth);
-				if (ImGui::BeginCombo("##Class", classPreview)) {
+				if (EditorUI::BeginCombo("##Class", classPreview)) {
 					for (const std::string& className : classes) {
 						const bool selected = (className == row.ScriptClassName);
 						if (ImGui::Selectable(className.c_str(), selected)) {
@@ -1178,7 +1178,7 @@ namespace Funke {
 						}
 						if (selected) ImGui::SetItemDefaultFocus();
 					}
-					ImGui::EndCombo();
+					EditorUI::EndCombo();
 				}
 				ImGui::SameLine(0.0f, spacing);
 
@@ -1195,7 +1195,7 @@ namespace Funke {
 					}
 				}
 				ImGui::SetNextItemWidth(fieldWidth);
-				if (ImGui::BeginCombo("##Method", methodPreview.c_str())) {
+				if (EditorUI::BeginCombo("##Method", methodPreview.c_str())) {
 					if (!row.ScriptClassName.empty()) {
 						const std::vector<std::string> raw =
 							InspectorEvents::GetInvokableMethods(row.ScriptClassName);
@@ -1229,7 +1229,7 @@ namespace Funke {
 							if (selected) ImGui::SetItemDefaultFocus();
 						}
 					}
-					ImGui::EndCombo();
+					EditorUI::EndCombo();
 				}
 				ImGui::SameLine(0.0f, spacing);
 

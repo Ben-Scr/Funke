@@ -17,6 +17,7 @@ namespace Funke {
 		// Launcher filter tab, e.g. "2D" or "3D".
 		std::string Category;
 		std::vector<std::string> Modules;
+		bool HasModuleSelection = false;
 		std::string StartupScene = "SampleScene";
 		int SortOrder = 0;
 		std::string RootDirectory;

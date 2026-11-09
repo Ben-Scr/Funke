@@ -18,11 +18,21 @@
 #include "Components/Graphics/ParticleSystem2DComponent.hpp"
 #include "Components/Graphics/TerrainRenderer2DComponent.hpp"
 #include "Components/Graphics/SpriteRendererComponent.hpp"
+#if FUNKE_WITH_PHYSICS2D
 #include "Components/Physics/BoxCollider2DComponent.hpp"
+#endif
+#if FUNKE_WITH_PHYSICS2D
 #include "Components/Physics/CircleCollider2DComponent.hpp"
+#endif
+#if FUNKE_WITH_PHYSICS2D
 #include "Components/Physics/PolygonCollider2DComponent.hpp"
+#endif
+#if FUNKE_WITH_PHYSICS2D
 #include "Components/Physics/Joint2DComponents.hpp"
+#endif
+#if FUNKE_WITH_PHYSICS2D
 #include "Components/Physics/Rigidbody2DComponent.hpp"
+#endif
 #endif
 
 #if FUNKE_WITH_3D
@@ -34,8 +44,12 @@
 #include "Components/Graphics/PointLightComponent.hpp"
 #include "Components/Graphics/SkinnedMeshRendererComponent.hpp"
 #include "Components/Graphics/SpotLightComponent.hpp"
+#if FUNKE_WITH_PHYSICS3D
 #include "Components/Physics3D/Collider3DComponents.hpp"
+#endif
+#if FUNKE_WITH_PHYSICS3D
 #include "Components/Physics3D/Rigidbody3DComponent.hpp"
+#endif
 #endif
 
 // Single source of truth for built-in components — names, categories, properties.
@@ -87,6 +101,7 @@ namespace Funke {
 			SetIcon<SpriteRendererComponent>(registry, "eye_open");
 			SetIcon<TerrainRenderer2DComponent>(registry, "eye_open");
 			SetIcon<ParticleSystem2DComponent>(registry, "particles");
+#if FUNKE_WITH_PHYSICS2D
 			SetIcon<Rigidbody2DComponent>(registry, "rigidbody_2d");
 			SetIcon<BoxCollider2DComponent>(registry, "collider_box_2d");
 			SetIcon<CircleCollider2DComponent>(registry, "collider_circle_2d");
@@ -94,6 +109,7 @@ namespace Funke {
 			SetIcon<RevoluteJoint2DComponent>(registry, "link");
 			SetIcon<PrismaticJoint2DComponent>(registry, "link");
 			SetIcon<WeldJoint2DComponent>(registry, "link");
+#endif
 #endif
 #if FUNKE_WITH_3D
 			SetIcon<Transform3DComponent>(registry, "move");
@@ -103,11 +119,13 @@ namespace Funke {
 			SetIcon<SpotLightComponent>(registry, "light_spot");
 			SetIcon<ParticleSystem3DComponent>(registry, "particles");
 			SetIcon<SkinnedMeshRendererComponent>(registry, "animator");
+#if FUNKE_WITH_PHYSICS3D
 			SetIcon<Rigidbody3DComponent>(registry, "rigidbody_3d");
 			SetIcon<BoxCollider3DComponent>(registry, "collider_box_3d");
 			SetIcon<SphereCollider3DComponent>(registry, "collider_sphere_3d");
 			SetIcon<CapsuleCollider3DComponent>(registry, "collider_capsule_3d");
 			SetIcon<MeshCollider3DComponent>(registry, "collider_mesh_3d");
+#endif
 #endif
 		}
 	}
@@ -120,9 +138,9 @@ namespace Funke {
 
 		Internal::RegisterGeneral(registry);
 		Internal::RegisterRendering(registry);
-#if FUNKE_WITH_2D
+#if FUNKE_WITH_PHYSICS2D
 		{
-			Internal::ModuleRegistrationScope module2D(registry, EngineModule::TwoD);
+			Internal::ModuleRegistrationScope module2D(registry, EngineModule::Physics2D);
 			Internal::RegisterPhysics(registry);
 		}
 #endif
@@ -153,6 +171,8 @@ namespace Funke {
 		// occupy the same role and should not coexist on a single entity.
 
 
+#endif
+#if FUNKE_WITH_PHYSICS2D
 		// One Box2D shape per entity — the rigidbody adopts whichever collider
 		// is on the entity, and Scene::OnRigidBody2DComponentConstruct only
 		// reaches for one. Layering two would leak a body.
@@ -207,15 +227,20 @@ namespace Funke {
 		DeclareConflict<DirectionalLightComponent, SpotLightComponent>(registry);
 		DeclareConflict<PointLightComponent, SpotLightComponent>(registry);
 
+#if FUNKE_WITH_PHYSICS3D
 		// ── Physics 3D (Jolt) ───────────────────────────────────────
 		// After the 3D slice for the same typeIdU32 reason. Transform3D already conflicts with
 		// Transform2D, so these dependencies also keep the 2D and 3D physics stacks apart.
-		Internal::RegisterPhysics3D(registry);
+		{
+			Internal::ModuleRegistrationScope physics3D(registry, EngineModule::Physics3D);
+			Internal::RegisterPhysics3D(registry);
+		}
 		DeclareDependency<Rigidbody3DComponent,       Transform3DComponent>(registry);
 		DeclareDependency<BoxCollider3DComponent,     Transform3DComponent>(registry);
 		DeclareDependency<SphereCollider3DComponent,  Transform3DComponent>(registry);
 		DeclareDependency<CapsuleCollider3DComponent, Transform3DComponent>(registry);
 		DeclareDependency<MeshCollider3DComponent,    Transform3DComponent>(registry);
+#endif
 
 		// ── Particles 3D ────────────────────────────────────────────
 		// After Physics3D for the same typeIdU32 reason.
@@ -280,7 +305,7 @@ namespace Funke {
 			std::vector<std::type_index> threeD;
 			registry.ForEachComponentInfo([&](const std::type_index& id, const ComponentInfo& info) {
 				if (!info.engineModule || info.category != ComponentCategory::Component) return;
-				(*info.engineModule == EngineModule::TwoD ? twoD : threeD).push_back(id);
+				(EngineModules::GetDimension(*info.engineModule) == EngineModule::TwoD ? twoD : threeD).push_back(id);
 			});
 			for (const std::type_index& a : twoD) {
 				for (const std::type_index& b : threeD) {

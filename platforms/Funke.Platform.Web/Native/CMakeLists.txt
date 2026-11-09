@@ -29,8 +29,8 @@ if(FUNKE_WEB_MANAGED)
     add_compile_options(-sWASM_LEGACY_EXCEPTIONS=0)
     add_link_options(-sWASM_LEGACY_EXCEPTIONS=0)
 endif()
-# Box2D's wasm path uses SSE2 intrinsics, which Emscripten maps onto WebAssembly SIMD.
-add_compile_options(-msimd128 -msse2)
+# Jolt's wasm SIMD path requires SSE4.2 intrinsics; Emscripten maps them to wasm SIMD.
+add_compile_options(-msimd128 -msse4.2)
 set(_port "--use-port=${FUNKE_EMDAWNWEBGPU_PORT}")
 add_compile_options("${_port}")
 

@@ -12,13 +12,22 @@ public abstract class SceneSystem
     public bool Enabled
     {
         get => !string.IsNullOrEmpty(Scene.Name)
-            && InternalCalls.Scene_IsSceneSystemEnabled(Scene.Name, GetType().Name);
+            && InternalCalls.Scene_IsSceneSystemEnabled(Scene.Name, ScriptInstanceManager.TypeIdentity(GetType()));
         set
         {
             if (!string.IsNullOrEmpty(Scene.Name))
-                InternalCalls.Scene_SetSceneSystemEnabled(Scene.Name, GetType().Name, value);
+                InternalCalls.Scene_SetSceneSystemEnabled(Scene.Name, ScriptInstanceManager.TypeIdentity(GetType()), value);
         }
     }
+
+    /// <inheritdoc cref="Funke.Entity.Create2D"/>
+    protected Entity Create2D(string? name = null, Vector2 localPosition = default, float localRotationDegrees = 0, Entity? parent = null) => Entity.Create2D(name, localPosition, localRotationDegrees, parent);
+    /// <inheritdoc cref="Funke.Entity.Create3D"/>
+    protected Entity Create3D(string? name = null, Vector3 localPosition = default, Vector3 localRotationDegrees = default, Entity? parent = null) => Entity.Create3D(name, localPosition, localRotationDegrees, parent);
+    /// <inheritdoc cref="Funke.Entity.Instantiate2D"/>
+    protected Entity Instantiate2D(Entity source, Vector2 localPosition = default, float localRotationDegrees = 0, Entity? parent = null) => Entity.Instantiate2D(source, localPosition, localRotationDegrees, parent);
+    /// <inheritdoc cref="Funke.Entity.Instantiate3D"/>
+    protected Entity Instantiate3D(Entity source, Vector3 localPosition = default, Vector3 localRotationDegrees = default, Entity? parent = null) => Entity.Instantiate3D(source, localPosition, localRotationDegrees, parent);
 
     protected Entity Create(string? name = null) => Entity.Create(name);
     protected Entity Create(string? name, Entity? parent) => Entity.Create(name, parent);
@@ -29,7 +38,8 @@ public abstract class SceneSystem
 
     protected void Destroy(Entity entity) => Entity.Destroy(entity);
 
-    protected void Print(object? obj) => Log.Print(obj);
+    protected void Print(object? obj, [System.Runtime.CompilerServices.CallerFilePath] string file = "",
+        [System.Runtime.CompilerServices.CallerLineNumber] int line = 0) => Log.Print(obj, file, line);
 
     internal void _SetSceneName(string sceneName)
     {

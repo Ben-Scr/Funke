@@ -32,6 +32,10 @@ namespace Funke::SceneSerializerInternal {
 }
 
 namespace Funke::Detail {
+	// A reduced runtime may inspect these scenes, but cannot safely rewrite their missing component data.
+	struct UnavailableModuleData { std::string Component; };
+	void RequireSerializableModules(const Scene& scene);
+
 	Json::Value SerializeEntity(Scene& scene, EntityHandle entity);
 	Json::Value SerializeScriptFields(const ScriptComponent& scriptComponent);
 

@@ -143,7 +143,7 @@ namespace Funke::BuiltInComponentRegistrationInternal {
 		transformInfo.serializedName = "Transform3D";
 		transformInfo.properties = {
 			Properties::Make("Position", "Position", &Transform3DComponent::Position),
-			Properties::Make("Rotation", "Rotation", &Transform3DComponent::Rotation, Properties::Meta::DragSpeed(1.0f)),
+			Properties::Make("Rotation", "Rotation", &Transform3DComponent::Rotation, Properties::Meta::DragSpeed(1.0f).WithRotation()),
 			Properties::Make("Scale", "Scale", &Transform3DComponent::Scale),
 		};
 		transformInfo.serialize = [](Entity e) -> Json::Value {

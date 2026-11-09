@@ -33,6 +33,7 @@ project "Funke-Editor-Tests"
         path.join(ROOT_DIR, "Funke-Editor/src/Editor/SpriteSlicing.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Gui/AssetSaveDialog.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Gui/AsyncTexturePreview.cpp"),
+        path.join(ROOT_DIR, "Funke-Editor/src/Gui/ThumbnailCache.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Gui/EditorDockLayout.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Gui/SceneHierarchyState.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Editor/ScriptWindowTypes.cpp"),

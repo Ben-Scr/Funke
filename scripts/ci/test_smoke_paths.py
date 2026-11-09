@@ -3,12 +3,86 @@
 from __future__ import annotations
 
 import tempfile
+import io
+import contextlib
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from scripts.ci import application_smoke_test, runtime_smoke_test
+
+
+class ApplicationResourcePathTests(unittest.TestCase):
+    def test_packaged_and_development_content_roots(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="Funke Prüfung ") as temporary:
+            root = Path(temporary)
+            binary = root / "Release/Funke-Editor/Funke-Editor"
+            binary.parent.mkdir(parents=True)
+            binary.touch()
+            shared = root / "Release/FunkeAssets"
+            shared.mkdir()
+            self.assertEqual(application_smoke_test.resolve_assets(binary), shared.resolve())
+            packed = binary.parent / "FunkeAssets"
+            packed.mkdir()
+            self.assertEqual(application_smoke_test.resolve_assets(binary), packed.resolve())
+
+    def test_bundle_does_not_fall_back_to_assets_outside_resources(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            contents = Path(temporary) / "Funke.app/Contents"
+            binary = contents / "MacOS/Funke-Launcher"
+            binary.parent.mkdir(parents=True)
+            binary.touch()
+            (contents / "Info.plist").touch()
+            (contents / "FunkeAssets").mkdir()
+            (binary.parent / "FunkeAssets").mkdir()
+            expected = contents / "Resources/FunkeAssets"
+            with self.assertRaises(ValueError) as failure:
+                application_smoke_test.resolve_assets(binary)
+            self.assertIn(str(expected), str(failure.exception))
+            self.assertIn("missing", str(failure.exception))
+            expected.parent.mkdir()
+            expected.touch()
+            with self.assertRaisesRegex(ValueError, "not a directory"):
+                application_smoke_test.resolve_assets(binary)
+
+    def test_missing_assets_stop_before_launch_and_report_locations(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            binary = Path(temporary) / "Tool/Funke-Launcher"
+            binary.parent.mkdir()
+            binary.touch()
+            args = SimpleNamespace(binary=binary, working_directory=None, argument=[], editor_project=False, timeout=1)
+            diagnostic = io.StringIO()
+            with patch.object(application_smoke_test, "parse_args", return_value=args), \
+                    patch.object(application_smoke_test.subprocess, "Popen") as launch, \
+                    contextlib.redirect_stderr(diagnostic):
+                self.assertEqual(application_smoke_test.main(), 1)
+            launch.assert_not_called()
+            for expected in application_smoke_test.asset_candidates(binary):
+                self.assertIn(str(expected), diagnostic.getvalue())
+
+    def test_smoke_requires_native_resolution_and_launches_from_foreign_cwd(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="Funke Prüfung ") as temporary:
+            root = Path(temporary)
+            binary = root / "Bundle/Funke-Launcher"
+            assets = binary.parent / "FunkeAssets"
+            assets.mkdir(parents=True)
+            binary.touch()
+            cwd = root / "Foreign working directory"
+            cwd.mkdir()
+            args = SimpleNamespace(binary=binary, working_directory=cwd, argument=[], editor_project=False, timeout=1)
+            for resource_log, expected_exit in (
+                    ("", 1),
+                    (application_smoke_test.RESOURCE_MARKER + f"'{cwd}'", 1),
+                    (application_smoke_test.RESOURCE_MARKER + f"'{assets}'", 0)):
+                process = Mock(returncode=0)
+                process.communicate.return_value = (application_smoke_test.STABLE_MARKER + "\n" + resource_log, None)
+                with patch.object(application_smoke_test, "parse_args", return_value=args), \
+                        patch.object(application_smoke_test.subprocess, "Popen", return_value=process) as launch, \
+                        patch.object(application_smoke_test, "log_snapshot", return_value=(None, 0)), \
+                        contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(application_smoke_test.main(), expected_exit)
+                self.assertEqual(launch.call_args.kwargs["cwd"], cwd.resolve())
 
 
 class SmokeLogPathTests(unittest.TestCase):

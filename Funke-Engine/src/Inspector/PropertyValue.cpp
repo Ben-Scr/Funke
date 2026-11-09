@@ -204,6 +204,8 @@ namespace Funke {
 			if (UIntValue == 0) return std::string();
 			return std::to_string(UIntValue) + ":" + StringValue;
 		case PropertyType::Graph:
+		case PropertyType::NestedList:
+		case PropertyType::Dictionary:
 			// Curve keys are carried verbatim in StringValue (shared ';'/',' codec).
 			return StringValue;
 		}
@@ -382,6 +384,8 @@ namespace Funke {
 			break;
 		}
 		case PropertyType::Graph:
+		case PropertyType::NestedList:
+		case PropertyType::Dictionary:
 			// Curve keys are carried verbatim in StringValue (shared ';'/',' codec).
 			v.StringValue = text;
 			break;

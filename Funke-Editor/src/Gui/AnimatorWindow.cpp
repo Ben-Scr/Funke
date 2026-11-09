@@ -904,7 +904,7 @@ namespace Funke {
 
 			ImGui::SetNextItemWidth(rowWidth * 0.45f);
 			const std::string preview = parameterIndex >= 0 ? condition.Parameter : (condition.Parameter.empty() ? std::string("Parameter") : condition.Parameter + " (missing)");
-			if (ImGui::BeginCombo("##Parameter", preview.c_str())) {
+			if (EditorUI::BeginCombo("##Parameter", preview.c_str())) {
 				for (const AnimatorParameter& p : m_Controller.Parameters) {
 					if (ImGui::Selectable(p.Name.c_str(), p.Name == condition.Parameter)) {
 						BeginEdit();
@@ -916,7 +916,7 @@ namespace Funke {
 						CommitEdit();
 					}
 				}
-				ImGui::EndCombo();
+				EditorUI::EndCombo();
 			}
 			ImGui::SameLine();
 
@@ -927,7 +927,7 @@ namespace Funke {
 			else modes = { AnimatorConditionMode::Greater, AnimatorConditionMode::Less };
 			const bool needsValue = type == AnimatorParameterType::Float || type == AnimatorParameterType::Int;
 			ImGui::SetNextItemWidth(needsValue ? rowWidth * 0.27f : rowWidth * 0.55f - ImGui::GetStyle().ItemSpacing.x);
-			if (ImGui::BeginCombo("##Mode", type == AnimatorParameterType::Trigger ? "Set" : ConditionModeLabel(condition.Mode))) {
+			if (EditorUI::BeginCombo("##Mode", type == AnimatorParameterType::Trigger ? "Set" : ConditionModeLabel(condition.Mode))) {
 				for (AnimatorConditionMode mode : modes) {
 					if (ImGui::Selectable(type == AnimatorParameterType::Trigger ? "Set" : ConditionModeLabel(mode), mode == condition.Mode)) {
 						BeginEdit();
@@ -935,7 +935,7 @@ namespace Funke {
 						CommitEdit();
 					}
 				}
-				ImGui::EndCombo();
+				EditorUI::EndCombo();
 			}
 			if (needsValue) {
 				ImGui::SameLine();

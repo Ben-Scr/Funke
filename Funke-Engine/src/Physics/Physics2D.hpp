@@ -1,5 +1,6 @@
 #pragma once
 #include "Collections/Vec2.hpp"
+#include "Core/Export.hpp"
 #include "Physics/OverlapMode.hpp"
 #include "Physics/RaycastHit2D.hpp"
 #include "Scene/EntityHandle.hpp"
@@ -19,8 +20,9 @@ namespace Funke {
 		Scene* scene = nullptr;
 	};
 
-	class Physics2D {
+	class FUNKE_API Physics2D {
 	public:
+		static constexpr float k_MaxRaycastDistance = 1000000.0f;
 		// Collider layers (categoryBits) every query below may hit; UINT64_MAX = all.
 		static void SetQueryLayerMask(uint64_t layerMask);
 		static uint64_t GetQueryLayerMask();

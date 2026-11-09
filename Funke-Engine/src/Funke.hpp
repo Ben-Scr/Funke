@@ -64,7 +64,7 @@
 #include "Components/Audio/AudioSourceComponent.hpp"
 #endif
 
-#if FUNKE_WITH_PHYSICS && FUNKE_WITH_2D
+#if FUNKE_WITH_PHYSICS2D
 #include "Components/Physics/BoxCollider2DComponent.hpp"
 #include "Components/Physics/CircleCollider2DComponent.hpp"
 #include "Components/Physics/PolygonCollider2DComponent.hpp"

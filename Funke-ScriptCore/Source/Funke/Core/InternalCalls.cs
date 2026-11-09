@@ -495,10 +495,19 @@ internal static unsafe class InternalCalls
         fixed (byte* ptr = buf) fn(ptr);
     }
 
-    internal static void Log_Trace(string message) => CallStringBinding(NativeCallbacks.Bindings.Log_Trace, message);
-    internal static void Log_Info(string message) => CallStringBinding(NativeCallbacks.Bindings.Log_Info, message);
-    internal static void Log_Warn(string message) => CallStringBinding(NativeCallbacks.Bindings.Log_Warn, message);
-    internal static void Log_Error(string message) => CallStringBinding(NativeCallbacks.Bindings.Log_Error, message);
+    private static void CallLogBinding(delegate* unmanaged<byte*, byte*, int, void> binding, string message, string file, int line)
+    {
+        if (binding == null) return;
+        byte[] text = EncodeUtf8Z(message);
+        byte[] path = EncodeUtf8Z(file);
+        fixed (byte* t = text)
+        fixed (byte* p = path) binding(t, p, line);
+    }
+
+    internal static void Log_Trace(string message, string file = "", int line = 0) => CallLogBinding(NativeCallbacks.Bindings.Log_Trace, message, file, line);
+    internal static void Log_Info(string message, string file = "", int line = 0) => CallLogBinding(NativeCallbacks.Bindings.Log_Info, message, file, line);
+    internal static void Log_Warn(string message, string file = "", int line = 0) => CallLogBinding(NativeCallbacks.Bindings.Log_Warn, message, file, line);
+    internal static void Log_Error(string message, string file = "", int line = 0) => CallLogBinding(NativeCallbacks.Bindings.Log_Error, message, file, line);
 
     // ── Input ───────────────────────────────────────────────────────
 
@@ -736,6 +745,9 @@ internal static unsafe class InternalCalls
 
     internal static ulong Entity_GetSceneGUID(ulong entityID)
         => NativeCallbacks.Bindings.Entity_GetSceneGUID(entityID);
+
+    internal static ulong Entity_GetOwningSceneId(ulong entityID)
+        => NativeCallbacks.Bindings.Entity_GetOwningSceneId(entityID);
 
     internal static ulong Entity_GetPrefabGUID(ulong entityID)
         => NativeCallbacks.Bindings.Entity_GetPrefabGUID(entityID);

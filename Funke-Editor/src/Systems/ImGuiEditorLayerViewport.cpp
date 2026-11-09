@@ -1635,7 +1635,7 @@ namespace Funke {
 			// Camera frame is drawn for ALL cameras in DrawAlwaysVisibleComponentGizmos,
 			// not only the selected one.
 	
-			if (scene.HasComponent<BoxCollider2DComponent>(m_SelectedEntity)) {
+			if (EngineModules::IsActive(EngineModule::Physics2D) && scene.HasComponent<BoxCollider2DComponent>(m_SelectedEntity)) {
 				auto& collider = scene.GetComponent<BoxCollider2DComponent>(m_SelectedEntity);
 				// Detached prefab scenes have no live Box2D shape; use the authored size for their gizmos.
 				const Vec2 localScale = collider.GetLocalScale(scene);
@@ -1650,7 +1650,7 @@ namespace Funke {
 				}
 			}
 	
-			if (scene.HasComponent<CircleCollider2DComponent>(m_SelectedEntity)) {
+			if (EngineModules::IsActive(EngineModule::Physics2D) && scene.HasComponent<CircleCollider2DComponent>(m_SelectedEntity)) {
 				auto& collider = scene.GetComponent<CircleCollider2DComponent>(m_SelectedEntity);
 				// Detached prefab-edit scene: no live shape â†’ GetRadius() is 0. Fall back to
 				// the authored logical radius scaled by the larger transform axis (matches
@@ -1666,7 +1666,7 @@ namespace Funke {
 				}
 			}
 	
-			if (scene.HasComponent<PolygonCollider2DComponent>(m_SelectedEntity)) {
+			if (EngineModules::IsActive(EngineModule::Physics2D) && scene.HasComponent<PolygonCollider2DComponent>(m_SelectedEntity)) {
 				auto& collider = scene.GetComponent<PolygonCollider2DComponent>(m_SelectedEntity);
 				// A live shape gives its convex pieces in entity-local space; a detached
 				// prefab-edit scene has none, so decompose the authored paths the same way.
@@ -2016,7 +2016,7 @@ namespace Funke {
 			const int currentIndex = static_cast<int>(m_EditorViewDrawMode);
 			// Fits the longest label ("Triangle") plus the arrow.
 			ImGui::SetNextItemWidth(ImGui::CalcTextSize("Triangle").x + ImGui::GetStyle().FramePadding.x * 2.0f + ImGui::GetFrameHeight());
-			if (ImGui::BeginCombo("##EditorViewDrawMode", k_EditorViewDrawModeLabels[currentIndex])) {
+			if (EditorUI::BeginCombo("##EditorViewDrawMode", k_EditorViewDrawModeLabels[currentIndex])) {
 				for (int i = 0; i < IM_ARRAYSIZE(k_EditorViewDrawModeLabels); ++i) {
 					const bool selected = (i == currentIndex);
 					if (ImGui::Selectable(k_EditorViewDrawModeLabels[i], selected)) {
@@ -2026,7 +2026,7 @@ namespace Funke {
 						ImGui::SetItemDefaultFocus();
 					}
 				}
-				ImGui::EndCombo();
+				EditorUI::EndCombo();
 			}
 			EditorUI::Tooltip("Editor View draw mode (Default / Triangle wireframe / Mixed overlay)");
 		}
@@ -2040,7 +2040,7 @@ namespace Funke {
 
 		if (beginElement(EditorViewToolbarItem::PostProcessing)) {
 			if (EditorUI::IconButton("##PostProcessingEditorView", "post_processing",
-					"Toggle post-processing effects (bloom, vignette, ...) in the Editor View", m_ShowPostProcessing,
+					m_ShowPostProcessing ? "Post-processing: On" : "Post-processing: Off", m_ShowPostProcessing,
 					false, 0.0f, "Post Processing")) {
 				m_ShowPostProcessing = !m_ShowPostProcessing;
 			}
@@ -2754,7 +2754,7 @@ namespace Funke {
 				const char* currentAspectLabel = m_GameViewAspectPresetIndex == k_GameViewProjectAspectIndex
 					? projectAspectLabel.c_str()
 					: k_AspectRatioPresets[m_GameViewAspectPresetIndex].Label;
-				if (ImGui::BeginCombo("##GameViewAspect", currentAspectLabel)) {
+				if (EditorUI::BeginCombo("##GameViewAspect", currentAspectLabel)) {
 					for (int i = k_GameViewProjectAspectIndex; i < static_cast<int>(k_AspectRatioPresets.size()); ++i) {
 						const bool isProject = i == k_GameViewProjectAspectIndex;
 						const bool selected = (i == m_GameViewAspectPresetIndex);
@@ -2772,7 +2772,7 @@ namespace Funke {
 							ImGui::SetItemDefaultFocus();
 						}
 					}
-					ImGui::EndCombo();
+					EditorUI::EndCombo();
 				}
 			}
 			if (beginElement(GameViewToolbarItem::VSync, false)) {

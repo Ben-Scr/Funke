@@ -16,7 +16,7 @@
 #include "Components/General/Transform2DComponent.hpp"
 #endif
 #include "Components/Graphics/TextRendererComponent.hpp"
-#if FUNKE_WITH_2D
+#if FUNKE_WITH_PHYSICS2D
 #include "Components/Physics/Rigidbody2DComponent.hpp"
 #include "Components/Physics/BoxCollider2DComponent.hpp"
 #include "Components/Physics/CircleCollider2DComponent.hpp"
@@ -1015,6 +1015,14 @@ namespace Funke {
 		Value SerializeScriptFields(const ScriptComponent& scriptComponent) {
 			Value fieldsByClass = Value::MakeObject();
 			auto& callbacks = ScriptEngine::GetCallbacks();
+			std::vector<std::string> owners = scriptComponent.ManagedComponents;
+			for (const auto& script : scriptComponent.Scripts) owners.push_back(script.GetClassName());
+			const auto findOwner = [&](const std::string& key) {
+				std::string owner;
+				for (const auto& name : owners)
+					if (name.size() > owner.size() && key.starts_with(name + ".")) owner = name;
+				return owner;
+			};
 
 			// Without C# metadata (assembly failed to compile, class renamed, runtime not up) write the
 			// stored values verbatim; dropping them would erase authored data on the next save.
@@ -1022,7 +1030,7 @@ namespace Funke {
 				const std::string prefix = className + ".";
 				Value fieldArray = Value::MakeArray();
 				for (const auto& [key, value] : scriptComponent.PendingFieldValues) {
-					if (key.size() <= prefix.size() || key.rfind(prefix, 0) != 0) continue;
+					if (key.size() <= prefix.size() || findOwner(key) != className) continue;
 					Value row = Value::MakeObject();
 					row.AddMember("name", Value(key.substr(prefix.size())));
 					row.AddMember("value", Value(value));
@@ -1050,7 +1058,7 @@ namespace Funke {
 				}
 
 				if (!rawJson || !*rawJson) {
-					if (!hasLiveInstance) addPendingOnly(instance.GetClassName());
+					addPendingOnly(instance.GetClassName());
 					continue;
 				}
 
@@ -1062,7 +1070,7 @@ namespace Funke {
 						"Failed to parse script field metadata for {}: {}",
 						instance.GetClassName(),
 						parseError);
-					if (!hasLiveInstance) addPendingOnly(instance.GetClassName());
+					addPendingOnly(instance.GetClassName());
 					continue;
 				}
 				if (!hasLiveInstance && fieldArray.GetArray().empty()) {
@@ -1161,6 +1169,21 @@ namespace Funke {
 				}
 			}
 
+			for (const auto& [key, value] : scriptComponent.PendingFieldValues) {
+				const std::string owner = findOwner(key);
+				if (owner.empty()) continue;
+				Value* rows = fieldsByClass.FindMember(owner);
+				if (!rows) { fieldsByClass.AddMember(owner, Value::MakeArray()); rows = fieldsByClass.FindMember(owner); }
+				const std::string field = key.substr(owner.size() + 1);
+				bool present = false;
+				for (const auto& row : rows->GetArray()) if (GetStringMember(row, "name") == field) present = true;
+				if (!present) {
+					Value row = Value::MakeObject();
+					row.AddMember("name", Value(field));
+					row.AddMember("value", Value(value));
+					rows->Append(std::move(row));
+				}
+			}
 			return fieldsByClass;
 		}
 
@@ -1174,7 +1197,8 @@ namespace Funke {
 					// The ScriptComponent list is the authored source of truth for managed component rows.
 					if (info.isDynamic) {
 						if (!scene.HasComponent<ScriptComponent>(entity)) return;
-						const ScriptComponent& sc = scene.GetComponent<ScriptComponent>(entity);
+						ScriptComponent sc = scene.GetComponent<ScriptComponent>(entity);
+				sc.MigrateManagedIdentities(ScriptEngine::ResolveManagedTypeName);
 						if (!sc.HasScript(info.serializedName) && !sc.HasManagedComponent(info.serializedName)) return;
 					}
 					try {
@@ -1193,6 +1217,7 @@ namespace Funke {
 		}
 
 		Value SerializeEntity(Scene& scene, EntityHandle entity) {
+			Detail::RequireSerializableModules(scene);
 			auto& registry = scene.GetRegistry();
 			Value entityValue = Value::MakeObject();
 
@@ -1285,7 +1310,7 @@ namespace Funke {
 				entityValue.AddMember("TextRenderer", std::move(textValue));
 			}
 
-#if FUNKE_WITH_2D
+#if FUNKE_WITH_PHYSICS2D
 			if (registry.all_of<Rigidbody2DComponent>(entity)) {
 				auto& rigidbody = registry.get<Rigidbody2DComponent>(entity);
 				Value rigidbodyValue = Value::MakeObject();
@@ -1505,7 +1530,8 @@ namespace Funke {
 			}
 
 			if (registry.all_of<ScriptComponent>(entity)) {
-				const auto& scriptComponent = registry.get<ScriptComponent>(entity);
+				auto scriptComponent = registry.get<ScriptComponent>(entity);
+				scriptComponent.MigrateManagedIdentities(ScriptEngine::ResolveManagedTypeName);
 				if (!scriptComponent.Scripts.empty()) {
 					Value scriptsValue = Value::MakeArray();
 					for (const ScriptInstance& instance : scriptComponent.Scripts) {
@@ -1537,7 +1563,8 @@ namespace Funke {
 			// Dynamic (C#-defined) component data parked before its type was registered: write it back
 			// verbatim, or the staged-load round trip / an early save resets the component to defaults.
 			if (scene.HasComponent<ScriptComponent>(entity)) {
-				const ScriptComponent& sc = scene.GetComponent<ScriptComponent>(entity);
+				ScriptComponent sc = scene.GetComponent<ScriptComponent>(entity);
+				sc.MigrateManagedIdentities(ScriptEngine::ResolveManagedTypeName);
 				for (const auto& [className, payload] : sc.PendingDynamicComponentValues) {
 					if (className.empty() || entityValue.FindMember(className)) continue;
 					Value pendingValue;
@@ -1553,6 +1580,13 @@ namespace Funke {
 
 	// External-linkage adapters forwarding to the anonymous-namespace helpers; declarations in SceneSerializerShared.hpp.
 	namespace Detail {
+		void RequireSerializableModules(const Scene& scene) {
+			if (const auto* missing = scene.GetRegistry().ctx().find<UnavailableModuleData>()) {
+				throw std::runtime_error("Cannot save scene '" + scene.GetName() + "': component '" + missing->Component
+					+ "' is not compiled into this engine. Reopen it in a build containing its physics module.");
+			}
+		}
+
 		Json::Value SerializeEntity(Scene& scene, EntityHandle entity) {
 			return ::Funke::SerializeEntity(scene, entity);
 		}
@@ -1579,6 +1613,7 @@ namespace Funke {
 	}
 
 	Json::Value SceneSerializer::SerializeScene(Scene& scene) {
+		Detail::RequireSerializableModules(scene);
 		Value root = Value::MakeObject();
 		root.AddMember("version", Value(SCENE_FORMAT_VERSION));
 		root.AddMember("name", Value(scene.GetName()));
@@ -1587,6 +1622,8 @@ namespace Funke {
 		Value systemsValue = Value::MakeArray();
 		for (const std::string& className : scene.GetSceneSystemClassNames()) {
 			if (className.empty()) continue;
+			const std::string resolved = ScriptEngine::ResolveManagedTypeName(className);
+			const std::string& storedName = resolved.empty() || scene.HasSceneSystem(resolved) ? className : resolved;
 			const bool enabled = scene.IsSceneSystemEnabled(className);
 
 			// Compact form: classes without authored field values stay as a
@@ -1594,12 +1631,12 @@ namespace Funke {
 			// Disabled systems or authored fields use the object form.
 			const auto* overrides = scene.GetSceneSystemFieldValues(className);
 			if (enabled && (!overrides || overrides->empty())) {
-				systemsValue.Append(Value(className));
+				systemsValue.Append(Value(storedName));
 				continue;
 			}
 
 			Value entry = Value::MakeObject();
-			entry.AddMember("className", Value(className));
+			entry.AddMember("className", Value(storedName));
 			if (!enabled) {
 				entry.AddMember("enabled", Value(false));
 			}
