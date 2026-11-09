@@ -1,6 +1,8 @@
 #include "pch.hpp"
 #include "Core/Platform.hpp"
+#include "Core/Platform/DialogText.hpp"
 
+#include <SDL3/SDL_clipboard.h>
 #include <SDL3/SDL_cpuinfo.h>
 #include <SDL3/SDL_dialog.h>
 #include <SDL3/SDL_error.h>
@@ -18,6 +20,8 @@
 #include <SDL3/SDL_video.h>
 
 #include <atomic>
+#include <chrono>
+#include <fstream>
 #include <deque>
 #include <mutex>
 #include <stdexcept>
@@ -280,32 +284,71 @@ namespace Funke::Platform {
 #endif
 	}
 
-	void ShowMessageBox(MessageBoxKind kind, const std::string& title, const std::string& message) {
-		if (!SDL_ShowSimpleMessageBox(ToSdlFlags(kind), title.c_str(), message.c_str(), DialogParentWindow())) {
-			FNK_CORE_WARN_TAG("Platform", "Message box failed ({}): {}: {}", SDL_GetError(), title, message);
+	namespace {
+		bool OpenDialogDetails(const std::string& title, const std::string& message) {
+			try {
+				const auto userRoot = GetUserDataRoot();
+				if (userRoot.empty()) return false;
+				const auto directory = userRoot / "Funke" / "Diagnostics" / "Dialogs";
+				std::error_code error;
+				std::filesystem::create_directories(directory, error);
+				if (error) return false;
+				static std::atomic<unsigned long long> sequence{ 0 };
+				const auto stamp = std::chrono::system_clock::now().time_since_epoch().count();
+				const auto record = directory / (std::to_string(stamp) + "-" + std::to_string(sequence.fetch_add(1)));
+				if (!std::filesystem::create_directory(record, error) || error) return false;
+				const auto path = record / "details.txt";
+				std::ofstream output(path, std::ios::binary);
+				output << title << "\n\n" << message;
+				output.close();
+				return !output.fail() && OpenPath(path);
+			}
+			catch (const std::exception&) { return false; }
+		}
+
+		bool ShowBoundedDialog(MessageBoxKind kind, const std::string& title, const std::string& message,
+			const char* yesLabel, const char* noLabel) {
+			const DialogText text = DialogText::Prepare(message);
+			std::string displayed = text.Preview;
+			std::vector<SDL_MessageBoxButtonData> buttons;
+			buttons.push_back({ SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 0, noLabel });
+			if (yesLabel) buttons.push_back({ SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT, 1, yesLabel });
+			else buttons.front().flags |= SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT;
+			if (text.Truncated) buttons.push_back({ 0, 2, "Show details" });
+			buttons.push_back({ 0, 3, "Copy details" });
+			for (;;) {
+				SDL_MessageBoxData data{};
+				data.flags = ToSdlFlags(kind);
+				data.title = title.c_str();
+				data.message = displayed.c_str();
+				data.window = DialogParentWindow();
+				data.numbuttons = static_cast<int>(buttons.size());
+				data.buttons = buttons.data();
+				int pressed = -1;
+				if (!SDL_ShowMessageBox(&data, &pressed)) {
+					FNK_CORE_WARN_TAG("Platform", "Message box failed ({}): {}: {}", SDL_GetError(), title, message);
+					return false;
+				}
+				if (pressed == 2) {
+					if (!OpenDialogDetails(title, message))
+						displayed = text.Preview + "\n\nCould not open the details file. Try 'Copy details'.";
+				}
+				else if (pressed == 3) {
+					if (!SDL_SetClipboardText(message.c_str()))
+						displayed = text.Preview + "\n\nClipboard unavailable.";
+				}
+				else return yesLabel && pressed == 1;
+			}
 		}
 	}
 
+	void ShowMessageBox(MessageBoxKind kind, const std::string& title, const std::string& message) {
+		ShowBoundedDialog(kind, title, message, nullptr, "OK");
+	}
+
 	bool ShowConfirmDialog(MessageBoxKind kind, const std::string& title, const std::string& message,
-		const std::string& yesLabel, const std::string& noLabel)
-	{
-		const SDL_MessageBoxButtonData buttons[] = {
-			{ SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 0, noLabel.c_str() },
-			{ SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT, 1, yesLabel.c_str() },
-		};
-		SDL_MessageBoxData data{};
-		data.flags = ToSdlFlags(kind);
-		data.window = DialogParentWindow();
-		data.title = title.c_str();
-		data.message = message.c_str();
-		data.numbuttons = static_cast<int>(std::size(buttons));
-		data.buttons = buttons;
-		int pressed = 0;
-		if (!SDL_ShowMessageBox(&data, &pressed)) {
-			FNK_CORE_WARN_TAG("Platform", "Confirm dialog failed: {}", SDL_GetError());
-			return false;
-		}
-		return pressed == 1;
+		const std::string& yesLabel, const std::string& noLabel) {
+		return ShowBoundedDialog(kind, title, message, yesLabel.c_str(), noLabel.c_str());
 	}
 
 	void PickFolderAsync(PathPickedFn onPicked, const std::filesystem::path& defaultLocation, const std::string& title) {

@@ -227,13 +227,15 @@ class Harness:
 
     def run(self, label: str, command: list[str], *, env=None, allowed=(0,), timeout=None) -> str:
         log = self.root / "logs" / f"{len(self.evidence['phases']):03d}-{label}.log"
-        phase = {"name": label, "command": list(map(str, command)), "cwd": str(self.cwd), "log": str(log)}
+        error_log = log.with_suffix(".stderr.log")
+        phase = {"name": label, "command": list(map(str, command)), "cwd": str(self.cwd),
+                 "log": str(log), "stderrLog": str(error_log)}
         self.evidence["phases"].append(phase)
         self.save()
         started = time.monotonic()
-        with log.open("wb") as stream:
+        with log.open("wb") as stream, error_log.open("wb") as errors:
             process = subprocess.Popen(command, cwd=self.cwd, env=env or self.env, stdout=stream,
-                                       stderr=subprocess.STDOUT, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+                                       stderr=errors, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
             try:
                 phase["exitCode"] = process.wait(timeout=timeout or self.timeout)
             except subprocess.TimeoutExpired:
@@ -243,14 +245,14 @@ class Harness:
             finally:
                 phase["seconds"] = round(time.monotonic() - started, 3)
                 self.save()
-        with log.open("rb") as stream:
-            output = stream.read(8 * 1024 * 1024).decode("utf-8", errors="replace")
-        if log.stat().st_size > 8 * 1024 * 1024:
-            raise RuntimeError(f"{label} exceeded the parsed log budget; complete output remains at {log}")
+        if log.stat().st_size + error_log.stat().st_size > 8 * 1024 * 1024:
+            raise RuntimeError(f"{label} exceeded the parsed log budget; complete output remains at {log} and {error_log}")
+        output = log.read_text(encoding="utf-8-sig", errors="replace")
+        diagnostic = error_log.read_text(encoding="utf-8-sig", errors="replace")
         if phase["exitCode"] not in allowed:
             raise RuntimeError(f"{label} failed ({phase['exitCode']}); see {log}")
-        if any(marker in output for marker in ERROR_MARKERS):
-            raise RuntimeError(f"{label} emitted an error marker; see {log}")
+        if any(marker in text for text in (output, diagnostic) for marker in ERROR_MARKERS):
+            raise RuntimeError(f"{label} emitted an error marker; see {log} and {error_log}")
         return output
 
     def assert_no_tools(self):

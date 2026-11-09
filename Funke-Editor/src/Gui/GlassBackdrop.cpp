@@ -96,6 +96,17 @@ namespace Funke::GlassBackdrop {
 			if (rect.GetWidth() < 4.0f || rect.GetHeight() < 4.0f) return;
 			const bool dark = EditorTheme::IsDark();
 			const float scale = ImGui::GetFontSize() / 15.0f;
+			if (rect.GetHeight() <= ImGui::GetFrameHeight() * 1.5f) {
+			const int sheenStart = dl->VtxBuffer.Size;
+			dl->AddRectFilled(rect.Min, rect.Max, IM_COL32_WHITE, rounding);
+			for (int i = sheenStart; i < dl->VtxBuffer.Size; ++i) {
+				ImDrawVert& vertex = dl->VtxBuffer[i];
+				const float coverage = (vertex.col >> IM_COL32_A_SHIFT) / 255.0f;
+				const float t = std::clamp((vertex.pos.y - rect.Min.y) / rect.GetHeight(), 0.0f, 1.0f);
+				const float alpha = (dark ? 0.045f : 0.10f) * (1.0f - t) * (1.0f - press * 0.7f);
+				vertex.col = ImGui::GetColorU32(ImVec4(0.90f, 0.96f, 1.0f, alpha * coverage));
+			}
+			}
 			const int first = dl->VtxBuffer.Size;
 			dl->AddRect(rect.Min, rect.Max, IM_COL32_WHITE, rounding, 0, std::max(1.0f, scale));
 			const ImVec2 mouse = ImGui::GetIO().MousePos;
@@ -220,7 +231,6 @@ namespace Funke::GlassBackdrop {
 
 	}
 
-
 	bool IsEnabled() {
 		const EditorThemeMode mode = EditorPreferences::GetThemeMode();
 		return mode == EditorThemeMode::Glass || mode == EditorThemeMode::GlassLight;
@@ -241,7 +251,7 @@ namespace Funke::GlassBackdrop {
 		}
 	}
 
-	void DrawLastItemSurface() {
+	void DrawLastItemSurface(ImVec2 min, ImVec2 max) {
 		if (!IsEnabled() || !ImGui::IsItemVisible()) return;
 		const ImGuiContext& context = *ImGui::GetCurrentContext();
 		const ImGuiID id = ImGui::GetItemID();
@@ -262,8 +272,12 @@ namespace Funke::GlassBackdrop {
 		storage->SetFloat(hoverId, response);
 		storage->SetFloat(pressId, press);
 		storage->SetInt(frameId, ImGui::GetFrameCount());
-		DrawRim(ImGui::GetWindowDrawList(), ImRect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax()),
+		DrawRim(ImGui::GetWindowDrawList(), ImRect(min, max),
 			ImGui::GetStyle().FrameRounding, response, press);
+	}
+
+	void DrawLastItemSurface() {
+		DrawLastItemSurface(ImGui::GetItemRectMin(), ImGui::GetItemRectMax());
 	}
 
 }

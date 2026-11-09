@@ -1,5 +1,6 @@
 #include <pch.hpp>
 #include "Animation/AnimationClip.hpp"
+#include "Gui/ImGuiDialog.hpp"
 #include "Animation/AnimatorController.hpp"
 #include "Gui/AssetBrowser.hpp"
 
@@ -1160,9 +1161,9 @@ namespace Funke {
 		ImGui::SetNextWindowSize(ImVec2(420, 0), ImGuiCond_Appearing);
 		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
 
-		if (ImGui::BeginPopupModal(k_PromptId, nullptr, ImGuiWindowFlags_NoSavedSettings)) {
-			ImGui::TextWrapped("An asset named \"%s\" already exists in this folder.",
-				m_PendingCreationPrompt->DisplayName.c_str());
+		if (ImGuiDialog::BeginModal(k_PromptId, nullptr, ImGuiWindowFlags_NoSavedSettings)) {
+			ImGuiDialog::Message("##Collision", ("An asset named \"" + m_PendingCreationPrompt->DisplayName
+				+ "\" already exists in this folder.").c_str());
 			ImGui::Spacing();
 			// The footer has no per-button tooltips, so the choices are explained inline.
 			ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
@@ -1241,10 +1242,10 @@ namespace Funke {
 		ImGui::SetNextWindowSize(ImVec2(420, 0), ImGuiCond_Appearing);
 		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
 
-		if (ImGui::BeginPopupModal(k_DeleteId, nullptr, ImGuiWindowFlags_NoSavedSettings)) {
+		if (ImGuiDialog::BeginModal(k_DeleteId, nullptr, ImGuiWindowFlags_NoSavedSettings)) {
 			if (m_PendingDeletePaths.size() == 1) {
 				const std::string name = std::filesystem::path(m_PendingDeletePaths.front()).filename().string();
-				ImGui::TextWrapped("Delete \"%s\"?", name.c_str());
+				ImGuiDialog::Message("##DeleteAsset", ("Delete \"" + name + "\"?").c_str());
 			}
 			else {
 				ImGui::TextWrapped("Delete %zu selected items?", m_PendingDeletePaths.size());

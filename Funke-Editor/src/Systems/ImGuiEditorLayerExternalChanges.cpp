@@ -1,4 +1,5 @@
 #include "Animation/AnimationClip.hpp"
+#include "Gui/ImGuiDialog.hpp"
 #include "Animation/AnimatorController.hpp"
 #include <pch.hpp>
 #include "Systems/ImGuiEditorLayer.hpp"
@@ -225,7 +226,7 @@ namespace Funke {
 
 		ImGuiUtils::CenterNextModal();
 		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
-		if (!ImGui::BeginPopupModal(k_ExternalSceneConflictPopupName, nullptr,
+		if (!ImGuiDialog::BeginModal(k_ExternalSceneConflictPopupName, nullptr,
 			ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoDocking)) {
 			m_ExternalSceneConflictPopupOpen = false;
 			return;
@@ -236,7 +237,7 @@ namespace Funke {
 			const std::shared_ptr<Scene> scene = SceneManager::GetLoadedScene(sceneName).lock();
 			const bool dirty = scene && scene->IsDirty();
 
-			ImGui::TextWrapped("The scene '%s' was changed outside the editor.", sceneName.c_str());
+			ImGuiDialog::Message("##SceneConflict", ("The scene '" + sceneName + "' was changed outside the editor.").c_str());
 			if (dirty) {
 				ImGui::TextWrapped("It also has unsaved changes in the editor. Reloading discards them.");
 			}
@@ -427,7 +428,7 @@ namespace Funke {
 
 		ImGuiUtils::CenterNextModal();
 		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
-		if (!ImGui::BeginPopupModal(k_ExternalPrefabConflictPopupName, nullptr,
+		if (!ImGuiDialog::BeginModal(k_ExternalPrefabConflictPopupName, nullptr,
 			ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoDocking)) {
 			m_PrefabEditConflictPopupOpen = false;
 			return;
@@ -436,7 +437,7 @@ namespace Funke {
 		if (m_PrefabEditConflict) {
 			const std::string prefabName = Path::ToUtf8(Path::FromUtf8(m_PrefabEditPath).filename());
 			const bool dirty = m_PrefabEditScene->IsDirty() || m_PrefabEditDirty;
-			ImGui::TextWrapped("The prefab '%s' was changed outside the editor.", prefabName.c_str());
+			ImGuiDialog::Message("##PrefabConflict", ("The prefab '" + prefabName + "' was changed outside the editor.").c_str());
 			if (dirty) {
 				ImGui::TextWrapped("It also has unsaved changes in the editor. Reloading discards them.");
 			}

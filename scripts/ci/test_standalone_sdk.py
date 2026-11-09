@@ -237,6 +237,24 @@ class StandaloneTests(unittest.TestCase):
         env = gate.child_environment(dict(os.environ), root, Path(sys.executable), root / "guards")
         return gate.Harness(root, root / "evidence.json", env, 30)
 
+    def test_json_stdout_is_separate_from_native_diagnostics(self):
+        harness = self.harness()
+        diagnostic = "ERROR: SymInitialize FAILED with code 3221225476 (0xc0000004) | "
+        command = [sys.executable, "-c", "import sys; print(" + repr(diagnostic)
+                   + ", file=sys.stderr); print('{\"succeeded\":true}')"]
+        result = harness.run("editor-recompile", command)
+        self.assertEqual({"succeeded": True}, json.loads(result))
+        phase = harness.evidence["phases"][-1]
+        self.assertNotIn(diagnostic, Path(phase["log"]).read_text(encoding="utf-8"))
+        self.assertIn(diagnostic, Path(phase["stderrLog"]).read_text(encoding="utf-8"))
+
+    def test_fatal_stderr_is_still_rejected_with_successful_json_stdout(self):
+        harness = self.harness()
+        with self.assertRaisesRegex(RuntimeError, "error marker"):
+            harness.run("editor-recompile", [sys.executable, "-c",
+                "import sys; print('interop mismatch', file=sys.stderr); print('{\"succeeded\":true}')"])
+        self.assertEqual(0, harness.evidence["phases"][-1]["exitCode"])
+
     def test_nonzero_child_and_timeout_preserve_structured_evidence(self):
         harness = self.harness()
         with self.assertRaisesRegex(RuntimeError, "failed"):
