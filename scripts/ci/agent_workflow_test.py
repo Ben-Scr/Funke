@@ -132,7 +132,7 @@ def verify(cli: Path, editor_exe: Path, root: Path, timeout: int) -> dict:
                 operations.append({"op": "property.set", "entity": {"localId": local}, "component": component,
                                    "property": prop, "value": value})
 
-            entity("player", "Player", ["Transform2D", "SpriteRenderer", "script:AgentLoop"])
+            entity("player", "Player", ["Transform2D", "SpriteRenderer", "script:type:AgentLoop"])
             field("player", "Transform2D", "Position", [-1, 0])
             field("player", "SpriteRenderer", "Color", [0.2, 0.65, 1, 1])
             entity("coin", "Coin", ["Transform2D", "SpriteRenderer"])
@@ -144,14 +144,15 @@ def verify(cli: Path, editor_exe: Path, root: Path, timeout: int) -> dict:
             field("score", "RectTransform2D", "SizeDelta", [260, 44])
             field("score", "TextRenderer", "Text", "Score: 0")
             entity("input", "NameInput", ["InputField", "Image"])
+            field("input", "Interactable", "Focusable", True)
             field("input", "RectTransform2D", "SizeDelta", [280, 50])
             field("input", "Image", "Color", [0.12, 0.16, 0.22, 1])
             entity("inputText", "NameInputText", ["RectTransform2D", "TextRenderer"])
             operations.append({"op": "entity.parent", "entity": {"localId": "inputText"}, "parent": {"localId": "input"}})
             field("inputText", "RectTransform2D", "SizeDelta", [260, 50])
             field("input", "InputField", "TextEntity", {"kind": "entity", "localId": "inputText"})
-            field("player", "script:AgentLoop", "Coin", {"kind": "entity", "localId": "coin"})
-            field("player", "script:AgentLoop", "Hud", {"kind": "entity", "localId": "score"})
+            field("player", "script:type:AgentLoop", "Coin", {"kind": "entity", "localId": "coin"})
+            field("player", "script:type:AgentLoop", "Hud", {"kind": "entity", "localId": "score"})
             target = {key: scene[key] for key in ("editorSessionId", "sceneId", "sceneInstanceId", "context")}
             batch = {"schemaVersion": 1, "requestId": uuid.uuid4().hex, "target": target,
                      "expectedRevision": scene["revision"], "expectedSchemaRevision": scene["schemaRevision"], "operations": operations}
@@ -159,10 +160,10 @@ def verify(cli: Path, editor_exe: Path, root: Path, timeout: int) -> dict:
             atomic_write_json(batch_path, batch)
             applied = bridge("apply", "--file", batch_path)
             player_id = applied["created"]["player"]
-            inspection = bridge("inspect", "--scene-id", scene["sceneId"], "--entity-id", player_id, "--component", "script:AgentLoop")
+            inspection = bridge("inspect", "--scene-id", scene["sceneId"], "--entity-id", player_id, "--component", "script:type:AgentLoop")
             atomic_write_json(root / "authored-player.json", inspection)
             unsupported = bridge("inspect", "--scene-id", scene["sceneId"], "--entity-id", player_id,
-                                 "--component", "script:AgentLoop", "--property", "Unsupported", expected=1)
+                                 "--component", "script:type:AgentLoop", "--property", "Unsupported", expected=1)
             assert unsupported["code"] == "unsupported_field_type"
             bridge("save-scene")
             kill_tree(editor)
@@ -172,11 +173,11 @@ def verify(cli: Path, editor_exe: Path, root: Path, timeout: int) -> dict:
         test("core-loop", suite)
         for label, step, code in [
             ("false-assert", {"type": "assert", "condition": {"kind": "property", "entity": {"name": "Player"},
-                "component": "script:AgentLoop", "property": "Score", "expected": 99}}, "assertion_failed"),
+                "component": "script:type:AgentLoop", "property": "Score", "expected": 99}}, "assertion_failed"),
             ("wait-timeout", {"type": "waitUntil", "frames": 3, "timeoutSeconds": 5,
                 "condition": {"kind": "exists", "entity": {"name": "NeverAppears"}, "expected": True}}, "condition_timeout"),
             ("invalid-field", {"type": "waitUntil", "frames": 300, "timeoutSeconds": 10,
-                "condition": {"kind": "property", "entity": {"name": "Player"}, "component": "script:AgentLoop",
+                "condition": {"kind": "property", "entity": {"name": "Player"}, "component": "script:type:AgentLoop",
                               "property": "NoSuchField", "expected": 1}}, "property_not_found"),
         ]:
             negative = copy.deepcopy(suite)

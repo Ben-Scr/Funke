@@ -17,7 +17,9 @@
 #include "Core/Log.hpp"
 #include "Core/EngineModules.hpp"
 #include "Core/Version.hpp"
+#if FUNKE_WITH_SCRIPTING
 #include "Scripting/ScriptEngine.hpp"
+#endif
 
 #include <algorithm>
 #include <array>
@@ -1370,10 +1372,14 @@ endif())");
 			}
 
 			Json::Value systemValue = Json::Value::MakeObject();
+			std::string className = registration.ClassName;
+#if FUNKE_WITH_SCRIPTING
 			const std::string canonical = ScriptEngine::ResolveManagedTypeName(registration.ClassName);
 			const bool collision = std::any_of(project.GlobalSystems.begin(), project.GlobalSystems.end(),
 				[&](const auto& other) { return &other != &registration && other.ClassName == canonical; });
-			systemValue.AddMember("className", canonical.empty() || collision ? registration.ClassName : canonical);
+			if (!canonical.empty() && !collision) className = canonical;
+#endif
+			systemValue.AddMember("className", className);
 			systemValue.AddMember("active", registration.Active);
 			globalSystems.Append(std::move(systemValue));
 		}

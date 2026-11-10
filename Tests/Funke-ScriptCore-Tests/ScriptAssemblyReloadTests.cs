@@ -142,6 +142,37 @@ public unsafe sealed class ScriptAssemblyReloadTests : IDisposable
         Assert.Equal(0, s_UnregisterCount);
     }
 
+    [Fact]
+    public void Loaded_dependency_can_be_replaced_while_previous_context_is_alive()
+    {
+        string path = Path.Combine(m_Directory, "Game.dll");
+        string dependencyPath = Path.Combine(m_Directory, "ReloadDependency.dll");
+        Type WriteDependency(int version)
+        {
+            var assembly = new PersistedAssemblyBuilder(new AssemblyName("ReloadDependency"), typeof(object).Assembly);
+            TypeBuilder type = assembly.DefineDynamicModule("ReloadDependency")
+                .DefineType("DependencyValue", TypeAttributes.Public);
+            ILGenerator body = type.DefineMethod("Version", MethodAttributes.Public | MethodAttributes.Static,
+                typeof(int), Type.EmptyTypes).GetILGenerator();
+            body.Emit(OpCodes.Ldc_I4, version);
+            body.Emit(OpCodes.Ret);
+            Type result = type.CreateType()!;
+            assembly.Save(dependencyPath);
+            return result;
+        }
+
+        WriteAssembly(path, 1, WriteDependency(7));
+        Assert.Equal(1, ScriptInstanceManager.LoadUserAssemblyPath(path));
+        Type previous = ScriptInstanceManager.UserAssembly!.GetType("ReloadScript")!.GetField("Value")!.FieldType;
+        Assert.Equal(7, previous.GetMethod("Version")!.Invoke(null, null));
+        WriteAssembly(path, 2, WriteDependency(11));
+        Assert.Equal(1, ScriptInstanceManager.LoadUserAssemblyPath(path));
+        Type replacement = ScriptInstanceManager.UserAssembly!.GetType("ReloadScript")!.GetField("Value")!.FieldType;
+        Assert.Equal(11, replacement.GetMethod("Version")!.Invoke(null, null));
+        Assert.Equal(7, previous.GetMethod("Version")!.Invoke(null, null));
+        Assert.NotSame(previous.Assembly, replacement.Assembly);
+    }
+
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static WeakReference LoadThenReplace(string path)
     {

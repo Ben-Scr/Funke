@@ -104,16 +104,18 @@ def verify(cli: Path, editor_exe: Path, root: Path, timeout: int) -> dict:
             scene_id = edit_scene["sceneId"]
             page1 = bridge("entities", "--scene-id", scene_id, "--name", "Same name", "--limit", "1")
             assert page1["entities"][0]["id"] == "9007199254740993", page1
+            script_component = "script:type:BridgeInspectionProbe"
+            assert script_component in page1["entities"][0]["components"], page1
             page2 = bridge("entities", "--scene-id", scene_id, "--name", "Same name", "--limit", "1", "--cursor", page1["nextCursor"])
             assert page2["entities"][0]["id"] == "9007199254740995" and not page2["nextCursor"], page2
             bridge("schema", "--component", "Transform2D")
             inspected = bridge("inspect", "--scene-id", scene_id, "--entity-id", "9007199254740993",
-                               "--component", "script:BridgeInspectionProbe")
+                               "--component", script_component)
             fields = {field["path"]: field for field in inspected["components"][0]["values"]}
             assert fields["Score"]["value"] == 7 and fields["Large"]["value"] == "18446744073709551615", fields
             assert fields["Caption"]["value"] == "Grüße", fields
             bridge("inspect", "--scene-id", scene_id, "--entity-id", "9007199254740993",
-                   "--component", "script:BridgeInspectionProbe", "--property", "NoSuchField", expected=1)
+                   "--component", script_component, "--property", "NoSuchField", expected=1)
             bridge("inspect", "--scene-id", scene_id, "--entity-id", "0", expected=1)
             unchanged = bridge("scenes")["scenes"][0]
             assert unchanged["revision"] == edit_scene["revision"] and unchanged["dirty"] == edit_scene["dirty"], unchanged
@@ -153,7 +155,7 @@ def verify(cli: Path, editor_exe: Path, root: Path, timeout: int) -> dict:
             runtime_scene = bridge("scenes")["scenes"][0]
             assert runtime_scene["context"] == "runtime" and runtime_scene["sceneInstanceId"] != edit_scene["sceneInstanceId"], runtime_scene
             runtime = bridge("inspect", "--scene-id", runtime_scene["sceneId"], "--entity-id", "9007199254740993",
-                             "--component", "script:BridgeInspectionProbe", "--property", "Score")
+                             "--component", script_component, "--property", "Score")
             assert runtime["components"][0]["values"][0]["value"] == 7, runtime
             bridge("entities", "--scene-id", runtime_scene["sceneId"], "--scene-instance-id", edit_scene["sceneInstanceId"], expected=1)
             bridge("stop")

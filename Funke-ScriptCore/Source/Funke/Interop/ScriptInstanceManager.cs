@@ -76,7 +76,7 @@ internal class ScriptAssemblyLoadContext : AssemblyLoadContext
         {
             string? resolvedPath = _resolver.ResolveAssemblyToPath(name);
             if (resolvedPath != null)
-                return LoadFromAssemblyPath(resolvedPath);
+                return LoadDependency(resolvedPath);
         }
 
         // Probe the user assembly's output directory
@@ -113,7 +113,7 @@ internal class ScriptAssemblyLoadContext : AssemblyLoadContext
                 {
                     string dllPath = System.IO.Path.Combine(packageDir, "lib", tfm, name.Name + ".dll");
                     if (System.IO.File.Exists(dllPath))
-                        return LoadFromAssemblyPath(dllPath);
+                        return LoadDependency(dllPath);
                 }
             }
         }
@@ -127,8 +127,15 @@ internal class ScriptAssemblyLoadContext : AssemblyLoadContext
         if (dir == null || assemblyName == null) return null;
         string candidate = System.IO.Path.Combine(dir, assemblyName + ".dll");
         if (System.IO.File.Exists(candidate))
-            return LoadFromAssemblyPath(candidate);
+            return LoadDependency(candidate);
         return null;
+    }
+
+    private Assembly LoadDependency(string path)
+    {
+        using var assemblyStream = new System.IO.MemoryStream(System.IO.File.ReadAllBytes(path));
+        using var symbolsStream = ScriptInstanceManager.ReadAssemblySymbols(path);
+        return LoadFromStream(assemblyStream, symbolsStream);
     }
 }
 
@@ -161,7 +168,7 @@ internal static class ScriptInstanceManager
         try
         {
             using var assemblyStream = new System.IO.MemoryStream(System.IO.File.ReadAllBytes(fullPath));
-            using var symbolsStream = ReadUserAssemblySymbols(fullPath);
+            using var symbolsStream = ReadAssemblySymbols(fullPath);
             Assembly assembly = context.LoadFromStream(assemblyStream, symbolsStream);
             ValidateUserAssemblyTypes(assembly);
             Funke.Components.ComponentTypes.ValidateAssembly(assembly);
@@ -1598,7 +1605,7 @@ internal static class ScriptInstanceManager
                 candidateContext = AssemblyLoadContext.Default;
                 ValidateUserAssemblyTypes(candidateAssembly);
                 Funke.Components.ComponentTypes.ValidateAssembly(candidateAssembly);
-                using var symbols = ReadUserAssemblySymbols(fullPath);
+                using var symbols = ReadAssemblySymbols(fullPath);
                 candidateCatalog = PackageScriptRegistry.BuildProjectTypesJson(candidateAssembly, symbols);
             }
 
@@ -1665,14 +1672,14 @@ internal static class ScriptInstanceManager
         }
     }
 
-    private static System.IO.MemoryStream? ReadUserAssemblySymbols(string fullPath)
+    internal static System.IO.MemoryStream? ReadAssemblySymbols(string fullPath)
     {
         string pdbPath = System.IO.Path.ChangeExtension(fullPath, ".pdb");
         if (!System.IO.File.Exists(pdbPath)) return null;
         try { return new System.IO.MemoryStream(System.IO.File.ReadAllBytes(pdbPath)); }
         catch (Exception ex)
         {
-            Log.Warn($"User assembly PDB load failed ({ex.Message}); stack traces will lack source info.");
+            Log.Warn($"Assembly PDB load failed ({ex.Message}); stack traces will lack source info.");
             return null;
         }
     }
