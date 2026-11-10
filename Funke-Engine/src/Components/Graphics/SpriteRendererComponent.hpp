@@ -13,9 +13,9 @@ namespace Funke {
 
 		short SortingOrder{0};
 		uint8_t SortingLayer{0};
-		TextureHandle TextureHandle;
+		Funke::TextureHandle TextureHandle;
 		UUID TextureAssetId{ 0 };
-		Color Color{ 1.0f, 1.0f, 1.0f, 1.0f };
+		Funke::Color Color{ 1.0f, 1.0f, 1.0f, 1.0f };
 		// Default = use the texture's own (.meta/import) filter; a concrete value
 		// overrides it. The texture's .meta still wins at load time regardless.
 		Filter FilterMode{ Filter::Default };

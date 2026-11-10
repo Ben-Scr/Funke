@@ -116,7 +116,7 @@ namespace Funke {
 		struct SoundInstance {
 			ma_resource_manager_data_source DataSource{};
 			ma_sound Sound{};
-			AudioHandle AudioHandle;
+			Funke::AudioHandle AudioHandle;
 			uint32_t Generation = 0;
 			bool HasDataSource = false;
 			bool IsValid = false;

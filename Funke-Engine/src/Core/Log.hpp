@@ -34,7 +34,7 @@ namespace Funke {
 
 		struct Entry {
 			std::string Message;
-			Level Level = Level::Info;
+			Log::Level Level = Log::Level::Info;
 			Type Source = Type::Core;
 			std::string SourceFile;
 			int SourceLine = 0;

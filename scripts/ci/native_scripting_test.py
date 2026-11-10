@@ -88,6 +88,7 @@ def main() -> None:
     fixture = Path(__file__).resolve().parents[2] / "Tests/Fixtures/NativeScripts/ConvenienceHeader.cpp"
     shutil.copy2(fixture, matrix / fixture.name)
     (matrix / "ComponentHeader.cpp").write_text('#include <Funke/ScriptComponents.hpp>\n', encoding="utf-8")
+    (matrix / "UmbrellaHeader.cpp").write_text('#include <Funke.hpp>\n', encoding="utf-8")
     includes = ["Funke-Engine/src", "Funke-Engine/src/Generated", "External/glm", "External/entt/src",
                 "External/spdlog/include", "External/magic_enum/include", "External/rapidxml",
                 "External/SDL/include", "External/miniaudio", "External/dawn/include", "External/dawn/build/gen/include"]
@@ -95,12 +96,12 @@ def main() -> None:
     selections = [(f"modules_{two}_{three}", int(two > 0), int(three > 0), int(two == 2), int(three == 2))
                   for two in range(3) for three in range(3)] + [("core", 0, 0, 0, 0)]
     for name, two_d, three_d, physics2d, physics3d in selections:
-        cmake += [f"add_library({name} OBJECT ConvenienceHeader.cpp ComponentHeader.cpp)"]
+        cmake += [f"add_library({name} OBJECT ConvenienceHeader.cpp ComponentHeader.cpp UmbrellaHeader.cpp)"]
         paths = (["Funke-Engine/src", "External/glm", "External/spdlog/include"] if name == "core"
                  else includes + (["External/box2d/include"] if physics2d else []))
         cmake += [f"target_include_directories({name} PRIVATE " + " ".join('"' + (sdk / p).as_posix() + '"' for p in paths) + ")"]
         defines = "" if name == "core" else "FUNKE_ALL_MODULES=1"
-        cmake += [f"target_compile_definitions({name} PRIVATE FNK_IMPORT_DLL {defines} FUNKE_WITH_2D={two_d} FUNKE_WITH_3D={three_d} FUNKE_WITH_PHYSICS2D={physics2d} FUNKE_WITH_PHYSICS3D={physics3d})",
+        cmake += [f"target_compile_definitions({name} PRIVATE FNK_IMPORT_DLL FNK_RELEASE {defines} FUNKE_WITH_2D={two_d} FUNKE_WITH_3D={three_d} FUNKE_WITH_PHYSICS2D={physics2d} FUNKE_WITH_PHYSICS3D={physics3d})",
                   f"if(MSVC)\n target_compile_options({name} PRIVATE /utf-8)\nendif()"]
     (matrix / "CMakeLists.txt").write_text("\n".join(cmake), encoding="utf-8")
     run([args.cmake, "-S", matrix, "-B", matrix / "build", "-G", args.generator], "matrix-configure")

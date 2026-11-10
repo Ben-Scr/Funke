@@ -6,7 +6,7 @@ namespace Funke {
 
 	// Omnidirectional light at the entity's Transform3D position; inverse-square falloff that reaches zero at Range.
 	struct FUNKE_API PointLightComponent {
-		Color Color{ 1.0f, 1.0f, 1.0f, 1.0f };
+		Funke::Color Color{ 1.0f, 1.0f, 1.0f, 1.0f };
 		float Intensity = 4.0f;
 		float Range = 10.0f;    // world units
 	};

@@ -25,7 +25,7 @@ namespace Funke {
 
 		struct Particle {
 			Transform2DComponent Transform;
-			Color Color;
+			Funke::Color Color;
 			float LifeTime;
 			Vec2 Velocity;
 			// Captured at emit for Scale-over-Lifetime: normalized age = 1 - LifeTime/StartLifeTime,
@@ -50,7 +50,7 @@ namespace Funke {
 
 		struct RenderingSettings {
 			uint32_t MaxParticles{ 1000 };
-			Color Color{ Color::White() };
+			Funke::Color Color{ Funke::Color::White() };
 			short SortingOrder{ 0 };
 			uint8_t SortingLayer{ 0 };
 		};
@@ -59,7 +59,7 @@ namespace Funke {
 		// sampled over the particle's normalized lifetime and used as a scale multiplier.
 		struct ScaleOverLifetimeSettings {
 			bool Enabled{ false };
-			Curve Curve;
+			Funke::Curve Curve;
 			float Evaluate(float t01) const { return Curve.Evaluate(t01); }
 		};
 
@@ -68,7 +68,7 @@ namespace Funke {
 		// alpha-fading gradient fades the particle out). Authored via DrawGradientEditor.
 		struct ColorOverLifetimeSettings {
 			bool Enabled{ false };
-			Gradient Gradient;
+			Funke::Gradient Gradient;
 		};
 
 		struct ParticleSettings {

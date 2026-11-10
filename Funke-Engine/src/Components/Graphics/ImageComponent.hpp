@@ -18,9 +18,9 @@ namespace Funke {
 	};
 
 	struct ImageComponent {
-		TextureHandle TextureHandle;
+		Funke::TextureHandle TextureHandle;
 		UUID TextureAssetId{ 0 };
-		Color Color;
+		Funke::Color Color;
 		int16_t SortingOrder{ 0 };
 		uint8_t SortingLayer{ 0 };
 		// LEGACY: `.meta` import block wins; kept for back-compat.

@@ -14,8 +14,8 @@ namespace Funke {
         // TerrainRenderer2D draws its segments as sheared quads so neighbours share their edges.
         float Shear{ 0.0f };
         float UvShear{ 0.0f };
-        Color Color{};
-        TextureHandle TextureHandle{};
+        Funke::Color Color{};
+        Funke::TextureHandle TextureHandle{};
         short SortingOrder{ 0 };
         std::uint8_t SortingLayer{ 0 };
         SpriteUVRect UvRect{};

@@ -24,7 +24,7 @@ namespace Funke {
 
 		struct VignetteSettings {
 			bool  Enabled    { false };
-			Color Color      { 0.0f, 0.0f, 0.0f, 1.0f };
+			Funke::Color Color      { 0.0f, 0.0f, 0.0f, 1.0f };
 			float Intensity  { 0.45f };   // 0..1
 			float Smoothness { 0.3f };    // 0..1, edge falloff
 			float Roundness  { 1.0f };    // 0..1, 1 = circle, 0 = follows aspect

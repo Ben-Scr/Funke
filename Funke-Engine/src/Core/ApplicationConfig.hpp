@@ -65,7 +65,7 @@
 namespace Funke {
 
 	struct ApplicationConfig {
-		WindowSpecification WindowSpecification{ 800, 800, "Funke Runtime", true, true, false };
+		Funke::WindowSpecification WindowSpecification{ 800, 800, "Funke Runtime", true, true, false };
 		// Off: no OS window or graphics backend; render-dependent subsystems force-disabled at Initialize (with warning). Use Headless() for sensible defaults.
 		bool EnableWindow = FUNKE_DEFAULT_ENABLE_WINDOW != 0;
 		bool EnableGuiRenderer = FUNKE_DEFAULT_ENABLE_GUI_RENDERER != 0;

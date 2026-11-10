@@ -35,20 +35,20 @@ namespace Funke {
 		return (static_cast<uint8_t>(layer) & static_cast<uint8_t>(mask)) != 0;
 	}
 
-	struct FUNKE_API Square { Vec2 Center, HalfExtents; float Radiant; Color Color; GizmoLayer Layer = GizmoLayer::Shared; };
-	struct FUNKE_API Circle { Vec2 Center; float Radius; int Segments; Color Color; GizmoLayer Layer = GizmoLayer::Shared; };
-	struct FUNKE_API Line { Vec2 Start; Vec2 End; Color Color; GizmoLayer Layer = GizmoLayer::Shared; };
+	struct FUNKE_API Square { Vec2 Center, HalfExtents; float Radiant; Funke::Color Color; GizmoLayer Layer = GizmoLayer::Shared; };
+	struct FUNKE_API Circle { Vec2 Center; float Radius; int Segments; Funke::Color Color; GizmoLayer Layer = GizmoLayer::Shared; };
+	struct FUNKE_API Line { Vec2 Start; Vec2 End; Funke::Color Color; GizmoLayer Layer = GizmoLayer::Shared; };
 	// Width-aware line emitted as triangle geometry — WebGPU's LineList topology
 	// ignores line width, so DrawLine is always 1px. HalfWidth is in world units.
-	struct FUNKE_API ThickLine { Vec2 Start; Vec2 End; float HalfWidth; Color Color; GizmoLayer Layer = GizmoLayer::Shared; };
+	struct FUNKE_API ThickLine { Vec2 Start; Vec2 End; float HalfWidth; Funke::Color Color; GizmoLayer Layer = GizmoLayer::Shared; };
 
 	// Engine-internal (never crosses the DLL boundary, so no FUNKE_API — would
 	// only earn a C4251 for the std::string member).
-	struct GizmoText { Vec2 Position; float Radiant; float Size; std::string Text; Color Color; GizmoLayer Layer = GizmoLayer::Shared; };
+	struct GizmoText { Vec2 Position; float Radiant; float Size; std::string Text; Funke::Color Color; GizmoLayer Layer = GizmoLayer::Shared; };
 
-	struct FUNKE_API Box { Vec3 Center, HalfExtents; float Radiant; Color Color; };
-	struct FUNKE_API Sphere { Vec3 Center; float Radius; int Segments; Color Color; };
-	struct FUNKE_API Line3D { Vec3 Start; Vec3 End; Color Color; };
+	struct FUNKE_API Box { Vec3 Center, HalfExtents; float Radiant; Funke::Color Color; };
+	struct FUNKE_API Sphere { Vec3 Center; float Radius; int Segments; Funke::Color Color; };
+	struct FUNKE_API Line3D { Vec3 Start; Vec3 End; Funke::Color Color; };
 
 	class FUNKE_API Gizmo {
 	public:

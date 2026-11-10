@@ -59,7 +59,7 @@ namespace Funke {
         // via the px→world conversion above. Reasonable values: 16-128.
         float FontSize = 32.0f;
 
-        Color Color{ 1.0f, 1.0f, 1.0f, 1.0f };
+        Funke::Color Color{ 1.0f, 1.0f, 1.0f, 1.0f };
 
         float LetterSpacing = 0.0f;
 

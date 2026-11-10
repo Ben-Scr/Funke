@@ -16,7 +16,7 @@ namespace Funke {
 		uint64_t Model = 0;
 		// .material asset GUID; 0 = the default material (white, roughness 0.5, lit).
 		uint64_t Material = 0;
-		Color Color{ 1.0f, 1.0f, 1.0f, 1.0f };
+		Funke::Color Color{ 1.0f, 1.0f, 1.0f, 1.0f };
 		// Without a material: false draws the flat color and ignores lights. A material's own Lit flag wins.
 		bool Lit = true;
 		bool CastShadows = true;
