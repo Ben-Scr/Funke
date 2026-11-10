@@ -18,6 +18,7 @@ GENERATED = (
     "Makefile", "Funke-Engine/Makefile", "Funke-Editor/Makefile", "Funke-EditorRuntime/Makefile",
     "Funke-Launcher/Makefile", "Funke-Runtime/Makefile", "Funke-CLI/Makefile",
     "Tests/Funke-Engine-Tests/Makefile", "Tests/Funke-Editor-Tests/Makefile",
+    "External/md4c/Makefile",
     "premake/generated/Funke-Managed/Makefile", "vendor/bin/premake5",
     "External/dotnet/lib/libnethost.a", "External/dotnet/lib/libnethost.so", "External/dotnet/lib/libnethost.dylib",
 )

@@ -30,6 +30,7 @@ premake/generated/
 /Funke-CLI/Makefile
 /Tests/Funke-Engine-Tests/Makefile
 /Tests/Funke-Editor-Tests/Makefile
+/External/md4c/Makefile
 /External/dotnet/lib/libnethost.a
 /External/dotnet/lib/libnethost.so
 /External/dotnet/lib/libnethost.dylib
