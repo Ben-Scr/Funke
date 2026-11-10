@@ -1,6 +1,7 @@
 #include "Gui/MarkdownPreview.hpp"
 
 #include "Gui/EditorTheme.hpp"
+#include "Utils/CharConv.hpp"
 
 #include <imgui.h>
 #include <imgui_internal.h>
@@ -102,7 +103,7 @@ namespace Funke {
 			percent = text.ends_with('%');
 			if (percent) text.remove_suffix(1);
 			float value = 0;
-			const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
+			const auto parsed = CharConv::ParseFloat(text.data(), text.data() + text.size(), value);
 			return parsed.ec == std::errc{} && parsed.ptr == text.data() + text.size() && std::isfinite(value) && value > 0
 				? std::min(value, percent ? 100.0f : 8192.0f) : 0;
 		}

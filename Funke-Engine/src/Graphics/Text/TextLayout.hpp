@@ -1,6 +1,7 @@
 #pragma once
 #include "Components/Graphics/TextRendererComponent.hpp"
 #include "Graphics/Text/TextEncoding.hpp"
+#include "Utils/CharConv.hpp"
 
 #include <algorithm>
 #include <charconv>
@@ -106,7 +107,7 @@ namespace Funke::TextLayout {
 						else if (name == "color" && ParseColor(value, next.Tint)) { next.HasColor = true; accepted = true; }
 						else if (name == "size" && !value.empty()) {
 							float size = 0.0f;
-							const auto result = std::from_chars(value.data(), value.data() + value.size(), size);
+							const auto result = CharConv::ParseFloat(value.data(), value.data() + value.size(), size);
 							accepted = result.ec == std::errc{} && result.ptr == value.data() + value.size()
 								&& std::isfinite(size) && size >= 1.0f && size <= 1024.0f;
 							if (accepted) next.Scale = size / baseSize;
