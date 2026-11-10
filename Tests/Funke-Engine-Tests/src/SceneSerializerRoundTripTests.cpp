@@ -67,7 +67,8 @@ TEST_CASE("Unsupported scene and prefab versions cannot replace existing files")
 }
 
 TEST_CASE("Archived version one scene upgrades identities without changing its asset reference") {
-	const auto fixture = std::filesystem::path(__FILE__).parent_path().parent_path() / "fixtures" / "serialization" / "217bf610.scene";
+	auto fixture = std::filesystem::path(__FILE__).parent_path().parent_path() / "fixtures/serialization/217bf610.scene";
+	if (fixture.is_relative() && !std::filesystem::exists(fixture)) fixture = std::filesystem::path("Tests/Funke-Engine-Tests") / fixture;
 	auto scene = Scene::CreateDetachedScene("Archived fixture");
 	const auto original = File::ReadAllBytes(fixture.string());
 	REQUIRE_FALSE(original.empty());

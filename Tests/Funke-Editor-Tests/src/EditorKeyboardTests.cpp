@@ -188,6 +188,8 @@ TEST_CASE("Game View reserves Tab and activation while editor panels and popups 
 
 TEST_CASE("Tab focuses an editor slider without starting numeric input; Enter still edits text") {
 	KeyboardFixture fixture;
+	SUBCASE("Windows and Linux shortcuts") { ImGui::GetIO().ConfigMacOSXBehaviors = false; }
+	SUBCASE("macOS shortcuts") { ImGui::GetIO().ConfigMacOSXBehaviors = true; }
 	float value = 1.2f;
 	ImGuiID slider = 0;
 	auto frame = [&] {
@@ -221,9 +223,10 @@ TEST_CASE("Tab focuses an editor slider without starting numeric input; Enter st
 	CHECK(ImGui::TempInputIsActive(slider));
 	press(ImGuiKey_A);
 	CHECK(value == doctest::Approx(1.2f));
-	ImGui::GetIO().AddKeyEvent(ImGuiMod_Ctrl, true);
+	const auto selectModifier = ImGui::GetIO().ConfigMacOSXBehaviors ? ImGuiMod_Super : ImGuiMod_Ctrl;
+	ImGui::GetIO().AddKeyEvent(selectModifier, true);
 	press(ImGuiKey_A);
-	ImGui::GetIO().AddKeyEvent(ImGuiMod_Ctrl, false); frame();
+	ImGui::GetIO().AddKeyEvent(selectModifier, false); frame();
 	ImGui::GetIO().AddInputCharactersUTF8("1.75"); frame();
 	press(ImGuiKey_Enter);
 	CHECK(value == doctest::Approx(1.75f));
