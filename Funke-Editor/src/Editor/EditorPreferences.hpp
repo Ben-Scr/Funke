@@ -14,9 +14,6 @@ namespace Funke {
 		Dark,
 		Light,
 		Custom,
-		// Translucent panels over the animated backdrop drawn by Gui/GlassBackdrop.
-		Glass,
-		GlassLight,
 	};
 
 	// How the Inspector renders a component's script fields. Detailed additionally
@@ -72,6 +69,8 @@ namespace Funke {
 		static EditorThemeMode GetThemeMode();
 		// First switch to Custom seeds m_CustomColors from the current on-screen style.
 		static void SetThemeMode(EditorThemeMode mode);
+		// Previewing an unseeded palette must not change what the first Custom selection captures.
+		static ImVec4 GetCustomColor(int imGuiColIdx);
 		// Mutable accessor — ColorEdit4 writes through this. Caller must
 		// pass a valid ImGuiCol_ index (asserted internally).
 		static ImVec4& CustomColor(int imGuiColIdx);

@@ -126,6 +126,28 @@ TEST_CASE("Managed-only packages never roll back for missing PackageHost modules
 	CHECK(Funke::FunkePackageInstaller::ShouldRollbackAfterLoad(standalone, false));
 }
 
+TEST_CASE("Rejected package registration preserves the saved project and references") {
+	ScopedPackageProject fixture;
+	fixture.Write("Demo.csproj", "<Project>\n</Project>\n");
+	fixture.Write("Packages/FunkePackages.props", "preserve references");
+	Funke::FunkeProject project;
+	project.Name = "RejectedInstall";
+	project.RootDirectory = fixture.Root.string();
+	project.ProjectFilePath = (fixture.Root / "project.json").string();
+	project.CsprojPath = (fixture.Root / "Demo.csproj").string();
+	project.Packages = { "Existing" };
+	REQUIRE(project.Save());
+	const std::string before = fixture.Read("project.json");
+	const std::string csprojBefore = fixture.Read("Demo.csproj");
+	for (const std::string name : { "Missing.Package", "../outside", "C:outside" }) {
+		CHECK_FALSE(Funke::FunkePackageInstaller::InstallToProject(project, name).Success);
+		CHECK(project.Packages == std::vector<std::string>{ "Existing" });
+		CHECK(fixture.Read("project.json") == before);
+		CHECK(fixture.Read("Packages/FunkePackages.props") == "preserve references");
+		CHECK(fixture.Read("Demo.csproj") == csprojBefore);
+	}
+}
+
 TEST_CASE("Installing a package enables the engine modules it needs, and they can't be removed under it") {
 	ScopedPackageProject fixture;
 	fixture.Write("Packages/Game.Tiles2D/funke-package.lua", R"(

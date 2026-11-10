@@ -16,7 +16,7 @@ namespace Funke {
 	// Methods and availability queries run on the render thread; callbacks own only detached results.
 	class FUNKE_API GpuTimer {
 	public:
-		GpuTimer();
+		explicit GpuTimer(std::string moduleName = "GPU");
 		~GpuTimer();
 		GpuTimer(const GpuTimer&) = delete;
 		GpuTimer& operator=(const GpuTimer&) = delete;
@@ -114,6 +114,33 @@ namespace Funke {
 		size_t                        m_CurrentSlot = 0;
 		Status                        m_Status = Status::Uninitialized;
 		bool                          m_FrameWritesIssued = false;
+		std::string m_ModuleName;
 	};
+
+#ifdef FUNKE_PROFILER_ENABLED
+	// Resolve after pass.End, before submitting the encoder. Capture is opt-in and never waits for GPU completion.
+	class FUNKE_API GpuPassTrace {
+	public:
+		GpuPassTrace(wgpu::CommandEncoder encoder, wgpu::RenderPassDescriptor& desc);
+		GpuPassTrace(wgpu::CommandEncoder encoder, wgpu::ComputePassDescriptor& desc);
+		void Resolve();
+		static void AfterSubmit();
+		static void Shutdown();
+	private:
+		void Begin(wgpu::CommandEncoder encoder, wgpu::StringView label);
+		wgpu::CommandEncoder m_Encoder;
+		wgpu::PassTimestampWrites m_Writes{};
+		GpuTimer* m_Timer = nullptr;
+	};
+#else
+	class GpuPassTrace {
+	public:
+		GpuPassTrace(wgpu::CommandEncoder, wgpu::RenderPassDescriptor&) {}
+		GpuPassTrace(wgpu::CommandEncoder, wgpu::ComputePassDescriptor&) {}
+		void Resolve() {}
+		static void AfterSubmit() {}
+		static void Shutdown() {}
+	};
+#endif
 
 } // namespace Funke

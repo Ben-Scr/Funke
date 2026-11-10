@@ -20,7 +20,6 @@
     scripts\dev\Run.ps1 -App Runtime -Variant 2d -Project <dir>     # module-reduced runtime from premake --without-3d
     scripts\dev\Run.ps1 -App Launcher -LauncherPage templates       # screenshot the Launcher's Templates page
     scripts\dev\Run.ps1 -OpenWindow build,buildprofiles             # editor with those windows open
-    scripts\dev\Run.ps1 -Theme glass                                # editor in the Liquid Glass theme, prefs untouched
     scripts\dev\Run.ps1 -App Runtime -Project <dir> -ScreenshotAt 2s,5s -FixedStep 60   # engine screenshots at game time
     scripts\dev\Run.ps1 -App Runtime -Project <dir> -InputScript Tests\level5.json      # scripted input, quits itself
     scripts\dev\Run.ps1 -App Runtime -Project <dir> -Exec "physics.debug on" -ScreenshotAt 3s
@@ -78,7 +77,7 @@ param(
     [ValidateSet("", "triangle", "mixed")]
     [string]$DrawMode = "",
     # Editor only: show this theme for the run without saving it to the user's preferences (FUNKE_EDITOR_THEME).
-    [ValidateSet("", "auto", "dark", "light", "glass", "glass-dark", "glass-light", "custom")]
+    [ValidateSet("", "auto", "dark", "light", "custom")]
     [string]$Theme = "",
     # Launcher only: start on this page (FUNKE_LAUNCHER_PAGE).
     [ValidateSet("", "templates", "assets", "settings")]

@@ -1,4 +1,5 @@
 #include "pch.hpp"
+#include "Profiling/Profiler.hpp"
 #include "Assets/AssetLoader.hpp"
 
 #include "Assets/AssetRegistry.hpp"
@@ -111,6 +112,7 @@ namespace Funke {
 		}
 
 		PreparedAsset Prepare(const Work& work) {
+			FUNKE_PROFILE_SCOPE("Assets.Decode");
 			PreparedAsset prepared;
 			try {
 				switch (work.Kind) {
@@ -146,6 +148,7 @@ namespace Funke {
 		}
 
 		bool Publish(const Work& work, PreparedAsset& prepared) {
+			FUNKE_PROFILE_SCOPE("Assets.Publish");
 			if (IsCached(work)) return true;
 			switch (work.Kind) {
 #if FUNKE_WITH_AUDIO
@@ -175,6 +178,7 @@ namespace Funke {
 		}
 
 		void Complete(const std::shared_ptr<Work>& work, AssetLoadStatus status, const std::string& message = {}) {
+			FUNKE_PROFILE_SCOPE("Assets.Complete");
 			for (auto& [id, request] : g_Requests) {
 				if (request.Preparation != work) continue;
 				if (request.Result.Status == AssetLoadStatus::Pending) {
@@ -226,6 +230,7 @@ namespace Funke {
 	}
 
 	uint64_t AssetLoader::LoadAsync(uint64_t assetId) {
+		FUNKE_PROFILE_SCOPE("Assets.Request");
 		if (!IsMainThread() || assetId == 0 || g_Requests.size() >= k_MaxRequests) return 0;
 		const uint64_t id = g_NextId++;
 		Request request{ { AssetLoadStatus::Pending, assetId, {} }, {} };
@@ -317,6 +322,7 @@ namespace Funke {
 	}
 
 	void AssetLoader::Pump(double budgetMs, size_t maxPublications) {
+		FUNKE_PROFILE_SCOPE("Assets.Pump");
 		if (!IsMainThread()) return;
 #if FUNKE_WITH_RENDER
 		TextureUploadBatch uploadBatch;

@@ -1489,8 +1489,9 @@ namespace Funke {
 	}
 
 	void AssetBrowser::CreateDataAsset(const std::string& parentDir, const std::string& typeName) {
+		const std::string fileName = typeName.starts_with("type:") ? typeName.substr(5) : typeName;
 		const std::filesystem::path preferred =
-			std::filesystem::path(parentDir) / (typeName + ".dataasset");
+			std::filesystem::path(parentDir) / (fileName + ".dataasset");
 
 		CreateAssetWithCollisionCheck(preferred,
 			[this, typeName](const std::filesystem::path& finalPath) {

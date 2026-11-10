@@ -552,7 +552,6 @@ namespace Funke {
 	}
 
 	namespace {
-		static constexpr int SCENE_FORMAT_VERSION = 1;
 		static constexpr float k_MinScaleAxis = 0.0001f;
 
 		SceneSerializationFormat GetProjectSerializationFormat() {
@@ -1023,6 +1022,14 @@ namespace Funke {
 					if (name.size() > owner.size() && key.starts_with(name + ".")) owner = name;
 				return owner;
 			};
+			const auto pendingRow = [&](const std::string& key) {
+				Value row = Value::MakeObject();
+				if (const auto metadata = scriptComponent.PendingFieldMetadata.find(key); metadata != scriptComponent.PendingFieldMetadata.end()) {
+					Value stored;
+					if (Json::TryParse(metadata->second, stored) && stored.IsObject()) row = std::move(stored);
+				}
+				return row;
+			};
 
 			// Without C# metadata (assembly failed to compile, class renamed, runtime not up) write the
 			// stored values verbatim; dropping them would erase authored data on the next save.
@@ -1031,7 +1038,7 @@ namespace Funke {
 				Value fieldArray = Value::MakeArray();
 				for (const auto& [key, value] : scriptComponent.PendingFieldValues) {
 					if (key.size() <= prefix.size() || findOwner(key) != className) continue;
-					Value row = Value::MakeObject();
+					Value row = pendingRow(key);
 					row.AddMember("name", Value(key.substr(prefix.size())));
 					row.AddMember("value", Value(value));
 					fieldArray.EnsureArray().push_back(std::move(row));
@@ -1178,7 +1185,7 @@ namespace Funke {
 				bool present = false;
 				for (const auto& row : rows->GetArray()) if (GetStringMember(row, "name") == field) present = true;
 				if (!present) {
-					Value row = Value::MakeObject();
+					Value row = pendingRow(key);
 					row.AddMember("name", Value(field));
 					row.AddMember("value", Value(value));
 					rows->Append(std::move(row));
@@ -1282,6 +1289,9 @@ namespace Funke {
 				textValue.AddMember("lineSpacing", Value(text.LineSpacing));
 				textValue.AddMember("wrapMode", Value(static_cast<int>(text.WrapMode)));
 				textValue.AddMember("autoSize", Value(text.AutoSize));
+				if (text.RichText) textValue.AddMember("richText", Value(true));
+				if (text.Bold) textValue.AddMember("bold", Value(true));
+				if (text.Italic) textValue.AddMember("italic", Value(true));
 				// WrapWidth field removed — wrap area is now derived
 				// from the host rect's width minus Margin every frame.
 				textValue.AddMember("marginL", Value(text.Margin.x));
@@ -1428,29 +1438,7 @@ namespace Funke {
 			}
 #endif
 
-			if (registry.all_of<AudioSourceComponent>(entity)) {
-				auto& audioSource = registry.get<AudioSourceComponent>(entity);
-				Value audioValue = Value::MakeObject();
-				audioValue.AddMember("volume", Value(audioSource.GetVolume()));
-				audioValue.AddMember("pitch", Value(audioSource.GetPitch()));
-				audioValue.AddMember("loop", Value(audioSource.IsLooping()));
-				audioValue.AddMember("playOnAwake", Value(audioSource.GetPlayOnAwake()));
 
-				uint64_t audioAssetId = static_cast<uint64_t>(audioSource.GetAudioAssetId());
-				if (audioAssetId == 0) {
-					audioAssetId = AudioManager::GetAudioAssetUUID(audioSource.GetAudioHandle());
-					if (audioAssetId != 0) {
-						audioSource.SetAudioAssetId(UUID(audioAssetId));
-					}
-				}
-
-				if (audioAssetId != 0) {
-					audioValue.AddMember("clipAsset", Value(std::to_string(audioAssetId)));
-				}
-				SceneSerializerShared::WriteAudioSpatial(audioValue, audioSource);
-
-				entityValue.AddMember("AudioSource", std::move(audioValue));
-			}
 
 			if (registry.all_of<StaticTag>(entity)) {
 				entityValue.AddMember("static", Value(true));
@@ -1615,7 +1603,7 @@ namespace Funke {
 	Json::Value SceneSerializer::SerializeScene(Scene& scene) {
 		Detail::RequireSerializableModules(scene);
 		Value root = Value::MakeObject();
-		root.AddMember("version", Value(SCENE_FORMAT_VERSION));
+		root.AddMember("version", Value(SceneSerializerInternal::k_SceneFormatVersion));
 		root.AddMember("name", Value(scene.GetName()));
 		root.AddMember("sceneId", Value(std::to_string(static_cast<uint64_t>(scene.GetSceneId()))));
 
@@ -1695,6 +1683,7 @@ namespace Funke {
 
 	bool SceneSerializer::SaveToFile(Scene& scene, const std::string& path, SceneSerializationFormat format, bool logSuccess) {
 		try {
+			if (!CanReplaceSerializedFile(path)) return false;
 			const std::filesystem::path parentDir = Path::FromUtf8(path).parent_path();
 			if (!parentDir.empty() && !std::filesystem::exists(parentDir)) {
 				std::filesystem::create_directories(parentDir);
@@ -1760,7 +1749,7 @@ namespace Funke {
 		if (!prefabEntity.IsObject() || !prefabEntities.IsArray()
 			|| prefabEntities.GetArray().empty()) return root;
 
-		root.AddMember("version", Value(SCENE_FORMAT_VERSION));
+		root.AddMember("version", Value(SceneSerializerInternal::k_SceneFormatVersion));
 		root.AddMember("type", Value("Prefab"));
 		if (prefabGuid != 0) {
 			root.AddMember("AssetGUID", Value(std::to_string(prefabGuid)));
@@ -1790,6 +1779,7 @@ namespace Funke {
 
 	bool SceneSerializer::SaveEntityToFile(Scene& scene, EntityHandle entity, const std::string& path, SceneSerializationFormat format) {
 		try {
+			if (!CanReplaceSerializedFile(path)) return false;
 			const std::filesystem::path parentDir = Path::FromUtf8(path).parent_path();
 			if (!parentDir.empty() && !std::filesystem::exists(parentDir)) {
 				std::filesystem::create_directories(parentDir);
@@ -1875,6 +1865,7 @@ namespace Funke {
 				FNK_CORE_WARN_TAG("SceneSerializer", "Cannot convert serialized asset {}: {}", path, error);
 				return false;
 			}
+			if (!ValidateFormatVersion(root, path)) return false;
 
 			if (!SceneSerializerStorage::WriteRootToFile(path, root, format)) {
 				FNK_CORE_WARN_TAG("SceneSerializer", "Failed to rewrite serialized asset: {}", path);

@@ -1,0 +1,6 @@
+{
+  "tool": "image_gen.imagegen",
+  "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: one empty upright document outline with a small folded upper-right corner.",
+  "original": "C:\\Users\\benso\\.codex\\generated_images\\01a1c212-a74a-7b43-b0d2-b123e6c6a554\\exec-8d993a73-021a-4e6a-88be-56e91cd65b39.png",
+  "source": "ui_file.png"
+}

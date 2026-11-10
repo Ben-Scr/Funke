@@ -52,7 +52,7 @@ def load_capture(path, scope, min_samples, min_repeats):
         raise ValueError("CSV row mapping is incomplete or duplicated")
     ids = set()
     groups = {}
-    columns = {"cpuWork": {"cpuWork": "cpu_ms", "cpu_submit_ms": "cpu_submit_ms"}, "gpu": {"gpu_ms": "gpu_ms"}}
+    columns = {"cpuWork": {"cpuWork": "cpu_ms", "cpu_submit_ms": "cpu_submit_ms", "cpu_render_ms": "cpu_render_ms"}, "gpu": {"gpu_ms": "gpu_ms"}}
     for run in runs:
         if run["runId"] in ids:
             raise ValueError("Duplicate run identity")

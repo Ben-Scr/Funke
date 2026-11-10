@@ -214,6 +214,66 @@ TEST_CASE("Localized Text writes the translation once and again after a language
 	CHECK(text.Text == "free");
 }
 
+TEST_CASE("Editor language preview changes display and layout state without changing authored text or player language") {
+	LanguageFolder folder;
+	folder.WriteEnglishAndGerman();
+	std::string saved = "en";
+	GameLocalization::SetSavedLanguageProvider([&] { return saved; });
+	REQUIRE(GameLocalization::Load(folder.Directory));
+	auto scene = Scene::CreateDetachedScene("Preview");
+	auto label = scene->CreateEntity("Label");
+	auto& text = label.AddComponent<TextRendererComponent>();
+	text.Text = "Authored placeholder";
+	label.AddComponent<LocalizedTextComponent>().Key = "menu.play";
+	const auto original = Json::Stringify(SceneSerializer::SerializeEntityFull(*scene, label.GetHandle()));
+	scene->ClearDirty();
+	scene->ClearUIDirty();
+	LocalizedTextSystem system;
+	int playerChanges = 0;
+	const auto callback = GameLocalization::RegisterChangeCallback([&] { ++playerChanges; });
+	const auto playerRevision = GameLocalization::GetRevision();
+	REQUIRE(GameLocalization::SetPreviewLanguage("de"));
+	CHECK(playerChanges == 0);
+	CHECK(GameLocalization::GetRevision() == playerRevision);
+	GameLocalization::UnregisterChangeCallback(callback);
+	system.OnPreRender(*scene);
+	CHECK(text.GetDisplayText() == "Spielen");
+	CHECK(text.Text == "Authored placeholder");
+	CHECK(GameLocalization::GetCurrentLanguage() == "en");
+	CHECK(GameLocalization::Get("menu.play") == "Play");
+	CHECK(saved == "en");
+	CHECK(scene->IsUIDirty());
+	CHECK_FALSE(scene->IsDirty());
+	CHECK(Json::Stringify(SceneSerializer::SerializeEntityFull(*scene, label.GetHandle())) == original);
+	CHECK(GameLocalization::GetPreview("menu.quit") == "Quit");
+	CHECK(GameLocalization::GetPreview("missing") == "missing");
+	CHECK(GameLocalization::GetMissingPreviewKeyCount() == 1);
+	CHECK_FALSE(GameLocalization::SetPreviewLanguage("unknown"));
+	CHECK(GameLocalization::GetPreviewLanguage() == "de");
+	folder.WriteLanguage("de", "Deutsch", R"({ "menu.play": "Jetzt spielen" })");
+	REQUIRE(GameLocalization::Reload());
+	system.OnPreRender(*scene);
+	CHECK(text.GetDisplayText() == "Jetzt spielen");
+	REQUIRE(GameLocalization::SetPreviewLanguage({}));
+	system.OnPreRender(*scene);
+	CHECK(text.GetDisplayText() == text.Text);
+	CHECK_FALSE(text.PreviewText.has_value());
+	REQUIRE(GameLocalization::SetPreviewLanguage("de"));
+	system.OnPreRender(*scene);
+	label.RemoveComponent<LocalizedTextComponent>();
+	system.OnPreRender(*scene);
+	CHECK_FALSE(text.PreviewText.has_value());
+	LanguageFolder other;
+	other.WriteEnglishAndGerman();
+	REQUIRE(GameLocalization::Load(other.Directory));
+	CHECK(GameLocalization::GetPreviewLanguage().empty());
+	CHECK(GameLocalization::GetCurrentLanguage() == "en");
+	REQUIRE(GameLocalization::SetPreviewLanguage("de"));
+	GameLocalization::Unload();
+	CHECK(GameLocalization::GetPreviewLanguage().empty());
+	GameLocalization::SetSavedLanguageProvider(nullptr);
+}
+
 TEST_CASE("Localized Text key round-trips through the serializer; a missing key resets it") {
 	auto scene = Scene::CreateDetachedScene("RoundTrip LocalizedText");
 	Entity label = scene->CreateEntity("Label");

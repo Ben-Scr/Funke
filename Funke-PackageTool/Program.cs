@@ -183,70 +183,22 @@ async Task<int> GitHubDownload(string[] args)
     if (!string.IsNullOrEmpty(expectedSha) && !IsSha256Hex(expectedSha))
         return Error("Expected SHA-256 must be exactly 64 hexadecimal characters.");
 
-    const long maxDownloadBytes = 512L * 1024L * 1024L;
-
     string? dir = Path.GetDirectoryName(outputPath);
-    if (!string.IsNullOrEmpty(dir))
-        Directory.CreateDirectory(dir);
-
-    using var dlHandler = new HttpClientHandler { AllowAutoRedirect = true };
-    using var dlHttp = new HttpClient(dlHandler) { Timeout = Timeout.InfiniteTimeSpan };
-    dlHttp.DefaultRequestHeaders.UserAgent.ParseAdd("Funke-PackageTool/1.0");
-
-    using var response = await dlHttp.GetAsync(url, HttpCompletionOption.ResponseHeadersRead);
-        response.EnsureSuccessStatusCode();
-        long? total = response.Content.Headers.ContentLength;
-        if (total > maxDownloadBytes)
-            return Error($"Download exceeds the {maxDownloadBytes} byte limit.");
-
-        await using var fileStream = File.Create(outputPath);
-    await using var netStream = await response.Content.ReadAsStreamAsync();
-
-    var buf = new byte[64 * 1024];
-    long copied = 0;
-    var lastEmit = DateTime.UtcNow - TimeSpan.FromSeconds(1); // force an emit on first chunk
-    int n;
-    while ((n = await netStream.ReadAsync(buf, 0, buf.Length)) > 0)
+    if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+    string temporary = outputPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+    try
     {
-            await fileStream.WriteAsync(buf, 0, n);
-            copied += n;
-            if (copied > maxDownloadBytes)
-            {
-                fileStream.Close();
-                try { File.Delete(outputPath); } catch { }
-                return Error($"Download exceeds the {maxDownloadBytes} byte limit.");
-            }
-        if ((DateTime.UtcNow - lastEmit).TotalMilliseconds >= 100)
+        long copied = await DownloadBounded(url, temporary);
+        if (!string.IsNullOrEmpty(expectedSha))
         {
-            Console.WriteLine(JsonSerializer.Serialize(new
-            {
-                @event = "progress",
-                bytes = copied,
-                total,
-                progress = total.HasValue && total.Value > 0 ? (double)copied / total.Value : (double?)null
-            }, jsonOpts));
-            lastEmit = DateTime.UtcNow;
+            string actualSha = await ComputeSha256(temporary);
+            if (actualSha != expectedSha) return Error($"SHA-256 mismatch (expected {expectedSha}, got {actualSha})");
         }
+        File.Move(temporary, outputPath, overwrite: true);
+        Console.WriteLine(JsonSerializer.Serialize(new { @event = "complete", success = true, path = outputPath, size = copied }, jsonOpts));
+        return 0;
     }
-
-    if (!string.IsNullOrEmpty(expectedSha))
-    {
-        string actualSha = await ComputeSha256(outputPath);
-        if (actualSha != expectedSha)
-        {
-            try { File.Delete(outputPath); } catch { }
-            return Error($"SHA-256 mismatch (expected {expectedSha}, got {actualSha})");
-        }
-    }
-
-    Console.WriteLine(JsonSerializer.Serialize(new
-    {
-        @event = "complete",
-        success = true,
-        path = outputPath,
-        size = copied
-    }, jsonOpts));
-    return 0;
+    finally { if (File.Exists(temporary)) File.Delete(temporary); }
 }
 
 
@@ -360,16 +312,23 @@ int Unzip(string[] args)
     if (!File.Exists(archive))
         return Error($"Archive not found: {archive}");
 
-    Directory.CreateDirectory(outDir);
-    System.IO.Compression.ZipFile.ExtractToDirectory(archive, outDir, overwriteFiles: false);
-
-    Console.WriteLine(JsonSerializer.Serialize(new
+    outDir = Path.GetFullPath(outDir);
+    RejectLinkedPath(outDir);
+    if (Directory.Exists(outDir) && Directory.EnumerateFileSystemEntries(outDir).Any())
+        return Error("Extraction destination must be absent or empty.");
+    string parent = Path.GetDirectoryName(outDir) ?? throw new InvalidDataException("Invalid extraction destination.");
+    Directory.CreateDirectory(parent);
+    string stage = Path.Combine(parent, ".extract-" + Guid.NewGuid().ToString("N") + ".tmp");
+    try
     {
-        @event = "complete",
-        success = true,
-        outDir
-    }, jsonOpts));
-    return 0;
+        ExtractArchiveBounded(archive, stage);
+        RejectLinkedPath(outDir);
+        if (Directory.Exists(outDir)) Directory.Delete(outDir, recursive: false);
+        Directory.Move(stage, outDir);
+        Console.WriteLine(JsonSerializer.Serialize(new { @event = "complete", success = true, outDir }, jsonOpts));
+        return 0;
+    }
+    finally { if (Directory.Exists(stage)) Directory.Delete(stage, recursive: true); }
 }
 
 
@@ -451,11 +410,8 @@ async Task<int> RegistryDownload(string[] args)
     if (!IsSha256Hex(expectedSha))
         return Error("Expected SHA-256 must be exactly 64 hexadecimal characters.");
 
+    RejectLinkedPath(destPackagesDir);
     Directory.CreateDirectory(destPackagesDir);
-
-    const long maxDownloadBytes = 512L * 1024L * 1024L;
-    const long maxExtractedBytes = 2L * 1024L * 1024L * 1024L;
-    const int maxArchiveEntries = 10000;
 
     string token = Guid.NewGuid().ToString("N");
     string tempZip = Path.Combine(destPackagesDir, $".registry-{token}.zip.tmp");
@@ -476,120 +432,11 @@ async Task<int> RegistryDownload(string[] args)
 
     try
     {
-        // 1. Stream download with progress events (mirrors GitHubDownload).
-        using var dlHandler = new HttpClientHandler { AllowAutoRedirect = true };
-        using var dlHttp = new HttpClient(dlHandler) { Timeout = Timeout.InfiniteTimeSpan };
-        dlHttp.DefaultRequestHeaders.UserAgent.ParseAdd("Funke-PackageTool/1.0");
-
-        using (var response = await dlHttp.GetAsync(zipUrl, HttpCompletionOption.ResponseHeadersRead))
-        {
-            response.EnsureSuccessStatusCode();
-            long? total = response.Content.Headers.ContentLength;
-            if (total > maxDownloadBytes)
-            {
-                Cleanup();
-                Console.Error.WriteLine($"Package download exceeds the {maxDownloadBytes} byte limit.");
-                return 1;
-            }
-
-            await using var fileStream = File.Create(tempZip);
-            await using var netStream = await response.Content.ReadAsStreamAsync();
-
-            var buf = new byte[64 * 1024];
-            long copied = 0;
-            var lastEmit = DateTime.UtcNow - TimeSpan.FromSeconds(1);
-            int n;
-            while ((n = await netStream.ReadAsync(buf, 0, buf.Length)) > 0)
-            {
-                await fileStream.WriteAsync(buf, 0, n);
-                copied += n;
-                if (copied > maxDownloadBytes)
-                {
-                    throw new InvalidDataException(
-                        $"Package download exceeds the {maxDownloadBytes} byte limit.");
-                }
-                if ((DateTime.UtcNow - lastEmit).TotalMilliseconds >= 100)
-                {
-                    Console.WriteLine(JsonSerializer.Serialize(new
-                    {
-                        @event = "progress",
-                        stage = "download",
-                        bytes = copied,
-                        total,
-                        progress = total.HasValue && total.Value > 0 ? (double)copied / total.Value : (double?)null
-                    }, jsonOpts));
-                    lastEmit = DateTime.UtcNow;
-                }
-            }
-        }
-
-        // 2. SHA-256 verify (lowercase hex).
+        await DownloadBounded(zipUrl, tempZip);
         string actualSha = await ComputeSha256(tempZip);
-
         if (actualSha != expectedSha)
-        {
-            Cleanup();
-            Console.Error.WriteLine($"SHA-256 mismatch (expected {expectedSha}, got {actualSha})");
-            return 1;
-        }
-
-        // 3. Extract. We iterate entries by hand instead of calling
-        // ZipFile.ExtractToDirectory so we can normalize backslashes in
-        // entry names — PowerShell's Compress-Archive (and a few other
-        // Windows zip tools) write non-spec backslash-separated paths
-        // that .NET's high-level extractor mishandles.
-        Directory.CreateDirectory(tempExtract);
-        using (var archive = System.IO.Compression.ZipFile.OpenRead(tempZip))
-        {
-            if (archive.Entries.Count > maxArchiveEntries)
-            {
-                Cleanup();
-                Console.Error.WriteLine($"Invalid package zip: more than {maxArchiveEntries} entries.");
-                return 1;
-            }
-
-            long extractedBytes = 0;
-            foreach (var entry in archive.Entries)
-            {
-                // Normalize separators and reject any path-traversal attempts.
-                string rel = entry.FullName.Replace('\\', '/');
-                if (rel.Contains("..", StringComparison.Ordinal))
-                {
-                    Cleanup();
-                    Console.Error.WriteLine($"Invalid package zip: entry has '..' in path ({entry.FullName})");
-                    return 1;
-                }
-
-                string targetPath = Path.GetFullPath(Path.Combine(tempExtract, rel));
-                string tempExtractFull = Path.GetFullPath(tempExtract);
-                if (!targetPath.StartsWith(tempExtractFull + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
-                    && targetPath != tempExtractFull)
-                {
-                    Cleanup();
-                    Console.Error.WriteLine($"Invalid package zip: entry escapes extract dir ({entry.FullName})");
-                    return 1;
-                }
-
-                if (string.IsNullOrEmpty(entry.Name))
-                {
-                    // Directory entry — make sure it exists, no content to copy.
-                    Directory.CreateDirectory(targetPath);
-                    continue;
-                }
-
-                extractedBytes += entry.Length;
-                if (extractedBytes > maxExtractedBytes)
-                {
-                    Cleanup();
-                    Console.Error.WriteLine($"Invalid package zip: extracted size exceeds {maxExtractedBytes} bytes.");
-                    return 1;
-                }
-
-                string? parent = Path.GetDirectoryName(targetPath);
-                if (!string.IsNullOrEmpty(parent)) Directory.CreateDirectory(parent);
-                entry.ExtractToFile(targetPath, overwrite: false);
-            }
-        }
+            return Error($"SHA-256 mismatch (expected {expectedSha}, got {actualSha})");
+        ExtractArchiveBounded(tempZip, tempExtract);
 
         // 4. Locate the single top-level folder and verify it has funke-package.lua.
         string[] topDirs = Directory.GetDirectories(tempExtract);
@@ -672,6 +519,121 @@ async Task<int> RegistryDownload(string[] args)
         Cleanup();
         Console.Error.WriteLine($"Registry download error: {ex.Message}");
         return 1;
+    }
+    finally { Cleanup(); }
+}
+
+async Task<long> DownloadBounded(string url, string destination)
+{
+    const long maxBytes = 512L * 1024L * 1024L;
+    using var totalDeadline = new CancellationTokenSource(TimeSpan.FromMinutes(15));
+    using var idleDeadline = CancellationTokenSource.CreateLinkedTokenSource(totalDeadline.Token);
+    using var client = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
+    client.DefaultRequestHeaders.UserAgent.ParseAdd("Funke-PackageTool/1.0");
+    idleDeadline.CancelAfter(TimeSpan.FromSeconds(30));
+    using var response = await client.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, idleDeadline.Token);
+    response.EnsureSuccessStatusCode();
+    long? total = response.Content.Headers.ContentLength;
+    if (total > maxBytes) throw new InvalidDataException($"Download exceeds the {maxBytes} byte limit.");
+    await using var input = await response.Content.ReadAsStreamAsync(idleDeadline.Token);
+    await using var output = new FileStream(destination, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+    var buffer = new byte[64 * 1024];
+    long copied = 0;
+    var lastEmit = DateTime.UtcNow - TimeSpan.FromSeconds(1);
+    while (true)
+    {
+        idleDeadline.CancelAfter(TimeSpan.FromSeconds(30));
+        int read = await input.ReadAsync(buffer, idleDeadline.Token);
+        if (read == 0) break;
+        if (read > maxBytes - copied) throw new InvalidDataException($"Download exceeds the {maxBytes} byte limit.");
+        await output.WriteAsync(buffer.AsMemory(0, read), idleDeadline.Token);
+        copied += read;
+        if ((DateTime.UtcNow - lastEmit).TotalMilliseconds >= 100)
+        {
+            Console.WriteLine(JsonSerializer.Serialize(new {
+                @event = "progress", stage = "download", bytes = copied, total,
+                progress = total > 0 ? (double?)copied / total.Value : null
+            }, jsonOpts));
+            lastEmit = DateTime.UtcNow;
+        }
+    }
+    if (total.HasValue && copied != total.Value) throw new InvalidDataException("Incomplete download.");
+    return copied;
+}
+
+void RejectLinkedPath(string path)
+{
+    for (var current = new DirectoryInfo(Path.GetFullPath(path)); current != null; current = current.Parent)
+        if (current.LinkTarget != null || (current.Exists && (current.Attributes & FileAttributes.ReparsePoint) != 0))
+            throw new InvalidDataException($"Linked extraction destination is not supported: {current.FullName}");
+}
+
+void ExtractArchiveBounded(string archivePath, string destination)
+{
+    const long maxBytes = 2L * 1024L * 1024L * 1024L;
+    const int maxEntries = 10000;
+    using var archive = ZipFile.OpenRead(archivePath);
+    if (archive.Entries.Count > maxEntries) throw new InvalidDataException($"Archive exceeds {maxEntries} entries.");
+    var targets = new HashSet<string>(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+    var entries = new List<(ZipArchiveEntry Entry, string Relative, bool Directory)>();
+    long declared = 0;
+    foreach (var entry in archive.Entries)
+    {
+        string relative = entry.FullName.Replace('\\', '/');
+        bool directory = relative.EndsWith('/');
+        string[] segments = relative.TrimEnd('/').Split('/');
+        int unixType = (entry.ExternalAttributes >> 16) & 0xF000;
+        if ((unixType != 0 && unixType != 0x8000 && unixType != 0x4000)
+            || (entry.ExternalAttributes & (int)FileAttributes.ReparsePoint) != 0)
+            throw new InvalidDataException($"Archive link or special file is not supported: {entry.FullName}");
+        foreach (string segment in segments)
+        {
+            string basename = segment.Split('.')[0].ToUpperInvariant();
+            bool reserved = basename is "CON" or "PRN" or "AUX" or "NUL"
+                || (basename.Length == 4 && (basename.StartsWith("COM") || basename.StartsWith("LPT"))
+                    && basename[3] >= '1' && basename[3] <= '9');
+            if (string.IsNullOrEmpty(segment) || segment is "." or ".." || segment.EndsWith('.') || segment.EndsWith(' ')
+                || segment.Any(c => c < 32 || "<>:\"|?*".Contains(c)) || reserved)
+                throw new InvalidDataException($"Unsafe archive path: {entry.FullName}");
+        }
+        string normalized = string.Join('/', segments);
+        if (!targets.Add(normalized)) throw new InvalidDataException($"Duplicate archive path: {entry.FullName}");
+        if (entry.Length < 0 || entry.Length > maxBytes - declared || (directory && entry.Length != 0))
+            throw new InvalidDataException($"Archive exceeds {maxBytes} extracted bytes or has invalid directory data.");
+        declared += entry.Length;
+        entries.Add((entry, normalized, directory));
+    }
+    RejectLinkedPath(destination);
+    Directory.CreateDirectory(destination);
+    var buffer = new byte[64 * 1024];
+    var crcTable = new uint[256];
+    for (uint index = 0; index < crcTable.Length; ++index)
+    {
+        uint value = index;
+        for (int bit = 0; bit < 8; ++bit) value = (value >> 1) ^ ((value & 1) != 0 ? 0xEDB88320u : 0u);
+        crcTable[index] = value;
+    }
+    long extracted = 0;
+    foreach (var item in entries)
+    {
+        string target = Path.Combine(destination, item.Relative.Replace('/', Path.DirectorySeparatorChar));
+        if (item.Directory) { Directory.CreateDirectory(target); continue; }
+        Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+        using var input = item.Entry.Open();
+        using var output = new FileStream(target, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+        long written = 0;
+        uint crc = uint.MaxValue;
+        int read;
+        while ((read = input.Read(buffer)) != 0)
+        {
+            if (read > maxBytes - extracted || read > item.Entry.Length - written)
+                throw new InvalidDataException("Archive data exceeds its declared size or extraction limit.");
+            output.Write(buffer, 0, read);
+            for (int index = 0; index < read; ++index) crc = (crc >> 8) ^ crcTable[(crc ^ buffer[index]) & 255];
+            extracted += read; written += read;
+        }
+        if (written != item.Entry.Length) throw new InvalidDataException("Truncated archive entry.");
+        if (~crc != item.Entry.Crc32) throw new InvalidDataException($"Archive checksum mismatch: {item.Entry.FullName}");
     }
 }
 

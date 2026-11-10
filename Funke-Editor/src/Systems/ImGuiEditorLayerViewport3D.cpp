@@ -312,9 +312,8 @@ namespace Funke {
 
 	void ImGuiEditorLayer::QueueEditorView3DOverlays(Scene& scene, Renderer3D& renderer) {
 		const glm::vec3 focus = m_EditorCamera3D.GetFocus();
-		// Grid follows the camera in whole cells so it never visibly slides.
-		const float spacing = m_EditorCamera3D.GetDistance() > 60.0f ? 10.0f : 1.0f;
-		renderer.DrawGrid({ std::round(focus.x / spacing) * spacing, 0.0f, std::round(focus.z / spacing) * spacing }, 40, spacing, k_GridColor);
+		const int extent = static_cast<int>(std::ceil(std::max(100.0f, m_EditorCamera3D.GetDistance() * 8.0f)));
+		renderer.DrawGrid({ focus.x, 0.0f, focus.z }, extent, 1.0f, k_GridColor);
 
 		const auto& registry = scene.GetRegistry();
 		if (m_ShowGizmos) {

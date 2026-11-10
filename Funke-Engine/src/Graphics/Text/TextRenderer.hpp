@@ -45,6 +45,10 @@ namespace Funke {
     struct FUNKE_API TextDrawCmd {
         Font* FontPtr = nullptr;
         std::string_view Text;
+        bool RichText = false;
+        bool Bold = false;
+        bool Italic = false;
+        float FontSize = 32.0f;
         float X = 0.0f;
         float Y = 0.0f;
         float Scale = 1.0f;
@@ -115,7 +119,10 @@ namespace Funke {
         // Returns size in atlas-pixel units; caller converts to screen pixels via (FontSize / font.GetPixelSize()).
         // lineSpacing widens the multi-line height by (lineCount-1)*lineSpacing.
         static Vec2 MeasureNaturalSize(Font& font, std::string_view text, float letterSpacing,
-            float lineSpacing = 0.0f);
+            float lineSpacing = 0.0f, bool richText = false, float fontSize = 32.0f,
+            bool bold = false, bool italic = false);
+
+        static const TextLayout::Layout& GetLayout(const TextDrawCmd& command);
 
         // Visual line byte-ranges [begin,end) for the text under the given wrap settings,
         // identical to what EmitText renders, so caret/selection/hit-test agree with the
@@ -123,7 +130,7 @@ namespace Funke {
         // to split on '\n' only.
         static void ComputeVisualLines(Font& font, std::string_view text, float letterSpacing,
         	TextWrapMode wrapMode, float wrapWidthPixels,
-        	std::vector<std::pair<size_t, size_t>>& out);
+            std::vector<std::pair<size_t, size_t>>& out, bool bold = false);
 
         // Drop GL state. Must run while the GL context is still alive.
         void Shutdown();
@@ -148,7 +155,7 @@ namespace Funke {
         void EnsureGpuCapacity(size_t requiredBytes);
         void EmitText(const TextLayout::Layout& layout, const TextDrawCmd& command,
             float offsetX, float offsetY, const Color& color,
-            const glm::mat4& mvp, const QuadVisibility::Clip& clip);
+            const glm::mat4& mvp, const QuadVisibility::Clip& clip, bool useTextColors);
 
         bool m_IsInitialized = false;
 
@@ -159,8 +166,6 @@ namespace Funke {
         // Reused across frames so we don't allocate in the hot path.
         std::vector<TextVertex> m_Vertices;
         std::vector<GlyphRun> m_Runs;
-        // Retained scratch for cache misses; hits reuse the complete glyph layout.
-        std::vector<std::pair<size_t, size_t>> m_WrapScratch;
         std::vector<TextDrawCmd> m_PendingDrawCmds; // capacity persists across frames
         std::vector<size_t> m_Order;
 

@@ -14,6 +14,7 @@ namespace {
 		ImGuiWindow* Body = nullptr;
 		bool FooterVisible = false;
 		bool Open = true;
+		bool ExplicitWidth = true;
 
 		MessageFixture(float scale = 1.0f, ImVec2 display = ImVec2(800.0f, 600.0f)) {
 			ImGuiIO& io = ImGui::GetIO();
@@ -33,7 +34,7 @@ namespace {
 			ImGui::NewFrame();
 			if (Open) { ImGui::OpenPopup("Error"); Open = false; }
 			ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-			Funke::ImGuiDialog::NextMessageWindow();
+			if (ExplicitWidth) Funke::ImGuiDialog::NextMessageWindow();
 			Body = nullptr;
 			if (Funke::ImGuiDialog::BeginModal("Error", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
 				Dialog = ImGui::GetCurrentWindow();
@@ -45,7 +46,7 @@ namespace {
 				ImGui::Spacing();
 				ImGui::Separator();
 				ImGui::Spacing();
-				ImGui::Button("OK", ImVec2(100.0f, 0.0f));
+				ImGui::Button("OK", ImVec2(Funke::ImGuiDialog::FooterButton(0, 1, 100.0f), 0.0f));
 				FooterVisible = ImGui::IsItemVisible();
 				if (close) ImGui::CloseCurrentPopup();
 				ImGui::EndPopup();
@@ -107,6 +108,38 @@ TEST_CASE("Dialog messages wrap unbroken paths without widening the dialog") {
 	CHECK_FALSE(fixture.Body->ScrollbarX);
 	CHECK(fixture.Dialog->Size.x < 800.0f);
 	CHECK(fixture.FooterVisible);
+}
+
+TEST_CASE("Dialog messages without an explicit width stay readable across frames and reopen") {
+	for (float scale : { 0.75f, 1.0f, 2.0f }) {
+		for (ImVec2 display : { ImVec2(800.0f, 600.0f), ImVec2(320.0f, 480.0f) }) {
+			CAPTURE(scale);
+			CAPTURE(display.x);
+			MessageFixture fixture(scale, display);
+			fixture.ExplicitWidth = false;
+			const std::string message = "Delete \"Player\"?";
+			for (int frame = 0; frame < 8; ++frame) {
+				fixture.Frame(message);
+				REQUIRE(fixture.Dialog != nullptr);
+				CHECK(fixture.Dialog->Size.x >= std::min(300.0f, display.x * 0.9f));
+				CHECK(fixture.Dialog->Size.x <= display.x * 0.9f);
+			}
+			CHECK(fixture.Body == nullptr);
+			CHECK(fixture.FooterVisible);
+			for (int frame = 0; frame < 5; ++frame) fixture.Frame(LongError());
+			REQUIRE(fixture.Body != nullptr);
+			CHECK(fixture.Body->ScrollbarY);
+			CHECK_FALSE(fixture.Body->ScrollbarX);
+			CHECK(fixture.FooterVisible);
+			fixture.Frame(LongError(), false, true);
+			fixture.Frame(message);
+			fixture.Open = true;
+			for (int frame = 0; frame < 5; ++frame) fixture.Frame(message);
+			CHECK(fixture.Dialog->Size.x >= std::min(300.0f, display.x * 0.9f));
+			CHECK(fixture.Body == nullptr);
+			CHECK(fixture.FooterVisible);
+		}
+	}
 }
 
 TEST_CASE("Dialog bodies bound combined metadata and keep wrapped footer actions visible") {

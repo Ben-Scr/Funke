@@ -89,6 +89,7 @@ namespace Funke {
 		// Before input polling: pushes this frame's synthetic input and runs its commands.
 		static void BeginFrame(bool gameStarted);
 		static void EndFrame(float unscaledDeltaTime);
+		static void FinishFrameTrace();
 		static void Reset();
 
 		static double GetClockSeconds();

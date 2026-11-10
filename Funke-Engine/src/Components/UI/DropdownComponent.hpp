@@ -47,7 +47,7 @@ namespace Funke {
 		Color HoveredColor  { 0.92f, 0.94f, 0.98f, 1.0f };
 		Color PressedColor  { 0.80f, 0.85f, 0.95f, 1.0f };
 		Color DisabledColor { 0.60f, 0.60f, 0.60f, 0.5f };
-		// Alpha == 0 = "no focus tint" sentinel. See ButtonComponent.
+		// Alpha zero inherits HoveredColor.
 		Color FocusedColor  { 0.00f, 0.00f, 0.00f, 0.0f };
 
 		UUID NormalSprite  { 0 };
@@ -57,6 +57,9 @@ namespace Funke {
 		UUID FocusedSprite { 0 };
 
 		InspectorEventList OnValueChanged;
+
+		// Transient preview; SelectedIndex changes only on confirmation.
+		int NavigationIndex = -1;
 	};
 
 }

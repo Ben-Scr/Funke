@@ -1,0 +1,20 @@
+{
+  "tool": "image_gen.imagegen",
+  "transparent_background": true,
+  "prompts": [
+    "Create ONE production UI glyph for a game editor's ROTATE tool, as a transparent PNG. A precise, clean, clockwise circular arrow: a smooth near-circular arc sweeping around about 285 degrees, a clear open gap on the right side, and ONE unmistakable compact filled triangular arrowhead at the upper-right end pointing clockwise/down-right tangent to the circle. The arrowhead must meet the arc seamlessly, with no kink, extra elbow, disconnected pieces, doubled outlines, or blunt rectangular hook. The non-arrow tail has a softly rounded cap. Flat single-color pure white (#FFFFFF) silhouette with transparent negative space and fully transparent background. Use a consistent medium stroke approximately 8 percent of the square canvas width; outer circular diameter about 74 percent of canvas, optically centered with generous even margins. The arrowhead is slightly wider than the arc, clearly readable at 16px. Minimal, geometric professional toolbar icon, restrained and balanced, clean antialiased edges, no pixel-art styling, no sketch texture. No button, no border, no checkerboard baked into image, no shadow, no glow, no gradient, no 3D, no text, no decorative object in the center, no second arrow. Square canvas, just the single white rotate glyph. This is the actual asset, not a mockup or icon sheet.",
+    "Refine this generated rotate toolbar glyph into a clean production asset. Preserve the circular clockwise arrow geometry, single triangular arrowhead at upper right, open gap on the right, rounded tail, centered square framing and transparent background. Remove EVERY stray speck, splatter, dust particle, halo, outline and texture inside and outside the arrow. The only visible shape must be ONE smooth continuous circular arrow, like a professionally exported vector icon. Use a uniform fully opaque neutral light gray #BEBEBE fill (not near-white), with transparent background and transparent center. Clean smooth antialiased boundary, absolutely no distressed finish or detached fragments. Keep it recognizable at 16 pixels: uniform medium-weight circular stroke and clearly connected solid triangular arrowhead. No shadow, no gradient, no highlight, no border, no button, no letters. The image is the edit target.",
+    "Edit this rotate icon for tiny 14–16 pixel toolbar display. Keep the same single clockwise circular arrow, position, circular proportions, transparent background and overall outer bounds. Increase the circular stroke thickness by about 35 percent, growing inward so the outer diameter stays the same. Enlarge the triangular arrowhead by about 20 percent and join it smoothly to the arc so it remains unmistakably an arrow when very small. Keep the open gap on the right. Use a single uniform opaque light-gray #BEBEBE fill; no gradients, texture, edging, halos, white fringes, stray specks, shadows, second outline or decoration. This must look like a pristine geometric UI glyph with smooth antialiased edges and strong small-size readability, not a hand-drawn or weathered image. The supplied image is the edit target."
+  ],
+  "exports": {
+    "sizes": [
+      16,
+      32,
+      64,
+      128
+    ],
+    "resampling": "Lanczos",
+    "source": "rotation-imagegen.png",
+    "destination": "Funke-Runtime/FunkeAssets/Textures/Editor/General/rotation"
+  }
+}

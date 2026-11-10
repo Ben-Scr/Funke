@@ -128,7 +128,7 @@ namespace Funke {
 		Color HoveredColor  { 0.95f, 0.95f, 0.95f, 1.0f };
 		Color PressedColor  { 0.90f, 0.90f, 0.90f, 1.0f };
 		Color DisabledColor { 0.60f, 0.60f, 0.60f, 0.5f };
-		// Alpha == 0 = "no focus tint" sentinel. See ButtonComponent.
+		// Alpha zero inherits HoveredColor.
 		Color FocusedColor  { 0.00f, 0.00f, 0.00f, 0.0f };
 
 		UUID NormalSprite  { 0 };

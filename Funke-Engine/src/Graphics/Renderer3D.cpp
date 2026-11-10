@@ -34,6 +34,7 @@
 #include "Graphics/TextureManager.hpp"
 #include "Graphics/TextureSampling.hpp"
 #include "Profiling/Profiler.hpp"
+#include "Profiling/GpuTimer.hpp"
 #include "Scene/Scene.hpp"
 #include "Systems/SkinnedMeshAnimationSystem.hpp"
 #include "Systems/Transform3DHierarchySystem.hpp"
@@ -47,6 +48,7 @@
 #include <array>
 #include <chrono>
 #include <cstddef>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <optional>
@@ -704,6 +706,16 @@ namespace Funke {
 		wgpu::ShaderModule SkyModule;
 		wgpu::ShaderModule ShadowModule;
 		wgpu::ShaderModule LineModule;
+		std::unique_ptr<Shader> GridShader;
+		wgpu::ShaderModule GridModule;
+		struct GridInstance {
+			glm::vec4 CenterSpacing;
+			glm::vec4 Color;
+			glm::vec4 OriginExtent;
+		};
+		std::vector<GridInstance> Grids;
+		wgpu::Buffer GridInstanceBuffer;
+		uint64_t GridInstanceCapacity = 0;
 		wgpu::ShaderModule ParticleModule;
 
 		wgpu::BindGroupLayout FrameLayout;
@@ -774,6 +786,7 @@ namespace Funke {
 		wgpu::Limits SkinLimits{};
 		bool SkinPipelineAttempted = false;
 		bool SkinDispatchLogged = false;
+		std::optional<GpuPassTrace> SkinTrace;
 		std::vector<const MeshBuffers*> FrameMeshes;
 		FrameLookup<uint32_t> FrameMeshSlots;
 		// Keyed by ScenePipelineKey: the MSAA scene target needs its own variants.
@@ -1008,6 +1021,8 @@ namespace Funke {
 		bool EnsureSkinPipeline(wgpu::Device device) {
 			if (SkinPipelineAttempted) return static_cast<bool>(SkinPipeline);
 			SkinPipelineAttempted = true;
+			if (const char* fallback = std::getenv("FUNKE_REFERENCE_CPU_SKINNING"); fallback && std::strcmp(fallback, "1") == 0)
+				return false;
 			if (device.GetLimits(&SkinLimits) != wgpu::Status::Success || SkinLimits.maxStorageBuffersPerShaderStage < 3
 				|| SkinLimits.maxComputeInvocationsPerWorkgroup < SkinningCompute::k_WorkgroupSize
 				|| SkinLimits.maxComputeWorkgroupSizeX < SkinningCompute::k_WorkgroupSize) return false;
@@ -1085,9 +1100,11 @@ namespace Funke {
 			if (!entry.SkinGroup) return false;
 			// Palettes belong to entities: queued uploads cannot overwrite another dispatch's pose.
 			device.GetQueue().WriteBuffer(entry.JointBuffer, 0, entry.Joints.data(), jointBytes);
+			FUNKE_PROFILE_VALUE("Renderer3D.JointUploadBytes", float(jointBytes));
 			if (!pass) {
 				wgpu::ComputePassDescriptor desc{};
 				desc.label = "renderer3d-skinning";
+				SkinTrace.emplace(encoder, desc);
 				pass = encoder.BeginComputePass(&desc);
 				pass.SetPipeline(SkinPipeline);
 			}
@@ -1543,20 +1560,25 @@ namespace Funke {
 			return pipeline;
 		}
 
-		wgpu::RenderPipeline GetLinePipeline(wgpu::Device device, wgpu::TextureFormat colorFormat, uint32_t sampleCount, bool depthTested) {
-			const uint64_t key = ScenePipelineKey(colorFormat, sampleCount, depthTested ? 1u : 0u);
+		wgpu::RenderPipeline GetLinePipeline(wgpu::Device device, wgpu::TextureFormat colorFormat, uint32_t sampleCount, bool depthTested, bool grid = false) {
+			const uint64_t key = ScenePipelineKey(colorFormat, sampleCount, (depthTested ? 1u : 0u) | (grid ? 2u : 0u));
 			if (auto it = LinePipelines.find(key); it != LinePipelines.end()) {
 				return it->second;
 			}
 
-			wgpu::VertexAttribute attributes[2] = {};
+			wgpu::VertexAttribute attributes[3] = {};
 			SetAttribute(attributes[0], wgpu::VertexFormat::Float32x3, offsetof(PosColorVertex, x), 0);
 			SetAttribute(attributes[1], wgpu::VertexFormat::Unorm8x4, offsetof(PosColorVertex, color), 1);
+			if (grid) {
+				SetAttribute(attributes[0], wgpu::VertexFormat::Float32x4, offsetof(GridInstance, CenterSpacing), 0);
+				SetAttribute(attributes[1], wgpu::VertexFormat::Float32x4, offsetof(GridInstance, Color), 1);
+				SetAttribute(attributes[2], wgpu::VertexFormat::Float32x4, offsetof(GridInstance, OriginExtent), 2);
+			}
 
 			wgpu::VertexBufferLayout buffer{};
-			buffer.arrayStride = sizeof(PosColorVertex);
-			buffer.stepMode = wgpu::VertexStepMode::Vertex;
-			buffer.attributeCount = 2;
+			buffer.arrayStride = grid ? sizeof(GridInstance) : sizeof(PosColorVertex);
+			buffer.stepMode = grid ? wgpu::VertexStepMode::Instance : wgpu::VertexStepMode::Vertex;
+			buffer.attributeCount = grid ? 3 : 2;
 			buffer.attributes = attributes;
 
 			wgpu::BlendState blend{};
@@ -1573,7 +1595,7 @@ namespace Funke {
 			colorTarget.writeMask = wgpu::ColorWriteMask::All;
 
 			wgpu::FragmentState fragment{};
-			fragment.module = LineModule;
+			fragment.module = grid ? GridModule : LineModule;
 			fragment.entryPoint = "fs_main";
 			fragment.targetCount = 1;
 			fragment.targets = &colorTarget;
@@ -1584,14 +1606,14 @@ namespace Funke {
 			depth.depthCompare = depthTested ? wgpu::CompareFunction::LessEqual : wgpu::CompareFunction::Always;
 
 			wgpu::RenderPipelineDescriptor desc{};
-			desc.label = "renderer3d-line-pipeline";
+			desc.label = grid ? "renderer3d-grid-pipeline" : "renderer3d-line-pipeline";
 			desc.layout = LinePipelineLayout;
-			desc.vertex.module = LineModule;
+			desc.vertex.module = grid ? GridModule : LineModule;
 			desc.vertex.entryPoint = "vs_main";
 			desc.vertex.bufferCount = 1;
 			desc.vertex.buffers = &buffer;
 			desc.fragment = &fragment;
-			desc.primitive.topology = wgpu::PrimitiveTopology::LineList;
+			desc.primitive.topology = grid ? wgpu::PrimitiveTopology::TriangleList : wgpu::PrimitiveTopology::LineList;
 			desc.primitive.cullMode = wgpu::CullMode::None;
 			desc.depthStencil = &depth;
 			desc.multisample.count = sampleCount;
@@ -2222,6 +2244,7 @@ namespace Funke {
 		passDesc.label = "renderer3d-sky";
 		passDesc.colorAttachmentCount = 1;
 		passDesc.colorAttachments = &colorAttachment;
+		GpuPassTrace passTrace(encoder, passDesc);
 
 		wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&passDesc);
 		WebGPUBackend::ApplyCachedViewportToPass(pass);
@@ -2230,6 +2253,7 @@ namespace Funke {
 		if (customGroup) pass.SetBindGroup(k_CustomShaderGroup, customGroup);
 		pass.Draw(3);
 		pass.End();
+		passTrace.Resolve();
 		++m_DrawCalls;
 
 		gpu.SkySubmitSerial = WebGPUBackend::GetFrameSubmitSerial();
@@ -2578,6 +2602,12 @@ namespace Funke {
 		for (const DrawItem& item : gpu.DrawItems) gpu.InstanceUpload.push_back(gpu.Instances[item.Instance]);
 
 		const uint64_t instanceBytes = gpu.InstanceUpload.size() * sizeof(MeshInstance);
+		FUNKE_PROFILE_VALUE("Renderer3D.InstanceUploadBytes", float(instanceBytes));
+		FUNKE_PROFILE_VALUE("Renderer3D.Lights", float(lighting.Selected.size()));
+		if (Profiler::IsFrameCaptureEnabled()) {
+			FUNKE_PROFILE_VALUE("Renderer3D.OffscreenCasters", float(std::count_if(gpu.DrawItems.begin(), gpu.DrawItems.end(),
+				[](const DrawItem& item) { return KeyHidden(item.Key) && KeyCastsShadow(item.Key); })));
+		}
 		if (!EnsureBuffer(device, gpu.InstanceBuffer, gpu.InstanceCapacity, instanceBytes, wgpu::BufferUsage::Vertex, "renderer3d-instances")) {
 			FNK_CORE_WARN_TAG("Renderer3D", "Instance buffer too large ({} bytes); meshes skipped", instanceBytes);
 			return;
@@ -2594,7 +2624,11 @@ namespace Funke {
 					gpu.UpdateSkinnedVertices(device, encoder, skinPass, gpu.FrameSkinning[mesh]);
 				}
 			}
-			if (skinPass) skinPass.End();
+			if (skinPass) {
+				skinPass.End();
+				if (gpu.SkinTrace) gpu.SkinTrace->Resolve();
+				gpu.SkinTrace.reset();
+			}
 		}
 
 		if (environment.FogEnabled) {
@@ -2621,6 +2655,7 @@ namespace Funke {
 			shadowPassDesc.depthStencilAttachment = &shadowDepth;
 
 			// Full map, not the cached viewport: the shadow map has its own resolution.
+			GpuPassTrace passTrace(encoder, shadowPassDesc);
 			wgpu::RenderPassEncoder shadowPass = encoder.BeginRenderPass(&shadowPassDesc);
 			wgpu::RenderPipeline standardShadow = gpu.GetShadowPipeline(device);
 			gpu.ShadowBundleDraws.clear();
@@ -2656,6 +2691,7 @@ namespace Funke {
 				{ gpu.InstanceBuffer.Get(), wgpu::TextureFormat::Undefined, k_ShadowFormat, 1 },
 				gpu.ShadowBundleDraws, Time::GetFrameCount());
 			shadowPass.End();
+			passTrace.Resolve();
 		}
 
 		const bool clearOwnDepth = !target.HasDepth && m_OwnDepthNeedsClear;
@@ -2678,6 +2714,7 @@ namespace Funke {
 		passDesc.colorAttachmentCount = 1;
 		passDesc.colorAttachments = &colorAttachment;
 		passDesc.depthStencilAttachment = &depthAttachment;
+		GpuPassTrace passTrace(encoder, passDesc);
 
 		wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&passDesc);
 		WebGPUBackend::ApplyCachedViewportToPass(pass);
@@ -2760,6 +2797,7 @@ namespace Funke {
 			}
 		}
 		pass.End();
+		passTrace.Resolve();
 		m_RenderedMeshes += drawnInstances;
 		if (!target.HasDepth) m_OwnDepthNeedsClear = false;
 
@@ -2878,6 +2916,7 @@ namespace Funke {
 		passDesc.depthStencilAttachment = &depthAttachment;
 
 		const TextureHandle whiteTexture = TextureManager::GetDefaultTexture(DefaultTexture::Pixel);
+		GpuPassTrace passTrace(encoder, passDesc);
 		wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&passDesc);
 		WebGPUBackend::ApplyCachedViewportToPass(pass);
 		pass.SetBindGroup(0, gpu.ParticleBindGroup);
@@ -2899,6 +2938,7 @@ namespace Funke {
 			m_GeometryTotals.AddQuads(batch.Count);
 		}
 		pass.End();
+		passTrace.Resolve();
 		if (!target.HasDepth) m_OwnDepthNeedsClear = false;
 
 		gpu.ParticleSubmitSerial = WebGPUBackend::GetFrameSubmitSerial();
@@ -2945,25 +2985,23 @@ namespace Funke {
 	}
 
 	void Renderer3D::DrawGrid(const glm::vec3& center, int halfLineCount, float spacing, const Color& color) {
-		const float extent = static_cast<float>(halfLineCount) * spacing;
-		const Color axisX{ 0.86f, 0.31f, 0.31f, color.a };
-		const Color axisZ{ 0.31f, 0.47f, 0.90f, color.a };
-		for (int i = -halfLineCount; i <= halfLineCount; ++i) {
-			const float offset = static_cast<float>(i) * spacing;
-			const float x = center.x + offset;
-			const float z = center.z + offset;
-			const bool onXAxis = std::abs(z) < spacing * 0.5f;
-			const bool onZAxis = std::abs(x) < spacing * 0.5f;
-			DrawLine({ center.x - extent, 0.0f, z }, { center.x + extent, 0.0f, z }, onXAxis ? axisX : color);
-			DrawLine({ x, 0.0f, center.z - extent }, { x, 0.0f, center.z + extent }, onZAxis ? axisZ : color);
+		if (!m_IsInitialized || !m_Gpu || halfLineCount <= 0 || !std::isfinite(spacing) || spacing <= 0.0f) return;
+		GpuState& gpu = *m_Gpu;
+		if (!gpu.GridShader) {
+			gpu.GridShader = std::make_unique<Shader>(std::string("grid3d"), std::string("grid3d"));
+			if (gpu.GridShader->IsValid()) gpu.GridModule = WebGPUBackend::LookupShader(gpu.GridShader->GetHandle()).Module;
 		}
+		if (!gpu.GridModule) return;
+		const float extent = static_cast<float>(halfLineCount) * spacing;
+		gpu.Grids.push_back({ { center.x, 0.0f, center.z, spacing }, { color.r, color.g, color.b, color.a }, { 0.0f, 0.0f, 0.0f, extent } });
 	}
 
 	void Renderer3D::FlushLines(const Camera3DView& view, bool depthTested) {
-		if (m_Lines.empty() && m_SeeThroughLines.empty()) return;
+		if (m_Lines.empty() && m_SeeThroughLines.empty() && (!m_Gpu || m_Gpu->Grids.empty())) return;
 		auto clearQueues = [this]() {
 			m_Lines.clear();
 			m_SeeThroughLines.clear();
+			if (m_Gpu) m_Gpu->Grids.clear();
 		};
 		if (!m_IsInitialized || !m_Gpu) {
 			clearQueues();
@@ -2998,9 +3036,13 @@ namespace Funke {
 		wgpu::RenderPipeline pipeline = gpu.GetLinePipeline(device, target.ColorFormat, samples, depthTested);
 		wgpu::RenderPipeline hiddenPipeline = seeThroughCount > 0 ? gpu.GetLinePipeline(device, target.ColorFormat, samples, false) : nullptr;
 		wgpu::RenderPipeline visiblePipeline = seeThroughCount > 0 ? gpu.GetLinePipeline(device, target.ColorFormat, samples, true) : nullptr;
+		wgpu::RenderPipeline gridPipeline = !gpu.Grids.empty() ? gpu.GetLinePipeline(device, target.ColorFormat, samples, depthTested, true) : nullptr;
 		const uint64_t bytes = m_LineUpload.size() * sizeof(PosColorVertex);
+		const uint64_t gridBytes = gpu.Grids.size() * sizeof(GpuState::GridInstance);
 		if (!depthView || !pipeline || (seeThroughCount > 0 && (!hiddenPipeline || !visiblePipeline))
-			|| !EnsureBuffer(device, gpu.LineVertexBuffer, gpu.LineVertexCapacity, bytes, wgpu::BufferUsage::Vertex, "renderer3d-lines")) {
+			|| (bytes > 0 && !EnsureBuffer(device, gpu.LineVertexBuffer, gpu.LineVertexCapacity, bytes, wgpu::BufferUsage::Vertex, "renderer3d-lines"))
+			|| (gridBytes > 0 && (!gridPipeline || !EnsureBuffer(device, gpu.GridInstanceBuffer, gpu.GridInstanceCapacity, gridBytes,
+				wgpu::BufferUsage::Vertex, "renderer3d-grids")))) {
 			clearQueues();
 			return;
 		}
@@ -3009,7 +3051,11 @@ namespace Funke {
         for (auto& vertex : m_LineUpload) { vertex.x -= origin.x; vertex.y -= origin.y; vertex.z -= origin.z; }
         const glm::mat4 viewProjection = view.Projection * view.RelativeView(origin);
 		queue.WriteBuffer(gpu.LineUniformBuffer, 0, glm::value_ptr(viewProjection), sizeof(glm::mat4));
-		queue.WriteBuffer(gpu.LineVertexBuffer, 0, m_LineUpload.data(), bytes);
+		if (bytes > 0) queue.WriteBuffer(gpu.LineVertexBuffer, 0, m_LineUpload.data(), bytes);
+		if (gridBytes > 0) {
+			for (auto& grid : gpu.Grids) grid.OriginExtent = glm::vec4(origin, grid.OriginExtent.w);
+			queue.WriteBuffer(gpu.GridInstanceBuffer, 0, gpu.Grids.data(), gridBytes);
+		}
 
 		const bool clearOwnDepth = !target.HasDepth && m_OwnDepthNeedsClear;
 		wgpu::RenderPassColorAttachment colorAttachment{};
@@ -3031,11 +3077,17 @@ namespace Funke {
 		passDesc.colorAttachmentCount = 1;
 		passDesc.colorAttachments = &colorAttachment;
 		passDesc.depthStencilAttachment = &depthAttachment;
+		GpuPassTrace passTrace(encoder, passDesc);
 
 		wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&passDesc);
 		WebGPUBackend::ApplyCachedViewportToPass(pass);
 		pass.SetBindGroup(0, gpu.LineBindGroup);
-		pass.SetVertexBuffer(0, gpu.LineVertexBuffer, 0, bytes);
+		if (gridBytes > 0) {
+			pass.SetPipeline(gridPipeline);
+			pass.SetVertexBuffer(0, gpu.GridInstanceBuffer, 0, gridBytes);
+			pass.Draw(6, static_cast<uint32_t>(gpu.Grids.size()));
+		}
+		if (bytes > 0) pass.SetVertexBuffer(0, gpu.LineVertexBuffer, 0, bytes);
 		if (regularCount > 0) {
 			pass.SetPipeline(pipeline);
 			pass.Draw(regularCount);
@@ -3047,6 +3099,7 @@ namespace Funke {
 			pass.Draw(seeThroughCount, 1, regularCount + seeThroughCount);
 		}
 		pass.End();
+		passTrace.Resolve();
 		clearQueues();
 		if (!target.HasDepth) m_OwnDepthNeedsClear = false;
 

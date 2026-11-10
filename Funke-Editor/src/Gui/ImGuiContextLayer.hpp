@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+struct ImGuiStyle;
+
 namespace Funke {
 
 	class FunkeEvent;
@@ -27,6 +29,8 @@ namespace Funke {
 		static DockLayoutRequest ConsumeDockLayoutRequest();
 
 		static std::vector<std::string> ListLayoutPresets();
+		static std::string ReadLayoutPreset(const std::string& name);
+		static const std::string& GetActiveLayoutPreset();
 		static bool SaveLayoutPreset(const std::string& name);
 		static bool LoadLayoutPreset(const std::string& name);
 		static bool DeleteLayoutPreset(const std::string& name);
@@ -38,10 +42,7 @@ namespace Funke {
 		static void ApplyFunkeTheme();
 		// Colors-only variant: leaves DPI-scaled sizing intact when called from theme switch.
 		static void ApplyFunkeThemeColors(bool dark = true);
-		// Needs GlassBackdrop behind translucent docked panels.
-		static void ApplyGlassThemeColors(bool dark = true);
-		// Writes DPI-scaled rounding, so call only after OnAttach's ScaleAllSizes.
-		static void ApplyThemeRounding(bool glass);
+		static void ConfigureFunkeThemeColors(ImGuiStyle& style, bool dark);
 
 		static void ApplyEditorFontSize();
 

@@ -95,6 +95,17 @@ Values are read in WGSL as `material.speed`, `material.deep` and so on. Textures
 
 The material stores its values under `"properties"`. Properties the shader doesn't declare (anymore) are kept, so switching between shaders loses nothing. A missing value, or one of the wrong type, falls back to the shader's default.
 
+The six-property layout limit applies to every target. Before GPU compilation the device's per-stage sampled-texture and sampler limits are checked as well. The effective budget is `min(6, texture limit - reserved textures, sampler limit - reserved samplers)`:
+
+| Target | Reserved textures | Reserved samplers |
+|---|---:|---:|
+| Mesh3D | 1 (shadow) | 1 |
+| Sprite2D / UI | 2 (image and mask) | 2 |
+| PostProcess | 4 (screen, two depth representations, shadow) | 2 |
+| Skybox | 0 | 0 |
+
+An over-budget property reports its name, source line, target and available budget. A seventh property is rejected even on a device that could bind more; it is never silently dropped. A device unable to hold the target's own bindings is rejected before compiling. Invalid edits retain the last successfully compiled shader, and fixing the file resumes normal hot reload. These checks do not alter material serialization or discard undeclared property values.
+
 ```json
 {
   "type": "Material",

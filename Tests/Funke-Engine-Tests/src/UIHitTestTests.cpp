@@ -9,10 +9,16 @@
 #include "Gui/CircularSliderGeometry.hpp"
 #include "Gui/UIDrawOrder.hpp"
 #include "Components/Graphics/ImageComponent.hpp"
+#include "Components/Graphics/TextRendererComponent.hpp"
 #include "Components/UI/InteractableComponent.hpp"
+#include "Components/UI/DropdownComponent.hpp"
+#include "Components/UI/SliderComponent.hpp"
+#include "Components/UI/InputFieldComponent.hpp"
 #include "Scene/Scene.hpp"
 #include "Systems/UIEventSystem.hpp"
 #include "Systems/UIFocusSystem.hpp"
+#include "Core/Application.hpp"
+#include "Core/Window.hpp"
 
 #include <entt/entity/registry.hpp>
 
@@ -35,6 +41,343 @@ namespace {
 	bool Hit(entt::registry& registry, EntityHandle e, Vec2 point) {
 		return UIDrawOrder::HitTest(registry, e, registry.get<RectTransform2DComponent>(e), point);
 	}
+
+	struct NavigationFixture {
+		std::shared_ptr<Scene> ScenePtr = Scene::CreateDetachedScene("Keyboard UI");
+		entt::registry& Registry = ScenePtr->GetRegistry();
+		EntityHandle Root = MakeRect(Registry, entt::null, {}, { 640, 360 });
+		EntityHandle First = MakeRect(Registry, Root, {}, { 100, 40 });
+		EntityHandle Second = MakeRect(Registry, Root, { 120, 0 }, { 100, 40 });
+		UIFocusSystem Focus;
+
+		NavigationFixture() {
+			Registry.emplace<InteractableComponent>(First).Focusable = true;
+			Registry.emplace<InteractableComponent>(Second).Focusable = true;
+			Step({ .Tab = true });
+		}
+		void Step(const UIFocusSystem::NavigationInput& input = {}) { Focus.UpdateNavigation(*ScenePtr, input); }
+		bool Focused(EntityHandle entity) { return Registry.get<InteractableComponent>(entity).IsFocused; }
+	};
+
+	struct SurfaceGuard {
+		Window::UIRegion Previous = Window::GetUIRegion();
+		explicit SurfaceGuard(int offset) { Window::SetUIRegion(offset, offset, 640, 360); }
+		~SurfaceGuard() {
+			Window::ClearUIRegion();
+			if (Previous.Source == Window::UIRegionSource::AspectLock) Window::PublishAspectLockUIRegion(1.0f, Previous);
+			else if (Previous.IsActive()) Window::SetUIRegion(Previous.OffsetX, Previous.OffsetY, Previous.Width, Previous.Height, Previous.WindowToRegionScale);
+		}
+	};
+}
+
+TEST_CASE("UI keyboard dropdown previews without committing and cancels without losing focus") {
+	NavigationFixture ui;
+	auto& dd = ui.Registry.emplace<DropdownComponent>(ui.First);
+	dd.Options = { "First", "Second", "Third" };
+	ui.Step({ .Activate = true });
+	CHECK(dd.IsOpen);
+	CHECK(dd.NavigationIndex == 0);
+	ui.Step({ .Down = true });
+	CHECK(dd.NavigationIndex == 1);
+	CHECK(dd.SelectedIndex == 0);
+	CHECK(ui.Focused(ui.First));
+	ui.Step({ .Cancel = true });
+	CHECK_FALSE(dd.IsOpen);
+	CHECK(dd.NavigationIndex == -1);
+	CHECK(dd.SelectedIndex == 0);
+	CHECK(ui.Focused(ui.First));
+	ui.Step({ .Activate = true });
+	ui.Step({ .End = true });
+	ui.Step({ .Down = true });
+	CHECK(dd.NavigationIndex == 2);
+	ui.Step({ .Home = true });
+	ui.Step({ .Up = true });
+	CHECK(dd.NavigationIndex == 0);
+	ui.Step({ .Down = true });
+	ui.Step({ .Activate = true });
+	CHECK_FALSE(dd.IsOpen);
+	CHECK(dd.SelectedIndex == 1);
+	CHECK(dd.SelectionObserved);
+	CHECK(dd.LastObservedSelectedIndex == 0);
+	CHECK_FALSE(ui.Registry.get<InteractableComponent>(ui.First).ActivatedThisFrame);
+	ui.Step({ .Activate = true });
+	ui.Step({ .Down = true });
+	ui.Step({ .Tab = true });
+	CHECK_FALSE(dd.IsOpen);
+	CHECK(dd.SelectedIndex == 1);
+	CHECK(ui.Focused(ui.Second));
+	ui.Step({ .Tab = true, .Shift = true });
+	CHECK(ui.Focused(ui.First));
+}
+
+TEST_CASE("UI keyboard dropdown tolerates empty changed read-only and disabled controls") {
+	NavigationFixture ui;
+	auto& dd = ui.Registry.emplace<DropdownComponent>(ui.First);
+	ui.Step({ .Activate = true });
+	CHECK_FALSE(dd.IsOpen);
+	dd.Options = { "One", "Two", "Three" };
+	dd.IsReadOnly = true;
+	ui.Step({ .Activate = true });
+	CHECK_FALSE(dd.IsOpen);
+	dd.IsReadOnly = false;
+	ui.Step({ .Activate = true });
+	ui.Step({ .End = true });
+	dd.Options.resize(1);
+	ui.Step({ .Activate = true });
+	CHECK(dd.SelectedIndex == 0);
+	ui.Step({ .Activate = true });
+	ui.Step({ .Enabled = false, .Tab = true, .Down = true, .Activate = true, .Cancel = true });
+	CHECK(dd.IsOpen);
+	CHECK(ui.Focused(ui.First));
+	ui.Registry.emplace<DisabledTag>(ui.Root);
+	ui.Step({ .Activate = true });
+	CHECK_FALSE(dd.IsOpen);
+	CHECK_FALSE(ui.Focused(ui.First));
+	ui.Registry.remove<DisabledTag>(ui.Root);
+	ui.Step({ .Tab = true });
+	ui.Step({ .Activate = true });
+	dd.Options.clear();
+	ui.Step({ .Down = true });
+	CHECK_FALSE(dd.IsOpen);
+	CHECK(dd.NavigationIndex == -1);
+}
+
+TEST_CASE("UI keyboard sliders respect direction steps limits and preserve Tab navigation") {
+	for (auto direction : { SliderDirection::LeftToRight, SliderDirection::RightToLeft,
+		SliderDirection::BottomToTop, SliderDirection::TopToBottom }) {
+		CAPTURE(static_cast<int>(direction));
+		NavigationFixture ui;
+		auto& slider = ui.Registry.emplace<SliderComponent>(ui.First);
+		slider.Direction = direction;
+		slider.MinValue = 0;
+		slider.MaxValue = 100;
+		slider.Value = 50;
+		const bool horizontal = direction == SliderDirection::LeftToRight || direction == SliderDirection::RightToLeft;
+		const bool reversed = direction == SliderDirection::RightToLeft || direction == SliderDirection::TopToBottom;
+		ui.Step({ .Right = horizontal, .Up = !horizontal });
+		CHECK(slider.Value == doctest::Approx(reversed ? 49.0f : 51.0f));
+		CHECK(slider.LastObservedValue == 50);
+		CHECK(slider.ValueObserved);
+		CHECK(ui.Focused(ui.First));
+		ui.Step({ .Home = true });
+		CHECK(slider.Value == 0);
+		ui.Step({ .End = true });
+		CHECK(slider.Value == 100);
+		ui.Step({ .Left = horizontal && reversed, .Right = horizontal && !reversed,
+			.Up = !horizontal && !reversed, .Down = !horizontal && reversed });
+		CHECK(slider.Value == 100);
+		CHECK(ui.Focused(ui.First));
+		ui.Step({ .Activate = true });
+		CHECK_FALSE(ui.Registry.get<InteractableComponent>(ui.First).ActivatedThisFrame);
+		CHECK(slider.Value == 100);
+		ui.Step({ .Tab = true });
+		CHECK(ui.Focused(ui.Second));
+		ui.Step({ .Tab = true, .Shift = true });
+		CHECK(ui.Focused(ui.First));
+	}
+}
+
+TEST_CASE("UI keyboard slider edits ignore read-only dragging and editor-owned input") {
+	NavigationFixture ui;
+	auto& slider = ui.Registry.emplace<SliderComponent>(ui.First);
+	slider.MinValue = -20;
+	slider.MaxValue = 180;
+	slider.Value = 50;
+	ui.Step({ .Right = true });
+	CHECK(slider.Value == doctest::Approx(52.0f));
+	slider.WholeNumbers = true;
+	ui.Step({ .Left = true });
+	CHECK(slider.Value == 51);
+	slider.IsReadOnly = true;
+	ui.Step({ .Right = true, .End = true });
+	CHECK(slider.Value == 51);
+	CHECK(ui.Focused(ui.First));
+	slider.IsReadOnly = false;
+	slider.IsDragging = true;
+	ui.Step({ .Left = true });
+	CHECK(slider.Value == 51);
+	slider.IsDragging = false;
+	ui.Step({ .Enabled = false, .Tab = true, .Right = true, .End = true, .Activate = true, .Cancel = true });
+	CHECK(slider.Value == 51);
+	CHECK(ui.Focused(ui.First));
+	slider.HandleEntity = ui.Second;
+	ui.Step({ .Tab = true });
+	ui.Step({ .Right = true });
+	CHECK(slider.Value == 52);
+	CHECK(ui.Focused(ui.Second));
+	slider.MinValue = slider.MaxValue = 5;
+	ui.Step({ .Right = true });
+	CHECK(slider.Value == 5);
+}
+
+TEST_CASE("UI keyboard input fields keep caret arrows and release focus with Tab") {
+	NavigationFixture ui;
+	auto& field = ui.Registry.emplace<InputFieldComponent>(ui.First);
+	ui.Step();
+	REQUIRE(field.IsFocused);
+	ui.Step({ .Right = true });
+	CHECK(ui.Focused(ui.First));
+	ui.Step({ .Tab = true });
+	CHECK_FALSE(field.IsFocused);
+	CHECK(ui.Focused(ui.Second));
+}
+
+TEST_CASE("UI keyboard circular sliders adjust values without navigating or starting a drag") {
+	for (bool clockwise : { false, true }) {
+		CAPTURE(clockwise);
+		NavigationFixture ui;
+		auto& slider = ui.Registry.emplace<CircularSliderComponent>(ui.First);
+		slider.Clockwise = clockwise;
+		slider.MinValue = -20;
+		slider.MaxValue = 180;
+		slider.Value = 50;
+		ui.Step({ .Right = true });
+		CHECK(slider.Value == doctest::Approx(52.0f));
+		CHECK(slider.LastObservedValue == 50);
+		CHECK(slider.ValueObserved);
+		ui.Step({ .Up = true });
+		CHECK(slider.Value == doctest::Approx(54.0f));
+		ui.Step({ .Left = true });
+		ui.Step({ .Down = true });
+		CHECK(slider.Value == doctest::Approx(50.0f));
+		CHECK(ui.Focused(ui.First));
+		slider.WholeNumbers = true;
+		ui.Step({ .Right = true, .Up = true });
+		CHECK(slider.Value == 51);
+		ui.Step({ .Home = true });
+		ui.Step({ .Left = true });
+		CHECK(slider.Value == -20);
+		ui.Step({ .End = true });
+		ui.Step({ .Up = true });
+		CHECK(slider.Value == 180);
+		ui.Step({ .Activate = true });
+		CHECK_FALSE(ui.Registry.get<InteractableComponent>(ui.First).ActivatedThisFrame);
+		CHECK_FALSE(slider.IsDragging);
+		CHECK(slider.Value == 180);
+		ui.Step({ .Tab = true, .Home = true });
+		CHECK(ui.Focused(ui.Second));
+		CHECK(slider.Value == 180);
+		ui.Step({ .Tab = true, .Shift = true });
+		CHECK(ui.Focused(ui.First));
+	}
+}
+
+TEST_CASE("UI keyboard circular sliders respect handle focus read-only and input ownership") {
+	NavigationFixture ui;
+	auto& slider = ui.Registry.emplace<CircularSliderComponent>(ui.First);
+	slider.HandleEntity = ui.Second;
+	ui.Step({ .Tab = true });
+	ui.Step({ .Right = true });
+	CHECK(ui.Focused(ui.Second));
+	CHECK(slider.Value == doctest::Approx(0.51f));
+	ui.Step({ .Activate = true });
+	CHECK_FALSE(ui.Registry.get<InteractableComponent>(ui.Second).ActivatedThisFrame);
+	slider.IsReadOnly = true;
+	ui.Step({ .Up = true, .End = true });
+	CHECK(slider.Value == doctest::Approx(0.51f));
+	slider.IsReadOnly = false;
+	slider.IsDragging = true;
+	ui.Step({ .Left = true, .Home = true });
+	CHECK(slider.Value == doctest::Approx(0.51f));
+	slider.IsDragging = false;
+	ui.Step({ .Enabled = false, .Tab = true, .Right = true, .End = true, .Activate = true, .Cancel = true });
+	CHECK(slider.Value == doctest::Approx(0.51f));
+	CHECK(ui.Focused(ui.Second));
+	slider.MinValue = slider.MaxValue = 5;
+	ui.Step({ .Down = true });
+	CHECK(slider.Value == 5);
+	ui.Registry.emplace<DisabledTag>(ui.Root);
+	ui.Step({ .Right = true });
+	CHECK_FALSE(ui.Focused(ui.Second));
+	CHECK(slider.Value == 5);
+}
+
+TEST_CASE("UI keyboard circular slider events and handle visuals work outside the game surface") {
+	Application app;
+	int offset = 0;
+	SUBCASE("pointer inside the game surface") { offset = 0; }
+	SUBCASE("pointer outside the game surface") { offset = 1000; }
+	SurfaceGuard surface(offset);
+	NavigationFixture ui;
+	UIEventSystem events;
+	auto& slider = ui.Registry.emplace<CircularSliderComponent>(ui.First);
+	ui.Registry.get<RectTransform2DComponent>(ui.First).SizeDelta = { 200, 200 };
+	slider.StartAngleDegrees = 0;
+	slider.SweepDegrees = 180;
+	const auto handle = MakeRect(ui.Registry, ui.First, {}, { 20, 20 });
+	auto& handleInteract = ui.Registry.emplace<InteractableComponent>(handle);
+	auto& image = ui.Registry.emplace<ImageComponent>(handle);
+	slider.HandleEntity = handle;
+	ui.Step({ .Right = true });
+	events.Update(*ui.ScenePtr);
+	CHECK(slider.ValueChangedThisFrame);
+	CHECK(slider.Value == doctest::Approx(0.51f));
+	const auto position = ui.Registry.get<RectTransform2DComponent>(handle).AnchoredPosition;
+	CHECK(position.x < -2.0f);
+	CHECK(position.y < -89.0f);
+	CHECK(image.Color == slider.HoveredColor);
+	CHECK_FALSE(handleInteract.IsFocused);
+	events.Update(*ui.ScenePtr);
+	CHECK_FALSE(slider.ValueChangedThisFrame);
+	slider.FocusedColor = { 1, 0, 0, 1 };
+	events.Update(*ui.ScenePtr);
+	CHECK(image.Color == slider.FocusedColor);
+	slider.TransitionMode = UITransitionMode::SpriteSwap;
+	slider.HoveredSprite = UUID{ 90001 };
+	slider.FocusedSprite = UUID{ 90002 };
+	events.Update(*ui.ScenePtr);
+	CHECK(image.TextureAssetId == slider.FocusedSprite);
+	slider.FocusedSprite = UUID{ 0 };
+	events.Update(*ui.ScenePtr);
+	CHECK(image.TextureAssetId == slider.HoveredSprite);
+	slider.TransitionMode = UITransitionMode::ColorSwap;
+	ui.Step({ .End = true });
+	events.Update(*ui.ScenePtr);
+	CHECK(slider.ValueChangedThisFrame);
+	ui.Step({ .Right = true });
+	events.Update(*ui.ScenePtr);
+	CHECK_FALSE(slider.ValueChangedThisFrame);
+	ui.Registry.get<InteractableComponent>(ui.First).Interactable = false;
+	events.Update(*ui.ScenePtr);
+	CHECK(image.Color == slider.DisabledColor);
+}
+
+TEST_CASE("UI keyboard widget changes emit one event through the existing UI event pass") {
+	Application app;
+	int offset = 0;
+	SUBCASE("pointer inside the game surface") { offset = 0; }
+	SUBCASE("pointer outside the game surface") { offset = 1000; }
+	SurfaceGuard surface(offset);
+	NavigationFixture ui;
+	UIEventSystem events;
+	auto& slider = ui.Registry.emplace<SliderComponent>(ui.First);
+	const auto handle = MakeRect(ui.Registry, ui.First, {}, { 10, 40 });
+	const auto label = MakeRect(ui.Registry, ui.First, {}, { 100, 30 });
+	ui.Registry.emplace<TextRendererComponent>(label);
+	slider.HandleEntity = handle;
+	slider.LabelEntity = label;
+	auto& dd = ui.Registry.emplace<DropdownComponent>(ui.Second);
+	dd.Options = { "First", "Second", "Third" };
+	ui.Step({ .Right = true });
+	events.Update(*ui.ScenePtr);
+	CHECK(slider.ValueChangedThisFrame);
+	CHECK(slider.Value == doctest::Approx(0.51f));
+	CHECK(ui.Registry.get<RectTransform2DComponent>(handle).AnchoredPosition.x == doctest::Approx(1.0f));
+	CHECK(ui.Registry.get<TextRendererComponent>(label).Text == "51%");
+	events.Update(*ui.ScenePtr);
+	CHECK_FALSE(slider.ValueChangedThisFrame);
+	ui.Step({ .Tab = true });
+	ui.Step({ .Activate = true });
+	ui.Step({ .Down = true });
+	events.Update(*ui.ScenePtr);
+	CHECK_FALSE(dd.SelectionChangedThisFrame);
+	CHECK(dd.SelectedIndex == 0);
+	ui.Step({ .Activate = true });
+	events.Update(*ui.ScenePtr);
+	CHECK(dd.SelectionChangedThisFrame);
+	CHECK(dd.SelectedIndex == 1);
+	events.Update(*ui.ScenePtr);
+	CHECK_FALSE(dd.SelectionChangedThisFrame);
 }
 
 TEST_CASE("UI hit-test rejects points clipped by an ancestor mask")

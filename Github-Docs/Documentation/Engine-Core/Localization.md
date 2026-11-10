@@ -243,6 +243,16 @@ Outside Play the Text Renderer keeps the text you typed, so translations never l
 
 In scene JSON the component is `"LocalizedText": { "key": "menu.play" }`.
 
+### Editor language preview
+
+Outside Play, right-click the Game View toolbar and open **Language Preview** (also available through the View settings). Pick a project language to preview Localized Text components and their wrapping/layout immediately. **Project / system language** uses the OS match and project fallback; **Off (authored text)** restores the authored labels.
+
+Preview uses separate display tables and a transient Text Renderer display value. It does not change `Localization.CurrentLanguage`, `Localization.Get`, the game's change callbacks, PlayerPrefs, or serialized scene/prefab text. The inspector's Translation row continues to describe the game language. Starting Play, loading another project, and restarting or closing the editor clear preview. Stop restores the authored scene; preview is not resumed automatically. Reloading language files refreshes an active preview, or clears it if that language disappears.
+
+Missing translations use the project's fallback; keys missing from both tables appear as their identifiers. The preview menu counts these keys and the Console records each once per preview table set. Fonts still need the requested glyphs; the existing font diagnostics and replacement glyph behavior apply. Preview does not automatically localize script-generated labels, dropdown options, or placeholders.
+
+Windows Release verification: nine native localization/serialization cases (121 assertions), plus a rendered English/German fixture, a wrapped German label, fallback and missing-key diagnostics, Play/Stop, and editor restart. A real isolated PlayerPrefs file containing an English preference and the authored scene remained byte-identical after a German preview and Play/Stop. Project-table replacement and unload reset are covered by the native lifecycle test; no additional platform certification is implied.
+
 ### From C#
 
 ```csharp

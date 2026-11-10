@@ -7,6 +7,7 @@
 #include "Gui/SplashScreen.hpp"
 #include "Graphics/Texture2D.hpp"
 #include "Systems/Prerequisites.hpp"
+#include "Systems/LauncherSettings.hpp"
 #include "Systems/LibraryThumbnails.hpp"
 #include "Utils/OwnedTask.hpp"
 #include <chrono>
@@ -171,37 +172,14 @@ namespace Funke {
 			std::chrono::steady_clock::time_point LastRefreshedAt{};
 		};
 
-		enum class SortMode : uint8_t {
-			LastOpened = 0,
-			Name = 1,
-			CreatedAt = 2,
-		};
+		using SortMode = LauncherSettings::SortMode;
 
 		// "Auto" is a distinct entry so future DPI heuristics can plug in without migrating saved settings; currently behaves like P100.
-		enum class FontScale : uint8_t {
-			Auto = 0,
-			P75 = 1,
-			P100 = 2,
-			P125 = 3,
-			P150 = 4,
-			P175 = 5,
-			P200 = 6,
-		};
+		using FontScale = LauncherSettings::FontScale;
 
-		enum class ThemeSetting : uint8_t {
-			Auto = 0,
-			Dark = 1,
-			Light = 2,
-		};
+		using ThemeSetting = LauncherSettings::ThemeSetting;
 
-		enum class DirectoryNameConvention : uint8_t {
-			None = 0,
-			TitleCase,
-			TitleDashCase,
-			TitleCamelCase,
-			TitleSnakeCase,
-			TitleKebabCase,
-		};
+		using DirectoryNameConvention = LauncherSettings::DirectoryNameConvention;
 
 		enum class LauncherPage : uint8_t {
 			Projects = 0,
@@ -306,34 +284,19 @@ namespace Funke {
 		std::string GetProjectSizeDisplayText(const LauncherProjectEntry& entry);
 		std::vector<const LauncherProjectEntry*> GetSortedProjectsView() const;
 		void RefreshProjectsList();
-		void LoadLauncherSettings();
-		void SaveLauncherSettings() const;
-		static std::string GetSettingsPath();
-		static const char* DirectoryNameConventionLabel(DirectoryNameConvention convention);
-		static std::string ApplyDirectoryNameConvention(std::string_view name,
-			DirectoryNameConvention convention);
 		float GetEffectiveFontScale() const;
 		bool IsEffectiveThemeDark() const;
 		void ApplyLauncherThemeIfNeeded();
 
+		LauncherSettings m_Settings;
 		LauncherRegistry m_Registry;
 		std::unordered_map<std::string, std::shared_ptr<ProjectSizeTaskState>> m_ProjectSizeTasks;
 		// Cached filesystem creation timestamps keyed by project path, so
 		// "Created" sort doesn't stat the disk every frame. Populated lazily.
 		mutable std::unordered_map<std::string, std::int64_t> m_CreatedAtCache;
 
-		SortMode m_SortMode = SortMode::LastOpened;
-		bool m_SortReverse = false;
-
-		FontScale m_FontScale = FontScale::Auto;
-		ThemeSetting m_ThemeSetting = ThemeSetting::Auto;
-		DirectoryNameConvention m_DirectoryNameConvention = DirectoryNameConvention::TitleCase;
 		std::optional<bool> m_LastAppliedDarkTheme;
 
-		// When true the active language follows the OS; persisted separately from Localization so the "follow OS" intent isn't overwritten.
-		bool m_LanguageAuto = false;
-
-		std::string m_DefaultProjectsLocation;
 		char m_SettingsLocationBuffer[1024]{};
 		bool m_SettingsLocationDirty = false;
 
@@ -413,8 +376,6 @@ namespace Funke {
 		std::string m_AssetLibrarySelectedTag;     // empty = "All tags"
 		std::string m_AssetLibraryDetailEntryId;
 		int m_AssetLibraryDetailScreenshot = 0;
-		// Trust ack persisted per source URL so the modal only shows once per machine.
-		std::unordered_map<std::string, bool> m_AssetLibraryTrustAck;
 		// One-shot: when set, the trust modal opens with this entry pending.
 		// After ack the worker is kicked off and the field cleared.
 		std::optional<AssetLibraryEntry> m_PendingTrustedDownload;
@@ -449,8 +410,7 @@ namespace Funke {
 
 		LauncherPage m_ActivePage = LauncherPage::Projects;
 
-		enum class ProjectViewMode : uint8_t { List = 0, Grid = 1 };
-		ProjectViewMode m_ProjectViewMode = ProjectViewMode::List;
+		using ProjectViewMode = LauncherSettings::ProjectViewMode;
 
 		struct ProjectThumbnail {
 			Texture2D Texture;

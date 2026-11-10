@@ -156,7 +156,21 @@ namespace Funke {
 			return g_HotReloadOverride.value_or(Application::IsEditor());
 		}
 
+		bool CheckTextureBudget(wgpu::Device device, const ShaderDescription& description,
+			std::vector<ShaderDiagnostic>& diagnostics) {
+			wgpu::Limits limits{};
+			if (device.GetLimits(&limits) != wgpu::Status::Success) {
+				diagnostics.push_back({ 0, "Could not query device texture/sampler limits", true });
+				return false;
+			}
+			const auto errors = ValidateCustomShaderTextureBudget(description,
+				limits.maxSampledTexturesPerShaderStage, limits.maxSamplersPerShaderStage);
+			diagnostics.insert(diagnostics.end(), errors.begin(), errors.end());
+			return errors.empty();
+		}
+
 		void LoadSource(uint64_t guid, ShaderEntry& entry) {
+			entry.CompilePending = false;
 			entry.LastLoad = Clock::now();
 			entry.LastPoll = entry.LastLoad;
 			entry.Path = AssetRegistry::ResolvePath(guid);
@@ -203,6 +217,13 @@ namespace Funke {
 		void CompilePending(uint64_t guid, ShaderEntry& entry) {
 			if (!entry.CompilePending || !entry.Description || !WebGPUBackend::IsInitialized()) return;
 			entry.CompilePending = false;
+			std::vector<ShaderDiagnostic> budgetErrors;
+			if (!CheckTextureBudget(WebGPUBackend::GetDevice(), *entry.Description, budgetErrors)) {
+				LogDiagnostics(entry.Path, budgetErrors);
+				entry.Diagnostics.insert(entry.Diagnostics.end(), budgetErrors.begin(), budgetErrors.end());
+				if (entry.Program) FNK_WARN_TAG("Shader", "{}: keeping the last version that compiled", DisplayPath(entry.Path));
+				return;
+			}
 			const ComposedShader composed = ComposeCustomShader(*entry.Description, entry.Source);
 			std::vector<CompileMessage> errors;
 			wgpu::ShaderModule module = CompileModule(WebGPUBackend::GetInstance(), WebGPUBackend::GetDevice(),
@@ -302,7 +323,7 @@ namespace Funke {
 	}
 
 	void CustomShaderLibrary::Invalidate(uint64_t guid) {
-		Entries().erase(guid);
+		if (auto entry = Entries().find(guid); entry != Entries().end()) LoadSource(guid, entry->second);
 		++g_Generation;
 	}
 
@@ -332,6 +353,7 @@ namespace Funke {
 		const ComposedShader composed = ComposeCustomShader(parsed.Description, source);
 		std::vector<CompileMessage> errors;
 		if (WebGPUBackend::IsInitialized()) {
+			if (!CheckTextureBudget(WebGPUBackend::GetDevice(), parsed.Description, outDiagnostics)) return false;
 			CompileModule(WebGPUBackend::GetInstance(), WebGPUBackend::GetDevice(), DisplayPath(path), composed.Wgsl, errors);
 		}
 		else {
@@ -340,6 +362,7 @@ namespace Funke {
 				outDiagnostics.push_back({ 0, "WGSL not checked: no WebGPU adapter available", false });
 				return true;
 			}
+			if (!CheckTextureBudget(headless.Device, parsed.Description, outDiagnostics)) return false;
 			CompileModule(headless.Instance, headless.Device, DisplayPath(path), composed.Wgsl, errors);
 		}
 		AppendCompileErrors(composed, errors, outDiagnostics);
@@ -504,7 +527,11 @@ namespace Funke {
 	}
 
 	wgpu::BindGroupLayout CustomMaterialBindings::GetLayout(const ShaderDescription& description) {
-		const uint32_t textureCount = std::min(description.TextureCount, k_MaxShaderTextureProperties);
+		if (description.TextureCount > k_MaxShaderTextureProperties) {
+			FNK_CORE_ERROR_TAG("CustomShader", "Cannot bind {} textures; material layout supports {}", description.TextureCount, k_MaxShaderTextureProperties);
+			return nullptr;
+		}
+		const uint32_t textureCount = description.TextureCount;
 		if (auto it = m_Layouts.find(textureCount); it != m_Layouts.end()) return it->second;
 
 		std::vector<wgpu::BindGroupLayoutEntry> entries(2 + textureCount * 2);
@@ -572,7 +599,7 @@ namespace Funke {
 		const Material& values = material ? *material : k_DefaultMaterial;
 		PackMaterialProperties(values, description, m_Scratch);
 
-		const uint32_t textureCount = std::min(description.TextureCount, k_MaxShaderTextureProperties);
+		const uint32_t textureCount = description.TextureCount;
 		std::array<wgpu::TextureView, k_MaxShaderTextureProperties> views;
 		std::array<wgpu::Sampler, k_MaxShaderTextureProperties> samplers;
 		std::array<WGPUTextureView, k_MaxShaderTextureProperties> viewKeys{};

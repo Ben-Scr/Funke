@@ -9,11 +9,13 @@
 #include "Graphics/TextureManager.hpp"
 #include "Scene/EntityHandle.hpp"
 #include "Serialization/FileStamp.hpp"
+#include "Serialization/File.hpp"
 #include "Serialization/Json.hpp"
 #include "Serialization/SceneSerializerStorage.hpp"
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <sstream>
@@ -59,6 +61,31 @@ namespace Funke::Detail {
 
 namespace Funke::SceneSerializerShared {
 	using Json::Value;
+
+	inline bool ValidateFormatVersion(const Value& root, std::string_view source) {
+		if (!root.IsObject()) return false;
+		const Value* version = root.FindMember("version");
+		if (!version) return true;
+		const double value = version->AsDoubleOr(-1.0);
+		if (!version->IsNumber() || !std::isfinite(value) || value < 0.0
+			|| value > SceneSerializerInternal::k_SceneFormatVersion || std::floor(value) != value) {
+			FNK_CORE_ERROR_TAG("SceneSerializer", "{} has unsupported format version {} (supported: 0 through {})",
+				source, Json::Stringify(*version), SceneSerializerInternal::k_SceneFormatVersion);
+			return false;
+		}
+		return true;
+	}
+
+	inline bool CanReplaceSerializedFile(const std::string& path) {
+		if (!File::Exists(path)) return true;
+		Value previous;
+		std::string error;
+		if (!SceneSerializerStorage::ReadRootFromFile(path, previous, &error)) {
+			FNK_CORE_ERROR_TAG("SceneSerializer", "Cannot safely replace {}: {}", path, error);
+			return false;
+		}
+		return ValidateFormatVersion(previous, path);
+	}
 
 	// BoxCollider2D gained exact localSizeX/Y keys after some prefab assets were authored.
 	// Prefab override diffs compare a live instance against the raw .prefab file, so when

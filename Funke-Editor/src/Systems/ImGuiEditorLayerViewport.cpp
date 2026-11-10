@@ -1,6 +1,7 @@
 #include <pch.hpp>
 #include "Gui/EditorTheme.hpp"
 #include "Gui/EditorUI.hpp"
+#include "Gui/EditorKeyboard.hpp"
 #include "Gui/EditorShortcuts.hpp"
 #include "Gui/ImGuiUtils.hpp"
 #include "Systems/ImGuiEditorLayer.hpp"
@@ -38,9 +39,11 @@
 #include "Collections/AspectRatio.hpp"
 #include "Core/Application.hpp"
 #include "Core/Time.hpp"
+#include "Localization/GameLocalization.hpp"
 #include "Core/Window.hpp"
 #include "Diagnostics/StatsOverlay.hpp"
 #include "Editor/ApplicationEditorAccess.hpp"
+#include "Editor/BoundsResize.hpp"
 #include "Editor/GameView2DLayer.hpp"
 #include "Graphics/Framebuffer.hpp"
 #include "Graphics/GizmoRenderer.hpp"
@@ -156,6 +159,24 @@ namespace Funke {
 		constexpr const char* k_GameViewSettingsPopup = "##GameViewSettings";
 
 		void DrawGameViewSettingsMenu() {
+			if (ImGui::BeginMenu("Language Preview", !Application::GetIsPlaying() && GameLocalization::IsLoaded())) {
+				const std::string preview = GameLocalization::GetPreviewLanguage();
+				if (ImGui::MenuItem("Off (authored text)", nullptr, preview.empty())) GameLocalization::SetPreviewLanguage({});
+				if (ImGui::MenuItem("Project / system language")) {
+					GameLocalization::SetPreviewLanguage(GameLocalization::ChooseStartLanguage({}, GameLocalization::GetSystemLanguage(),
+						GameLocalization::GetAvailableLanguages(), GameLocalization::GetFallbackLanguage()));
+				}
+				ImGui::Separator();
+				for (const auto& language : GameLocalization::GetAvailableLanguages()) {
+					const std::string label = language.DisplayName + " (" + language.Code + ")";
+					if (ImGui::MenuItem(label.c_str(), nullptr, preview == language.Code)) GameLocalization::SetPreviewLanguage(language.Code);
+				}
+				ImGui::Separator();
+				ImGui::TextDisabled("Preview only; cleared on Play and project change.");
+				if (const auto missing = GameLocalization::GetMissingPreviewKeyCount(); missing > 0)
+					ImGui::TextDisabled("%zu missing keys (see Console)", missing);
+				ImGui::EndMenu();
+			}
 			auto itemSwitch = [](const char* label, GameViewToolbarItem item, bool enabled) {
 				const bool visible = EditorPreferences::IsGameViewToolbarItemVisible(item);
 				if (ImGui::MenuItem(label, nullptr, visible, enabled)) {
@@ -1043,62 +1064,12 @@ namespace Funke {
 							m_AlignSnapDebt = Vec2{ 0.0f, 0.0f };
 						}
 
+						const Vec2 resizeDelta{ dWorldX, dWorldY };
 						if (rect) {
-							const float sX = worldScale * std::max(0.01f, std::abs(rect->Scale.x));
-							const float sY = worldScale * std::max(0.01f, std::abs(rect->Scale.y));
-							const float localDx = sX > 0.0f ? dWorldX / sX : 0.0f;
-							const float localDy = sY > 0.0f ? dWorldY / sY : 0.0f;
-							if (h.xe > 0) {
-								float d = localDx;
-								if (rect->SizeDelta.x + d < 1.0f) d = 1.0f - rect->SizeDelta.x;
-								rect->SizeDelta.x += d;
-								rect->AnchoredPosition.x += d * rect->Pivot.x;
-							}
-							else if (h.xe < 0) {
-								float d = localDx;
-								if (rect->SizeDelta.x - d < 1.0f) d = rect->SizeDelta.x - 1.0f;
-								rect->SizeDelta.x -= d;
-								rect->AnchoredPosition.x += d * (1.0f - rect->Pivot.x);
-							}
-							if (h.ye > 0) {
-								float d = localDy;
-								if (rect->SizeDelta.y + d < 1.0f) d = 1.0f - rect->SizeDelta.y;
-								rect->SizeDelta.y += d;
-								rect->AnchoredPosition.y += d * rect->Pivot.y;
-							}
-							else if (h.ye < 0) {
-								float d = localDy;
-								if (rect->SizeDelta.y - d < 1.0f) d = rect->SizeDelta.y - 1.0f;
-								rect->SizeDelta.y -= d;
-								rect->AnchoredPosition.y += d * (1.0f - rect->Pivot.y);
-							}
+							BoundsResize::Rect(*rect, worldScale, resizeDelta, h.xe, h.ye);
 						}
 						else {
-							constexpr float kMinScale = 0.01f;
-							if (h.xe > 0) {
-								float d = dWorldX;
-								if (tf->LocalScale.x + d < kMinScale) d = kMinScale - tf->LocalScale.x;
-								tf->LocalScale.x += d;
-								tf->LocalPosition.x += d * 0.5f;
-							}
-							else if (h.xe < 0) {
-								float d = dWorldX;
-								if (tf->LocalScale.x - d < kMinScale) d = tf->LocalScale.x - kMinScale;
-								tf->LocalScale.x -= d;
-								tf->LocalPosition.x += d * 0.5f;
-							}
-							if (h.ye > 0) {
-								float d = dWorldY;
-								if (tf->LocalScale.y + d < kMinScale) d = kMinScale - tf->LocalScale.y;
-								tf->LocalScale.y += d;
-								tf->LocalPosition.y += d * 0.5f;
-							}
-							else if (h.ye < 0) {
-								float d = dWorldY;
-								if (tf->LocalScale.y - d < kMinScale) d = tf->LocalScale.y - kMinScale;
-								tf->LocalScale.y -= d;
-								tf->LocalPosition.y += d * 0.5f;
-							}
+							BoundsResize::Transform(*tf, resizeDelta, h.xe, h.ye);
 							tf->MarkDirty();
 							renderScene->MarkTransformDirty(m_SelectedEntity);
 						}
@@ -2692,7 +2663,8 @@ namespace Funke {
 			ImGui::SetNextWindowFocus();
 			--s_FocusFramesFromEnvironment;
 		}
-		m_IsGameViewActive = ImGui::Begin("Game View");
+		m_IsGameViewActive = ImGui::Begin("Game View", nullptr, ImGuiWindowFlags_NoNavInputs);
+		EditorKeyboard::ReserveGameNavigation();
 
 		if (!m_IsGameViewActive) {
 			// A hidden tab keeps its dock size; the Editor Bridge sizes the unseen game from it.
@@ -2733,6 +2705,7 @@ namespace Funke {
 			|| EditorPreferences::IsGameViewToolbarItemVisible(GameViewToolbarItem::Logs);
 		if (EditorPreferences::IsGameViewToolbarItemVisible(GameViewToolbarItem::Toolbar) && anyGameViewItem) {
 			EditorUI::BeginToolbar("##GameViewToolbar");
+			EditorKeyboard::ReserveGameNavigation();
 			// Separators only between elements that are drawn, so hidden ones leave no gaps.
 			bool anyDrawn = false;
 			auto beginElement = [&](GameViewToolbarItem item, bool separator) {

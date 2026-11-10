@@ -804,7 +804,7 @@ public class Entity : IEquatable<Entity>
 
     /// <summary>Borrowed writable 2D transform; throws InvalidOperationException when absent and marks scene transforms dirty.</summary>
     /// <remarks>Expires on structural changes; reacquire each frame. Use TransformRefReadOnly for reading.</remarks>
-    /// <example><code>var copy = entity.TransformRef;
+    /// <example><code>var copy = entity.TransformRefReadOnly;
     /// ref var transform = ref entity.TransformRef;</code>Only the second variable writes through to native storage; neither reference may outlive a structural change.</example>
     public unsafe ref Native.NativeTransform2D TransformRef
     {

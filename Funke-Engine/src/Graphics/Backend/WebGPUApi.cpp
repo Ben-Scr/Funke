@@ -11,6 +11,7 @@
 #include "Graphics/GLInitSpecifications.hpp"
 #include "Graphics/Texture2D.hpp"
 #include "Profiling/Profiler.hpp"
+#include "Profiling/GpuTimer.hpp"
 #include "Project/FunkeProject.hpp"
 #include "Project/ProjectManager.hpp"
 #include "Utils/Timer.hpp"
@@ -751,6 +752,7 @@ namespace Funke {
 			wgpu::CommandBufferDescriptor cbDesc{};
 			wgpu::CommandBuffer cmd = g_Frame.Encoder.Finish(&cbDesc);
 			g_Queue.Submit(1, &cmd);
+			FUNKE_PROFILE_VALUE("GPU.QueueSubmits", 1);
 			++g_FrameSubmitSerial;
 
 			g_Frame.Encoder    = nullptr;
@@ -793,6 +795,7 @@ namespace Funke {
 			encoder.CopyTextureToBuffer(&src, &dst, &extent);
 			wgpu::CommandBuffer cmd = encoder.Finish();
 			g_Queue.Submit(1, &cmd);
+			FUNKE_PROFILE_VALUE("GPU.QueueSubmits", 1);
 
 			bool mapped = false;
 			wgpu::Future future = buffer.MapAsync(wgpu::MapMode::Read, 0, bufDesc.size,
@@ -866,6 +869,7 @@ namespace Funke {
 				wgpu::CommandBufferDescriptor cbDesc{};
 				wgpu::CommandBuffer cmd = g_Frame.Encoder.Finish(&cbDesc);
 				g_Queue.Submit(1, &cmd);
+				FUNKE_PROFILE_VALUE("GPU.QueueSubmits", 1);
 				++g_FrameSubmitSerial;
 			}
 
@@ -877,6 +881,7 @@ namespace Funke {
 #endif
 
 			Framebuffer::ProcessFrameEndDeferredDestroy();
+			GpuPassTrace::AfterSubmit();
 			g_Frame = FrameState{};
 			PumpEvents();
 		}
@@ -1302,6 +1307,7 @@ namespace Funke {
 
 	void RenderApi::Shutdown() {
 		if (!g_Initialized && !g_Instance) return;
+		GpuPassTrace::Shutdown();
 
 		g_Frame = FrameState{};
 		Framebuffer::ReleaseAllBackendResources();

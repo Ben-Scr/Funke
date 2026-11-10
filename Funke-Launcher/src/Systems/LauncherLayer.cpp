@@ -439,16 +439,16 @@ artifacts/
 
 		// Settings drive the splash theme + UI defaults, so load them now; the
 		// heavier registry scan is deferred to OnUpdate (runs behind the splash).
-		LoadLauncherSettings();
+		m_Settings.Load();
 		ApplyLauncherThemeIfNeeded();
 
-		if (m_LanguageAuto) {
+		if (m_Settings.LanguageAuto) {
 			Localization::SetLanguage(Localization::GetSystemLanguage());
 		}
 
-		const std::string defaultLocation = m_DefaultProjectsLocation.empty()
+		const std::string defaultLocation = m_Settings.DefaultProjectsLocation.empty()
 			? FunkeProject::GetDefaultProjectsDir()
-			: m_DefaultProjectsLocation;
+			: m_Settings.DefaultProjectsLocation;
 		std::snprintf(m_NewProjectLocation, sizeof(m_NewProjectLocation), "%s",
 			defaultLocation.c_str());
 		std::snprintf(m_SettingsLocationBuffer, sizeof(m_SettingsLocationBuffer), "%s",
@@ -567,7 +567,7 @@ artifacts/
 	}
 
 	float LauncherLayer::GetEffectiveFontScale() const {
-		switch (m_FontScale) {
+		switch (m_Settings.Scale) {
 			case FontScale::Auto:   return 1.0f;
 			case FontScale::P75:    return 0.75f;
 			case FontScale::P100:   return 1.0f;
@@ -580,7 +580,7 @@ artifacts/
 	}
 
 	bool LauncherLayer::IsEffectiveThemeDark() const {
-		switch (m_ThemeSetting) {
+		switch (m_Settings.Theme) {
 			case ThemeSetting::Auto:
 				return ImGuiContextLayer::GetSystemTheme() == ImGuiContextLayer::Theme::Dark;
 			case ThemeSetting::Dark:
@@ -1367,9 +1367,9 @@ artifacts/
 		std::snprintf(m_NewProjectName, sizeof(m_NewProjectName), "%s",
 			FNK_TR("launcher.create.default_project_name").c_str());
 		// Re-snap the location: the user may have changed the default in settings since OnAttach.
-		const std::string defaultLocation = m_DefaultProjectsLocation.empty()
+		const std::string defaultLocation = m_Settings.DefaultProjectsLocation.empty()
 			? FunkeProject::GetDefaultProjectsDir()
-			: m_DefaultProjectsLocation;
+			: m_Settings.DefaultProjectsLocation;
 		std::snprintf(m_NewProjectLocation, sizeof(m_NewProjectLocation), "%s",
 			defaultLocation.c_str());
 
@@ -1480,22 +1480,22 @@ artifacts/
 		const std::string sortName = FNK_TR("launcher.sort.mode.name");
 		const std::string sortCreated = FNK_TR("launcher.sort.mode.created");
 		const char* k_SortLabels[] = { sortLastOpened.c_str(), sortName.c_str(), sortCreated.c_str() };
-		int sortMode = static_cast<int>(m_SortMode);
+		int sortMode = static_cast<int>(m_Settings.Sort);
 		if (ImGui::Combo("##LauncherSort", &sortMode, k_SortLabels, IM_ARRAYSIZE(k_SortLabels))) {
-			m_SortMode = static_cast<SortMode>(sortMode);
-			SaveLauncherSettings();
+			m_Settings.Sort = static_cast<SortMode>(sortMode);
+			m_Settings.Save();
 		}
 		if (ImGui::IsItemHovered()) {
 			ImGui::SetTooltip("%s", FNK_TR("launcher.sort.label").c_str());
 		}
 		ImGui::SameLine();
-		const Icons::Type sortArrow = m_SortReverse ? Icons::Type::ArrowUp : Icons::Type::ArrowDown;
+		const Icons::Type sortArrow = m_Settings.SortReverse ? Icons::Type::ArrowUp : Icons::Type::ArrowDown;
 		if (Icons::IconButton("##SortReverse", sortArrow, ImVec2(frameH, frameH))) {
-			m_SortReverse = !m_SortReverse;
-			SaveLauncherSettings();
+			m_Settings.SortReverse = !m_Settings.SortReverse;
+			m_Settings.Save();
 		}
 		if (ImGui::IsItemHovered()) {
-			ImGui::SetTooltip("%s", m_SortReverse
+			ImGui::SetTooltip("%s", m_Settings.SortReverse
 				? FNK_TR("launcher.sort.tooltip.ascending").c_str()
 				: FNK_TR("launcher.sort.tooltip.descending").c_str());
 		}
@@ -1507,17 +1507,17 @@ artifacts/
 			ImGui::SetTooltip("%s", FNK_TR("launcher.sort.tooltip.refresh").c_str());
 		}
 		ImGui::SameLine();
-		if (ViewModeButton("##ViewList", /*grid=*/false, m_ProjectViewMode == ProjectViewMode::List, pal)) {
-			m_ProjectViewMode = ProjectViewMode::List;
-			SaveLauncherSettings();
+		if (ViewModeButton("##ViewList", /*grid=*/false, m_Settings.ProjectView == ProjectViewMode::List, pal)) {
+			m_Settings.ProjectView = ProjectViewMode::List;
+			m_Settings.Save();
 		}
 		if (ImGui::IsItemHovered()) {
 			ImGui::SetTooltip("%s", FNK_TR("launcher.view.list").c_str());
 		}
 		ImGui::SameLine();
-		if (ViewModeButton("##ViewGrid", /*grid=*/true, m_ProjectViewMode == ProjectViewMode::Grid, pal)) {
-			m_ProjectViewMode = ProjectViewMode::Grid;
-			SaveLauncherSettings();
+		if (ViewModeButton("##ViewGrid", /*grid=*/true, m_Settings.ProjectView == ProjectViewMode::Grid, pal)) {
+			m_Settings.ProjectView = ProjectViewMode::Grid;
+			m_Settings.Save();
 		}
 		if (ImGui::IsItemHovered()) {
 			ImGui::SetTooltip("%s", FNK_TR("launcher.view.grid").c_str());
@@ -1733,7 +1733,7 @@ artifacts/
 		}
 
 		std::string removePath;
-		if (m_ProjectViewMode == ProjectViewMode::Grid) {
+		if (m_Settings.ProjectView == ProjectViewMode::Grid) {
 			RenderProjectGrid(shown, removePath);
 		}
 		else {
@@ -2188,7 +2188,7 @@ artifacts/
 		ImGui::SetNextItemWidth(-1);
 		ImGui::InputText("##DuplicateLocation", m_DuplicateLocationBuffer, sizeof(m_DuplicateLocationBuffer));
 
-		const std::string directoryName = ApplyDirectoryNameConvention(m_DuplicateNameBuffer, m_DirectoryNameConvention);
+		const std::string directoryName = LauncherSettings::ApplyDirectoryNameConvention(m_DuplicateNameBuffer, m_Settings.DirectoryConvention);
 		ImGui::Spacing();
 		const std::string preview = Path::Combine(m_DuplicateLocationBuffer, directoryName);
 		ImGui::PushStyleColor(ImGuiCol_Text, GetLauncherPalette().TextDim);
@@ -3352,7 +3352,7 @@ artifacts/
 		const LauncherPalette pal = GetLauncherPalette();
 		const float em = ImGui::GetFontSize();
 		const float contentW = std::min(em * 31.0f, ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ScrollbarSize);
-		const std::string directoryName = ApplyDirectoryNameConvention(m_NewProjectName, m_DirectoryNameConvention);
+		const std::string directoryName = LauncherSettings::ApplyDirectoryNameConvention(m_NewProjectName, m_Settings.DirectoryConvention);
 		const std::string preview = Path::Combine(m_NewProjectLocation, directoryName);
 
 		ImGuiDialog::BeginBody("##CreateProjectBody");
@@ -3970,7 +3970,7 @@ artifacts/
 			return ts;
 		};
 
-		switch (m_SortMode) {
+		switch (m_Settings.Sort) {
 			case SortMode::LastOpened:
 				std::sort(view.begin(), view.end(),
 					[](const auto* a, const auto* b) { return a->LastOpened > b->LastOpened; });
@@ -3992,7 +3992,7 @@ artifacts/
 				break;
 		}
 
-		if (m_SortReverse) {
+		if (m_Settings.SortReverse) {
 			std::reverse(view.begin(), view.end());
 		}
 		return view;
@@ -4012,204 +4012,6 @@ artifacts/
 		m_Registry.Load();
 		m_Registry.ValidateAll();
 		m_Registry.Save();
-	}
-
-	std::string LauncherLayer::GetSettingsPath() {
-		return Path::Combine(
-			Path::GetSpecialFolderPath(SpecialFolder::LocalAppData),
-			"Funke", "Launcher", "launcher_settings.json");
-	}
-
-	// One-time move of a launcher file from the old LocalAppData/Funke root into
-	// the new Launcher/ subfolder so existing settings survive. No-op once moved.
-	static void MigrateLegacyLauncherFile(const std::string& legacyPath, const std::string& newPath) {
-		if (legacyPath == newPath || !File::Exists(legacyPath) || File::Exists(newPath)) return;
-
-		std::error_code ec;
-		std::filesystem::create_directories(std::filesystem::path(newPath).parent_path(), ec);
-		std::filesystem::rename(legacyPath, newPath, ec);
-		if (ec) {
-			ec.clear();
-			std::filesystem::copy_file(legacyPath, newPath,
-				std::filesystem::copy_options::overwrite_existing, ec);
-			if (!ec) std::filesystem::remove(legacyPath, ec);
-		}
-	}
-
-	const char* LauncherLayer::DirectoryNameConventionLabel(DirectoryNameConvention convention) {
-		switch (convention) {
-		case DirectoryNameConvention::None:           return "None";
-		case DirectoryNameConvention::TitleCase:      return "TitleCase";
-		case DirectoryNameConvention::TitleDashCase:  return "Title-Case";
-		case DirectoryNameConvention::TitleCamelCase: return "titleCase";
-		case DirectoryNameConvention::TitleSnakeCase: return "title_case";
-		case DirectoryNameConvention::TitleKebabCase: return "title-case";
-		}
-		return "TitleCase";
-	}
-
-	std::string LauncherLayer::ApplyDirectoryNameConvention(std::string_view name,
-		DirectoryNameConvention convention)
-	{
-		if (convention == DirectoryNameConvention::None) {
-			return std::string(name);
-		}
-
-		std::vector<std::string> words;
-		std::string current;
-		char previous = '\0';
-		for (char raw : name) {
-			const unsigned char c = static_cast<unsigned char>(raw);
-			if (!std::isalnum(c)) {
-				if (!current.empty()) {
-					words.push_back(current);
-					current.clear();
-				}
-				previous = '\0';
-				continue;
-			}
-
-			const bool splitCamel = !current.empty()
-				&& std::islower(static_cast<unsigned char>(previous))
-				&& std::isupper(c);
-			if (splitCamel) {
-				words.push_back(current);
-				current.clear();
-			}
-			current.push_back(raw);
-			previous = raw;
-		}
-		if (!current.empty()) {
-			words.push_back(current);
-		}
-
-		auto titleWord = [](std::string word) {
-			if (word.empty()) return word;
-			for (char& ch : word) {
-				ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-			}
-			word[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(word[0])));
-			return word;
-		};
-		auto lowerWord = [](std::string word) {
-			for (char& ch : word) {
-				ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-			}
-			return word;
-		};
-
-		std::string result;
-		const char separator =
-			(convention == DirectoryNameConvention::TitleDashCase) ? '-' :
-			(convention == DirectoryNameConvention::TitleSnakeCase) ? '_' :
-			(convention == DirectoryNameConvention::TitleKebabCase) ? '-' : '\0';
-
-		for (std::size_t i = 0; i < words.size(); ++i) {
-			std::string word;
-			if (convention == DirectoryNameConvention::TitleCamelCase) {
-				word = (i == 0) ? lowerWord(words[i]) : titleWord(words[i]);
-			}
-			else if (convention == DirectoryNameConvention::TitleSnakeCase
-				|| convention == DirectoryNameConvention::TitleKebabCase) {
-				word = lowerWord(words[i]);
-			}
-			else {
-				word = titleWord(words[i]);
-			}
-
-			if (!result.empty() && separator != '\0') {
-				result.push_back(separator);
-			}
-			result += word;
-		}
-
-		return result;
-	}
-
-	void LauncherLayer::LoadLauncherSettings() {
-		const std::string path = GetSettingsPath();
-		MigrateLegacyLauncherFile(
-			Path::Combine(Path::GetSpecialFolderPath(SpecialFolder::LocalAppData),
-				"Funke", "launcher_settings.json"),
-			path);
-		if (!File::Exists(path)) return;
-
-		Json::Value root;
-		std::string parseError;
-		const std::string text = File::ReadAllText(path);
-		if (!Json::TryParse(text, root, &parseError) || !root.IsObject()) {
-			FNK_CORE_WARN_TAG("Launcher", "Failed to parse '{}': {}", path, parseError);
-			return;
-		}
-
-		if (const Json::Value* v = root.FindMember("defaultProjectsLocation")) {
-			m_DefaultProjectsLocation = v->AsStringOr();
-		}
-		if (const Json::Value* v = root.FindMember("sortMode")) {
-			int mode = v->AsIntOr(static_cast<int>(SortMode::LastOpened));
-			if (mode >= 0 && mode <= static_cast<int>(SortMode::CreatedAt)) {
-				m_SortMode = static_cast<SortMode>(mode);
-			}
-		}
-		if (const Json::Value* v = root.FindMember("sortReverse")) {
-			m_SortReverse = v->AsBoolOr(false);
-		}
-		if (const Json::Value* v = root.FindMember("projectView")) {
-			m_ProjectViewMode = v->AsIntOr(0) == 1 ? ProjectViewMode::Grid : ProjectViewMode::List;
-		}
-		if (const Json::Value* v = root.FindMember("fontScale")) {
-			int scale = v->AsIntOr(static_cast<int>(FontScale::Auto));
-			if (scale >= 0 && scale <= static_cast<int>(FontScale::P200)) {
-				m_FontScale = static_cast<FontScale>(scale);
-			}
-		}
-		if (const Json::Value* v = root.FindMember("themeSetting")) {
-			int setting = v->AsIntOr(static_cast<int>(ThemeSetting::Auto));
-			if (setting >= 0 && setting <= static_cast<int>(ThemeSetting::Light)) {
-				m_ThemeSetting = static_cast<ThemeSetting>(setting);
-			}
-		}
-		if (const Json::Value* v = root.FindMember("directoryNameConvention")) {
-			int convention = v->AsIntOr(static_cast<int>(DirectoryNameConvention::TitleCase));
-			if (convention >= 0 && convention <= static_cast<int>(DirectoryNameConvention::TitleKebabCase)) {
-				m_DirectoryNameConvention = static_cast<DirectoryNameConvention>(convention);
-			}
-		}
-		if (const Json::Value* v = root.FindMember("languageAuto")) {
-			m_LanguageAuto = v->AsBoolOr(false);
-		}
-		if (const Json::Value* v = root.FindMember("assetLibraryTrustAck"); v && v->IsArray()) {
-			for (const auto& item : v->GetArray()) {
-				if (item.IsString()) m_AssetLibraryTrustAck[item.AsStringOr("")] = true;
-			}
-		}
-	}
-
-	void LauncherLayer::SaveLauncherSettings() const {
-		const std::string path = GetSettingsPath();
-
-		std::error_code ec;
-		std::filesystem::create_directories(std::filesystem::path(path).parent_path(), ec);
-
-		Json::Value root = Json::Value::MakeObject();
-		root.AddMember("defaultProjectsLocation", m_DefaultProjectsLocation);
-		root.AddMember("sortMode", Json::Value(static_cast<int>(m_SortMode)));
-		root.AddMember("sortReverse", Json::Value(m_SortReverse));
-		root.AddMember("projectView", Json::Value(static_cast<int>(m_ProjectViewMode)));
-		root.AddMember("fontScale", Json::Value(static_cast<int>(m_FontScale)));
-		root.AddMember("themeSetting", Json::Value(static_cast<int>(m_ThemeSetting)));
-		root.AddMember("directoryNameConvention", Json::Value(static_cast<int>(m_DirectoryNameConvention)));
-		root.AddMember("languageAuto", Json::Value(m_LanguageAuto));
-		{
-			Json::Value ack = Json::Value::MakeArray();
-			for (const auto& [url, acked] : m_AssetLibraryTrustAck) {
-				if (acked) ack.Append(Json::Value(url));
-			}
-			root.AddMember("assetLibraryTrustAck", std::move(ack));
-		}
-		if (!File::WriteAllText(path, Json::Stringify(root, true))) {
-			FNK_CORE_WARN_TAG("Launcher", "Failed to write launcher settings to '{}'", path);
-		}
 	}
 
 	void LauncherLayer::ShowError(std::string message) {
@@ -4287,11 +4089,11 @@ artifacts/
 		}
 		const std::string typed(m_SettingsLocationBuffer);
 		const std::string engineDefault = FunkeProject::GetDefaultProjectsDir();
-		m_DefaultProjectsLocation = typed == engineDefault ? std::string{} : typed;
-		SaveLauncherSettings();
+		m_Settings.DefaultProjectsLocation = typed == engineDefault ? std::string{} : typed;
+		m_Settings.Save();
 		m_SettingsLocationDirty = false;
 		std::snprintf(m_SettingsLocationBuffer, sizeof(m_SettingsLocationBuffer), "%s",
-			m_DefaultProjectsLocation.empty() ? engineDefault.c_str() : m_DefaultProjectsLocation.c_str());
+			m_Settings.DefaultProjectsLocation.empty() ? engineDefault.c_str() : m_Settings.DefaultProjectsLocation.c_str());
 	}
 
 	void LauncherLayer::RenderSettingsPage() {
@@ -4299,14 +4101,14 @@ artifacts/
 		ImGui::Dummy(ImVec2(0.0f, ImGui::GetFontSize() * 0.6f));
 		ImGui::BeginChild("##SettingsScroll", ImVec2(0.0f, 0.0f));
 
-		const std::string effectiveDefault = m_DefaultProjectsLocation.empty()
+		const std::string effectiveDefault = m_Settings.DefaultProjectsLocation.empty()
 			? FunkeProject::GetDefaultProjectsDir()
-			: m_DefaultProjectsLocation;
+			: m_Settings.DefaultProjectsLocation;
 
 		BeginSettingsSection("##SettingsProjects", FNK_TR("launcher.settings.section.projects"));
 
 		const std::string currentLine = Localization::Format("launcher.settings.current", effectiveDefault)
-			+ (m_DefaultProjectsLocation.empty() ? FNK_TR("launcher.settings.engine_default_suffix") : std::string{});
+			+ (m_Settings.DefaultProjectsLocation.empty() ? FNK_TR("launcher.settings.engine_default_suffix") : std::string{});
 		BeginFormRow(FNK_TR("launcher.settings.default_location"),
 			FNK_TR("launcher.settings.default_location_subtitle"), true);
 		{
@@ -4336,15 +4138,15 @@ artifacts/
 				DirectoryNameConvention::TitleKebabCase,
 			};
 
-			const char* preview = DirectoryNameConventionLabel(m_DirectoryNameConvention);
+			const char* preview = LauncherSettings::DirectoryNameConventionLabel(m_Settings.DirectoryConvention);
 			ImGui::SetNextItemWidth(-1.0f);
 			if (ImGui::BeginCombo("##LauncherDirectoryNameConventionCombo", preview)) {
 				for (DirectoryNameConvention convention : k_Entries) {
-					const bool selected = convention == m_DirectoryNameConvention;
-					const char* label = DirectoryNameConventionLabel(convention);
+					const bool selected = convention == m_Settings.DirectoryConvention;
+					const char* label = LauncherSettings::DirectoryNameConventionLabel(convention);
 					if (ImGui::Selectable(label, selected)) {
-						m_DirectoryNameConvention = convention;
-						SaveLauncherSettings();
+						m_Settings.DirectoryConvention = convention;
+						m_Settings.Save();
 					}
 					if (selected) ImGui::SetItemDefaultFocus();
 				}
@@ -4382,7 +4184,7 @@ artifacts/
 
 			std::string preview;
 			for (const auto& e : k_Entries) {
-				if (e.Value == m_ThemeSetting) {
+				if (e.Value == m_Settings.Theme) {
 					preview = labelFor(e);
 					break;
 				}
@@ -4391,12 +4193,12 @@ artifacts/
 			ImGui::SetNextItemWidth(-1.0f);
 			if (ImGui::BeginCombo("##LauncherThemeCombo", preview.c_str())) {
 				for (const auto& e : k_Entries) {
-					const bool selected = (e.Value == m_ThemeSetting);
+					const bool selected = (e.Value == m_Settings.Theme);
 					const std::string label = labelFor(e);
 					if (ImGui::Selectable(label.c_str(), selected)) {
-						m_ThemeSetting = e.Value;
+						m_Settings.Theme = e.Value;
 						m_LastAppliedDarkTheme.reset();
-						SaveLauncherSettings();
+						m_Settings.Save();
 					}
 					if (selected) ImGui::SetItemDefaultFocus();
 				}
@@ -4433,7 +4235,7 @@ artifacts/
 
 			std::string preview;
 			for (const auto& e : k_Entries) {
-				if (e.Value == m_FontScale) {
+				if (e.Value == m_Settings.Scale) {
 					preview = labelFor(e);
 					break;
 				}
@@ -4442,11 +4244,11 @@ artifacts/
 			ImGui::SetNextItemWidth(-1.0f);
 			if (ImGui::BeginCombo("##LauncherFontScaleCombo", preview.c_str())) {
 				for (const auto& e : k_Entries) {
-					const bool selected = (e.Value == m_FontScale);
+					const bool selected = (e.Value == m_Settings.Scale);
 					const std::string label = labelFor(e);
 					if (ImGui::Selectable(label.c_str(), selected)) {
-						m_FontScale = e.Value;
-						SaveLauncherSettings();
+						m_Settings.Scale = e.Value;
+						m_Settings.Save();
 					}
 					if (selected) ImGui::SetItemDefaultFocus();
 				}
@@ -4468,7 +4270,7 @@ artifacts/
 		const std::string autoLabel = Localization::Format("launcher.settings.language.auto_format", sysDisplay);
 
 		std::string previewName;
-		if (m_LanguageAuto) {
+		if (m_Settings.LanguageAuto) {
 			previewName = autoLabel;
 		}
 		else {
@@ -4482,25 +4284,25 @@ artifacts/
 			// Auto entry always at the top — matches the screenshot the user
 			// referenced and lets a returning user re-engage system-language
 			// tracking without hunting for a checkbox.
-			if (ImGui::Selectable(autoLabel.c_str(), m_LanguageAuto)) {
-				m_LanguageAuto = true;
+			if (ImGui::Selectable(autoLabel.c_str(), m_Settings.LanguageAuto)) {
+				m_Settings.LanguageAuto = true;
 				Localization::SetLanguage(sysCode);
-				SaveLauncherSettings();
+				m_Settings.Save();
 			}
-			if (m_LanguageAuto) ImGui::SetItemDefaultFocus();
+			if (m_Settings.LanguageAuto) ImGui::SetItemDefaultFocus();
 
 			ImGui::Separator();
 
 			for (size_t i = 0; i < languages.size(); ++i) {
-				const bool selected = !m_LanguageAuto && (languages[i].Code == currentCode);
+				const bool selected = !m_Settings.LanguageAuto && (languages[i].Code == currentCode);
 				std::string label = languages[i].DisplayName;
 				if (languages[i].Status != Localization::LanguageStatus::Installed) {
 					label += notInstalledSuffix;
 				}
 				if (ImGui::Selectable(label.c_str(), selected)) {
-					m_LanguageAuto = false;
+					m_Settings.LanguageAuto = false;
 					Localization::SetLanguage(languages[i].Code);
-					SaveLauncherSettings();
+					m_Settings.Save();
 				}
 				if (selected) ImGui::SetItemDefaultFocus();
 			}
@@ -4934,8 +4736,8 @@ artifacts/
 		// user downloads from this source URL on this machine. The download
 		// kicks off only after acknowledgement.
 		const std::string sourceKey = ResolveAssetLibraryUrl();
-		auto it = m_AssetLibraryTrustAck.find(sourceKey);
-		if (it == m_AssetLibraryTrustAck.end() || !it->second) {
+		auto it = m_Settings.AssetLibraryTrustAck.find(sourceKey);
+		if (it == m_Settings.AssetLibraryTrustAck.end() || !it->second) {
 			m_PendingTrustedDownload = entry;
 			m_OpenAssetLibraryTrustPopup = true;
 			return;
@@ -4959,11 +4761,11 @@ artifacts/
 		if (m_AssetLibraryTask.Worker.joinable()) m_AssetLibraryTask.Worker.join();
 
 		AssetLibraryEntry entryCopy = entry; // capture by value
-		// Resolve the projects base dir HERE (render thread): m_DefaultProjectsLocation
+		// Resolve the projects base dir HERE (render thread): m_Settings.DefaultProjectsLocation
 		// is mutated by the settings UI on this thread, so the worker must not read it.
-		std::string baseDir = m_DefaultProjectsLocation.empty()
+		std::string baseDir = m_Settings.DefaultProjectsLocation.empty()
 			? FunkeProject::GetDefaultProjectsDir()
-			: m_DefaultProjectsLocation;
+			: m_Settings.DefaultProjectsLocation;
 		// Boundary guard: a throw escaping a std::thread body calls std::terminate and kills the
 		// launcher. The worker touches the filesystem, parses JSON, and allocates — any of which can
 		// throw. Catch here and publish the failure into the task state the poll loop already reads.
@@ -5023,7 +4825,7 @@ artifacts/
 
 		// Stage download to <projects>/.asset-library-staging/<id>-<rand>.zip.tmp.
 		// baseDir was resolved on the render thread (passed in) — do NOT read
-		// m_DefaultProjectsLocation here.
+		// m_Settings.DefaultProjectsLocation here.
 		std::error_code ec;
 		const std::filesystem::path stagingRoot = std::filesystem::path(baseDir) / ".asset-library-staging";
 		std::filesystem::create_directories(stagingRoot, ec);
@@ -5491,8 +5293,8 @@ artifacts/
 		const int action = DialogFooter({ FNK_TR("launcher.asset_library.trust.acknowledge"),
 			FNK_TR("launcher.asset_library.trust.cancel") }, 0);
 		if (action == 0) {
-			m_AssetLibraryTrustAck[ResolveAssetLibraryUrl()] = true;
-			SaveLauncherSettings();
+			m_Settings.AssetLibraryTrustAck[ResolveAssetLibraryUrl()] = true;
+			m_Settings.Save();
 
 			if (m_PendingTrustedDownload.has_value()) {
 				AssetLibraryEntry entry = std::move(*m_PendingTrustedDownload);

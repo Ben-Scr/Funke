@@ -28,7 +28,7 @@ namespace Funke::InspectorEvents {
 				return 0;
 			}
 			for (const ScriptInstance& s : sc->Scripts) {
-				if (s.HasManagedInstance() && s.GetClassName() == className) {
+				if (s.HasManagedInstance() && ScriptEngine::ManagedTypeNamesMatch(s.GetClassName(), className)) {
 					return s.GetGCHandle();
 				}
 			}

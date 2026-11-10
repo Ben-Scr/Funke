@@ -25,6 +25,8 @@ project "Funke-Editor-Tests"
     files
     {
         path.join(ROOT_DIR, "Funke-Editor/src/Build/GameBuilder.cpp"),
+        path.join(ROOT_DIR, "Funke-Editor/src/Inspector/InspectorSelectionCache.cpp"),
+        path.join(ROOT_DIR, "Funke-Launcher/src/Systems/LauncherSettings.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Bridge/EditorSceneEdit.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Build/DotNetRuntimeBundle.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Editor/BuildAssetPruning.cpp"),
@@ -32,6 +34,7 @@ project "Funke-Editor-Tests"
         path.join(ROOT_DIR, "Funke-Editor/src/Editor/PlatformBuilder.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Editor/SpriteSlicing.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Gui/AssetSaveDialog.cpp"),
+        path.join(ROOT_DIR, "Funke-Editor/src/Gui/MarkdownPreview.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Gui/AsyncTexturePreview.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Gui/ThumbnailCache.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Gui/EditorDockLayout.cpp"),
@@ -62,10 +65,12 @@ project "Funke-Editor-Tests"
     defines(GetFunkeModuleDefines())
     ApplyFunkeEditorModuleDefine()
     defines { "FNK_IMPORT_DLL" }
-    includedirs { path.join(ROOT_DIR, "Funke-Editor/src") }
+    includedirs { path.join(ROOT_DIR, "Funke-Editor/src"), path.join(ROOT_DIR, "Funke-Launcher/src") }
 
     -- doctest is a single-header lib at External/doctest/doctest/doctest.h.
     includedirs { path.join(ROOT_DIR, "External/doctest") }
+    includedirs { path.join(ROOT_DIR, "External/md4c") }
+    links { "MD4C" }
 
     -- Same DLL-copying postbuild as the engine tests so the exe finds
     -- Funke-Engine.dll (and friends) next to it at run time.

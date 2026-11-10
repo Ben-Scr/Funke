@@ -28,6 +28,7 @@ from funke_platform_sdk import BuilderError, emit_log, platform_cache, run
 
 # Files the game reads at runtime; licenses ship in the folder but are not loaded into memory.
 _NOT_LOADED_AT_RUNTIME = ("Licenses/",)
+WEB_CONTENT_PART_BYTES = 128 * 1024 * 1024
 
 MIN_SDK_MAJOR = 11
 IS_WINDOWS = platform.system() == "Windows"
@@ -156,7 +157,7 @@ def _content_manifest(content_dir: Path) -> dict:
         if not path.is_file():
             continue
         relative = path.relative_to(content_dir).as_posix()
-        if relative.startswith(_NOT_LOADED_AT_RUNTIME):
+        if relative == "funke-content.json" or relative.startswith(_NOT_LOADED_AT_RUNTIME):
             continue
         files.append(relative)
         parent = Path(relative).parent
@@ -164,6 +165,38 @@ def _content_manifest(content_dir: Path) -> dict:
             directories.add(parent.as_posix())
             parent = parent.parent
     return {"directories": sorted(directories, key=lambda d: (d.count("/"), d)), "files": files}
+
+
+def stage_browser_content(content_dir: Path, game: Path, part_bytes: int = WEB_CONTENT_PART_BYTES) -> dict:
+    """Split large downloads without changing the runtime's files or bundle compression."""
+    if part_bytes <= 0:
+        raise ValueError("Web content part size must be positive")
+    if (content_dir / "__funke_parts").exists():
+        raise BuilderError("Game content uses the reserved __funke_parts directory")
+    if game.exists() and any(game.iterdir()):
+        raise BuilderError("Web content destination must be empty")
+    manifest = _content_manifest(content_dir)
+    shutil.copytree(content_dir, game, dirs_exist_ok=True)
+    chunks = {}
+    for index, relative in enumerate(manifest["files"]):
+        path = game / relative
+        size = path.stat().st_size
+        if size <= part_bytes:
+            continue
+        parts = []
+        with path.open("rb") as source:
+            while data := source.read(part_bytes):
+                name = f"__funke_parts/{index}/{len(parts):04d}.bin"
+                destination = game / name
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(data)
+                parts.append(name)
+        path.unlink()
+        chunks[relative] = {"size": size, "parts": parts}
+    if chunks:
+        manifest["chunks"] = chunks
+    (game / "funke-content.json").write_text(json.dumps(manifest), encoding="utf-8")
+    return manifest
 
 
 def _xml(text: str) -> str:
@@ -287,7 +320,6 @@ def publish_browser_app(sdk: DotnetWasmSdk, work_dir: Path, *, app_name: str, ma
     if not (site / "_framework" / "dotnet.js").is_file():
         raise BuilderError(f"dotnet publish did not produce {site / '_framework' / 'dotnet.js'}")
     game = site / "game"
-    shutil.copytree(content_dir, game, dirs_exist_ok=True)
-    (game / "funke-content.json").write_text(json.dumps(_content_manifest(content_dir)), encoding="utf-8")
+    stage_browser_content(content_dir, game)
     return site
 

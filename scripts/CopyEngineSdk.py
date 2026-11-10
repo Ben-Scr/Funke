@@ -66,6 +66,7 @@ LICENSES = (
     ("External/SDL", "SDL3", "LICENSE.txt"),
     ("External/imgui", "Dear-ImGui", "LICENSE.txt"),
     ("External/ImGuizmo", "ImGuizmo", "LICENSE"),
+    ("External/md4c", "MD4C", "LICENSE.md"),
     ("External/magic_enum", "magic_enum", "LICENSE"),
     ("External/miniaudio", "miniaudio", "LICENSE"),
     ("External/kemar", "KEMAR", "LICENSE"),

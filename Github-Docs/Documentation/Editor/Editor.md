@@ -111,19 +111,63 @@ The editor is a set of dockable panels. The main ones:
 
 A **toolbar** at the top has the playback controls (Play / Pause / Step / Stop), and a **menu bar** has Save, project tools, preferences, and more.
 
+The **Log** panel opens an available source location at every displayed severity, including Trace and Info. Double-click the row or select it and click **Open source file** in its details; both use the configured external editor and the same file/line. Expanded details show **No source location available** when the source is absent, missing locally, or malformed. Such messages remain selectable and copyable. The existing Core-log display filter is unchanged.
+
+Normal C# `Log` string/object overloads and script `Print`, native logging macros, and C++ script `Print`/`FNK_NATIVE_LOG_*` carry the caller's file and line. Exceptions keep the actual stack-trace throw site. Structured locations take precedence; compiler diagnostics and older text-only output use the text parser. Supported forms include Windows drive paths, quoted paths, project-relative paths with spaces, `file.cs(12,3)` and exception `file.cs:line 12`. Missing files are never replaced by a recursive same-filename match. Relative paths resolve against the working, project, script and asset directories.
+
+**Collapse** merges consecutive matching messages only when severity, source identity and line also match. Owned source strings remain valid after managed or native script reload. Source resolution happens when the message enters the panel, with a bounded cache (1,024 paths, two-second expiry and project-change invalidation); drawing rows does not repeat filesystem searches. A message whose source appears later needs to be emitted again. Windows Release verification covered actual VS Code navigation, failed compiler diagnostics, background-thread logs, Collapse, and successful reload while playing. Other IDE/platform launchers were not re-certified by that check.
+
 The **Layout** dropdown at the top right switches between saved layout presets. **Default** restores the standard arrangement: Hierarchy on the left, Inspector on the right, Editor View and Game View in the middle, Asset Browser and Console below. **Manage layouts...** opens Editor Preferences › Layouts, where you save the current arrangement as a preset or delete presets. The editor keeps your layout in its user data folder (`%LOCALAPPDATA%\Funke\Editor\imgui.ini` on Windows) and falls back to the default when that file docks none of the main panels.
 
-**Editor Preferences › Appearance › Theme** picks the editor's look: **System Default** (follows the Windows light/dark setting), **Dark**, **Light**, **Liquid Glass Dark**, **Liquid Glass Light** or **Custom**. Both Liquid Glass variants use neutral translucent panels over an editor-rendered backdrop, rounded controls and layered reflective edges. Docked panels have their own softly shaded surface, inset rim and contact shadow; the dockspace adds no extra opaque wash. There is no pointer-following circle or background animation. Shared buttons, toolbar toggles and search fields respond to hover, keyboard focus and pressing; disabled controls remain subdued. Dark uses neutral smoked glass and light text; Light uses frosted milk glass and dark text. The Apple-inspired material uses silver highlights without colored background gradients or continuously drifting decoration. The Editor View and Game View stay opaque. Floating native windows use solid matching backgrounds and captions for readability; this is an editor material effect, not desktop transparency or scene-image refraction. Existing saved `Glass` preferences still select Liquid Glass Dark; the light variant saves as `GlassLight`. **Custom** starts from the active palette and lets you change every color; a translucent window background enables the backdrop in the matching dark/light palette.
+Layout presets appear as responsive cards with miniatures of their saved docking arrangement. **Load** restores a preset; **Active** marks the last preset saved or loaded in this editor session and can be clicked to restore it again. The trash button opens a deletion confirmation. **Storage location** expands the preset folder path, and **Reset to default** keeps saved presets intact. Miniatures show docked panels, not scene contents or floating windows; presets without readable docking data remain loadable and show **Preview unavailable**.
+
+**Save current layout** is the primary action. Presets use `.ini` files in the editor's `Layouts` user-data folder. Names must contain 1–64 bytes, exclude filename separators and reserved characters, and cannot end in a space or dot. Saving checks the atomic write result; a failed overwrite preserves the existing preset and keeps the entered name and dialog available for retry. Failed loading or deletion also shows an error. Loading applies the saved docking state at the start of the next frame. Long names wrap within the list, keeping their actions reachable in narrow windows.
+
+**Editor Preferences › Behavior › UI Editing** controls UI alignment guides and the snap distance shown while guides are enabled. Search for `UI Editing`, `alignment`, or `snap` to find it. The **Editor Camera** category configures the **3D editor camera**, including orbit/fly navigation, movement, zoom, and FOV; **Reset Editor Camera** restores its defaults. Search accepts `editor camera`, `camera`, `orbit`, `fly`, and `fov`. Both groups persist across editor restarts; their existing `AlignmentGuidesEnabled`, `AlignmentSnapThreshold`, and `Camera3D` settings remain compatible.
+
+Preferences search covers all categories. Clearing it restores category navigation and its separate scroll areas. The tab bar omits the redundant tab-list popup; overflow arrows still expose every category when the window is narrow or text is enlarged.
+
+**Editor Preferences › Appearance › Theme** offers **System Default** (follows the Windows light/dark setting), **Dark**, **Light**, and **Custom**. **Custom** starts from the active palette and lets you change every color. Older saved `Glass` and `GlassLight` settings load as **Dark** and **Light**, respectively.
+
+Select a theme using the editor-preview tiles: **Light**, **Dark**, **System**, or **Custom**. The blue outline and radio indicator mark the active choice; changes apply and save immediately. The tiles wrap into two columns (or one in very narrow panels) and support keyboard navigation. System shows a split light/dark preview, while Custom previews your saved colors and opens **Custom Colors** when selected.
 
 ---
 
 ## Core workflows
+
+### Creating scripts and data assets
+
+In the Asset Browser's current folder, right-click and open **Create**:
+
+| Menu | Templates |
+|---|---|
+| **C# Scripting** | EntityScript, SceneSystem, GlobalSystem, Empty C# Script, Component, Native Component, DataAsset |
+| **C++ Scripting** | C++ Script |
+| **Data Assets** | Instances of compiled DataAsset classes, grouped by their menu paths |
+
+**Native Component** generates a `.cs` declaration and belongs under C#. **C++ Script** requires an open project; its disabled tooltip explains this requirement. Creation uses the selected folder, name and collision handling, asset registration, and file undo/redo. **DataAsset** under C# creates the class; **Data Assets** creates a `.dataasset` instance. See [Data Assets](../Assets/Data-Assets.md).
+
+Undo and redo feedback uses a mirrored arrow pair with theme-aware text tint. Its texture size follows the displayed icon size and viewport DPI. For shared Launcher/Editor glyphs and maintenance, see [Interface Icons](Interface-Icons.md).
 
 ### Picking colors from the screen
 
 On Windows, every editor color window includes a pipette button labeled **Pick screen color**. Activate it, then click any visible screen pixel to copy its RGB color. A swatch and hex value preview the sampled color. **Escape** or **right-click** cancels without changing the value. Sampling keeps the field's existing alpha; Inspector edits support the usual undo/redo. The pipette is currently disabled on Linux and macOS.
 
 ### Keyboard shortcuts
+
+Editor controls support **Tab / Shift+Tab** focus navigation. In Preferences the order is search, category tabs, then the selected category's controls; scroll areas are traversed directly. The focus outline remains visible at larger text scales and in narrow windows.
+
+| Focused editor control | Keys | Behavior |
+|---|---|---|
+| Slider | Left / A; Right / D | Decrease/increase; integers move by one, floats use a step based on range and displayed precision. Held keys repeat at ImGui's navigation rate and clamp to the field limits. |
+| Slider | Enter or Ctrl-click | Edit the numeric value as text. Tab focuses the slider without entering this mode. Text editing and modifier shortcuts retain priority. |
+| Closed dropdown | Enter | Open with the current selection highlighted. |
+| Open dropdown | Up / W; Down / A | Move to the previous/next enabled item, scrolling it into view and stopping at the list ends. W/A is intentional. |
+| Open dropdown | Enter; Escape | Commit the highlighted item; or cancel and return focus to the dropdown. Clicking outside cancels an uncommitted highlight. |
+
+Search fields consume letters as text. Disabled or unfocused controls ignore these aliases. Slider changes use the existing save/change path; Preferences and Project Settings save immediately. Inspector drag fields retain their numeric editing and Undo/Redo behavior. These bindings apply to editor controls; game UI has its own focus system. The editor camera only accepts fly keys while its viewport owns the appropriate look interaction.
+
+Verification on Windows Release: six ImGui behavior tests (88 assertions) cover slider Tab versus numeric entry, single-step/disabled/clamped changes, Game View isolation, empty/single/disabled/long dropdowns, scrolling, cancellation and search input. An isolated running editor additionally verified Preferences traversal in both directions at 100% and at 150% in a 760-pixel-wide window, saved float/integer slider values, controlled repeats, mouse/keyboard dropdown selection, Inspector numeric edit/Undo/Redo, and return to Editor View. The live 3D editor camera matrix stayed unchanged during slider and dropdown key sequences. Other platforms were not run in this verification.
 
 The engine and editor select their shortcuts for the platform they are built for. A macOS build uses **Cmd** for standard editing shortcuts and provides alternatives to function keys; changing a game's active build profile does not change the editor's keyboard controls.
 
@@ -183,6 +227,8 @@ There are also display toggles (draw mode, post-processing on/off) to help you s
 - **Default** draws the scene normally.
 - **Triangle** draws sprites and meshes as black triangle edges only, including edges hidden behind other meshes.
 - **Mixed** draws the normal scene with the triangle edges on top; in 3D only the visible edges.
+
+The spark-shaped **Post Processing** button toggles effects in the 2D or 3D **Editor View** only. Its highlight and `Post-processing: On` / `Post-processing: Off` tooltip show the current state without changing the toolbar size. The toggle does not change the Game View, saved camera effects, or scene data.
 
 #### View Settings
 

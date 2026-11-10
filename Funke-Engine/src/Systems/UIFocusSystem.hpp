@@ -9,9 +9,20 @@ namespace Funke {
 	// MUST run before UIEventSystem: writes ActivatedThisFrame and IsFocused so UIEventSystem's hit-test sees them; when an InputField owns focus it surrenders arrow keys to UIEventSystem's caret handler.
 	class UIFocusSystem : public SceneSystem {
 	public:
+		struct NavigationInput {
+			bool Enabled = true;
+			bool Tab = false, Shift = false;
+			bool Left = false, Right = false, Up = false, Down = false;
+			bool Home = false, End = false;
+			bool Activate = false, Cancel = false;
+			bool PointerPressed = false;
+			EntityHandle PointerTarget = entt::null;
+		};
+
 		FUNKE_API static std::vector<EntityHandle> NavigationOrder(Scene& scene);
 		FUNKE_API static EntityHandle PickFocusable(Scene& scene, const Vec2& screenUi);
-		void Update(Scene& scene) override;
+		FUNKE_API void UpdateNavigation(Scene& scene, const NavigationInput& input);
+		FUNKE_API void Update(Scene& scene) override;
 		void OnDestroy(Scene&) override {
 			m_FocusedEntity = entt::null;
 			m_PrevAxisLeftPushed = false;

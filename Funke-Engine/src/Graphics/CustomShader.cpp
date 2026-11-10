@@ -1172,8 +1172,13 @@ fn fs_main(in: FnkVaryings) -> @location(0) vec4<f32> {
 		description.UniformSize = std::max(16u, AlignUp(cursor, 16u));
 		description.TextureCount = textureSlot;
 		if (textureSlot > k_MaxShaderTextureProperties) {
-			error(0, "at most " + std::to_string(k_MaxShaderTextureProperties) + " texture properties are supported, found "
-				+ std::to_string(textureSlot));
+			for (const auto& property : description.Properties) {
+				if (property.Type == ShaderPropertyType::Texture && property.TextureSlot >= k_MaxShaderTextureProperties) {
+					error(property.Line, "texture property '" + property.Name + "' exceeds the "
+						+ ShaderTargetToString(description.Target) + " material budget of "
+						+ std::to_string(k_MaxShaderTextureProperties) + " textures (found " + std::to_string(textureSlot) + ")");
+				}
+			}
 		}
 
 		const std::string code = StripComments(source);
@@ -1384,6 +1389,37 @@ fn surface(in: SurfaceInput) -> SurfaceOutput {
 			case ShaderTarget::Skybox: return "Skybox";
 		}
 		return "Mesh3D";
+	}
+
+	std::vector<ShaderDiagnostic> ValidateCustomShaderTextureBudget(const ShaderDescription& description,
+		uint32_t maxTexturesPerStage, uint32_t maxSamplersPerStage) {
+		uint32_t reservedTextures = 0, reservedSamplers = 0;
+		switch (description.Target) {
+			case ShaderTarget::Mesh3D: reservedTextures = 1; reservedSamplers = 1; break;
+			case ShaderTarget::Sprite2D:
+			case ShaderTarget::UI: reservedTextures = 2; reservedSamplers = 2; break;
+			case ShaderTarget::PostProcess: reservedTextures = 4; reservedSamplers = 2; break;
+			case ShaderTarget::Skybox: break;
+		}
+		std::vector<ShaderDiagnostic> diagnostics;
+		if (reservedTextures > maxTexturesPerStage || reservedSamplers > maxSamplersPerStage) {
+			diagnostics.push_back({ 0, std::string(ShaderTargetToString(description.Target))
+				+ " engine bindings require " + std::to_string(reservedTextures) + " textures / "
+				+ std::to_string(reservedSamplers) + " samplers per stage; device provides "
+				+ std::to_string(maxTexturesPerStage) + " / " + std::to_string(maxSamplersPerStage), true });
+			return diagnostics;
+		}
+		const uint32_t budget = std::min({ k_MaxShaderTextureProperties,
+			maxTexturesPerStage - reservedTextures, maxSamplersPerStage - reservedSamplers });
+		for (const auto& property : description.Properties) {
+			if (property.Type == ShaderPropertyType::Texture && property.TextureSlot >= budget) {
+				diagnostics.push_back({ property.Line, "texture property '" + property.Name + "' exceeds "
+					+ ShaderTargetToString(description.Target) + " device budget of " + std::to_string(budget)
+					+ " material textures (engine reserves " + std::to_string(reservedTextures) + " textures / "
+					+ std::to_string(reservedSamplers) + " samplers per stage)", true });
+			}
+		}
+		return diagnostics;
 	}
 
 	const char* ShaderPropertyTypeToString(ShaderPropertyType type) {

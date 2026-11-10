@@ -6,6 +6,10 @@
 #include "Components/General/RectTransform2DComponent.hpp"
 #include "Components/Tags.hpp"
 #include "Components/UI/InputFieldComponent.hpp"
+#include "Components/UI/DropdownComponent.hpp"
+#include "Components/UI/SliderComponent.hpp"
+#include "Components/UI/CircularSliderComponent.hpp"
+#include "DevTools/DevConsole.hpp"
 #include "Components/UI/InteractableComponent.hpp"
 #include "Core/Application.hpp"
 #include "Core/Input.hpp"
@@ -18,6 +22,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cmath>
 #include <utility>
 #include <vector>
 
@@ -33,6 +38,23 @@ namespace Funke {
 		}
 
 		constexpr float k_StickNavThreshold = 0.5f;
+
+		template<typename TSlider>
+		void ApplySliderNavigation(TSlider& slider, int direction, const UIFocusSystem::NavigationInput& navigation) {
+			if (!navigation.Enabled || navigation.Tab || slider.IsReadOnly || slider.IsDragging
+				|| !(direction || navigation.Home || navigation.End)) return;
+			if (!slider.ValueObserved) {
+				slider.LastObservedValue = slider.Value;
+				slider.ValueObserved = true;
+			}
+			const float range = slider.MaxValue - slider.MinValue;
+			const float step = slider.WholeNumbers ? (range < 0.0f ? -1.0f : 1.0f) : range * 0.01f;
+			float value = slider.Value + direction * step;
+			if (navigation.Home) value = slider.MinValue;
+			if (navigation.End) value = slider.MaxValue;
+			if (slider.WholeNumbers) value = std::round(value);
+			slider.Value = std::clamp(value, std::min(slider.MinValue, slider.MaxValue), std::max(slider.MinValue, slider.MaxValue));
+		}
 
 		bool AnyPadPushed(const Input& input, GamepadAxis axis, float sign,
 			GamepadButton dpad)
@@ -80,6 +102,65 @@ namespace Funke {
 		FUNKE_PROFILE_SCOPE("UIFocus");
 		Input& input = app->GetInput();
 
+		NavigationInput navigation;
+		navigation.Enabled = app->IsGameInputEnabled() && !DevConsole::IsOpen();
+		// ── 3. Mouse-focus promotion ────────────────────────────────
+		const bool mouseDownThisFrame = navigation.Enabled && input.GetMouseDown(MouseButton::Left);
+		if (mouseDownThisFrame) {
+			const Window::UIRegion uiRegion = Window::GetUIRegion();
+			const Vec2 mousePosition = input.GetMousePosition();
+			int vpW = 0, vpH = 0;
+			if (uiRegion.IsActive()) {
+				vpW = uiRegion.Width;
+				vpH = uiRegion.Height;
+			}
+			else if (Viewport* viewport = Window::GetMainViewport()) {
+				vpW = viewport->GetWidth();
+				vpH = viewport->GetHeight();
+			}
+			const bool cursorOverUiSurface = vpW > 0 && vpH > 0
+				&& (!Application::IsEditor() || uiRegion.IsActive())
+				&& mousePosition.x >= 0.0f && mousePosition.y >= 0.0f
+				&& mousePosition.x < static_cast<float>(vpW)
+				&& mousePosition.y < static_cast<float>(vpH);
+			if (cursorOverUiSurface) {
+				const Vec2 mouseUi = ScreenPixelToUiSpace(mousePosition, vpW, vpH);
+				navigation.PointerPressed = true;
+				navigation.PointerTarget = PickFocusable(scene, mouseUi);
+			}
+		}
+
+		// Stick / D-pad rising edges — fire once per push.
+		const bool padUpPushed    = AnyPadPushed(input, GamepadAxis::LeftY, -1.f, GamepadButton::DPadUp);
+		const bool padDownPushed  = AnyPadPushed(input, GamepadAxis::LeftY,  1.f, GamepadButton::DPadDown);
+		const bool padLeftPushed  = AnyPadPushed(input, GamepadAxis::LeftX, -1.f, GamepadButton::DPadLeft);
+		const bool padRightPushed = AnyPadPushed(input, GamepadAxis::LeftX,  1.f, GamepadButton::DPadRight);
+
+		const bool padUpEdge    = padUpPushed    && !m_PrevAxisUpPushed;
+		const bool padDownEdge  = padDownPushed  && !m_PrevAxisDownPushed;
+		const bool padLeftEdge  = padLeftPushed  && !m_PrevAxisLeftPushed;
+		const bool padRightEdge = padRightPushed && !m_PrevAxisRightPushed;
+
+		m_PrevAxisUpPushed    = padUpPushed;
+		m_PrevAxisDownPushed  = padDownPushed;
+		m_PrevAxisLeftPushed  = padLeftPushed;
+		m_PrevAxisRightPushed = padRightPushed;
+
+		navigation.Tab = input.GetKeyDown(KeyCode::Tab);
+		navigation.Shift = input.GetKey(KeyCode::LeftShift) || input.GetKey(KeyCode::RightShift);
+		navigation.Left = input.GetKeyDown(KeyCode::Left) || padLeftEdge;
+		navigation.Right = input.GetKeyDown(KeyCode::Right) || padRightEdge;
+		navigation.Up = input.GetKeyDown(KeyCode::Up) || padUpEdge;
+		navigation.Down = input.GetKeyDown(KeyCode::Bottom) || padDownEdge;
+		navigation.Home = input.GetKeyDown(KeyCode::Home);
+		navigation.End = input.GetKeyDown(KeyCode::End);
+		navigation.Activate = input.GetKeyDown(KeyCode::Enter) || input.GetKeyDown(KeyCode::KpEnter)
+			|| input.GetKeyDown(KeyCode::Space) || AnyPadButtonDown(input, GamepadButton::A);
+		navigation.Cancel = input.GetKeyDown(KeyCode::Esc) || AnyPadButtonDown(input, GamepadButton::B);
+		UpdateNavigation(scene, navigation);
+	}
+
+	void UIFocusSystem::UpdateNavigation(Scene& scene, const NavigationInput& navigation) {
 		auto& registry = scene.GetRegistry();
 		const auto focusables = NavigationOrder(scene);
 
@@ -119,79 +200,105 @@ namespace Funke {
 			}
 		}
 
-		// ── 3. Mouse-focus promotion ────────────────────────────────
-		const bool mouseDownThisFrame = input.GetMouseDown(MouseButton::Left);
-		if (mouseDownThisFrame) {
-			const Window::UIRegion uiRegion = Window::GetUIRegion();
-			const Vec2 mousePosition = input.GetMousePosition();
-			int vpW = 0, vpH = 0;
-			if (uiRegion.IsActive()) {
-				vpW = uiRegion.Width;
-				vpH = uiRegion.Height;
-			}
-			else if (Viewport* viewport = Window::GetMainViewport()) {
-				vpW = viewport->GetWidth();
-				vpH = viewport->GetHeight();
-			}
-			const bool cursorOverUiSurface = vpW > 0 && vpH > 0
-				&& (!Application::IsEditor() || uiRegion.IsActive())
-				&& mousePosition.x >= 0.0f && mousePosition.y >= 0.0f
-				&& mousePosition.x < static_cast<float>(vpW)
-				&& mousePosition.y < static_cast<float>(vpH);
-			if (cursorOverUiSurface) {
-				const Vec2 mouseUi = ScreenPixelToUiSpace(mousePosition, vpW, vpH);
-				const EntityHandle hitFocusable = PickFocusable(scene, mouseUi);
-				// A click on anything else lets go: otherwise a focused input field kept its focus (and the phone
-				// keyboard) because UIEventSystem's click-outside defocus was undone here next frame.
-				m_FocusedEntity = hitFocusable;
-			}
+		if (navigation.Enabled && navigation.PointerPressed) {
+			m_FocusedEntity = IsValidFocusTarget(navigation.PointerTarget) ? navigation.PointerTarget : entt::null;
 		}
 
-		// ── 4. Read input actions ───────────────────────────────────
-		const bool shiftDown = input.GetKey(KeyCode::LeftShift) || input.GetKey(KeyCode::RightShift);
+		bool left = navigation.Enabled && navigation.Left;
+		bool right = navigation.Enabled && navigation.Right;
+		bool up = navigation.Enabled && navigation.Up;
+		bool down = navigation.Enabled && navigation.Down;
+		bool wantActivate = navigation.Enabled && navigation.Activate;
+		bool wantCancel = navigation.Enabled && navigation.Cancel;
+		const bool tabPressed = navigation.Enabled && navigation.Tab;
+		if (tabPressed) wantActivate = false;
 
-		bool inputFieldOwnsArrows = false;
-		if (m_FocusedEntity != entt::null && registry.valid(m_FocusedEntity)) {
-			if (auto* field = registry.try_get<InputFieldComponent>(m_FocusedEntity)) {
-				inputFieldOwnsArrows = field->IsFocused;
+		for (auto&& [entity, dropdown] : registry.view<DropdownComponent>().each()) {
+			if (dropdown.NavigationIndex >= 0 && (!IsValidFocusTarget(entity) || dropdown.IsReadOnly
+				|| dropdown.Options.empty() || (entity != m_FocusedEntity && !navigation.PointerPressed))) {
+				dropdown.IsOpen = false;
 			}
+			if (!dropdown.IsOpen) dropdown.NavigationIndex = -1;
 		}
 
-		auto navKeyDown = [&](KeyCode k) {
-			return !inputFieldOwnsArrows && input.GetKeyDown(k);
-		};
+		if (m_FocusedEntity != entt::null) {
+			if (auto* field = registry.try_get<InputFieldComponent>(m_FocusedEntity); field && field->IsFocused) {
+				left = right = up = down = false;
+			}
+			if (auto* dropdown = registry.try_get<DropdownComponent>(m_FocusedEntity)) {
+				const bool activate = std::exchange(wantActivate, false);
+				if (dropdown->IsOpen) {
+					if (wantCancel || tabPressed) {
+						dropdown->IsOpen = false;
+						dropdown->NavigationIndex = -1;
+						wantCancel = false;
+					}
+					else if (navigation.Enabled && !dropdown->IsReadOnly && !dropdown->Options.empty()) {
+						const int last = static_cast<int>(dropdown->Options.size()) - 1;
+						int index = std::clamp(dropdown->NavigationIndex < 0 ? dropdown->SelectedIndex : dropdown->NavigationIndex, 0, last);
+						if (up || down || navigation.Home || navigation.End || activate) {
+							index = std::clamp(index + static_cast<int>(down) - static_cast<int>(up), 0, last);
+							if (navigation.Home) index = 0;
+							if (navigation.End) index = last;
+							dropdown->NavigationIndex = index;
+						}
+						if (activate) {
+							if (!dropdown->SelectionObserved) {
+								dropdown->LastObservedSelectedIndex = dropdown->SelectedIndex;
+								dropdown->SelectionObserved = true;
+							}
+							dropdown->SelectedIndex = index;
+							dropdown->IsOpen = false;
+							dropdown->NavigationIndex = -1;
+						}
+					}
+					left = right = up = down = false;
+				}
+				else if (activate && !dropdown->IsReadOnly && !dropdown->Options.empty()) {
+					dropdown->IsOpen = true;
+					dropdown->NavigationIndex = std::clamp(dropdown->SelectedIndex, 0, static_cast<int>(dropdown->Options.size()) - 1);
+				}
+			}
 
-		// Stick / D-pad rising edges — fire once per push.
-		const bool padUpPushed    = AnyPadPushed(input, GamepadAxis::LeftY, -1.f, GamepadButton::DPadUp);
-		const bool padDownPushed  = AnyPadPushed(input, GamepadAxis::LeftY,  1.f, GamepadButton::DPadDown);
-		const bool padLeftPushed  = AnyPadPushed(input, GamepadAxis::LeftX, -1.f, GamepadButton::DPadLeft);
-		const bool padRightPushed = AnyPadPushed(input, GamepadAxis::LeftX,  1.f, GamepadButton::DPadRight);
+			SliderComponent* slider = registry.try_get<SliderComponent>(m_FocusedEntity);
+			if (!slider) {
+				for (auto&& [entity, candidate] : registry.view<SliderComponent>().each()) {
+					if (candidate.HandleEntity == m_FocusedEntity && IsValidFocusTarget(entity)) {
+						slider = &candidate;
+						break;
+					}
+				}
+			}
+			if (slider) {
+				// A synthetic pointer press would jump the value to the mouse position.
+				wantActivate = false;
+				const bool horizontal = slider->Direction == SliderDirection::LeftToRight || slider->Direction == SliderDirection::RightToLeft;
+				const bool reversed = slider->Direction == SliderDirection::RightToLeft || slider->Direction == SliderDirection::TopToBottom;
+				int direction = horizontal ? static_cast<int>(right) - static_cast<int>(left) : static_cast<int>(up) - static_cast<int>(down);
+				if (horizontal) left = right = false;
+				else up = down = false;
+				if (reversed) direction = -direction;
+				ApplySliderNavigation(*slider, direction, navigation);
+			}
 
-		const bool padUpEdge    = padUpPushed    && !m_PrevAxisUpPushed;
-		const bool padDownEdge  = padDownPushed  && !m_PrevAxisDownPushed;
-		const bool padLeftEdge  = padLeftPushed  && !m_PrevAxisLeftPushed;
-		const bool padRightEdge = padRightPushed && !m_PrevAxisRightPushed;
-
-		m_PrevAxisUpPushed    = padUpPushed;
-		m_PrevAxisDownPushed  = padDownPushed;
-		m_PrevAxisLeftPushed  = padLeftPushed;
-		m_PrevAxisRightPushed = padRightPushed;
-
-		const bool tabPressed = input.GetKeyDown(KeyCode::Tab);
-		const bool wantNext = (tabPressed && !shiftDown)
-			|| navKeyDown(KeyCode::Bottom) || navKeyDown(KeyCode::Right)
-			|| padDownEdge || padRightEdge;
-		const bool wantPrev = (tabPressed && shiftDown)
-			|| navKeyDown(KeyCode::Up) || navKeyDown(KeyCode::Left)
-			|| padUpEdge || padLeftEdge;
-
-		const bool wantActivate = input.GetKeyDown(KeyCode::Enter)
-			|| input.GetKeyDown(KeyCode::KpEnter)
-			|| input.GetKeyDown(KeyCode::Space)
-			|| AnyPadButtonDown(input, GamepadButton::A);
-
-		const bool wantCancel = input.GetKeyDown(KeyCode::Esc)
-			|| AnyPadButtonDown(input, GamepadButton::B);
+			CircularSliderComponent* circular = registry.try_get<CircularSliderComponent>(m_FocusedEntity);
+			if (!circular) {
+				for (auto&& [entity, candidate] : registry.view<CircularSliderComponent>().each()) {
+					if (candidate.HandleEntity == m_FocusedEntity && IsValidFocusTarget(entity)) {
+						circular = &candidate;
+						break;
+					}
+				}
+			}
+			if (circular) {
+				wantActivate = false;
+				const int direction = static_cast<int>(right || up) - static_cast<int>(left || down);
+				left = right = up = down = false;
+				ApplySliderNavigation(*circular, direction, navigation);
+			}
+		}
+		const bool wantNext = (tabPressed && !navigation.Shift) || (!tabPressed && (down || right));
+		const bool wantPrev = (tabPressed && navigation.Shift) || (!tabPressed && (up || left));
 
 		// ── 5. Apply navigation actions ─────────────────────────────
 		if (!focusables.empty() && (wantNext || wantPrev)) {

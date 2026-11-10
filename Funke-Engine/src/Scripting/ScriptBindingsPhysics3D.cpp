@@ -1,4 +1,5 @@
 #include "pch.hpp"
+#include "Scripting/ScriptBindingModuleSlots.hpp"
 #include "Scripting/ScriptBindingGuard.hpp"
 #include "Scripting/ScriptGlue.hpp"
 
@@ -236,19 +237,8 @@ namespace Funke {
 	}
 
 	void PopulatePhysics3DBindings(NativeBindings& b) {
-		b.Rigidbody3D_Get = FNK_GUARDED_BINDING(Funke_Rigidbody3D_Get);
-		b.Rigidbody3D_Set = FNK_GUARDED_BINDING(Funke_Rigidbody3D_Set);
-		b.Rigidbody3D_GetVelocity = FNK_GUARDED_BINDING(Funke_Rigidbody3D_GetVelocity);
-		b.Rigidbody3D_SetVelocity = FNK_GUARDED_BINDING(Funke_Rigidbody3D_SetVelocity);
-		b.Rigidbody3D_AddForce = FNK_GUARDED_BINDING(Funke_Rigidbody3D_AddForce);
-		b.Rigidbody3D_IsSleeping = FNK_GUARDED_BINDING(Funke_Rigidbody3D_IsSleeping);
-		b.Rigidbody3D_SetSleeping = FNK_GUARDED_BINDING(Funke_Rigidbody3D_SetSleeping);
-		b.Collider3D_Get = FNK_GUARDED_BINDING(Funke_Collider3D_Get);
-		b.Collider3D_Set = FNK_GUARDED_BINDING(Funke_Collider3D_Set);
-		b.Physics3D_Raycast = FNK_GUARDED_BINDING(Funke_Physics3D_Raycast);
-		b.Physics3D_GetGravity = FNK_GUARDED_BINDING(Funke_Physics3D_GetGravity);
-		b.Physics3D_SetGravity = FNK_GUARDED_BINDING(Funke_Physics3D_SetGravity);
-		b.MeshCollider3D_GetCustomMesh = FNK_GUARDED_BINDING(Funke_MeshCollider3D_GetCustomMesh);
-		b.MeshCollider3D_SetCustomMesh = FNK_GUARDED_BINDING(Funke_MeshCollider3D_SetCustomMesh);
+#define FNK_ASSIGN_BINDING(slot) b.slot = FNK_GUARDED_BINDING(Funke_##slot);
+		FNK_FOR_EACH_PHYSICS3D_BINDING(FNK_ASSIGN_BINDING)
+#undef FNK_ASSIGN_BINDING
 	}
 }

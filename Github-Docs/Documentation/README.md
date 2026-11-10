@@ -49,7 +49,7 @@ Optional packages provide existing Funke features as well as an extension mechan
 
 | Feature | External package |
 |---|---|
-| Tilemaps | [Funke.Tilemap2D](https://github.com/Ben-Scr/Funke-PackageRegistry/tree/main/packages/Funke.Tilemap2D) — chunked tile storage, rendering, Inspector support and C++/C# APIs. |
+| Tilemaps | [Funke.Tilemap2D](https://github.com/Ben-Scr/Funke-PackageRegistry/tree/main/packages/Funke.Tilemap2D) — chunked tile storage, rendering, Inspector support and C++/C# APIs. [Traversal and diagnostic counters](Packages/Tilemap-Traversal.md). |
 | Input actions and rebinding | [Funke.Input](https://github.com/Ben-Scr/Funke-PackageRegistry/tree/main/packages/Funke.Input) — named actions, control maps, keyboard/mouse/gamepad bindings and saved rebinding. |
 | 2D lighting | [Funke.Lighting2D](Engine-Core/Lighting-2D.md) — ambient light, point lights and shadow occluders. |
 | Audio mixing | [Funke.AudioMixer](https://github.com/Ben-Scr/Funke-PackageRegistry/tree/main/packages/Funke.AudioMixer) — optional mixer functionality; see the [scripting examples](Scripting/Scripting.md). |

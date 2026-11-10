@@ -32,10 +32,10 @@ namespace Funke {
 			EntityHandle Entity = entt::null;
 		};
 
-		void Update(Scene& scene) override;
+		FUNKE_API void Update(Scene& scene) override;
 		// OnPreRender keeps slider visuals in sync with inspector edits in edit mode (Update doesn't run outside play).
-		void OnPreRender(Scene& scene) override;
-		void OnDestroy(Scene&) override;
+		FUNKE_API void OnPreRender(Scene& scene) override;
+		FUNKE_API void OnDestroy(Scene&) override;
 
 		// Front-most Interactable entity under the pointer, or entt::null. Already gated on an enabled
 		// InteractableComponent; surfaced to C# via UIPointer.HoveredEntity. Re-picked when the pointer moved

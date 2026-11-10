@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <optional>
 #include <system_error>
 #include <unordered_map>
 #include <utility>
@@ -36,6 +37,8 @@ namespace Funke::GameLocalization {
 		struct State {
 			std::filesystem::path Directory;
 			Tables Data;
+			std::optional<Tables> Preview;
+			std::unordered_map<std::string, std::string> MissingPreviewKeys;
 			// Presence means "already warned" for this table set.
 			std::unordered_map<std::string, std::string> MissingKeys;
 			bool WarnedNoTables = false;
@@ -185,6 +188,7 @@ namespace Funke::GameLocalization {
 
 	bool Load(const std::filesystem::path& directory) {
 		State& s = S();
+		SetPreviewLanguage({});
 		s.Directory = directory;
 		const bool changed = Commit(Build(directory, nullptr));
 		if (changed && !s.Data.Languages.empty()) {
@@ -196,8 +200,10 @@ namespace Funke::GameLocalization {
 
 	bool Reload() {
 		State& s = S();
+		const std::string preview = GetPreviewLanguage();
 		const std::string keep = s.Data.Current;
 		const bool changed = Commit(Build(s.Directory, keep.empty() ? nullptr : &keep));
+		if (!preview.empty() && !SetPreviewLanguage(preview)) SetPreviewLanguage({});
 		if (changed) {
 			FNK_CORE_INFO_TAG("Localization", "Game localization reloaded: {} language(s), current '{}'.",
 				s.Data.Languages.size(), s.Data.Current);
@@ -206,6 +212,7 @@ namespace Funke::GameLocalization {
 	}
 
 	void Unload() {
+		SetPreviewLanguage({});
 		S().Directory.clear();
 		Commit(Tables{});
 	}
@@ -287,6 +294,42 @@ namespace Funke::GameLocalization {
 	std::uint32_t GetRevision() {
 		return S().Revision;
 	}
+
+	bool SetPreviewLanguage(std::string_view code) {
+		State& s = S();
+		const std::string wanted(code);
+		if (wanted.empty()) {
+			if (!s.Preview) return true;
+			s.Preview.reset();
+		}
+		else {
+			if (!s.Data.Files.contains(wanted)) return false;
+			Tables next = Build(s.Directory, &wanted);
+			if (next.Current != wanted) return false;
+			if (s.Preview && s.Preview->SameContent(next)) return true;
+			s.Preview = std::move(next);
+		}
+		s.MissingPreviewKeys.clear();
+		return true;
+	}
+
+	const std::string& GetPreviewLanguage() {
+		static const std::string empty;
+		return S().Preview ? S().Preview->Current : empty;
+	}
+
+	const std::string& GetPreview(std::string_view key) {
+		State& s = S();
+		if (!s.Preview) return Get(key);
+		const std::string name(key);
+		if (auto it = s.Preview->Active.find(name); it != s.Preview->Active.end()) return it->second;
+		if (auto it = s.Preview->FallbackStrings.find(name); it != s.Preview->FallbackStrings.end()) return it->second;
+		auto [it, inserted] = s.MissingPreviewKeys.emplace(name, name);
+		if (inserted) FNK_CORE_WARN_TAG("Localization", "Preview missing key '{}' (language '{}', fallback '{}')", name, s.Preview->Current, s.Preview->Fallback);
+		return it->second;
+	}
+
+	std::size_t GetMissingPreviewKeyCount() { return S().MissingPreviewKeys.size(); }
 
 	std::string MatchLanguage(std::string_view locale, const std::vector<LanguageInfo>& languages) {
 		const std::string wanted = NormalizeCode(locale);

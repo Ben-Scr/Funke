@@ -1,4 +1,5 @@
 #include "pch.hpp"
+#include "Scripting/ScriptBindingModuleSlots.hpp"
 #include "Scripting/ScriptBindingGuard.hpp"
 #include "Scripting/ScriptGlue.hpp"
 
@@ -709,85 +710,8 @@ namespace Funke {
 	}
 
 	void Populate3DBindings(NativeBindings& b) {
-		b.Transform3D_GetPosition = FNK_GUARDED_BINDING(Funke_Transform3D_GetPosition);
-		b.Transform3D_SetPosition = FNK_GUARDED_BINDING(Funke_Transform3D_SetPosition);
-		b.Transform3D_GetRotation = FNK_GUARDED_BINDING(Funke_Transform3D_GetRotation);
-		b.Transform3D_SetRotation = FNK_GUARDED_BINDING(Funke_Transform3D_SetRotation);
-		b.Transform3D_GetScale = FNK_GUARDED_BINDING(Funke_Transform3D_GetScale);
-		b.Transform3D_SetScale = FNK_GUARDED_BINDING(Funke_Transform3D_SetScale);
-		b.Transform3D_GetWorldPosition = FNK_GUARDED_BINDING(Funke_Transform3D_GetWorldPosition);
-		b.Transform3D_GetForward = FNK_GUARDED_BINDING(Funke_Transform3D_GetForward);
-		b.Camera3D_GetPostProcessingEnabled = FNK_GUARDED_BINDING(Funke_Camera3D_GetPostProcessingEnabled);
-		b.Camera3D_SetPostProcessingEnabled = FNK_GUARDED_BINDING(Funke_Camera3D_SetPostProcessingEnabled);
-		b.Camera3D_GetProjection = FNK_GUARDED_BINDING(Funke_Camera3D_GetProjection);
-		b.Camera3D_SetProjection = FNK_GUARDED_BINDING(Funke_Camera3D_SetProjection);
-		b.Camera3D_GetFieldOfView = FNK_GUARDED_BINDING(Funke_Camera3D_GetFieldOfView);
-		b.Camera3D_SetFieldOfView = FNK_GUARDED_BINDING(Funke_Camera3D_SetFieldOfView);
-		b.Camera3D_GetOrthographicSize = FNK_GUARDED_BINDING(Funke_Camera3D_GetOrthographicSize);
-		b.Camera3D_SetOrthographicSize = FNK_GUARDED_BINDING(Funke_Camera3D_SetOrthographicSize);
-		b.Camera3D_GetNearClip = FNK_GUARDED_BINDING(Funke_Camera3D_GetNearClip);
-		b.Camera3D_SetNearClip = FNK_GUARDED_BINDING(Funke_Camera3D_SetNearClip);
-		b.Camera3D_GetFarClip = FNK_GUARDED_BINDING(Funke_Camera3D_GetFarClip);
-		b.Camera3D_SetFarClip = FNK_GUARDED_BINDING(Funke_Camera3D_SetFarClip);
-		b.Camera3D_GetClearColor = FNK_GUARDED_BINDING(Funke_Camera3D_GetClearColor);
-		b.Camera3D_SetClearColor = FNK_GUARDED_BINDING(Funke_Camera3D_SetClearColor);
-		b.Camera3D_GetMainEntity = FNK_GUARDED_BINDING(Funke_Camera3D_GetMainEntity);
-		b.MeshRenderer_GetMesh = FNK_GUARDED_BINDING(Funke_MeshRenderer_GetMesh);
-		b.MeshRenderer_SetMesh = FNK_GUARDED_BINDING(Funke_MeshRenderer_SetMesh);
-		b.MeshRenderer_GetColor = FNK_GUARDED_BINDING(Funke_MeshRenderer_GetColor);
-		b.MeshRenderer_SetColor = FNK_GUARDED_BINDING(Funke_MeshRenderer_SetColor);
-		b.MeshRenderer_GetLit = FNK_GUARDED_BINDING(Funke_MeshRenderer_GetLit);
-		b.MeshRenderer_SetLit = FNK_GUARDED_BINDING(Funke_MeshRenderer_SetLit);
-		b.DirectionalLight_GetColor = FNK_GUARDED_BINDING(Funke_DirectionalLight_GetColor);
-		b.DirectionalLight_SetColor = FNK_GUARDED_BINDING(Funke_DirectionalLight_SetColor);
-		b.DirectionalLight_GetIntensity = FNK_GUARDED_BINDING(Funke_DirectionalLight_GetIntensity);
-		b.DirectionalLight_SetIntensity = FNK_GUARDED_BINDING(Funke_DirectionalLight_SetIntensity);
-		b.DirectionalLight_GetAmbient = FNK_GUARDED_BINDING(Funke_DirectionalLight_GetAmbient);
-		b.DirectionalLight_SetAmbient = FNK_GUARDED_BINDING(Funke_DirectionalLight_SetAmbient);
-		b.MeshRenderer_GetMaterial = FNK_GUARDED_BINDING(Funke_MeshRenderer_GetMaterial);
-		b.MeshRenderer_SetMaterial = FNK_GUARDED_BINDING(Funke_MeshRenderer_SetMaterial);
-		b.MeshRenderer_GetCastShadows = FNK_GUARDED_BINDING(Funke_MeshRenderer_GetCastShadows);
-		b.MeshRenderer_SetCastShadows = FNK_GUARDED_BINDING(Funke_MeshRenderer_SetCastShadows);
-		b.DirectionalLight_GetCastShadows = FNK_GUARDED_BINDING(Funke_DirectionalLight_GetCastShadows);
-		b.DirectionalLight_SetCastShadows = FNK_GUARDED_BINDING(Funke_DirectionalLight_SetCastShadows);
-		b.Material_Get = FNK_GUARDED_BINDING(Funke_Material_Get);
-		b.Material_Set = FNK_GUARDED_BINDING(Funke_Material_Set);
-		b.Material_GetTexture = FNK_GUARDED_BINDING(Funke_Material_GetTexture);
-		b.Material_SetTexture = FNK_GUARDED_BINDING(Funke_Material_SetTexture);
-		b.PointLight_Get = FNK_GUARDED_BINDING(Funke_PointLight_Get);
-		b.PointLight_Set = FNK_GUARDED_BINDING(Funke_PointLight_Set);
-		b.SpotLight_Get = FNK_GUARDED_BINDING(Funke_SpotLight_Get);
-		b.SpotLight_Set = FNK_GUARDED_BINDING(Funke_SpotLight_Set);
-		b.Camera3D_GetSky = FNK_GUARDED_BINDING(Funke_Camera3D_GetSky);
-		b.Camera3D_SetSky = FNK_GUARDED_BINDING(Funke_Camera3D_SetSky);
-		b.MeshRenderer_GetCustomMesh = FNK_GUARDED_BINDING(Funke_MeshRenderer_GetCustomMesh);
-		b.MeshRenderer_SetCustomMesh = FNK_GUARDED_BINDING(Funke_MeshRenderer_SetCustomMesh);
-		b.Mesh_GetInfo = FNK_GUARDED_BINDING(Funke_Mesh_GetInfo);
-		b.Mesh_CreateRuntime = FNK_GUARDED_BINDING(Funke_Mesh_CreateRuntime);
-		b.Mesh_SetData = FNK_GUARDED_BINDING(Funke_Mesh_SetData);
-		b.Mesh_DestroyRuntime = FNK_GUARDED_BINDING(Funke_Mesh_DestroyRuntime);
-		b.Mesh_IsRuntime = FNK_GUARDED_BINDING(Funke_Mesh_IsRuntime);
-		b.ParticleSystem3D_Get = FNK_GUARDED_BINDING(Funke_ParticleSystem3D_Get);
-		b.ParticleSystem3D_Set = FNK_GUARDED_BINDING(Funke_ParticleSystem3D_Set);
-		b.ParticleSystem3D_Control = FNK_GUARDED_BINDING(Funke_ParticleSystem3D_Control);
-		b.ParticleSystem3D_Emit = FNK_GUARDED_BINDING(Funke_ParticleSystem3D_Emit);
-		b.ParticleSystem3D_GetState = FNK_GUARDED_BINDING(Funke_ParticleSystem3D_GetState);
-		b.ParticleSystem3D_GetTexture = FNK_GUARDED_BINDING(Funke_ParticleSystem3D_GetTexture);
-		b.ParticleSystem3D_SetTexture = FNK_GUARDED_BINDING(Funke_ParticleSystem3D_SetTexture);
-		b.Camera3D_GetSkyboxMaterial = FNK_GUARDED_BINDING(Funke_Camera3D_GetSkyboxMaterial);
-		b.Camera3D_SetSkyboxMaterial = FNK_GUARDED_BINDING(Funke_Camera3D_SetSkyboxMaterial);
-		b.Camera3D_ScreenPointToRay = FNK_GUARDED_BINDING(Funke_Camera3D_ScreenPointToRay);
-		b.Camera3D_WorldToScreenPoint = FNK_GUARDED_BINDING(Funke_Camera3D_WorldToScreenPoint);
-		b.SkinnedMeshRenderer_Get = FNK_GUARDED_BINDING(Funke_SkinnedMeshRenderer_Get);
-		b.SkinnedMeshRenderer_Set = FNK_GUARDED_BINDING(Funke_SkinnedMeshRenderer_Set);
-		b.SkinnedMeshRenderer_GetAsset = FNK_GUARDED_BINDING(Funke_SkinnedMeshRenderer_GetAsset);
-		b.SkinnedMeshRenderer_SetAsset = FNK_GUARDED_BINDING(Funke_SkinnedMeshRenderer_SetAsset);
-		b.SkinnedMeshRenderer_Play = FNK_GUARDED_BINDING(Funke_SkinnedMeshRenderer_Play);
-		b.SkinnedMeshRenderer_Control = FNK_GUARDED_BINDING(Funke_SkinnedMeshRenderer_Control);
-		b.SkinnedMeshRenderer_GetClip = FNK_GUARDED_BINDING(Funke_SkinnedMeshRenderer_GetClip);
-		b.SkinnedMeshRenderer_GetClipCount = FNK_GUARDED_BINDING(Funke_SkinnedMeshRenderer_GetClipCount);
-		b.SkinnedMeshRenderer_GetClipName = FNK_GUARDED_BINDING(Funke_SkinnedMeshRenderer_GetClipName);
-		b.SkinnedMeshRenderer_GetClipDuration = FNK_GUARDED_BINDING(Funke_SkinnedMeshRenderer_GetClipDuration);
-		b.SkinnedMeshRenderer_GetBone = FNK_GUARDED_BINDING(Funke_SkinnedMeshRenderer_GetBone);
+#define FNK_ASSIGN_BINDING(slot) b.slot = FNK_GUARDED_BINDING(Funke_##slot);
+		FNK_FOR_EACH_3D_BINDING(FNK_ASSIGN_BINDING)
+#undef FNK_ASSIGN_BINDING
 	}
 }

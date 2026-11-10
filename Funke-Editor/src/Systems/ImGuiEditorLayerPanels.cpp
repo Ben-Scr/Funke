@@ -761,11 +761,6 @@ namespace Funke {
 						const ImVec4 fill = rowSelected ? EditorTheme::Colors::RowSelection(ImGui::IsItemActive())
 							: ImGui::GetStyleColorVec4(ImGuiCol_FrameBgHovered);
 						drawList->AddRectFilled(min, max, ImGui::GetColorU32(fill), style.FrameRounding);
-						if (rowSelected) {
-							const float markerWidth = std::max(1.0f, fontSize * 0.13f);
-							drawList->AddRectFilled(ImVec2(min.x, rowStart.y), ImVec2(min.x + markerWidth, rowStart.y + fontSize),
-								ImGui::GetColorU32(EditorTheme::Colors::Highlight()), markerWidth * 0.5f);
-						}
 						if (focused) drawList->AddRect(min, max, ImGui::GetColorU32(ImGuiCol_NavCursor), style.FrameRounding);
 						ImGui::TablePopBackgroundChannel();
 					}
@@ -907,6 +902,9 @@ namespace Funke {
 				if (hasSource) {
 					DrawLogCell(selected.SourceLinkText, ImGui::GetContentRegionAvail().x, muted);
 					ImGui::Dummy(ImVec2(0.0f, fontSize));
+				}
+				else {
+					ImGui::TextColored(muted, "No source location available");
 				}
 				ImGui::PushID(m_SelectedLogIndex);
 				ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0, 0, 0, 0));
@@ -1512,10 +1510,24 @@ namespace Funke {
 			const float manageW = ImGui::CalcTextSize("Manage…").x + style.FramePadding.x * 2.0f;
 			ImGui::SetNextItemWidth(std::max(1.0f,
 				ImGui::GetContentRegionAvail().x - manageW - style.ItemInnerSpacing.x - k_CardPad));
-			const char* previewLabel = project->ActiveBuildProfileName.empty()
-				? "<none>" : project->ActiveBuildProfileName.c_str();
-			if (EditorUI::BeginCombo("##ActiveBuildProfile", previewLabel)) {
-				if (ImGui::Selectable("<none>", project->ActiveBuildProfileName.empty())) {
+			const float profileIconSize = ImGui::GetFontSize();
+			const float profileTextOffset = profileIconSize + style.ItemInnerSpacing.x;
+			if (EditorUI::BeginCombo("##ActiveBuildProfile", nullptr, ImGuiComboFlags_CustomPreview)) {
+				auto profileOption = [&](const char* name, const FunkeBuildProfile* profile, bool selected) {
+					ImGui::PushID(name);
+					const ImVec2 rowMin = ImGui::GetCursorScreenPos();
+					const float rowWidth = std::max(ImGui::GetContentRegionAvail().x,
+						profileTextOffset + ImGui::CalcTextSize(name).x);
+					const bool clicked = ImGui::Selectable("##Profile", selected, 0, ImVec2(rowWidth, profileIconSize));
+					if (selected) ImGui::SetItemDefaultFocus();
+					if (profile) EditorIcons::DrawPlatform(ImGui::GetWindowDrawList(), profile->Platform,
+						rowMin, profileIconSize, style.Alpha);
+					ImGui::RenderTextClipped(ImVec2(rowMin.x + profileTextOffset, rowMin.y),
+						ImVec2(rowMin.x + rowWidth, rowMin.y + profileIconSize), name, nullptr, nullptr);
+					ImGui::PopID();
+					return clicked;
+				};
+				if (profileOption("<none>", nullptr, project->ActiveBuildProfileName.empty())) {
 					if (!project->ActiveBuildProfileName.empty()) {
 						project->ActiveBuildProfileName.clear();
 						project->Save();
@@ -1523,7 +1535,7 @@ namespace Funke {
 				}
 				for (const auto& p : diskProfiles) {
 					const bool selected = (project->ActiveBuildProfileName == p.Name);
-					if (ImGui::Selectable(p.Name.c_str(), selected)) {
+					if (profileOption(p.Name.c_str(), &p, selected)) {
 						if (project->ActiveBuildProfileName != p.Name) {
 							project->ActiveBuildProfileName = p.Name;
 							project->Save();
@@ -1532,16 +1544,26 @@ namespace Funke {
 				}
 				EditorUI::EndCombo();
 			}
+			const FunkeBuildProfile* active = nullptr;
+			for (const auto& p : diskProfiles) {
+				if (p.Name == project->ActiveBuildProfileName) { active = &p; break; }
+			}
+			if (ImGui::BeginComboPreview()) {
+				if (active) {
+					EditorIcons::DrawPlatform(ImGui::GetWindowDrawList(), active->Platform,
+						ImGui::GetCursorScreenPos(), profileIconSize, style.Alpha);
+					ImGui::Dummy(ImVec2(profileIconSize, profileIconSize));
+					ImGui::SameLine(0.0f, style.ItemInnerSpacing.x);
+				}
+				ImGui::TextUnformatted(project->ActiveBuildProfileName.empty()
+					? "<none>" : project->ActiveBuildProfileName.c_str());
+				ImGui::EndComboPreview();
+			}
 			ImGui::SameLine(0.0f, style.ItemInnerSpacing.x);
 			if (ImGui::Button("Manage…")) {
 				OpenPanel("Build Profiles", m_ShowBuildProfilesPanel);
 			}
 			EditorUI::Tooltip("Open the Build Profiles window.");
-
-			const FunkeBuildProfile* active = nullptr;
-			for (const auto& p : diskProfiles) {
-				if (p.Name == project->ActiveBuildProfileName) { active = &p; break; }
-			}
 
 			// Echo what Build will actually target without flipping over to the Build Profiles window.
 			if (!project->ActiveBuildProfileName.empty()) {
@@ -3789,6 +3811,24 @@ namespace Funke {
 		}
 
 		ImGui::TextDisabled("Type: %s", ext.c_str());
+		if (ext == ".md" || ext == ".markdown") {
+			m_MarkdownPreview.Render(path, [this](const std::filesystem::path& imagePath) {
+				MarkdownPreview::ImageInfo image;
+				if (const auto* texture = GetPreviewTexture(imagePath); texture && texture->IsValid()) {
+					image.Texture = texture->GetHandle();
+					image.Width = texture->GetWidth();
+					image.Height = texture->GetHeight();
+					image.FlipY = texture->IsFlippedY();
+				}
+				else {
+					const auto entry = m_PreviewTextureLookup.find(NormalizePreviewTexturePath(imagePath));
+					image.Failed = entry != m_PreviewTextureLookup.end()
+						&& m_PreviewTextureCache[entry->second].Preview->State == TexturePreview::Status::Failed;
+				}
+				return image;
+			});
+			return;
+		}
 		if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" || ext == ".tga") {
 			ImGui::Spacing();
 			const Texture2D* tex = GetPreviewTexture(path);

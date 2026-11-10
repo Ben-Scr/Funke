@@ -1,13 +1,27 @@
 # Performance evidence
 
-Use the existing [FunkeBench v1 contract](../../../Github-Docs/Documentation/Editor/Benchmark-Results.md). These tools do not build the engine and never overwrite a capture directory.
+Use the existing [FunkeBench v1 contract](../../../Github-Docs/Documentation/Editor/Benchmark-Results.md). Measurement runners do not build the engine. The explicit `CaptureBuild.py` wrapper below runs a supplied build command. Output directories are never overwritten.
 
 ## CPU probes
+
+Capture provenance during the actual build, then pass it to the measurement runner:
+
+```powershell
+python scripts/benchmarks/performance/CaptureBuild.py --output artifacts/performance/build-current `
+  --binary bin/Release-windows-x86_64/Funke-Engine-Tests/Funke-Engine-Tests.exe `
+  --binary bin/Release-windows-x86_64/Funke-Engine-Tests/Funke-Engine.dll `
+  -- pwsh -NoProfile -File scripts/dev/Build.ps1 EngineTests -Config Release -NoRegenCheck
+python scripts/benchmarks/performance/Run.py --output artifacts/performance/cpu-current `
+  --build-manifest artifacts/performance/build-current/build.json --case-prefix transform-flat- `
+  --samples 30 --repeats 3 --warmups 5 --timeout 30
+```
+
+The wrapper has a separate build timeout (`--timeout`, default 1,200 seconds). A build may take longer than a short test. Source changes during compilation, a failed build, missing/changing binaries and timeout yield `incomplete`. Frozen outputs are stored in `binaries/`. Concurrent development can invalidate provenance even when linking succeeds; do not relabel that record.
 
 Build `EngineTests` in the existing full-module Release configuration with profiling enabled. `PerformanceBenchmarkTests.cpp` is opt-in and skipped by the ordinary suite. Run from the repository root:
 
 ```powershell
-python scripts/benchmarks/performance/Run.py --output artifacts/performance/cpu-reference --samples 1000
+python scripts/benchmarks/performance/Run.py --output artifacts/performance/cpu-reference --samples 60 --timeout 30
 ```
 
 `--case-prefix layout-` selects the layout matrix; fixture setup for other cases remains outside the measured scope. `--reference-layout-visits` selects the original node-based hierarchy-visit set in the same binary (`FUNKE_REFERENCE_LAYOUT_VISITS=1`). Normal runs explicitly select the scene-owned dense scratch set. The choice is recorded in `context.json` and build metadata. Compare the same prefix and sample settings in alternating reference/candidate order.
@@ -32,9 +46,47 @@ These are isolated CPU probes, not frame-rate tests. Fixture construction, valid
 
 `--case-prefix physics-` selects 28 physics cases. Box2D bodies settle for 120 untimed steps; Jolt bodies are explicitly put to sleep. Step cases then give the selected fraction undamped unit Y velocity at zero gravity, while other bodies stay asleep. Sync cases alternate the selected bodies' Y positions between 0 and 1 without advancing simulation, matching editor synchronization rather than normal velocity-driven play. Positions, sleep states and query identities are checked outside timing. Dense contacts, script callbacks and catch-up steps are not covered. The fixed physics rate is 60 Hz; it is separate from the requested Windows presentation target of 120 FPS (8.33 ms per full frame).
 
-Do not run GPU captures, builds or other CPU probes concurrently. Retain contaminated or failed attempts with a reason, then create a new capture. Source fingerprints describe capture-time files; binary hashes and native version identify the actual executable. Build and freeze the binaries before measurement.
+Do not run GPU captures, builds or other CPU probes concurrently. Retain contaminated or failed attempts with a reason, then create a new capture. Build and freeze the binaries before measurement. `Run.py` defaults to a 120-second native-process timeout; `RunSpriteMatrix.py` defaults to 180 seconds. Both accept a smaller `--timeout`, terminate their own child on timeout, and retain failed context and logs. A timeout is never a passing capture.
+
+Capture-time checkout identity is stored as `sourceAtCapture`, never substituted for the source used to compile an older executable. Without `--build-manifest`, new CPU exports are explicitly `incomplete`. A build pipeline can supply a JSON manifest with `source` (full `engineCommit`, boolean `dirty`, and `sourceFingerprint` when dirty), `binaries` (filename-to-SHA-256 map for the measured EXE and engine DLL), and `harnessSha256` for `PerformanceBenchmarkTests.cpp`. Record source identity when building and hashes after successful linking; the runner checks exact binary and harness matches. Do not fabricate a manifest after capture from the current checkout. Existing historical exports are retained; their old `complete` label alone does not prove this stronger provenance requirement.
+
+The unsuccessful Windows `directory_entry` FileStamp experiment was removed after bounded A/B comparisons. New captures record `fileStampReads: filesystem`; `--reference-file-stamp` is no longer supported. Retain older recordings with their original mode labels.
+
+## Bounded additional probes
+
+```powershell
+python scripts/benchmarks/performance/Run.py --output artifacts/performance/ui-text-snapshots --extended --case-prefix extra- --samples 60 --warmups 5 --timeout 30
+```
+
+Fixture version 5 adds 20 optional cases: 100/1,000/5,000 UI rectangles with a top hit, complete miss or moved top rectangle; the same three glyph counts with rebuilt text, a warm cache or changed spacing; and fresh/reused profiler snapshot buffers. The text fixture supplies synthetic font metrics (eight-unit advance), not a rasterized font. Hit testing includes hit-order reconstruction but excludes input dispatch and rendering. Profiler snapshots include 200 samples per module but exclude ImGui and a Tracy viewer. Each result is checked outside its timed scope. The ordinary 121-case matrix is unchanged unless `--extended` is selected.
+
+The existing opt-in material test also accepts `FUNKE_SPRITE_LIFECYCLE=1`: it validates transparent ordering around the 4,096-instance boundary, static/dynamic equivalence, oversized sprites and camera regions, movement, disabled/static tag transitions, scene destruction, texture/sampler mutation and shader invalidation. Set `FUNKE_BATCH_BENCH=1` and a fresh `FUNKE_BATCH_OUTPUT`; select only `GPU material batching benchmark*`. Stage the normal `FunkeAssets` beside the executable. Require native assertions **and** `sprite-lifecycle.complete.txt`; without the opt-in flag the test returns without running the workload.
+
+For the real model comparison, use the same native test with `FUNKE_SKINNING_MATRIX=1`, `FUNKE_SKINNING_MODEL` pointing to an existing animated GLB, and `FUNKE_BATCH_SAMPLES=30`. Run in two fresh processes, with `FUNKE_REFERENCE_CPU_SKINNING=0` then `1`. This diagnostic is read once when a Renderer3D skinning pipeline is first attempted; `1` exercises the existing CPU fallback. Leave it unset in ordinary applications. It does not change geometry, animation quality or the default backend choice.
+
+The model fixture measures 1/10/100 instances in three modes (static mesh, changing pose, unchanged pose), three repeats and five warmups. It validates visible counts and actual pose/fallback counts, writes `skinning.samples.csv`, 27 images and `skinning.complete.txt`, and retains the model's vertex/bone counts. The timed scope is CPU `Renderer3D::RenderScene`; GPU completion/readback happens afterwards. This is neither GPU execution time nor a pipelined application frame. Compare the two sets of images and hash the model and binaries. Wrap each process in a short timeout (60 seconds used for the documented run). Do not interpret the standalone raw file as a complete v1 baseline.
+
+The managed `PerformanceDispatchTests` runs a small functional case in the ordinary suite. Setting `FUNKE_DISPATCH_BENCH_OUTPUT` to a new CSV path enables 100/1,000/10,000 instances, three repeats, ten warmups and 60 samples. It compares a direct managed callback with the actual unmanaged `ScriptInstanceManager.InvokeUpdate` entry point, validates Awake/Start ordering and destroyed handles, and reports thread allocation deltas and GC pause deltas. It excludes the native ScriptSystem iteration/snapshot loop. Run with tiered compilation and ReadyToRun disabled for a fixed diagnostic configuration; no timing threshold belongs in the functional suite.
+
+See [November 2026 verification](../../../Github-Docs/Documentation/Editor/Performance-Verification-2026-11.md) for measured results and limitations. No soak test is part of these commands.
 
 ## Regression comparison
+
+### Complete application frames and GPU passes
+
+With profiling compiled in, set `FUNKE_FRAME_TRACE` to a new CSV path and optionally `FUNKE_FRAME_TRACE_FRAMES` (1–3,600; default 600) before launching Runtime or Editor. The capture starts when startup is ready, independently of whether the Editor is playing. It preallocates bounded rows, aggregates every registered scope and writes once at the limit or normal shutdown. An existing output path is rejected. **The capture limit does not terminate the application:** also use an explicit quit condition and a short external process timeout. A failed startup may never advance a frame-based quit condition.
+
+Columns `interval_ms` and `work_ms` respectively measure begin-to-next-begin elapsed time and the current frame's work before trace consumption/export. The final row has no next interval. `playing` and `paused` distinguish Editor states. Each metric has `.sum` and `.calls`; sums accumulate all views/threads without the panel's sampling throttle. Time scopes are inclusive milliseconds, while counters such as `GPU.QueueSubmits`, `GPU.TextureUploadBytes`, `Renderer2D.InstanceCopyBytes`, `Renderer2D.UploadBytes`, `Renderer2D.SceneDrawGrowths` and `Scripts.SnapshotAllocations/Bytes` retain their named units. They are not all milliseconds or complete native allocation counts.
+
+The normal panel still follows visibility, sampling, play and pause gates. Diagnostic collection continues during pause. Do not add nested scope sums as exclusive CPU time. A worker scope is recorded when it ends; it can span several frame intervals.
+
+Capture additionally enables `GPU.<pass-label>` timestamps for 3D, text, UI and postprocessing. Bounded timer pools resolve queries after each pass and poll after submission without waiting for GPU completion. Results can arrive in a later frame. Check `GPU.PassRequests`, `GPU.PassUnavailable` and `.calls`, retain unavailable results as unknown, and account for timer quantization. Main presentation/ImGui work is not fully represented by summing only these pass labels. Leave capture disabled in ordinary use.
+
+For the existing native physics probes, `FUNKE_CPU_PROFILE_COMPONENTS=1` adds per-repeat `.metrics.csv` files separating Sync and BodyTransforms. These sums include instrumentation overhead and are distinct from the uninstrumented baseline. All other workload and timeout rules still apply.
+
+The [bounded November follow-up](../../../Github-Docs/Documentation/Editor/Performance-Remaining-2026-11.md) records the actual visible fixtures, build manifests, full-frame A/B, Editor inputs, resize transitions and remaining native-heap/controlled-runner limitations.
+
+### Comparing compatible captures
 
 ```powershell
 python scripts/benchmarks/performance/Compare.py artifacts/performance/before/results.metadata.json artifacts/performance/after/results.metadata.json --relative 0.10 --absolute-ms 0.05 --output artifacts/performance/comparison.json

@@ -8,6 +8,7 @@
 #include "Components/Graphics/TextRendererComponent.hpp"
 #include "Components/UI/ContentSizeFitterComponent.hpp"
 #include "Components/UI/GridLayoutGroupComponent.hpp"
+#include "Components/UI/InputFieldComponent.hpp"
 #include "Components/UI/HorizontalLayoutGroupComponent.hpp"
 #include "Components/UI/VerticalLayoutGroupComponent.hpp"
 #include "Components/UI/WidthConstraintComponent.hpp"
@@ -485,8 +486,14 @@ namespace Funke {
 			Font* font = TextRenderer::ResolveFont(*text);
 			if (!font || !font->IsLoaded()) return;
 
+			bool richText = text->RichText;
+			if (richText) {
+				for (const auto& [fieldEntity, field] : registry.view<InputFieldComponent>().each()) {
+					if (field.TextEntity == entity) { richText = false; break; }
+				}
+			}
 			const Vec2 naturalAtlasPx = TextRenderer::MeasureNaturalSize(
-				*font, text->Text, text->LetterSpacing, text->LineSpacing);
+				*font, text->GetDisplayText(), text->LetterSpacing, text->LineSpacing, richText, text->FontSize, text->Bold, text->Italic);
 
 			const float bakedSize = font->GetPixelSize() > 0.0f
 				? font->GetPixelSize()
@@ -649,7 +656,7 @@ namespace Funke {
 		auto LayoutKey(const WidthConstraintComponent& c) { return std::tie(c.MinWidth, c.MaxWidth); }
 
 		auto LayoutKey(const TextRendererComponent& c) {
-			return std::tie(c.Text, c.FontAssetId, c.FontSize, c.LetterSpacing, c.LineSpacing, c.WrapMode, c.AutoSize);
+			return std::tie(c.GetDisplayText(), c.FontAssetId, c.FontSize, c.LetterSpacing, c.LineSpacing, c.WrapMode, c.AutoSize);
 		}
 
 		template<class T>

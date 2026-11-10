@@ -1,4 +1,5 @@
 #include "pch.hpp"
+#include "Profiling/GpuTimer.hpp"
 #include "Graphics/PostProcessing/PostProcessor.hpp"
 
 #include "Components/Graphics/PostProcessing2DComponent.hpp"
@@ -821,12 +822,14 @@ namespace Funke {
 			passDesc.colorAttachmentCount = 1;
 			passDesc.colorAttachments = &colorAtt;
 			passDesc.depthStencilAttachment = nullptr;
+			GpuPassTrace passTrace(encoder, passDesc);
 
 			wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&passDesc);
 			pass.SetPipeline(pipeline);
 			pass.SetBindGroup(0, bg);
 			pass.Draw(/*vertexCount=*/3, /*instanceCount=*/1, /*firstVertex=*/0, /*firstInstance=*/0);
 			pass.End();
+			passTrace.Resolve();
 		}
 
 		wgpu::RenderPipeline GetCustomEffectPipeline(PostProcessor::Impl& impl, const CustomShaderProgram& program, wgpu::TextureFormat dstFormat) {
@@ -906,6 +909,7 @@ namespace Funke {
 			passDesc.label = "postprocess-custom";
 			passDesc.colorAttachmentCount = 1;
 			passDesc.colorAttachments = &colorAtt;
+			GpuPassTrace passTrace(encoder, passDesc);
 
 			wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&passDesc);
 			pass.SetPipeline(pipeline);
@@ -914,6 +918,7 @@ namespace Funke {
 			pass.SetBindGroup(2, impl.SceneGroup);
 			pass.Draw(3, 1, 0, 0);
 			pass.End();
+			passTrace.Resolve();
 			impl.SceneSubmitSerial = WebGPUBackend::GetFrameSubmitSerial();
 		}
 
@@ -941,9 +946,11 @@ namespace Funke {
 			passDesc.label                = "postprocess-pingpong-clear";
 			passDesc.colorAttachmentCount = 1;
 			passDesc.colorAttachments     = &colorAtt;
+			GpuPassTrace passTrace(encoder, passDesc);
 
 			wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&passDesc);
 			pass.End();
+			passTrace.Resolve();
 		}
 
 		wgpu::RenderPipeline BuildCompositePipeline(
@@ -1054,12 +1061,14 @@ namespace Funke {
 			passDesc.label = "postprocess-composite";
 			passDesc.colorAttachmentCount = 1;
 			passDesc.colorAttachments = &colorAtt;
+			GpuPassTrace passTrace(encoder, passDesc);
 
 			wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&passDesc);
 			pass.SetPipeline(pipeline);
 			pass.SetBindGroup(0, bg);
 			pass.Draw(3, 1, 0, 0);
 			pass.End();
+			passTrace.Resolve();
 		}
 
 		// Threshold + blur into BloomTempA; returns its view, or null when bloom can't run this frame.
@@ -1334,6 +1343,7 @@ namespace Funke {
 		passDesc.colorAttachmentCount = 1;
 		passDesc.colorAttachments = &colorAtt;
 		passDesc.depthStencilAttachment = nullptr;
+		GpuPassTrace passTrace(encoder, passDesc);
 
 		wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&passDesc);
 		// MUST apply viewport before draw: aspect-lock caller sets a sub-rect so the blit
@@ -1343,6 +1353,7 @@ namespace Funke {
 		pass.SetBindGroup(0, bindGroup);
 		pass.Draw(/*vertexCount=*/3, /*instanceCount=*/1, /*firstVertex=*/0, /*firstInstance=*/0);
 		pass.End();
+		passTrace.Resolve();
 	}
 
 	bool PostProcessor::RunAntiAliasing(const Framebuffer& src,
@@ -1374,6 +1385,7 @@ namespace Funke {
 		passDesc.label = "postprocess-fxaa";
 		passDesc.colorAttachmentCount = 1;
 		passDesc.colorAttachments = &colorAtt;
+		GpuPassTrace passTrace(encoder, passDesc);
 
 		wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&passDesc);
 		if (finalTarget) WebGPUBackend::ApplyCachedViewportToPass(pass);
@@ -1381,6 +1393,7 @@ namespace Funke {
 		pass.SetBindGroup(0, bindGroup);
 		pass.Draw(3, 1, 0, 0);
 		pass.End();
+		passTrace.Resolve();
 		return true;
 	}
 

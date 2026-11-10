@@ -6,7 +6,25 @@
 #include <initializer_list>
 
 namespace Funke::EditorKeyboard {
+	inline void ReserveGameNavigation() {
+		auto& g = *GImGui;
+		auto* window = ImGui::GetCurrentWindow();
+		window->Flags |= ImGuiWindowFlags_NoNavInputs;
+		if (g.NavWindow != window) return;
+		// Cancel requests already queued before the game window acquired focus this frame.
+		ImGui::NavMoveRequestCancel();
+		g.NavInitRequest = false;
+		g.NavInitResult = {};
+		g.NavCursorVisible = false;
+	}
+
 	namespace {
+		inline void FocusSliderOnTab(ImGuiID id) {
+			auto& g = *GImGui;
+			if (g.NavActivateId == id && (g.NavActivateFlags & ImGuiActivateFlags_FromTabbing))
+				g.NavActivateFlags &= ~ImGuiActivateFlags_PreferInput;
+		}
+
 		inline int SliderKeyboardDirection(ImGuiID id) {
 			auto& g = *GImGui;
 			const auto& io = g.IO;
@@ -52,6 +70,7 @@ namespace Funke::EditorKeyboard {
 
 	inline bool SliderFloat(const char* label, float* value, float minimum, float maximum, const char* format, ImGuiSliderFlags flags) {
 		const ImGuiID id = ImGui::GetID(label);
+		FocusSliderOnTab(id);
 		const int direction = SliderKeyboardDirection(id);
 		const float previous = *value;
 		if (direction) {
@@ -68,6 +87,7 @@ namespace Funke::EditorKeyboard {
 
 	inline bool SliderInt(const char* label, int* value, int minimum, int maximum, const char* format, ImGuiSliderFlags flags) {
 		const ImGuiID id = ImGui::GetID(label);
+		FocusSliderOnTab(id);
 		const int direction = SliderKeyboardDirection(id);
 		const int previous = *value;
 		if (direction) *value = static_cast<int>(std::clamp(static_cast<long long>(*value) + direction,

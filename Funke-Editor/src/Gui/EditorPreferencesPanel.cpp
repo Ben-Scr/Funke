@@ -8,7 +8,9 @@
 #include "Editor/ExternalEditor.hpp"
 #include "Editor/ExternalEditorInfo.hpp"
 #include "Graphics/Text/FontHandle.hpp"
+#include "Gui/EditorIcons.hpp"
 #include "Gui/EditorShortcuts.hpp"
+#include "Gui/EditorTheme.hpp"
 #include "Gui/EditorUI.hpp"
 #include "Gui/ImGuiContextLayer.hpp"
 #include "Gui/ImGuiFonts.hpp"
@@ -18,6 +20,7 @@
 #include "Serialization/Path.hpp"
 
 #include <imgui.h>
+#include <imgui_internal.h>
 
 #include <algorithm>
 #include <cctype>
@@ -29,6 +32,44 @@
 namespace Funke {
 	namespace {
 		constexpr const char* k_FontPickerKey = "EditorPrefs.EditorFont";
+
+		void DrawLayoutPreview(const EditorDockLayout::Preview& preview, ImVec2 size) {
+			const ImVec2 origin = ImGui::GetCursorScreenPos();
+			ImGui::Dummy(size);
+			ImDrawList* drawList = ImGui::GetWindowDrawList();
+			const float font = ImGui::GetFontSize();
+			const float inset = font * 0.6f;
+			drawList->AddRectFilled(origin, ImVec2(origin.x + size.x, origin.y + size.y),
+				ImGui::GetColorU32(ImGuiCol_WindowBg), ImGui::GetStyle().FrameRounding);
+			if (preview.Panes.empty()) {
+				const char* text = "Preview unavailable";
+				const ImVec2 textSize = ImGui::CalcTextSize(text);
+				const ImVec2 position(origin.x + inset, origin.y + (size.y - textSize.y) * 0.5f);
+				ImGui::RenderTextEllipsis(drawList, position, ImVec2(origin.x + size.x - inset, origin.y + size.y),
+					origin.x + size.x - inset, text, nullptr, &textSize);
+				return;
+			}
+			EditorUI::Tooltip("Docked panel arrangement from this saved layout.");
+			const float scale = std::min(std::max(1.0f, size.x - 2.0f * inset) / preview.Size.x,
+				std::max(1.0f, size.y - 2.0f * inset) / preview.Size.y);
+			const ImVec2 extent(preview.Size.x * scale, preview.Size.y * scale);
+			const ImVec2 offset(origin.x + (size.x - extent.x) * 0.5f, origin.y + (size.y - extent.y) * 0.5f);
+			const float gap = font * 0.1f;
+			for (const auto& pane : preview.Panes) {
+				const ImVec2 min(offset.x + pane.Position.x * extent.x + gap, offset.y + pane.Position.y * extent.y + gap);
+				const ImVec2 max(offset.x + (pane.Position.x + pane.Size.x) * extent.x - gap,
+					offset.y + (pane.Position.y + pane.Size.y) * extent.y - gap);
+				if (max.x <= min.x || max.y <= min.y) continue;
+				const ImU32 color = pane.Central ? ImGui::GetColorU32(EditorTheme::Colors::ActiveToggle())
+					: ImGui::GetColorU32(ImGuiCol_FrameBg);
+				drawList->AddRectFilled(min, max, color, std::min(font * 0.1f, (max.x - min.x) * 0.2f));
+				if (max.x - min.x > font && max.y - min.y > font * 0.6f) {
+					const ImVec2 tabMin(min.x + gap * 2, min.y + gap * 2);
+					drawList->AddRectFilled(tabMin, ImVec2(tabMin.x + (max.x - min.x) * 0.35f, tabMin.y + gap),
+						ImGui::GetColorU32(ImGuiCol_TextDisabled, 0.35f));
+				}
+			}
+		}
 
 		// Same folder ImGuiContextLayer stores layout presets in.
 		std::string LayoutsFolderDisplay() {
@@ -61,8 +102,6 @@ namespace Funke {
 						? "Auto (Light)"
 						: "Auto (Dark)";
 				case EditorThemeMode::Custom:        return "Custom";
-				case EditorThemeMode::Glass:         return "Liquid Glass Dark";
-				case EditorThemeMode::GlassLight:    return "Liquid Glass Light";
 			}
 			return "Auto (Dark)";
 		}
@@ -79,6 +118,119 @@ namespace Funke {
 			return "100%";
 		}
 
+		void DrawThemePreview(ImDrawList* drawList, const ImVec2& min, const ImVec2& size,
+			const ImGuiStyle& theme, bool custom) {
+			auto point = [&](float x, float y) { return ImVec2(min.x + size.x * x, min.y + size.y * y); };
+			auto color = [&](ImGuiCol role) { return ImGui::GetColorU32(theme.Colors[role]); };
+			auto rect = [&](float x, float y, float w, float h, ImGuiCol role) {
+				drawList->AddRectFilled(point(x, y), point(x + w, y + h), color(role));
+			};
+			rect(0, 0, 1, 1, ImGuiCol_WindowBg);
+			rect(0, 0, 1, 0.15f, ImGuiCol_TitleBg);
+			rect(0, 0.17f, 0.23f, 0.59f, ImGuiCol_FrameBg);
+			rect(0.77f, 0.17f, 0.23f, 0.59f, ImGuiCol_FrameBg);
+			rect(0, 0.78f, 1, 0.22f, ImGuiCol_FrameBg);
+			for (int i = 0; i < 3; ++i) {
+				rect(0.04f + i * 0.06f, 0.06f, 0.025f, 0.035f, ImGuiCol_TextDisabled);
+				for (float x : { 0.04f, 0.81f }) {
+					rect(x, 0.26f + i * 0.13f, i == 2 ? 0.10f : 0.15f, 0.035f,
+						i == 1 ? ImGuiCol_TabSelectedOverline : ImGuiCol_TextDisabled);
+				}
+				const ImVec2 swatchMin = point(0.04f + i * 0.12f, 0.84f);
+				const ImVec2 swatchMax = point(0.12f + i * 0.12f, 0.94f);
+				if (custom) {
+					constexpr ImGuiCol k_Swatches[] = { ImGuiCol_WindowBg, ImGuiCol_Text, ImGuiCol_CheckMark };
+					drawList->AddRectFilled(swatchMin, swatchMax, color(k_Swatches[i]));
+				}
+				drawList->AddRect(swatchMin, swatchMax, color(ImGuiCol_TextDisabled));
+			}
+			rect(0.90f, 0.06f, 0.04f, 0.035f, ImGuiCol_TabSelectedOverline);
+			const float half = std::min(size.x * 0.10f, size.y * 0.14f);
+			const ImVec2 center = point(0.50f, 0.46f);
+			const ImVec2 objectMin(center.x - half, center.y - half);
+			const ImVec2 objectMax(center.x + half, center.y + half);
+			drawList->AddRectFilled(objectMin, objectMax, color(ImGuiCol_TextSelectedBg));
+			drawList->AddRect(objectMin, objectMax, color(ImGuiCol_TabSelectedOverline));
+		}
+
+		bool ThemeChoice(const char* label, EditorThemeMode mode, bool selected, const ImVec2& size,
+			const ImGuiStyle& light, const ImGuiStyle& dark, const ImGuiStyle& custom) {
+			const float font = ImGui::GetFontSize();
+			const float padding = font * 0.5f;
+			const ImVec2 min = ImGui::GetCursorScreenPos();
+			const ImVec2 max(min.x + size.x, min.y + size.y);
+			const bool clicked = ImGui::InvisibleButton(label, size, ImGuiButtonFlags_EnableNav);
+			if (!ImGui::IsItemVisible()) return clicked;
+			const bool hovered = ImGui::IsItemHovered();
+			const ImGuiStyle& style = ImGui::GetStyle();
+			ImDrawList* drawList = ImGui::GetWindowDrawList();
+			const ImU32 accent = ImGui::GetColorU32(EditorTheme::Colors::Accent());
+			drawList->AddRectFilled(min, max, ImGui::GetColorU32(ImGui::IsItemActive() ? ImGuiCol_FrameBgActive
+				: hovered ? ImGuiCol_FrameBgHovered : ImGuiCol_WindowBg), style.FrameRounding);
+			if (selected) {
+				ImVec4 tint = EditorTheme::Colors::Accent();
+				tint.w = 0.10f;
+				drawList->AddRectFilled(min, max, ImGui::GetColorU32(tint), style.FrameRounding);
+			}
+			drawList->AddRect(min, max, selected ? accent : ImGui::GetColorU32(ImGuiCol_Border),
+				style.FrameRounding, 0, selected ? std::max(1.0f, font * 0.1f) : 1.0f);
+			const ImVec2 previewMin(min.x + padding, min.y + padding);
+			const ImVec2 previewSize(size.x - padding * 2.0f, size.y - padding * 3.0f - font * 1.4f);
+			const ImVec2 previewMax(previewMin.x + previewSize.x, previewMin.y + previewSize.y);
+			drawList->PushClipRect(previewMin, previewMax, true);
+			DrawThemePreview(drawList, previewMin, previewSize,
+				mode == EditorThemeMode::Light ? light : mode == EditorThemeMode::Custom ? custom : dark,
+				mode == EditorThemeMode::Custom);
+			if (mode == EditorThemeMode::SystemDefault) {
+				drawList->PushClipRect(previewMin, ImVec2(previewMin.x + previewSize.x * 0.5f, previewMax.y), true);
+				DrawThemePreview(drawList, previewMin, previewSize, light, false);
+				drawList->PopClipRect();
+			}
+			drawList->PopClipRect();
+			drawList->AddRect(previewMin, previewMax, ImGui::GetColorU32(ImGuiCol_Border));
+			const ImVec2 labelMin(min.x + padding, previewMax.y + padding);
+			const ImU32 text = ImGui::GetColorU32(ImGuiCol_Text);
+			const char* icon = mode == EditorThemeMode::Light ? "theme_light"
+				: mode == EditorThemeMode::Dark ? "theme_dark"
+				: mode == EditorThemeMode::SystemDefault ? "monitor" : "pen";
+			const auto texture = EditorIcons::Get(icon, static_cast<int>(std::ceil(font)));
+			if (texture) drawList->AddImage(static_cast<ImTextureID>(texture), labelMin,
+				ImVec2(labelMin.x + font, labelMin.y + font), ImVec2(0, 1), ImVec2(1, 0), text);
+			drawList->AddText(ImVec2(labelMin.x + font * 1.4f, labelMin.y), text, label);
+			const ImVec2 indicator(max.x - padding - font * 0.4f, labelMin.y + font * 0.5f);
+			drawList->AddCircle(indicator, font * 0.35f, selected ? accent : ImGui::GetColorU32(ImGuiCol_TextDisabled));
+			if (selected) drawList->AddCircleFilled(indicator, font * 0.18f, accent);
+			EditorUI::Tooltip(mode == EditorThemeMode::SystemDefault ? "Follow the system light/dark appearance."
+				: mode == EditorThemeMode::Custom ? "Use your saved palette and edit it in Custom Colors." : label);
+			return clicked;
+		}
+
+		EditorThemeMode ThemeChoices(EditorThemeMode currentMode) {
+			static const ImGuiStyle light = [] { ImGuiStyle theme; ImGuiContextLayer::ConfigureFunkeThemeColors(theme, false); return theme; }();
+			static const ImGuiStyle dark = [] { ImGuiStyle theme; ImGuiContextLayer::ConfigureFunkeThemeColors(theme, true); return theme; }();
+			ImGuiStyle custom = ImGui::GetStyle();
+			for (int i = 0; i < ImGuiCol_COUNT; ++i) custom.Colors[i] = EditorPreferences::GetCustomColor(i);
+			constexpr EditorThemeMode k_Modes[] = { EditorThemeMode::Light, EditorThemeMode::Dark,
+				EditorThemeMode::SystemDefault, EditorThemeMode::Custom };
+			constexpr const char* k_Labels[] = { "Light", "Dark", "System", "Custom" };
+			const float font = ImGui::GetFontSize();
+			const float gap = ImGui::GetStyle().ItemSpacing.x;
+			const float available = ImGui::GetContentRegionAvail().x;
+			float minimumWidth = font * 9.0f;
+			for (const char* label : k_Labels) minimumWidth = std::max(minimumWidth, ImGui::CalcTextSize(label).x + font * 4.0f);
+			const int columns = available >= minimumWidth * 4.0f + gap * 3.0f ? 4
+				: available >= minimumWidth * 2.0f + gap ? 2 : 1;
+			const ImVec2 size(std::max(1.0f, std::min(font * 14.0f, (available - gap * (columns - 1)) / columns)), font * 9.0f);
+			EditorThemeMode chosen = currentMode;
+			ImGui::PushID("EditorThemeChoices");
+			for (int i = 0; i < 4; ++i) {
+				if (i % columns != 0) ImGui::SameLine(0.0f, gap);
+				if (ThemeChoice(k_Labels[i], k_Modes[i], k_Modes[i] == currentMode, size, light, dark, custom)) chosen = k_Modes[i];
+			}
+			ImGui::PopID();
+			return chosen;
+		}
+
 		std::string LowerCopy(std::string value) {
 			std::transform(value.begin(), value.end(), value.begin(),
 				[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
@@ -93,7 +245,9 @@ namespace Funke {
 	}
 
 	void EditorPreferencesPanel::Shutdown() {
-		// No persistent allocations to drop.
+		m_LayoutPresets.clear();
+		m_LayoutPresetsDirty = true;
+		m_LastLayoutsFrame = -1;
 	}
 
 	void EditorPreferencesPanel::Render(bool* pOpen) {
@@ -107,6 +261,7 @@ namespace Funke {
 		// restart the editor after installing a new IDE.
 		if (!m_WasOpenLastFrame) {
 			ExternalEditor::DetectEditors();
+			m_LayoutPresetsDirty = true;
 		}
 		m_WasOpenLastFrame = true;
 
@@ -116,14 +271,15 @@ namespace Funke {
 			ImGui::End();
 			return;
 		}
+		if (ImGui::IsWindowAppearing()) m_LayoutPresetsDirty = true;
 
-		if (ImGui::BeginChild("##PreferencesContent", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None,
+		if (ImGui::BeginChild("##PreferencesContent", ImVec2(0.0f, 0.0f), ImGuiChildFlags_NavFlattened,
 			ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBackground)) {
 			EditorUI::SearchField("##EditorPrefsSearch", m_SearchBuffer, sizeof(m_SearchBuffer), "Search preferences...");
 			ImGui::Spacing();
 
 			if (IsPreferenceSearchActive()) {
-				if (ImGui::BeginChild("##EditorPrefsSearchResults", ImVec2(0, 0), false,
+				if (ImGui::BeginChild("##EditorPrefsSearchResults", ImVec2(0, 0), ImGuiChildFlags_NavFlattened,
 					ImGuiWindowFlags_AlwaysVerticalScrollbar)) {
 					RenderAppearanceTab();
 					RenderScriptingTab();
@@ -134,33 +290,35 @@ namespace Funke {
 				ImGui::EndChild();
 			}
 			else if (EditorUI::BeginTabBar("##EditorPrefsTabs", ImGuiTabBarFlags_None, false)) {
-				// Independent scroll regions keep search and tabs pinned.
-				if (EditorUI::BeginTabItem("Appearance")) {
-					if (ImGui::BeginChild("##AppearanceScroll", ImVec2(0, 0), false)) RenderAppearanceTab();
-					ImGui::EndChild();
-					EditorUI::EndTabItem();
+				struct Category {
+					const char* Label;
+					const char* ScrollId;
+					void (EditorPreferencesPanel::*Render)();
+				};
+				const Category categories[] = {
+					{ "Appearance", "##AppearanceScroll", &EditorPreferencesPanel::RenderAppearanceTab },
+					{ "Scripting", "##ScriptingScroll", &EditorPreferencesPanel::RenderScriptingTab },
+					{ "Layouts", "##LayoutsScroll", &EditorPreferencesPanel::RenderLayoutsTab },
+					{ "Behavior", "##BehaviorScroll", &EditorPreferencesPanel::RenderBehaviorTab },
+					{ "Editor Camera", "##CameraScroll", &EditorPreferencesPanel::RenderCameraTab },
+				};
+				const Category* active = nullptr;
+				for (const auto& category : categories) {
+					const auto flags = m_OpenLayoutsRequest && category.Render == &EditorPreferencesPanel::RenderLayoutsTab
+						? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None;
+					if (EditorUI::BeginTabItem(category.Label, nullptr, flags)) {
+						active = &category;
+						EditorUI::EndTabItem();
+					}
 				}
-				if (EditorUI::BeginTabItem("Scripting")) {
-					if (ImGui::BeginChild("##ScriptingScroll", ImVec2(0, 0), false)) RenderScriptingTab();
-					ImGui::EndChild();
-					EditorUI::EndTabItem();
-				}
-				if (EditorUI::BeginTabItem("Layouts")) {
-					if (ImGui::BeginChild("##LayoutsScroll", ImVec2(0, 0), false)) RenderLayoutsTab();
-					ImGui::EndChild();
-					EditorUI::EndTabItem();
-				}
-				if (EditorUI::BeginTabItem("Behavior")) {
-					if (ImGui::BeginChild("##BehaviorScroll", ImVec2(0, 0), false)) RenderBehaviorTab();
-					ImGui::EndChild();
-					EditorUI::EndTabItem();
-				}
-				if (EditorUI::BeginTabItem("Editor Camera")) {
-					if (ImGui::BeginChild("##CameraScroll", ImVec2(0, 0), false)) RenderCameraTab();
-					ImGui::EndChild();
-					EditorUI::EndTabItem();
-				}
+				m_OpenLayoutsRequest = false;
 				EditorUI::EndTabBar();
+				// Submit all category tabs before their content for a continuous Tab order.
+				if (active) {
+					if (ImGui::BeginChild(active->ScrollId, ImVec2(0, 0), ImGuiChildFlags_NavFlattened))
+						(this->*active->Render)();
+					ImGui::EndChild();
+				}
 			}
 		}
 		ImGui::EndChild();
@@ -187,7 +345,7 @@ namespace Funke {
 	}
 
 	void EditorPreferencesPanel::RenderAppearanceTab() {
-		const bool showTheme = PreferenceSectionVisible("Theme", "appearance auto dark light liquid glass transparent translucent custom color colors palette");
+		const bool showTheme = PreferenceSectionVisible("Theme", "appearance auto system dark light custom color colors palette");
 		const bool showFont = PreferenceSectionVisible("Editor Font", "appearance editor font typeface ibm plex sans condensed size zoom text scale");
 		const bool showHierarchy = PreferenceSectionVisible("Entities Hierarchy",
 			"appearance entities hierarchy outliner row size scale height bigger larger smaller");
@@ -195,37 +353,23 @@ namespace Funke {
 
 		if (showTheme) {
 			EditorThemeMode currentMode = EditorPreferences::GetThemeMode();
+			bool openCustomColors = false;
 			if (EditorUI::BeginSection("Theme", ThemeModeLabel(currentMode), true, IsPreferenceSearchActive())) {
-				EditorUI::BeginSettingsRow("Editor theme");
-				ImGui::SetNextItemWidth(-FLT_MIN);
-				if (EditorUI::BeginCombo("##EditorThemeCombo", ThemeModeLabel(currentMode))) {
-					constexpr EditorThemeMode kModes[] = {
-						EditorThemeMode::SystemDefault,
-						EditorThemeMode::Dark,
-						EditorThemeMode::Light,
-						EditorThemeMode::Glass,
-						EditorThemeMode::GlassLight,
-						EditorThemeMode::Custom,
-					};
-					for (EditorThemeMode mode : kModes) {
-						const bool selected = (mode == currentMode);
-						if (ImGui::Selectable(ThemeModeLabel(mode), selected)) {
-							EditorPreferences::SetThemeMode(mode);
-							currentMode = mode;
-						}
-						if (mode == EditorThemeMode::Glass || mode == EditorThemeMode::GlassLight) {
-							EditorUI::Tooltip("Neutral frosted glass with soft reflections and responsive controls.");
-						}
-						if (selected) ImGui::SetItemDefaultFocus();
-					}
-					EditorUI::EndCombo();
+				ImGui::TextUnformatted("Editor theme");
+				const EditorThemeMode chosen = ThemeChoices(currentMode);
+				if (chosen != currentMode) {
+					EditorPreferences::SetThemeMode(chosen);
+					currentMode = chosen;
+					openCustomColors = chosen == EditorThemeMode::Custom;
 				}
-				EditorUI::EndSettingsRow();
-				EditorUI::Tooltip("The theme of the editor ui");
+				EditorUI::StatusText(EditorUI::Tone::Neutral, currentMode == EditorThemeMode::SystemDefault
+					? "Follows your system appearance." : currentMode == EditorThemeMode::Custom
+					? "Adjust your palette in Custom Colors." : "Applies immediately.");
 				EditorUI::EndSection();
 			}
 
 			const bool customActive = (currentMode == EditorThemeMode::Custom);
+			if (openCustomColors) ImGui::SetNextItemOpen(true, ImGuiCond_Always);
 			if (EditorUI::BeginSection("Custom Colors", customActive ? "Custom theme active" : "Custom theme only",
 				customActive, IsPreferenceSearchActive())) {
 				ImGui::BeginDisabled(!customActive);
@@ -443,56 +587,115 @@ namespace Funke {
 		}
 	}
 
+	void EditorPreferencesPanel::RefreshLayoutPresets() {
+		m_LayoutPresets.clear();
+		for (const std::string& name : ImGuiContextLayer::ListLayoutPresets()) {
+			m_LayoutPresets.push_back({ name, EditorDockLayout::ParsePreview(ImGuiContextLayer::ReadLayoutPreset(name)) });
+		}
+		m_LayoutPresetsDirty = false;
+	}
+
 	void EditorPreferencesPanel::RenderLayoutsTab() {
 		if (!PreferenceSectionVisible("Layout Presets", "layout layouts preset save load reset delete")) return;
-		if (!EditorUI::BeginSection("Layout Presets", nullptr, true, IsPreferenceSearchActive())) return;
+		if (m_LayoutPresetsDirty || m_LastLayoutsFrame + 1 != ImGui::GetFrameCount()) RefreshLayoutPresets();
+		m_LastLayoutsFrame = ImGui::GetFrameCount();
+		const std::string summary = std::to_string(m_LayoutPresets.size()) + " saved";
+		if (!EditorUI::BeginSection("Layout Presets", summary.c_str(), true, IsPreferenceSearchActive())) return;
 
-		if (EditorUI::Button("Save Current Layout As...", EditorUI::ButtonVariant::Primary)) {
+		const ImGuiStyle& style = ImGui::GetStyle();
+		const float font = ImGui::GetFontSize();
+		const float available = ImGui::GetContentRegionAvail().x;
+		const float startX = ImGui::GetCursorPosX();
+		const char* saveLabel = "Save current layout...";
+		const float saveWidth = ImGui::CalcTextSize(saveLabel).x + style.FramePadding.x * 2.0f;
+		const std::string hint = std::to_string(m_LayoutPresets.size()) + (m_LayoutPresets.size() == 1 ? " saved layout" : " saved layouts");
+		const float hintWidth = ImGui::CalcTextSize(hint.c_str()).x;
+		ImGui::AlignTextToFramePadding();
+		ImGui::TextDisabled("%s", hint.c_str());
+		if (available > hintWidth + saveWidth + font) ImGui::SameLine(startX + available - saveWidth);
+		if (EditorUI::Button(saveLabel, EditorUI::ButtonVariant::Primary)) {
 			m_SaveLayoutBuffer[0] = '\0';
 			m_LayoutError.clear();
 			m_OpenSaveLayoutRequest = true;
 		}
 		ImGui::Spacing();
 
-		const std::vector<std::string> presets =
-			ImGuiContextLayer::ListLayoutPresets();
-		if (presets.empty()) {
-			EditorUI::EmptyState("No saved layout presets.", "Use \"Save Current Layout As...\" to create one.");
+		if (m_LayoutPresets.empty()) {
+			EditorUI::EmptyState("No saved layouts yet.", "Save the current layout to create a preset.");
 		}
 
-		if (!presets.empty() && ImGui::BeginTable("##LayoutPresetsTable", 3,
-				ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH)) {
-			ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthStretch);
-			const float actionWidth = ImGui::CalcTextSize("Delete").x + ImGui::GetStyle().FramePadding.x * 2.0f;
-			ImGui::TableSetupColumn("##Load", ImGuiTableColumnFlags_WidthFixed, actionWidth);
-			ImGui::TableSetupColumn("##Delete", ImGuiTableColumnFlags_WidthFixed, actionWidth);
-
-			for (const std::string& name : presets) {
-				ImGui::PushID(name.c_str());
-				ImGui::TableNextRow();
-				ImGui::TableSetColumnIndex(0);
-				ImGui::AlignTextToFramePadding();
-				ImGui::TextWrapped("%s", name.c_str());
-
-				ImGui::TableSetColumnIndex(1);
-				if (ImGui::Button("Load", ImVec2(-FLT_MIN, 0))) {
-					m_LayoutError = ImGuiContextLayer::LoadLayoutPreset(name) ? "" : "Could not load layout preset.";
+		const float gap = font * 0.8f;
+		const int columns = std::clamp(static_cast<int>((available + gap) / (font * 15.0f + gap)), 1, 4);
+		ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(gap * 0.5f, gap * 0.5f));
+		if (!m_LayoutPresets.empty() && ImGui::BeginTable("##LayoutPresetCards", columns,
+			ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_NoPadOuterX)) {
+			for (const LayoutPreset& preset : m_LayoutPresets) {
+				ImGui::TableNextColumn();
+				ImGui::PushID(preset.Name.c_str());
+				const bool active = ImGuiContextLayer::GetActiveLayoutPreset() == preset.Name;
+				const ImVec2 origin = ImGui::GetCursorScreenPos();
+				const float width = ImGui::GetContentRegionAvail().x;
+				const float padding = font * 0.65f;
+				const float innerWidth = std::max(1.0f, width - padding * 2.0f);
+				const float frame = ImGui::GetFrameHeight();
+				const bool stacked = innerWidth < font * 12.0f;
+				const float previewHeight = font * 7.5f;
+				const float height = previewHeight + frame + padding * 3.0f + (stacked ? frame : 0.0f);
+				EditorUI::BeginCard("##Card");
+				ImGui::SetCursorScreenPos(ImVec2(origin.x + padding, origin.y + padding));
+				DrawLayoutPreview(preset.Preview, ImVec2(innerWidth, previewHeight));
+				const float footerY = origin.y + previewHeight + padding * 2.0f;
+				const float loadWidth = std::max(ImGui::CalcTextSize("Active").x, ImGui::CalcTextSize("Load").x)
+					+ style.FramePadding.x * 2.0f;
+				const float nameWidth = stacked ? innerWidth : std::max(1.0f, innerWidth - loadWidth - frame - style.ItemSpacing.x * 2.0f);
+				const ImVec2 textMin(origin.x + padding, footerY + style.FramePadding.y);
+				const ImVec2 textSize = ImGui::CalcTextSize(preset.Name.c_str(), nullptr, false);
+				ImGui::RenderTextEllipsis(ImGui::GetWindowDrawList(), textMin, ImVec2(textMin.x + nameWidth, textMin.y + font),
+					textMin.x + nameWidth, preset.Name.c_str(), preset.Name.c_str() + preset.Name.size(), &textSize);
+				ImGui::SetCursorScreenPos(ImVec2(textMin.x, footerY));
+				ImGui::Dummy(ImVec2(nameWidth, frame));
+				EditorUI::Tooltip(preset.Name);
+				const float actionsY = footerY + (stacked ? frame : 0.0f);
+				ImGui::SetCursorScreenPos(ImVec2(origin.x + width - padding - frame - style.ItemSpacing.x - loadWidth, actionsY));
+				if (active) {
+					ImGui::PushStyleColor(ImGuiCol_Button, EditorTheme::Colors::ActiveToggle());
+					ImGui::PushStyleColor(ImGuiCol_Text, EditorTheme::Colors::Highlight());
 				}
-
-				ImGui::TableSetColumnIndex(2);
-				if (EditorUI::Button("Delete", EditorUI::ButtonVariant::Danger, ImVec2(-FLT_MIN, 0))) {
+				const bool load = EditorUI::Button(active ? "Active" : "Load", EditorUI::ButtonVariant::Default, ImVec2(loadWidth, frame));
+				if (active) ImGui::PopStyleColor(2);
+				EditorUI::Tooltip(active ? "Last saved or loaded preset. Click to restore its saved arrangement." : "Load this layout.");
+				if (load) m_LayoutError = ImGuiContextLayer::LoadLayoutPreset(preset.Name) ? "" : "Could not load layout preset.";
+				ImGui::SameLine(0, style.ItemSpacing.x);
+				EditorUI::PushButtonColors(EditorUI::ButtonVariant::Ghost);
+				const bool remove = EditorUI::IconButton("##Delete", "delete", "Delete preset", false, false, frame, "X");
+				EditorUI::PopButtonColors(EditorUI::ButtonVariant::Ghost);
+				if (remove) {
 					m_LayoutError.clear();
-					m_PendingDeleteLayoutName = name;
+					m_PendingDeleteLayoutName = preset.Name;
 					m_OpenDeleteLayoutRequest = true;
 				}
+				EditorUI::EndCard(origin.y + height);
+				if (active) ImGui::GetWindowDrawList()->AddRect(origin, ImVec2(origin.x + width, origin.y + height),
+					ImGui::GetColorU32(EditorTheme::Colors::AssetTileSelectionBorder()), style.WindowRounding);
+				ImGui::SetCursorScreenPos(origin);
+				ImGui::Dummy(ImVec2(width, height));
 				ImGui::PopID();
 			}
 			ImGui::EndTable();
 		}
+		ImGui::PopStyleVar();
 		ImGui::Spacing();
 		ImGui::Separator();
-		if (EditorUI::Button("Reset to Default")) ImGuiContextLayer::ResetLayoutToDefault();
-		EditorUI::StatusText(EditorUI::Tone::Neutral, ("Stored under " + LayoutsFolderDisplay() + '.').c_str());
+		if (EditorUI::Button("Reset to default", EditorUI::ButtonVariant::Ghost)) {
+			ImGuiContextLayer::ResetLayoutToDefault();
+			m_LayoutError.clear();
+		}
+		const float resetWidth = ImGui::GetItemRectSize().x;
+		const float storageWidth = ImGui::CalcTextSize("Storage location").x + style.FramePadding.x * 2.0f;
+		if (available > resetWidth + storageWidth + font) ImGui::SameLine(startX + available - storageWidth);
+		if (EditorUI::Button("Storage location", EditorUI::ButtonVariant::Ghost)) m_ShowLayoutStorage = !m_ShowLayoutStorage;
+		EditorUI::Tooltip(LayoutsFolderDisplay());
+		if (m_ShowLayoutStorage) EditorUI::StatusText(EditorUI::Tone::Neutral, LayoutsFolderDisplay().c_str());
 		if (!m_LayoutError.empty()) EditorUI::StatusText(EditorUI::Tone::Error, m_LayoutError.c_str());
 
 		EditorUI::EndSection();
@@ -748,6 +951,7 @@ namespace Funke {
 			const int clicked = EditorUI::DialogFooter({ "Save", "Cancel" }, 0, -1, nameValid ? 0u : 1u);
 			if ((clicked == 0 || enterPressed) && nameValid) {
 				if (ImGuiContextLayer::SaveLayoutPreset(nameStr)) {
+					m_LayoutPresetsDirty = true;
 					m_LayoutError.clear();
 					m_SaveLayoutBuffer[0] = '\0';
 					ImGui::CloseCurrentPopup();
@@ -770,6 +974,7 @@ namespace Funke {
 			const int clicked = EditorUI::DialogFooter({ "Delete", "Cancel" }, -1, 0);
 			if (clicked == 0) {
 				if (ImGuiContextLayer::DeleteLayoutPreset(m_PendingDeleteLayoutName)) {
+					m_LayoutPresetsDirty = true;
 					m_LayoutError.clear();
 					m_PendingDeleteLayoutName.clear();
 					ImGui::CloseCurrentPopup();

@@ -41,6 +41,11 @@ jobs:
         with:
           python-version: "3.13"
 
+      - name: Setup .NET for PackageTool integration tests
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
       - name: Release, platform builder, packaging and Web preview tests
         id: scripts
         run: python scripts/ci/run_script_tests.py --output test-results/python.json
@@ -239,6 +244,27 @@ jobs:
         id: native_debug
         shell: pwsh
         run: scripts/RunTests.bat
+
+      - name: Capture bounded CPU performance trend
+        shell: pwsh
+        run: |
+          python scripts/benchmarks/performance/CaptureBuild.py --output artifacts/performance/ci-build `
+            --binary bin/Release-windows-x86_64/Funke-Engine-Tests/Funke-Engine-Tests.exe `
+            --binary bin/Release-windows-x86_64/Funke-Engine-Tests/Funke-Engine.dll `
+            -- pwsh -NoProfile -File scripts/dev/Build.ps1 EngineTests -Config Release -NoRegenCheck
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/benchmarks/performance/Run.py --output artifacts/performance/ci-transform `
+            --build-manifest artifacts/performance/ci-build/build.json --case-prefix transform-flat- `
+            --samples 30 --repeats 3 --warmups 5 --timeout 30 `
+            --conditions "Shared GitHub Windows runner; trend only, no calibrated timing gate"
+
+      - name: Preserve CPU performance trend and provenance
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Funke-Performance-Windows-${{ github.sha }}
+          path: artifacts/performance
+          if-no-files-found: error
 
       - name: Project-local Package Smoke Test
         shell: pwsh

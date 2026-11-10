@@ -28,7 +28,140 @@ namespace {
 		}
 		float GetKerning(uint32_t a, uint32_t b) const { return a == 'A' && b == 'V' ? -2.0f : 0.0f; }
 		float GetLineHeight() const { return 12.0f; }
+		float GetPixelSize() const { return 10.0f; }
+		float GetAscent() const { return 9.0f; }
+		float GetDescent() const { return -3.0f; }
 	};
+}
+
+TEST_CASE("Rich text nests styles restores parents and escapes literal markup") {
+	const auto chars = TextLayout::ParseRichText("<b>A<i>B</i>C</b><color='#12345680'>D<color=red>E</color>F</color><size=20>G</size>H&lt;b&gt;&amp;", 10);
+	REQUIRE(chars.size() == 12);
+	CHECK(chars[0].Style.Bold);
+	CHECK(chars[1].Style.Bold);
+	CHECK(chars[1].Style.Italic);
+	CHECK_FALSE(chars[2].Style.Italic);
+	CHECK_FALSE(chars[3].Style.Bold);
+	CHECK(chars[3].Style.Tint.a == doctest::Approx(128.0f / 255));
+	CHECK(chars[4].Style.Tint.r == 1.0f);
+	CHECK(chars[5].Style.Tint.r == doctest::Approx(18.0f / 255));
+	CHECK(chars[6].Style.Scale == 2.0f);
+	CHECK(chars[7].Style.Scale == 1.0f);
+	CHECK_FALSE(chars[7].Style.HasColor);
+	CHECK(chars[8].Codepoint == '<');
+	CHECK(chars[11].Codepoint == '&');
+	for (const auto text : { "<size=0>X", "<size=nan>X", "<size=inf>X", "<size=1025>X", "<color=#oops>X", "<unknown>X", "</b>X", "<", "<>" }) {
+		const auto literal = TextLayout::ParseRichText(text, 10);
+		CHECK(literal.size() == std::string_view(text).size());
+	}
+	const auto unicode = TextLayout::ParseRichText("<i>\xCE\xA9</i>", 10);
+	REQUIRE(unicode.size() == 1);
+	CHECK(unicode[0].Codepoint == 0x3a9);
+	CHECK(TextLayout::MaxRichTextScale("<size=40>A<size=20>B</size></size>", 10) == 4);
+	CHECK(TextLayout::MaxRichTextScale("&lt;size=40&gt;A", 10) == 1);
+	CHECK(TextLayout::MaxRichTextScale("<size=nan>A", 10) == 1);
+}
+
+TEST_CASE("Rich text measures visible glyphs wraps scaled runs and preserves baseline alignment") {
+	LayoutTestFont font;
+	TextLayout::Settings settings;
+	settings.RichText = true;
+	settings.FontSize = 10;
+	TextLayout::Layout layout;
+	std::vector<std::pair<size_t, size_t>> lines;
+	TextLayout::Build(font, "A<size=20>V</size>A", settings, layout, lines);
+	REQUIRE(layout.Glyphs.size() == 3);
+	CHECK(layout.NaturalSize.x == 32);
+	CHECK(layout.NaturalSize.y == 24);
+	CHECK(layout.Glyphs[1].Y0 - layout.Glyphs[1].Y1 == 20);
+	CHECK(layout.Glyphs[2].X0 == 23);
+	settings.Wrap = TextWrapMode::Character;
+	settings.WrapWidth = 17;
+	TextLayout::Build(font, "A<size=20>V</size>A", settings, layout, lines);
+	REQUIRE(lines.size() == 3);
+	CHECK(layout.Glyphs[0].Y0 == 8);
+	CHECK(layout.Glyphs[1].Y0 == -5);
+	CHECK(layout.Glyphs[2].Y0 == -28);
+	CHECK(layout.NaturalSize.y == 48);
+	settings.Wrap = TextWrapMode::Word;
+	settings.WrapWidth = 20;
+	TextLayout::Build(font, "<color=red>AV AV</color>", settings, layout, lines);
+	CHECK(lines.size() == 2);
+	CHECK(layout.NaturalSize.x == 14);
+	CHECK(layout.Glyphs.size() == 4);
+	settings.Wrap = TextWrapMode::None;
+	TextLayout::Build(font, "<b><i>A</i></b>", settings, layout, lines);
+	REQUIRE(layout.Glyphs.size() == 2);
+	CHECK(layout.Glyphs[0].ShearTop > 0);
+	CHECK(layout.Glyphs[0].ShearBottom < 0);
+	CHECK(layout.Glyphs[1].X0 > layout.Glyphs[0].X0);
+	CHECK(layout.Max.x >= layout.Glyphs[1].X1 + layout.Glyphs[1].ShearTop);
+	settings.RichText = false;
+	TextLayout::Build(font, "<b>A</b>", settings, layout, lines);
+	CHECK(layout.Glyphs.size() == 8);
+}
+
+TEST_CASE("Rich text cache separates opt-in and absolute size from the font atlas") {
+	TextLayout::Cache cache;
+	TextLayout::Settings settings;
+	int builds = 0;
+	auto build = [&](TextLayout::Layout&) { ++builds; };
+	cache.Get(17, "<size=20>A</size>", settings, build);
+	settings.RichText = true;
+	cache.Get(17, "<size=20>A</size>", settings, build);
+	settings.FontSize = 20;
+	cache.Get(17, "<size=20>A</size>", settings, build);
+	cache.Get(17, "<size=20>A</size>", settings, build);
+	CHECK(builds == 3);
+	settings.Bold = true;
+	cache.Get(17, "<size=20>A</size>", settings, build);
+	settings.Italic = true;
+	cache.Get(17, "<size=20>A</size>", settings, build);
+	cache.Get(17, "<size=20>A</size>", settings, build);
+	CHECK(builds == 5);
+}
+
+TEST_CASE("Text layout applies whole-text styles without interpreting markup") {
+	LayoutTestFont font;
+	TextLayout::Settings settings;
+	settings.Bold = true;
+	settings.Italic = true;
+	TextLayout::Layout layout;
+	std::vector<std::pair<size_t, size_t>> lines;
+	TextLayout::Build(font, "<b>A</b>&lt;", settings, layout, lines);
+	REQUIRE(layout.Glyphs.size() == 24);
+	CHECK(layout.Glyphs.front().ShearTop == doctest::Approx(1.6f));
+	CHECK(layout.Glyphs.front().ShearBottom == doctest::Approx(-0.4f));
+	CHECK(layout.Glyphs[1].X0 - layout.Glyphs[0].X0 == doctest::Approx(0.35f));
+	CHECK(layout.Glyphs[2].X0 - layout.Glyphs[0].X0 == doctest::Approx(8.35f));
+	CHECK(layout.Max.x >= layout.Glyphs.back().X1 + layout.Glyphs.back().ShearTop);
+	settings.Wrap = TextWrapMode::Character;
+	settings.WrapWidth = 14.5f;
+	TextLayout::Build(font, "AV", settings, layout, lines);
+	CHECK(lines.size() == 2);
+	settings.Bold = false;
+	TextLayout::Build(font, "AV", settings, layout, lines);
+	CHECK(lines.size() == 1);
+	CHECK(layout.Glyphs.size() == 2);
+}
+
+TEST_CASE("Rich text closing tags restore the component font style") {
+	const auto characters = TextLayout::ParseRichText("A<b>B</b>C<i>D</i>E", 32, true, true);
+	REQUIRE(characters.size() == 5);
+	for (const auto& character : characters) {
+		CHECK(character.Style.Bold);
+		CHECK(character.Style.Italic);
+	}
+	LayoutTestFont font;
+	TextLayout::Settings settings;
+	settings.RichText = true;
+	settings.Bold = true;
+	settings.Italic = true;
+	TextLayout::Layout layout;
+	std::vector<std::pair<size_t, size_t>> lines;
+	TextLayout::Build(font, "A<b>B</b>C<i>D</i>E", settings, layout, lines);
+	CHECK(layout.Glyphs.size() == 10);
+	CHECK(layout.NaturalSize.x == doctest::Approx(5 * 8.35f));
 }
 
 TEST_CASE("Text layout preserves kerning word wrap alignment and visible glyph bounds") {

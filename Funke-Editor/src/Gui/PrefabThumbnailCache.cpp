@@ -69,7 +69,8 @@ namespace Funke {
 
 			const float bakedSize = font->GetPixelSize() > 0.0f ? font->GetPixelSize() : text.FontSize;
 			const float scale = std::abs((text.FontSize / bakedSize) * transform.Scale.x / k_TextPixelsPerWorldUnit);
-			const Vec2 size = TextRenderer::MeasureNaturalSize(*font, text.Text, text.LetterSpacing, text.LineSpacing);
+			const Vec2 size = TextRenderer::MeasureNaturalSize(*font, text.Text, text.LetterSpacing, text.LineSpacing,
+				text.RichText, text.FontSize, text.Bold, text.Italic);
 			const float width = size.x * scale;
 			const float height = size.y * scale;
 			const float x = transform.Position.x + text.Margin.x * scale;

@@ -1,0 +1,6 @@
+{
+  "tool": "image_gen.imagegen",
+  "prompt": "Create a single flat vector-style UI SUN icon as a transparent PNG. The icon consists ONLY of solid dark graphite (#404040) strokes: a perfectly circular ring and eight detached short straight rays, arranged symmetrically at 45-degree intervals. The interior of the ring and ALL space between rays must be fully transparent. Uniform clean rounded strokes of substantial medium weight, no outlines around the strokes. Crisp immaculate smooth edges. No texture, noise, speckles, grain, grunge, sketching, gradients, shadows, lighting, glow, or backdrop. This is a tiny professional desktop editor toolbar glyph, designed to read at 16 px. Centered in a square canvas with equal 12.5% margins. The same graphite value everywhere on the opaque symbol. Do not use white lines. One icon only, no labels, no presentation board.",
+  "original": "C:\\Users\\benso\\.codex\\generated_images\\01a1c212-a74a-7b43-b0d2-b123e6c6a554\\exec-27251766-4321-4915-90dc-c9034c1d0f01.png",
+  "source": "theme_light.png"
+}

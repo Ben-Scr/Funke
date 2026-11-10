@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <string>
+#include <optional>
 
 namespace Funke {
 
@@ -39,6 +40,12 @@ namespace Funke {
     // 2D text renderer. FontSize in pixels; renderer divides by k_TextPixelsPerWorldUnit for world-space.
     struct FUNKE_API TextRendererComponent {
         std::string Text = "Hello, World!";
+        // Display-only localization preview, excluded from scene/prefab serialization.
+        std::optional<std::string> PreviewText;
+        const std::string& GetDisplayText() const { return PreviewText ? *PreviewText : Text; }
+        bool RichText = false;
+        bool Bold = false;
+        bool Italic = false;
 
         // Defaults to IBMPlexSans GUID; without this, UUID() rolls a random id that resolves to nothing and the inspector shows "(Missing Asset)".
         UUID FontAssetId{ k_DefaultFontAssetId };

@@ -1,7 +1,53 @@
 #include "pch.hpp"
 #include "EditorIcons.hpp"
+#include "Graphics/TextureManager.hpp"
+#include "Project/FunkeBuildProfile.hpp"
+
+#include <imgui.h>
+#include <filesystem>
 
 namespace Funke {
+	namespace {
+		struct PlatformIcon {
+			uint64_t handle = 0;
+			float width = 0.0f;
+			float height = 0.0f;
+		};
+
+		PlatformIcon LoadPlatformIcon(BuildPlatform platform) {
+			const char* iconName = FunkeBuildProfile::PlatformIconName(platform);
+			if (!iconName) return {};
+
+			static std::string platformIconsDir = []() {
+				const std::string editorTexturesDir = Path::ResolveFunkeAssets("Textures");
+				if (editorTexturesDir.empty()) return std::string{};
+				return (std::filesystem::path(editorTexturesDir) / "Editor" / "PlatformIcons").string();
+			}();
+			if (platformIconsDir.empty()) return {};
+
+			const std::string fullPath = (std::filesystem::path(platformIconsDir) /
+				(std::string(iconName) + ".png")).string();
+			TextureHandle handle = TextureManager::LoadTexture(
+				fullPath, Filter::Bilinear, Wrap::Clamp, Wrap::Clamp);
+			Texture2D* tex = TextureManager::GetTexture(handle);
+			if (tex && tex->IsValid()) return { tex->GetHandle(), tex->GetWidth(), tex->GetHeight() };
+			return {};
+		}
+	}
+
+	void EditorIcons::DrawPlatform(ImDrawList* drawList, BuildPlatform platform, const ImVec2& boxMin, float boxSize, float alpha) {
+		const PlatformIcon icon = LoadPlatformIcon(platform);
+		if (icon.handle == 0 || icon.width <= 0.0f || icon.height <= 0.0f) return;
+		float drawW = boxSize;
+		float drawH = boxSize;
+		if (icon.width > icon.height) drawH = boxSize * (icon.height / icon.width);
+		else if (icon.height > icon.width) drawW = boxSize * (icon.width / icon.height);
+		const ImVec2 min(boxMin.x + (boxSize - drawW) * 0.5f, boxMin.y + (boxSize - drawH) * 0.5f);
+		drawList->AddImage(static_cast<ImTextureID>(static_cast<intptr_t>(icon.handle)),
+			min, ImVec2(min.x + drawW, min.y + drawH), ImVec2(0, 0), ImVec2(1, 1),
+			IM_COL32(255, 255, 255, static_cast<int>(alpha * 255.0f)));
+	}
+
 	std::unordered_map<std::string, EditorIcons::IconEntry> EditorIcons::s_Icons;
 	bool EditorIcons::s_Initialized = false;
 

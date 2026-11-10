@@ -84,12 +84,14 @@ The same set as script fields:
 
 Once your class exists and the project is built:
 
-1. In the **Asset Browser**, right-click → **Create → Data Asset → Gameplay/Item Data** (your menu path).
+1. In the **Asset Browser**, right-click → **Create → Data Assets → Gameplay/Item Data** (your menu path).
 2. A new `.dataasset` file appears. Name it (e.g. `Sword`).
 3. Select it — its fields show in the **Inspector**, starting from the class's default values.
 4. Edit the values. They're saved to the `.dataasset` file.
 
 Each file is an independent instance with its own values, but all share the class you wrote. See [Assets › The Asset Browser](Assets.md#the-asset-browser-editor).
+
+To generate the class first, choose **Create → C# Scripting → DataAsset**. Creating an instance preserves its canonical type identity (for example `type:Gameplay.ItemData`) inside the asset, but omits the internal `type:` prefix from the suggested filename so it is valid on Windows. Renaming the file leaves its type identity unchanged.
 
 ---
 

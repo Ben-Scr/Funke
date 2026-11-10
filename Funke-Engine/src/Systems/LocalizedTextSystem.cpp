@@ -23,8 +23,23 @@ namespace Funke {
 	}
 
 	void LocalizedTextSystem::OnPreRender(Scene& scene) {
-		// Edit mode keeps the authored text: writing it there would leak the preview into saved scenes and prefabs.
-		if (!Application::GetIsPlaying()) return;
+		const bool playing = Application::GetIsPlaying();
+		const bool preview = !playing && !GameLocalization::GetPreviewLanguage().empty();
+		for (auto [entity, text] : scene.GetRegistry().view<TextRendererComponent>().each()) {
+			const auto* localized = scene.GetRegistry().try_get<LocalizedTextComponent>(entity);
+			if (preview && localized && !localized->Key.empty()) {
+				const std::string& translated = GameLocalization::GetPreview(localized->Key);
+				if (!text.PreviewText || *text.PreviewText != translated) {
+					text.PreviewText = translated;
+					scene.MarkUIDirty();
+				}
+			}
+			else if (text.PreviewText) {
+				text.PreviewText.reset();
+				scene.MarkUIDirty();
+			}
+		}
+		if (!playing) return;
 		FUNKE_PROFILE_SCOPE("LocalizedText");
 		// Disabled entities too, so they show the right text the frame they are enabled.
 		auto view = scene.GetRegistry().view<LocalizedTextComponent, TextRendererComponent>();

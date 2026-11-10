@@ -125,7 +125,6 @@ namespace Funke {
 
 
 	namespace {
-		static constexpr int SCENE_FORMAT_VERSION = 1;
 
 		// Absent keys mean a Simple image with the standard shader (files from before 9-slice and materials).
 		void ReadImageSlicingAndMaterial(const Value& imageValue, ImageComponent& image) {
@@ -205,22 +204,7 @@ namespace Funke {
 				FNK_CORE_ERROR_TAG("SceneSerializer", "{} root must be an object", sourceLabel);
 				return false;
 			}
-			if (const Value* version = root.FindMember("version")) {
-				if (!version->IsNumber()) {
-					FNK_CORE_ERROR_TAG("SceneSerializer", "{} has a non-numeric scene version", sourceLabel);
-					return false;
-				}
-				const int value = version->AsIntOr(-1);
-				if (value < 0 || version->AsDoubleOr(-1.0) != static_cast<double>(value)) {
-					FNK_CORE_ERROR_TAG("SceneSerializer", "{} has an invalid scene version", sourceLabel);
-					return false;
-				}
-				if (value > SCENE_FORMAT_VERSION) {
-					FNK_CORE_ERROR_TAG("SceneSerializer", "{} uses newer scene version {} (supported: {})",
-						sourceLabel, value, SCENE_FORMAT_VERSION);
-					return false;
-				}
-			}
+			if (!ValidateFormatVersion(root, sourceLabel)) return false;
 			if (const Value* name = root.FindMember("name"); name && !name->IsString()) {
 				FNK_CORE_ERROR_TAG("SceneSerializer", "{} has a non-string name", sourceLabel);
 				return false;
@@ -825,7 +809,7 @@ namespace Funke {
 
 		bool ReadPrefabDefinitionFromRoot(const Value& root, PrefabDefinition& outDefinition) {
 			outDefinition.Entities.clear();
-			if (!root.IsObject()) {
+			if (!ValidateFormatVersion(root, "prefab data")) {
 				return false;
 			}
 
@@ -1204,6 +1188,7 @@ namespace Funke {
 				FNK_CORE_WARN_TAG("SceneSerializer", "Failed to parse prefab {}: {}", prefabPath, readError);
 				return false;
 			}
+			if (!ValidateFormatVersion(*root, prefabPath)) return false;
 
 			std::lock_guard<std::mutex> lock(g_PrefabRootCacheMutex);
 			auto& entry = g_PrefabRootCache[key];
@@ -2221,6 +2206,9 @@ namespace Funke {
 			text.VAlign = static_cast<TextVerticalAlignment>(GetIntMember(*textValue, "valign", static_cast<int>(text.VAlign)));
 			text.WrapMode = static_cast<TextWrapMode>(GetIntMember(*textValue, "wrapMode", static_cast<int>(text.WrapMode)));
 			text.AutoSize = GetBoolMember(*textValue, "autoSize", false);
+			text.RichText = GetBoolMember(*textValue, "richText", false);
+			text.Bold = GetBoolMember(*textValue, "bold", false);
+			text.Italic = GetBoolMember(*textValue, "italic", false);
 			// WrapWidth field removed; old scenes that wrote it just
 			// pass through unread.
 			text.Margin.x = GetFloatMember(*textValue, "marginL", text.Margin.x);
@@ -2320,21 +2308,7 @@ namespace Funke {
 		}
 #endif
 
-		if (const Value* audioValue = GetObjectMember(entityValue, "AudioSource")) {
-			auto& audioSource = scene.AddComponent<AudioSourceComponent>(entity);
-			audioSource.SetVolume(GetFloatMember(*audioValue, "volume", 1.0f));
-			audioSource.SetPitch(GetFloatMember(*audioValue, "pitch", 1.0f));
-			audioSource.SetLoop(GetBoolMember(*audioValue, "loop", false));
-			audioSource.SetPlayOnAwake(GetBoolMember(*audioValue, "playOnAwake", false));
-			ReadAudioSpatial(*audioValue, audioSource);
 
-			UUID audioAssetId = UUID(0);
-			const AudioHandle handle = LoadAudioFromValue(*audioValue, "clipAsset", "clip", &audioAssetId);
-			audioSource.SetAudioAssetId(audioAssetId);
-			if (handle.IsValid()) {
-				audioSource.SetAudioHandle(handle, audioAssetId);
-			}
-		}
 
 		if (const Value* rectValue = GetObjectMember(entityValue, "RectTransform2D")) {
 			auto& rectTransform = scene.GetComponent<RectTransform2DComponent>(entity);
@@ -2489,6 +2463,9 @@ namespace Funke {
 						const std::string key = className + "." + fieldName;
 						const std::string stored = ValueToFieldString(*valueValue);
 						fieldsComponent.PendingFieldValues[key] = stored;
+						Value metadata = fieldValue;
+						RemoveObjectMember(metadata, "value");
+						fieldsComponent.PendingFieldMetadata[key] = Json::Stringify(metadata);
 						++populated;
 
 						if (scene.IsEntityRefRemapActive()) {
@@ -2816,6 +2793,9 @@ namespace Funke {
 			text.VAlign = static_cast<TextVerticalAlignment>(GetIntMember(componentValue, "valign", static_cast<int>(defaults.VAlign)));
 			text.WrapMode = static_cast<TextWrapMode>(GetIntMember(componentValue, "wrapMode", static_cast<int>(defaults.WrapMode)));
 			text.AutoSize = GetBoolMember(componentValue, "autoSize", false);
+			text.RichText = GetBoolMember(componentValue, "richText", false);
+			text.Bold = GetBoolMember(componentValue, "bold", false);
+			text.Italic = GetBoolMember(componentValue, "italic", false);
 			// WrapWidth field removed; old scenes that wrote it just
 			// pass through unread.
 			text.Margin.x = GetFloatMember(componentValue, "marginL", defaults.Margin.x);
@@ -2928,21 +2908,7 @@ namespace Funke {
 		}
 #endif
 
-		if (component == "AudioSource") {
-			auto& audioSource = scene.HasComponent<AudioSourceComponent>(entity)
-				? scene.GetComponent<AudioSourceComponent>(entity)
-				: scene.AddComponent<AudioSourceComponent>(entity);
-			audioSource.SetVolume(GetFloatMember(componentValue, "volume", 1.0f));
-			audioSource.SetPitch(GetFloatMember(componentValue, "pitch", 1.0f));
-			audioSource.SetLoop(GetBoolMember(componentValue, "loop", false));
-			audioSource.SetPlayOnAwake(GetBoolMember(componentValue, "playOnAwake", false));
-			ReadAudioSpatial(componentValue, audioSource);
 
-			UUID audioAssetId = UUID(0);
-			const AudioHandle handle = LoadAudioFromValue(componentValue, "clipAsset", "clip", &audioAssetId);
-			audioSource.SetAudioHandle(handle, audioAssetId);
-			return true;
-		}
 
 		if (component == "RectTransform2D") {
 			auto& rectTransform = scene.HasComponent<RectTransform2DComponent>(entity)

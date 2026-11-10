@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Core/Export.hpp"
+#include <cstdint>
 
 #ifdef FUNKE_PROFILER_ENABLED
 // MSVC: __FUNCTION__ is not a string literal, so Tracy's constexpr SourceLocationData fails; override to "" to satisfy constexpr and avoid strlen(nullptr) UB. Must be before <tracy/Tracy.hpp>.
@@ -17,6 +18,12 @@
 #include <chrono>
 
 namespace Funke {
+
+	struct ProfilerFrameSample {
+		std::string Name;
+		double Sum = 0;
+		uint64_t Calls = 0;
+	};
 
 	struct FUNKE_API ProfilerModule {
 		std::string Name;
@@ -59,6 +66,10 @@ namespace Funke {
 		// Reuse the caller's buffer to avoid the per-frame allocations the
 		// by-value overload incurs.
 		static void AllModules(std::vector<ProfilerModule>& outBuffer);
+		// Explicit diagnostic capture is unthrottled and independent of panel/play gates.
+		static void SetFrameCaptureEnabled(bool enabled);
+		static bool IsFrameCaptureEnabled();
+		static void ConsumeFrameSamples(std::vector<ProfilerFrameSample>& outBuffer);
 
 		// Returns 0.0 if no such module; used by the "Others" residual in Application::Run for unattributed CPU time.
 		static float GetCurrentValue(std::string_view name);
@@ -103,6 +114,9 @@ namespace Funke {
 		static inline ProfilerModule* Find(const std::string&) { return nullptr; }
 		static inline std::vector<ProfilerModule> AllModules() { return {}; }
 		static inline void AllModules(std::vector<ProfilerModule>& outBuffer) { outBuffer.clear(); }
+		static inline void SetFrameCaptureEnabled(bool) {}
+		static inline bool IsFrameCaptureEnabled() { return false; }
+		static inline void ConsumeFrameSamples(std::vector<ProfilerFrameSample>& outBuffer) { outBuffer.clear(); }
 		static inline float GetCurrentValue(std::string_view) { return 0.0f; }
 		static inline void PushValue(std::string_view, float) {}
 		static inline void PushSample(std::string_view, float) {}

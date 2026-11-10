@@ -5,7 +5,6 @@
 
 #include "Gui/EditorIcons.hpp"
 #include "Gui/EditorTheme.hpp"
-#include "Gui/GlassBackdrop.hpp"
 #include "Gui/ImGuiUtils.hpp"
 
 #include <Gui/Icons.hpp>
@@ -208,7 +207,6 @@ namespace Funke::EditorUI {
 	bool Button(const char* label, ButtonVariant variant, const ImVec2& size) {
 		PushButtonColors(variant);
 		const bool clicked = ImGui::Button(label, size);
-		GlassBackdrop::DrawLastItemSurface();
 		PopButtonColors(variant);
 		return clicked;
 	}
@@ -276,7 +274,6 @@ namespace Funke::EditorUI {
 				clicked = ImGui::Button(id, ImVec2(side, side));
 			}
 		}
-		GlassBackdrop::DrawLastItemSurface();
 		if (toggleFill) ImGui::PopStyleColor(2);
 
 		if (tooltip) Tooltip(tooltip);
@@ -290,7 +287,6 @@ namespace Funke::EditorUI {
 			ImGui::PushStyleColor(ImGuiCol_ButtonHovered, WithAlpha(fill, std::min(1.0f, fill.w + 0.10f)));
 		}
 		const bool clicked = ImGui::Button(label);
-		GlassBackdrop::DrawLastItemSurface();
 		if (active) ImGui::PopStyleColor(2);
 		if (tooltip) Tooltip(tooltip);
 		return clicked;
@@ -329,7 +325,6 @@ namespace Funke::EditorUI {
 		ImGui::SetNextItemWidth(std::max(1.0f, fullW - inset - style.FramePadding.x));
 		const bool changed = ImGui::InputTextWithHint("##search", hint, buffer, bufferSize);
 		const bool active = ImGui::IsItemActive();
-		GlassBackdrop::DrawLastItemSurface(p, ImVec2(p.x + fullW, p.y + frameH));
 		ImGui::PopStyleVar();
 		ImGui::PopStyleColor(3);
 		ImGui::PopID();

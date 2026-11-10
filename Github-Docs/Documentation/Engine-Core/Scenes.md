@@ -222,6 +222,27 @@ A couple of important details:
 
 ## Prefabs
 
+### Format compatibility
+
+Scene and prefab document versions are separate from the `FNKSCNB` binary storage version. Both currently write version **1**. The current 2026.1 beta source accepts the following formats; this is a source-format contract, not a claim of end-to-end compatibility with every historic engine build.
+
+| Source format / provenance | Current reader | Explicit save |
+|---|---|---|
+| Unversioned or version 0 scene | Legacy defaults; missing persistent IDs are assigned once | Version 1, assigned IDs retained on subsequent reload |
+| Version 1 scene, including the archived `217bf610` fixture from 2026-11-01 | Supported; asset GUID identity retained | Version 1 |
+| Unversioned prefab `Entities`, `Entity`, `prefab`, or recognized bare entity object, as read by `217bf610` | Supported; internal entity/component references remap to the instance | Version 1 with explicit subtree identities |
+| Version 1 prefab / `PrefabRef` variant | Supported; base and variant must both be supported | Version 1 |
+| Binary storage version 0 or 1 | Supported with the same document-version checks | Storage version 1 |
+| Future, negative, fractional or nonnumeric document version; future/truncated binary storage | Rejected before replacing scene contents or instantiating a prefab | Scene save, prefab save and format conversion refuse to replace that existing file |
+
+Existing compatibility fallbacks include legacy asset-path keys beside GUID keys, string scene-system names beside objects with field overrides, `filter` beside `filterMode`, and world-scaled box-collider sizes beside the newer exact local sizes. Missing optional fields use their documented defaults. Collider override comparison normalizes old size keys to avoid false prefab overrides.
+
+Loading does not rewrite the source. Explicit JSON/binary format conversion preserves the parsed tree, including unknown members; a normal scene/prefab save serializes supported live state and does not promise preservation of arbitrary unknown JSON. Keep the original file or version-control snapshot when upgrading authored data. The engine does not introduce an automatic destructive migration step. Existing files that cannot be parsed are also protected from normal save replacement; recover them or choose a different destination first. Successful writes use the existing atomic temporary-file replacement.
+
+Regression coverage includes the byte-for-byte archived scene, historic prefab child/sibling and nested-list reference formats, repeated save/reload, GUIDs, and rejected versions in both JSON and binary storage. Verification on Windows x64 Release does not establish an untested historic release or platform matrix.
+
+Stored script-field schemas remain attached to their pending values when the assembly is unavailable. Saving such a prefab retains `entity`, component-reference and nested-list metadata, so the next instantiation can remap its references again. Available live script metadata remains authoritative; retaining a pending value alone is insufficient to distinguish an entity ID from an ordinary integer.
+
 A **prefab** is a saved entity (with its children and components) stored as a `.prefab` file, so you can reuse it many times. Drop a prefab into a scene and you get an **instance** of it; you can then tweak individual instances with **overrides** while still tracking which prefab they came from.
 
 Editing the prefab asset updates every instance (except the parts an instance has deliberately overridden). The editor has dedicated support for creating, editing, and instantiating prefabs — see [Editor](../Editor/Editor.md#prefabs).

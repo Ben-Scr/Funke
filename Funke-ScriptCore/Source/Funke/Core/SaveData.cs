@@ -1,5 +1,6 @@
 using System.IO;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace Funke;
 
@@ -42,6 +43,75 @@ public static class SaveData
 
     /// <summary>Loads a slot or returns <paramref name="fallback"/> when it is missing or unreadable.</summary>
     public static T Load<T>(string slot, T fallback) => TryLoad(slot, out T? value) ? value! : fallback;
+
+    /// <summary>Opt-in envelope; schema versions belong to the game, independently of engine versions.</summary>
+    public static void SaveVersioned<T>(string slot, T value, int schemaVersion)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(schemaVersion);
+        JsonNode payload = JsonSerializer.SerializeToNode(value, CreateOptions())
+            ?? throw new ArgumentNullException(nameof(value));
+        AtomicFile.WriteAllText(GetPath(slot), VersionedJson(payload, schemaVersion));
+    }
+
+    /// <summary>Migrates one version per callback on detached JSON; writes back only after validation when explicitly requested.</summary>
+    public static bool TryLoadVersioned<T>(string slot, int currentVersion, out T? value, out string? error,
+        Func<int, JsonNode, JsonNode>? migrate = null, Func<T, bool>? validate = null,
+        int? unversionedVersion = null, bool persistMigration = false)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(currentVersion);
+        if (unversionedVersion < 0) throw new ArgumentOutOfRangeException(nameof(unversionedVersion));
+        value = default;
+        error = null;
+        string path = GetPath(slot);
+        if (!File.Exists(path)) { error = "Save slot does not exist."; return false; }
+
+        try
+        {
+            JsonNode root = JsonNode.Parse(File.ReadAllText(path)) ?? throw new JsonException("Empty save data.");
+            JsonNode payload;
+            int version;
+            bool legacy = root is not JsonObject envelope || !envelope.ContainsKey("$funkeSave");
+            if (legacy)
+            {
+                version = unversionedVersion ?? throw new JsonException("An explicit version is required for unversioned saves.");
+                payload = root.DeepClone();
+            }
+            else
+            {
+                if (root["$funkeSave"]?.GetValue<int>() != 1) throw new JsonException("Unsupported save envelope version.");
+                version = root["schemaVersion"]?.GetValue<int>() ?? throw new JsonException("Missing schema version.");
+                payload = root["payload"]?.DeepClone() ?? throw new JsonException("Missing save payload.");
+            }
+
+            if (version < 0 || version > currentVersion) throw new JsonException("Unsupported save schema version.");
+            bool changed = legacy || version != currentVersion;
+            while (version < currentVersion)
+            {
+                if (migrate == null) throw new JsonException($"No migration from schema {version}.");
+                payload = migrate(version, payload.DeepClone())?.DeepClone()
+                    ?? throw new JsonException($"Migration from schema {version} returned no data.");
+                ++version;
+            }
+
+            T candidate = payload.Deserialize<T>(CreateOptions()) ?? throw new JsonException("Save payload is null.");
+            if (validate != null && !validate(candidate)) throw new JsonException("Save validation failed.");
+            if (persistMigration && changed) AtomicFile.WriteAllText(path, VersionedJson(payload, currentVersion));
+            value = candidate;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            return false;
+        }
+    }
+
+    private static string VersionedJson(JsonNode payload, int version) => new JsonObject
+    {
+        ["$funkeSave"] = 1,
+        ["schemaVersion"] = version,
+        ["payload"] = payload.DeepClone(),
+    }.ToJsonString(CreateOptions());
 
     public static bool Exists(string slot) => File.Exists(GetPath(slot));
 

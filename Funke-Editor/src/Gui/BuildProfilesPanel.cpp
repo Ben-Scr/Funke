@@ -5,6 +5,7 @@
 #include "Core/Log.hpp"
 #include "Graphics/Texture2D.hpp"
 #include "Graphics/TextureManager.hpp"
+#include "Gui/EditorIcons.hpp"
 #include "Gui/EditorTheme.hpp"
 #include "Gui/EditorUI.hpp"
 #include "Gui/ImGuiImplWebGPU.hpp"
@@ -56,50 +57,6 @@ namespace Funke {
 
 		const char* RenderBackendLabel(FunkeProject::RenderBackend backend) {
 			return FunkeProject::RenderBackendToString(backend);
-		}
-
-		// Native dimensions travel with the handle so the draw call can
-		// fit-with-aspect instead of stretching every icon into a square —
-		// shipped icons range from 1:1 (macOS, Linux) through 3:2 (iOS) to
-		// nearly 16:9 (Android), and force-fitting warps the non-square ones.
-		struct PlatformIcon {
-			uint64_t handle = 0;
-			float width = 0.0f;
-			float height = 0.0f;
-		};
-
-		PlatformIcon LoadPlatformIcon(BuildPlatform platform) {
-			const char* iconName = FunkeBuildProfile::PlatformIconName(platform);
-			if (!iconName) return {};
-
-			static std::string platformIconsDir = []() {
-				const std::string editorTexturesDir = Path::ResolveFunkeAssets("Textures");
-				if (editorTexturesDir.empty()) return std::string{};
-				return (std::filesystem::path(editorTexturesDir) / "Editor" / "PlatformIcons").string();
-			}();
-			if (platformIconsDir.empty()) return {};
-
-			const std::string fullPath = (std::filesystem::path(platformIconsDir) /
-				(std::string(iconName) + ".png")).string();
-			TextureHandle handle = TextureManager::LoadTexture(
-				fullPath, Filter::Bilinear, Wrap::Clamp, Wrap::Clamp);
-			Texture2D* tex = TextureManager::GetTexture(handle);
-			if (tex && tex->IsValid()) return { tex->GetHandle(), tex->GetWidth(), tex->GetHeight() };
-			return {};
-		}
-
-		// Fits the icon into a square box keeping its aspect; alpha dims it (uninstalled platforms).
-		void DrawPlatformIcon(ImDrawList* drawList, BuildPlatform platform, const ImVec2& boxMin, float boxSize, float alpha = 1.0f) {
-			const PlatformIcon icon = LoadPlatformIcon(platform);
-			if (icon.handle == 0 || icon.width <= 0.0f || icon.height <= 0.0f) return;
-			float drawW = boxSize;
-			float drawH = boxSize;
-			if (icon.width > icon.height) drawH = boxSize * (icon.height / icon.width);
-			else if (icon.height > icon.width) drawW = boxSize * (icon.width / icon.height);
-			const ImVec2 min(boxMin.x + (boxSize - drawW) * 0.5f, boxMin.y + (boxSize - drawH) * 0.5f);
-			drawList->AddImage(static_cast<ImTextureID>(static_cast<intptr_t>(icon.handle)),
-				min, ImVec2(min.x + drawW, min.y + drawH), ImVec2(0, 0), ImVec2(1, 1),
-				IM_COL32(255, 255, 255, static_cast<int>(alpha * 255.0f)));
 		}
 
 		// Width EditorUI::Badge will occupy, so badges can be right-aligned before they are drawn.
@@ -593,7 +550,7 @@ namespace Funke {
 		}
 
 		const float centerY = rowMin.y + rowHeight * 0.5f;
-		DrawPlatformIcon(drawList, profile.Platform, ImVec2(rowMin.x + padX, centerY - iconSize * 0.5f), iconSize);
+		EditorIcons::DrawPlatform(drawList, profile.Platform, ImVec2(rowMin.x + padX, centerY - iconSize * 0.5f), iconSize);
 		drawList->AddText(ImVec2(textX, centerY - ImGui::GetTextLineHeight() * 0.5f),
 			ImGui::GetColorU32(ImGuiCol_Text), label.c_str());
 		if (isActive) {
@@ -714,7 +671,7 @@ namespace Funke {
 				drawList->AddRect(tileMin, tileMax, ImGui::GetColorU32(ImGuiCol_Border), rounding);
 			}
 
-			DrawPlatformIcon(drawList, platform,
+			EditorIcons::DrawPlatform(drawList, platform,
 				ImVec2(tileMin.x + pad, tileMin.y + (tileHeight - iconSize) * 0.5f), iconSize, available ? 1.0f : 0.45f);
 
 			const float textX = tileMin.x + pad + iconSize + pad;

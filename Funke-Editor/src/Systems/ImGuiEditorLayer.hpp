@@ -1,4 +1,5 @@
 #pragma once
+#include "Inspector/InspectorSelectionCache.hpp"
 #include "Gui/SceneHierarchyState.hpp"
 #include "Gui/AsyncTexturePreview.hpp"
 #include "Core/Layer.hpp"
@@ -19,6 +20,7 @@
 #include "Gui/EditorPreferencesPanel.hpp"
 #include "Gui/PackageManagerPanel.hpp"
 #include "Gui/PrefabInspector.hpp"
+#include "Gui/MarkdownPreview.hpp"
 #include "Gui/ProfilerPanel.hpp"
 #include "Gui/ScriptEditorWindows.hpp"
 #include "Gui/SpriteEditorPanel.hpp"
@@ -242,6 +244,7 @@ namespace Funke {
 
 		void RebuildSelectionSet();
 		void RecomputeInspectorSelectionCache(Scene& scene);
+		static const char* EntityTypeIconName(Scene& scene, EntityHandle handle);
 		static std::vector<std::string> CurrentEntityNames(Scene& scene, std::span<const EntityHandle> handles);
 		void FinishInspectorRename(Scene& scene);
 		void DrainPendingLogEntries();
@@ -390,18 +393,7 @@ namespace Funke {
 		bool m_IsSceneNodeSelected = false;
 
 		// Lazily recomputed when m_SelectionVersion changes; avoids per-frame N×M loops at large selection counts.
-		struct InspectorSelectionCache {
-			std::uint64_t Version = UINT64_MAX;
-			std::vector<EntityHandle> Handles;
-			std::unordered_set<std::type_index> CommonComponentTypes;
-			std::vector<std::string> PartialComponents;
-			bool NameUniform = true;
-			std::string FirstName;
-			bool EnabledUniform = true;
-			bool EnabledFirst = true;
-			bool StaticUniform = true;
-			bool StaticFirst = false;
-		};
+
 		InspectorSelectionCache m_InspectorCache;
 		// Inspector name field renames live while typing; one undo step from activation to deactivation.
 		struct InspectorRenameEdit {
@@ -639,6 +631,7 @@ namespace Funke {
 		bool m_PrefabEditConflictPopupOpen = false;
 
 		PrefabInspector m_PrefabInspector;
+		MarkdownPreview m_MarkdownPreview;
 		std::string m_PrefabInspectorPath;
 		// Save/discard prompt state for switching away from a dirty prefab.
 		bool m_ShowPrefabSavePrompt = false;

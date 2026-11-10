@@ -22,6 +22,7 @@
 #include <chrono>
 #include <cstring>
 #include <filesystem>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -34,6 +35,7 @@ namespace {
 
 		GraphicsAssetProject() {
 			MeshLibrary::Clear();
+			MaterialLibrary::Clear();
 			if (const auto* project = ProjectManager::GetCurrentProject()) Previous = std::make_unique<FunkeProject>(*project);
 			Root = std::filesystem::temp_directory_path() / ("FunkeGraphicsAssets_" +
 				std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
@@ -48,6 +50,7 @@ namespace {
 
 		~GraphicsAssetProject() {
 			MeshLibrary::Clear();
+			MaterialLibrary::Clear();
 			ProjectManager::SetCurrentProject(std::move(Previous));
 			std::error_code ec;
 			std::filesystem::remove_all(Root, ec);
@@ -357,6 +360,118 @@ TEST_CASE("Indirect texture ownership retains live 3D particles and releases rem
 	CHECK(references() == std::unordered_set<uint64_t>{ 3002 });
 	scene->DestroyEntity(emitter);
 	CHECK(references().empty());
+}
+
+TEST_CASE("Material hot reload is independent of other file readers and saves") {
+	GraphicsAssetProject project;
+	const std::string path = project.PathTo("surface.material");
+	REQUIRE(MaterialLibrary::SaveToFile(path, Material{}));
+	const uint64_t guid = AssetRegistry::GetOrCreateAssetUUID(path);
+	REQUIRE(guid != 0);
+	const Material* live = MaterialLibrary::Get(guid);
+	REQUIRE(live != nullptr);
+	Material replacement = *live;
+	replacement.Roughness = 0.123f;
+	replacement.BaseColorTexture = 717;
+	replacement.Properties["strength"].Value.x = 4.0f;
+	const auto oldTime = FileStamp::Read(path).WriteTime;
+	REQUIRE(File::WriteAllText(path, Json::Stringify(MaterialToJson(replacement))));
+	std::filesystem::last_write_time(Path::FromUtf8(path), oldTime + std::chrono::seconds(2));
+	SUBCASE("A preview reads the changed file before the cache reloads") {
+		Material preview;
+		REQUIRE(MaterialLibrary::LoadFromFile(path, preview));
+		CHECK_FALSE(KnownFileStamps::HasChangedOnDisk(path));
+	}
+	SUBCASE("A path-based writer records its own save") {
+		REQUIRE(MaterialLibrary::SaveToFile(path, replacement));
+		std::filesystem::last_write_time(Path::FromUtf8(path), oldTime + std::chrono::seconds(2));
+	}
+	CHECK(MaterialLibrary::ReloadChangedFromDisk() == 1);
+	CHECK(MaterialLibrary::Get(guid) == live);
+	CHECK(*live == replacement);
+	CHECK(MaterialLibrary::ReloadChangedFromDisk() == 0);
+	replacement.Roughness = 0.75f;
+	REQUIRE(MaterialLibrary::Save(guid, replacement));
+	CHECK(*live == replacement);
+	CHECK(MaterialLibrary::ReloadChangedFromDisk() == 0);
+}
+
+TEST_CASE("Material hot reload keeps the last usable material during partial saves") {
+	GraphicsAssetProject project;
+	const std::string path = project.PathTo("surface.material");
+	Material original;
+	original.Roughness = 0.25f;
+	REQUIRE(MaterialLibrary::SaveToFile(path, original));
+	const uint64_t guid = AssetRegistry::GetOrCreateAssetUUID(path);
+	const Material* live = MaterialLibrary::Get(guid);
+	REQUIRE(live != nullptr);
+	REQUIRE(File::WriteAllText(path, "{\"roughness\":"));
+	CHECK(MaterialLibrary::ReloadChangedFromDisk() == 0);
+	CHECK(MaterialLibrary::Get(guid) == live);
+	CHECK(*live == original);
+	Material replacement = original;
+	replacement.Roughness = 0.875f;
+	REQUIRE(File::WriteAllText(path, Json::Stringify(MaterialToJson(replacement))));
+	CHECK(MaterialLibrary::ReloadChangedFromDisk() == 1);
+	CHECK(MaterialLibrary::Get(guid) == live);
+	CHECK(*live == replacement);
+}
+
+TEST_CASE("Material hot reload retries a transient failure without another watcher event") {
+	GraphicsAssetProject project;
+	const std::string path = project.PathTo("surface.material");
+	REQUIRE(MaterialLibrary::SaveToFile(path, Material{}));
+	const uint64_t guid = AssetRegistry::GetOrCreateAssetUUID(path);
+	const Material* live = MaterialLibrary::Get(guid);
+	REQUIRE(live != nullptr);
+	Material replacement;
+	replacement.Roughness = 0.875f;
+	const std::string contents = Json::Stringify(MaterialToJson(replacement));
+	REQUIRE(File::WriteAllText(path, std::string(contents.size(), 'x')));
+	CHECK(MaterialLibrary::ReloadChangedFromDisk() == 0);
+	const FileStamp failedStamp = FileStamp::Read(path);
+	REQUIRE(File::WriteAllText(path, contents));
+	std::filesystem::last_write_time(Path::FromUtf8(path), failedStamp.WriteTime);
+	REQUIRE(FileStamp::Read(path) == failedStamp);
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+	while (std::chrono::steady_clock::now() < deadline) {
+		const Material* current = MaterialLibrary::Get(guid);
+		if (!current || current->Roughness == replacement.Roughness) break;
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	CHECK(MaterialLibrary::Get(guid) == live);
+	CHECK(*live == replacement);
+}
+
+TEST_CASE("glTF hot reload keeps usable geometry until all exported files are ready") {
+	GraphicsAssetProject project;
+	REQUIRE(project.WriteBuffer(2.0f));
+	const uint64_t guid = project.WriteMesh("model.gltf");
+	const MeshAsset* live = MeshLibrary::Get(guid);
+	REQUIRE(live != nullptr);
+	const uint32_t revision = live->Revision;
+	const std::string modelPath = project.PathTo("model.gltf");
+	const std::string model = File::ReadAllText(modelPath);
+	SUBCASE("The model JSON is temporarily truncated") {
+		REQUIRE(File::WriteAllText(modelPath, "{"));
+	}
+	SUBCASE("The external buffer is only partially written") {
+		REQUIRE(File::WriteAllBytes(project.PathTo("shared.bin"), std::vector<uint8_t>{ 0 }));
+	}
+	SUBCASE("An atomic replacement temporarily removes the model") {
+		REQUIRE(std::filesystem::remove(Path::FromUtf8(modelPath)));
+	}
+	CHECK(MeshLibrary::ReloadChangedFromDisk() == 0);
+	CHECK(MeshLibrary::Get(guid) == live);
+	CHECK(live->Revision == revision);
+	CHECK(live->BoundsMax.y == doctest::Approx(2.0f));
+	REQUIRE(File::WriteAllText(modelPath, model));
+	REQUIRE(project.WriteBuffer(7.0f));
+	CHECK(MeshLibrary::ReloadChangedFromDisk() == 1);
+	CHECK(MeshLibrary::Get(guid) == live);
+	CHECK(live->Revision != revision);
+	CHECK(live->BoundsMax.y == doctest::Approx(7.0f));
+	CHECK(MeshLibrary::ReloadChangedFromDisk() == 0);
 }
 
 TEST_CASE("glTF hot reload refreshes every mesh sharing an externally changed buffer") {

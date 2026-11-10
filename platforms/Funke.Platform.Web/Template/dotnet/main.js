@@ -39,13 +39,27 @@ async function loadContent(Module) {
       }
     }
   };
+  const downloadFile = async (file) => {
+    const chunks = manifest.chunks?.[file];
+    if (!chunks) return download(file);
+    const data = new Uint8Array(chunks.size);
+    let offset = 0;
+    for (const part of chunks.parts) {
+      const bytes = await download(part);
+      if (offset + bytes.length > data.length) throw new Error(`Oversized game file: ${file}`);
+      data.set(bytes, offset);
+      offset += bytes.length;
+    }
+    if (offset !== data.length) throw new Error(`Incomplete game file: ${file}`);
+    return data;
+  };
   // A bounded number of requests in flight: thousands at once exhaust the browser's buffers.
   const worker = async () => {
     while (next < manifest.files.length && !failed) {
       const file = manifest.files[next++];
       let data;
       try {
-        data = await download(file);
+        data = await downloadFile(file);
       }
       catch (error) {
         failed = true;

@@ -61,7 +61,7 @@ namespace Funke {
 			};
 		}
 
-		// FocusedColor.a == 0 is the sentinel "no focus tint"; all presets ship with a==0 so scenes opt-in explicitly.
+		// Alpha zero leaves focus styling to the existing hover tint.
 		Color ResolveStateTint(const Color& normal, const Color& hovered,
 			const Color& pressed, const Color& disabled,
 			const Color& focused,
@@ -69,8 +69,8 @@ namespace Funke {
 		{
 			if (!interact.Interactable) return disabled;
 			if (interact.IsPressed)     return pressed;
-			if (interact.Focusable && interact.IsFocused && focused.a > 0.0f) {
-				return focused;
+			if (interact.Focusable && interact.IsFocused) {
+				return focused.a > 0.0f ? focused : hovered;
 			}
 			if (interact.IsHovered)     return hovered;
 			return normal;
@@ -83,7 +83,7 @@ namespace Funke {
 				btn.PressedColor, btn.DisabledColor, btn.FocusedColor, interact);
 		}
 
-		// UUID{0} in any per-state slot means "unset, fall back to NormalSprite"; returns 0 when NormalSprite is also unset.
+		// Unset focus sprites inherit hover; other unset states fall back to normal.
 		UUID ResolveStateSprite(UUID normal, UUID hovered, UUID pressed,
 			UUID disabled, UUID focused,
 			const InteractableComponent& interact)
@@ -91,7 +91,7 @@ namespace Funke {
 			UUID candidate{ 0 };
 			if (!interact.Interactable)                                  candidate = disabled;
 			else if (interact.IsPressed)                                 candidate = pressed;
-			else if (interact.Focusable && interact.IsFocused)           candidate = focused;
+			else if (interact.Focusable && interact.IsFocused)           candidate = static_cast<uint64_t>(focused) != 0 ? focused : hovered;
 			else if (interact.IsHovered)                                 candidate = hovered;
 			else                                                         candidate = normal;
 			if (static_cast<uint64_t>(candidate) == 0) candidate = normal;
@@ -449,7 +449,7 @@ namespace Funke {
 
 		// Mirrors EmitText's advance/kerning/letter-spacing so caret X aligns to the actual rendered glyph positions.
 		float MeasureUpToByte(const Font& font, std::string_view text, int targetByte,
-			float letterSpacing)
+			float letterSpacing, bool bold)
 		{
 			if (targetByte <= 0) return 0.0f;
 			const int n = static_cast<int>(text.size());
@@ -465,7 +465,7 @@ namespace Funke {
 				const GlyphMetrics* g = font.GetGlyph(cp);
 				if (g) {
 					if (prev != 0) w += font.GetKerning(prev, cp);
-					w += g->XAdvance;
+					w += g->XAdvance + (bold ? font.GetPixelSize() * 0.035f : 0.0f);
 					if (glyphCount > 0) w += letterSpacing;
 					++glyphCount;
 					prev = cp;
@@ -482,7 +482,7 @@ namespace Funke {
 		// the left of `relX` (screen pixels relative to text origin). Used
 		// for click-to-place-caret and drag-to-extend-selection.
 		int ByteFromRelativeX(const Font& font, std::string_view text,
-			float relX, float scale, float letterSpacing)
+			float relX, float scale, float letterSpacing, bool bold)
 		{
 			if (text.empty() || relX <= 0.0f) return 0;
 			float accX = 0.0f;
@@ -497,7 +497,7 @@ namespace Funke {
 				float advance = 0.0f;
 				if (g) {
 					if (prev != 0) advance += font.GetKerning(prev, cp);
-					advance += g->XAdvance;
+					advance += g->XAdvance + (bold ? font.GetPixelSize() * 0.035f : 0.0f);
 					if (glyphCount > 0) advance += letterSpacing;
 				}
 				const float advanceScreen = advance * scale;
@@ -516,6 +516,7 @@ namespace Funke {
 			float OriginX = 0.0f;
 			float Scale = 1.0f;
 			float LetterSpacing = 0.0f;
+			bool Bold = false;
 			float LineSpacing = 0.0f;
 			Font* FontPtr = nullptr;
 			TextAlignment Align = TextAlignment::Left;
@@ -566,6 +567,7 @@ namespace Funke {
 				out.WrapWidthPixels = std::max(0.0f, ((tr.x - bl.x) - padPixels - marginPixels) / out.Scale);
 			}
 			out.LetterSpacing = tc.LetterSpacing;
+			out.Bold = tc.Bold;
 			out.LineSpacing = tc.LineSpacing;
 			out.FontPtr = font;
 			out.Align = tc.HAlign;
@@ -578,7 +580,7 @@ namespace Funke {
 			const float descentW = font->GetDescent() * out.Scale; // negative (below baseline)
 			const float capOffset = tc.FontSize * uniformScale * 0.35f;
 			std::vector<std::pair<size_t, size_t>> vlinesTmp;
-			TextRenderer::ComputeVisualLines(*font, field.Text, out.LetterSpacing, out.WrapMode, out.WrapWidthPixels, vlinesTmp);
+			TextRenderer::ComputeVisualLines(*font, field.Text, out.LetterSpacing, out.WrapMode, out.WrapWidthPixels, vlinesTmp, out.Bold);
 			const float blockSpan = static_cast<float>(std::max<size_t>(1, vlinesTmp.size()) - 1) * lineHeightW;
 			switch (tc.VAlign) {
 			case TextVerticalAlignment::Top:
@@ -606,7 +608,7 @@ namespace Funke {
 		std::vector<std::pair<int, int>> InputVisualLines(const InputTextLayout& layout, std::string_view text) {
 			std::vector<std::pair<size_t, size_t>> raw;
 			TextRenderer::ComputeVisualLines(*layout.FontPtr, text, layout.LetterSpacing,
-				layout.WrapMode, layout.WrapWidthPixels, raw);
+				layout.WrapMode, layout.WrapWidthPixels, raw, layout.Bold);
 			std::vector<std::pair<int, int>> lines;
 			lines.reserve(raw.size());
 			for (const auto& p : raw) lines.emplace_back(static_cast<int>(p.first), static_cast<int>(p.second));
@@ -667,9 +669,9 @@ namespace Funke {
 			}
 
 			const float caretX = MeasureUpToByte(*layout.FontPtr, measureView, caretMeasureByte,
-				layout.LetterSpacing) * layout.Scale;
+				layout.LetterSpacing, layout.Bold) * layout.Scale;
 			const float lineW = MeasureUpToByte(*layout.FontPtr, measureView,
-				static_cast<int>(measureView.size()), layout.LetterSpacing) * layout.Scale;
+				static_cast<int>(measureView.size()), layout.LetterSpacing, layout.Bold) * layout.Scale;
 
 			float scroll = field.ScrollOffsetX;
 			if (caretX - scroll > windowWidth) scroll = caretX - windowWidth; // caret past right edge
@@ -783,16 +785,16 @@ namespace Funke {
 				float relX = mouseUi.x - layout.OriginX + field.ScrollOffsetX;
 				if (layout.Align == TextAlignment::Center) {
 					const float lineW = MeasureUpToByte(*layout.FontPtr, lineView,
-						static_cast<int>(lineView.size()), layout.LetterSpacing) * layout.Scale;
+						static_cast<int>(lineView.size()), layout.LetterSpacing, layout.Bold) * layout.Scale;
 					relX += lineW * 0.5f;
 				}
 				else if (layout.Align == TextAlignment::Right) {
 					const float lineW = MeasureUpToByte(*layout.FontPtr, lineView,
-						static_cast<int>(lineView.size()), layout.LetterSpacing) * layout.Scale;
+						static_cast<int>(lineView.size()), layout.LetterSpacing, layout.Bold) * layout.Scale;
 					relX += lineW;
 				}
 				return ls + ByteFromRelativeX(*layout.FontPtr, lineView, relX,
-					layout.Scale, layout.LetterSpacing);
+					layout.Scale, layout.LetterSpacing, layout.Bold);
 			}
 
 			// Secret: measure the masked string (widths differ from real text), then map the mask byte back to a field.Text codepoint offset.
@@ -806,16 +808,16 @@ namespace Funke {
 			float relX = mouseUi.x - layout.OriginX + field.ScrollOffsetX;
 			if (layout.Align == TextAlignment::Center) {
 				const float lineW = MeasureUpToByte(*layout.FontPtr, measureView,
-					static_cast<int>(measureView.size()), layout.LetterSpacing) * layout.Scale;
+					static_cast<int>(measureView.size()), layout.LetterSpacing, layout.Bold) * layout.Scale;
 				relX += lineW * 0.5f;
 			}
 			else if (layout.Align == TextAlignment::Right) {
 				const float lineW = MeasureUpToByte(*layout.FontPtr, measureView,
-					static_cast<int>(measureView.size()), layout.LetterSpacing) * layout.Scale;
+					static_cast<int>(measureView.size()), layout.LetterSpacing, layout.Bold) * layout.Scale;
 				relX += lineW;
 			}
 			const int byteInMeasure = ByteFromRelativeX(*layout.FontPtr, measureView, relX,
-				layout.Scale, layout.LetterSpacing);
+				layout.Scale, layout.LetterSpacing, layout.Bold);
 
 			if (!field.IsSecret) return byteInMeasure;
 
@@ -1602,14 +1604,17 @@ namespace Funke {
 		// dropdownView is hoisted to function scope above so Widgets section 9
 		// can reuse it after this Group 2 block ends.
 		for (auto&& [entity, rect, dd] : dropdownView.each()) {
-			const Vec2 mouseUi = PointerForEntity(scene, entity, screenUi);
-			if (mouseUi.x == std::numeric_limits<float>::lowest()) continue;
 			dd.SelectionChangedThisFrame = false;
+			if (!dd.IsOpen || input.GetMouseDelta().x != 0.0f || input.GetMouseDelta().y != 0.0f || mouseDownThisFrame) {
+				dd.NavigationIndex = -1;
+			}
 			if (!dd.SelectionObserved) {
 				dd.LastObservedSelectedIndex = dd.SelectedIndex;
 				dd.SelectionObserved = true;
 			}
 			if (!dd.IsOpen || dd.Options.empty()) continue;
+			const Vec2 mouseUi = PointerForEntity(scene, entity, screenUi);
+			if (mouseUi.x == std::numeric_limits<float>::lowest()) continue;
 
 			const Vec2 bl = rect.GetBottomLeft();
 			const Vec2 tr = rect.GetTopRight();
@@ -1850,6 +1855,9 @@ namespace Funke {
 				targetInteract = registry.try_get<InteractableComponent>(entity);
 			}
 			if (targetImage && targetInteract) {
+				if (auto* track = registry.try_get<InteractableComponent>(entity); track && track->IsFocused) {
+					targetInteract = track;
+				}
 				ApplyWidgetVisualState(*targetImage, *targetInteract, slider.TransitionMode,
 					slider.NormalColor, slider.HoveredColor, slider.PressedColor, slider.DisabledColor, slider.FocusedColor,
 					slider.NormalSprite, slider.HoveredSprite, slider.PressedSprite, slider.DisabledSprite, slider.FocusedSprite);
@@ -1863,7 +1871,7 @@ namespace Funke {
 		auto sliderView = registry.view<SliderComponent, RectTransform2DComponent>(entt::exclude<DisabledTag>);
 		for (auto&& [entity, slider, rect] : sliderView.each()) {
 			const Vec2 mouseUi = PointerForEntity(scene, entity, screenUi);
-			if (mouseUi.x == std::numeric_limits<float>::lowest()) continue;
+			const bool hasPointer = mouseUi.x != std::numeric_limits<float>::lowest();
 			slider.ValueChangedThisFrame = false;
 			// Sync the diff baseline on first observation so a scene-load
 			// deserialised Value doesn't fire a spurious event against the
@@ -1885,7 +1893,7 @@ namespace Funke {
 			const bool handlePressed = handleInteract && handleInteract->Interactable && handleInteract->IsPressed;
 			const bool trackPressed = trackInteract && trackInteract->Interactable && trackInteract->IsPressed;
 
-			if (slider.IsReadOnly) {
+			if (slider.IsReadOnly || !hasPointer) {
 				slider.IsDragging = false;
 			}
 			else if (handlePressed || trackPressed) {
@@ -1972,7 +1980,7 @@ namespace Funke {
 			auto circularView = registry.view<CircularSliderComponent, RectTransform2DComponent, InteractableComponent>(entt::exclude<DisabledTag>);
 			for (auto&& [entity, cs, rect, interact] : circularView.each()) {
 				const Vec2 mouseUi = PointerForEntity(scene, entity, screenUi);
-				if (mouseUi.x == std::numeric_limits<float>::lowest()) continue;
+				const bool hasPointer = mouseUi.x != std::numeric_limits<float>::lowest();
 				cs.ValueChangedThisFrame = false;
 				if (!cs.ValueObserved) {
 					cs.LastObservedValue = cs.Value;
@@ -2002,7 +2010,7 @@ namespace Funke {
 				const float dy = mouseUi.y - centre.y;
 				const float cursorAngle = std::atan2(dy, dx);
 
-				if (cs.IsReadOnly) {
+				if (cs.IsReadOnly || !hasPointer) {
 					cs.IsDragging = false;
 				}
 				else if (isPressed) {
@@ -2055,14 +2063,20 @@ namespace Funke {
 					cs.LastObservedValue = cs.Value;
 				}
 
-				// Tint handle from its own Interactable (cursor-on-handle), not the ring's — without this the handle Color stayed static.
+				// Preserve handle pointer feedback while inheriting ring focus and disabled state.
 				if (cs.HandleEntity != entt::null
 					&& registry.valid(cs.HandleEntity))
 				{
 					ImageComponent* handleImage = registry.try_get<ImageComponent>(cs.HandleEntity);
-					InteractableComponent* handleInteract = registry.try_get<InteractableComponent>(cs.HandleEntity);
 					if (handleImage) {
-						InteractableComponent& effectiveInteract = handleInteract ? *handleInteract : interact;
+						InteractableComponent effectiveInteract = handleInteract ? *handleInteract : interact;
+						effectiveInteract.Interactable = effectiveInteract.Interactable && interact.Interactable;
+						effectiveInteract.IsPressed = effectiveInteract.IsPressed || interact.IsPressed;
+						effectiveInteract.IsHovered = effectiveInteract.IsHovered || interact.IsHovered;
+						if (interact.Focusable && interact.IsFocused) {
+							effectiveInteract.Focusable = true;
+							effectiveInteract.IsFocused = true;
+						}
 						ApplyWidgetVisualState(*handleImage, effectiveInteract, cs.TransitionMode,
 							cs.NormalColor, cs.HoveredColor, cs.PressedColor, cs.DisabledColor, cs.FocusedColor,
 							cs.NormalSprite, cs.HoveredSprite, cs.PressedSprite, cs.DisabledSprite, cs.FocusedSprite);
@@ -2702,10 +2716,10 @@ namespace Funke {
 					// Establish the goal column on the first vertical move, then reuse it.
 					if (field.CaretDesiredX < 0.0f) {
 						const int withinCur = std::clamp(field.CaretBytePos - curStart, 0, curEnd - curStart);
-						field.CaretDesiredX = MeasureUpToByte(*layout.FontPtr, curLine, withinCur, layout.LetterSpacing) * layout.Scale;
+						field.CaretDesiredX = MeasureUpToByte(*layout.FontPtr, curLine, withinCur, layout.LetterSpacing, layout.Bold) * layout.Scale;
 					}
 					const int newCaret = tStart + ByteFromRelativeX(*layout.FontPtr, targetView,
-						field.CaretDesiredX, layout.Scale, layout.LetterSpacing);
+						field.CaretDesiredX, layout.Scale, layout.LetterSpacing, layout.Bold);
 					field.CaretBytePos = std::clamp(newCaret, tStart, tEnd);
 					if (!shiftDown) field.SelectionAnchorBytePos = field.CaretBytePos;
 				};

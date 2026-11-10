@@ -152,6 +152,7 @@ namespace Funke {
 	}
 
 	void PhysicsSystem2D::SyncTransformsToPhysics() {
+		FUNKE_PROFILE_SCOPE("Physics2D.Sync");
 		// Collider shape rebuild FIRST: body loops clear the dirty flag, so shape sync must read it before they do.
 		SceneManager::ForeachLoadedScene([](Scene& scene) {
 			auto& registry = scene.GetRegistry();
@@ -186,10 +187,13 @@ namespace Funke {
 				if (extension.SyncToPhysics) extension.SyncToPhysics(scene);
 			}
 
-			for (auto [ent, rb, tf] : registry.view<Rigidbody2DComponent, Transform2DComponent>(entt::exclude<DisabledTag>).each()) {
-				if (tf.IsDirty() && rb.IsValid()) {
-					rb.SetTransform(tf);
-					tf.ClearDirty();
+			{
+				FUNKE_PROFILE_SCOPE("Physics2D.BodyTransforms");
+				for (auto [ent, rb, tf] : registry.view<Rigidbody2DComponent, Transform2DComponent>(entt::exclude<DisabledTag>).each()) {
+					if (tf.IsDirty() && rb.IsValid()) {
+						rb.SetTransform(tf);
+						tf.ClearDirty();
+					}
 				}
 			}
 
@@ -247,7 +251,10 @@ namespace Funke {
 
 		SyncTransformsToPhysics();
 
-		s_MainWorld->Step(dt);
+		{
+			FUNKE_PROFILE_SCOPE("Physics2D.Step");
+			s_MainWorld->Step(dt);
+		}
 		for (const PhysicsExtension2D& extension : Extensions()) {
 			if (extension.Step) extension.Step(dt);
 		}
@@ -279,6 +286,7 @@ namespace Funke {
 
 		// Queued events carry raw Scene*; a callback calling LoadScene (Single) releases those scenes
 		// mid-dispatch. Keep them alive until dispatch ends and skip events for scenes unloaded meanwhile.
+		FUNKE_PROFILE_SCOPE("Physics2D.Callbacks");
 		std::vector<std::shared_ptr<Scene>> sceneKeepAlive;
 		for (const std::weak_ptr<Scene>& weakScene : SceneManager::GetLoadedScenes()) {
 			if (auto scene = weakScene.lock()) sceneKeepAlive.push_back(std::move(scene));
@@ -288,12 +296,15 @@ namespace Funke {
 				&& (!collision.sceneB || collision.sceneB->IsLoaded());
 		};
 		const PhysicsExtension2D::CollisionHandler onEnter = [&](const Collision2D& collision) {
+			FUNKE_PROFILE_VALUE("Physics2D.ContactEvents", 1);
 			if (scenesStillLoaded(collision)) ScriptSystem::DispatchCollisionEnter2D(collision);
 		};
 		const PhysicsExtension2D::CollisionHandler onStay = [&](const Collision2D& collision) {
+			FUNKE_PROFILE_VALUE("Physics2D.ContactEvents", 1);
 			if (scenesStillLoaded(collision)) ScriptSystem::DispatchCollisionStay2D(collision);
 		};
 		const PhysicsExtension2D::CollisionHandler onExit = [&](const Collision2D& collision) {
+			FUNKE_PROFILE_VALUE("Physics2D.ContactEvents", 1);
 			if (scenesStillLoaded(collision)) ScriptSystem::DispatchCollisionExit2D(collision);
 		};
 

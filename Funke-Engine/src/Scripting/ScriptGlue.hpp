@@ -4,7 +4,7 @@
 namespace Funke {
 
 	// Bump together with InteropHandshake.LayoutVersion (ScriptHostBridge.cs) on any add/remove/reorder in NativeBindings or ManagedCallbacks.
-	inline constexpr int32_t k_ScriptInteropLayoutVersion = 50;
+	inline constexpr int32_t k_ScriptInteropLayoutVersion = 52;
 
 	/// Layout must match C# NativeBindingsStruct exactly (Sequential, blittable).
 	struct NativeBindings
@@ -1374,6 +1374,12 @@ namespace Funke {
 		int (*Scene_ActivatePreloaded)(uint64_t operationId, int additive);
 		int (*Scene_GetLoadProgress)(uint64_t operationId, int* phase, float* progress);
 		uint64_t (*Entity_GetOwningSceneId)(uint64_t entityID);
+		int (*TextRenderer_GetRichText)(uint64_t entityID);
+		void (*TextRenderer_SetRichText)(uint64_t entityID, int enabled);
+		int (*TextRenderer_GetBold)(uint64_t entityID);
+		void (*TextRenderer_SetBold)(uint64_t entityID, int enabled);
+		int (*TextRenderer_GetItalic)(uint64_t entityID);
+		void (*TextRenderer_SetItalic)(uint64_t entityID, int enabled);
 	};
 
 	/// Layout must match C# ManagedCallbacksStruct exactly.

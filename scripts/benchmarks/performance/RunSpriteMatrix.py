@@ -111,7 +111,7 @@ def export(output):
             "timings": {"cpuWork": timing, "gpu": None, "frameInterval": None, "setup": None, "commandRecording": None, "commandPlayback": None},
             "memory": {"native": None, "managed": None, "gpu": None},
             "diagnostics": {"scopeSums": result["timings"], "image": result["image"]},
-            "rawSamples": [{"file": raw_path.name, "sha256": common.digest(raw_path), "timingScope": "cpuWork", "unit": "ms"}]}
+            "rawSamples": [{"file": raw_path.name, "sha256": common.digest(raw_path), "timingScope": "cpu_render_ms", "unit": "ms"}]}
         def missing(value, prefix):
             if isinstance(value, dict):
                 for key, item in value.items():
@@ -142,6 +142,7 @@ def main():
     parser.add_argument("--samples", type=int, default=60)
     parser.add_argument("--warmups", type=int, default=20)
     parser.add_argument("--repeats", type=int, default=3)
+    parser.add_argument("--timeout", type=int, default=180, help="Maximum seconds for the native process")
     parser.add_argument("--conditions", required=True, help="Observed host load and capture limitations")
     parser.add_argument("--export-only", action="store_true")
     args = parser.parse_args()
@@ -151,6 +152,8 @@ def main():
         return
     if any(n < 1 or n > 10000 for n in (args.samples, args.warmups, args.repeats)):
         parser.error("Sample settings must be between 1 and 10000")
+    if args.timeout < 1:
+        parser.error("Timeout must be positive")
     binary = args.binary.resolve(strict=True)
     output.mkdir(parents=True, exist_ok=False)
     files = [binary, *binary.parent.glob("*.dll")]
@@ -164,10 +167,16 @@ def main():
           "FUNKE_BATCH_WARMUPS": str(args.warmups), "FUNKE_USER_DATA_ROOT": str(output / "user-data")}
     command = [str(binary), "--test-case=GPU material batching benchmark*", "--no-skip", "--reporters=xml", f"--out={output / 'tests.xml'}"]
     begin = time.monotonic()
-    with (output / "run.log").open("wb") as log:
-        result = subprocess.run(command, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT, timeout=1800, creationflags=subprocess.CREATE_NO_WINDOW)
-    context.update(exitCode=result.returncode, wallSeconds=time.monotonic()-begin, binariesAfter=hashes())
-    common.write_json(output / "context.json", context)
+    try:
+        with (output / "run.log").open("wb") as log:
+            result = subprocess.run(command, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT, timeout=args.timeout, creationflags=subprocess.CREATE_NO_WINDOW)
+        context["exitCode"] = result.returncode
+    except subprocess.TimeoutExpired:
+        context.update(exitCode=None, failure="timeout", timeoutSeconds=args.timeout)
+        raise
+    finally:
+        context.update(wallSeconds=time.monotonic()-begin, binariesAfter=hashes())
+        common.write_json(output / "context.json", context)
     if re.search(r"WebGPU \[(Validation|OutOfMemory|Internal)\]|Device lost", (output / "run.log").read_text(errors="replace")):
         raise RuntimeError("Graphics validation failed")
     export(output)

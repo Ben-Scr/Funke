@@ -1,4 +1,6 @@
 #include "pch.hpp"
+#include "Profiling/GpuTimer.hpp"
+#include "Profiling/Profiler.hpp"
 #include "Gui/GuiRenderer.hpp"
 
 #include "Components/General/HierarchyComponent.hpp"
@@ -32,6 +34,7 @@
 #include "Graphics/Text/Font.hpp"
 #include "Graphics/Text/FontManager.hpp"
 #include "Graphics/Text/TextRenderer.hpp"
+#include "Graphics/Text/TextLayout.hpp"
 #include "Graphics/Text/TextEncoding.hpp"
 #include "Graphics/TextureManager.hpp"
 #include "Gui/UIDrawOrder.hpp"
@@ -67,7 +70,7 @@ namespace Funke {
 		}
 
 		float MeasureUpToByteUI(const Font& font, std::string_view text, int targetByte,
-			float letterSpacing)
+			float letterSpacing, bool bold)
 		{
 			if (targetByte <= 0) return 0.0f;
 			const int n = static_cast<int>(text.size());
@@ -83,7 +86,7 @@ namespace Funke {
 				const GlyphMetrics* g = font.GetGlyph(cp);
 				if (g) {
 					if (prev != 0) w += font.GetKerning(prev, cp);
-					w += g->XAdvance;
+					w += g->XAdvance + (bold ? font.GetPixelSize() * 0.035f : 0.0f);
 					if (glyphCount > 0) w += letterSpacing;
 					++glyphCount;
 					prev = cp;
@@ -101,6 +104,7 @@ namespace Funke {
 			float OriginX = 0.0f;
 			float Scale = 1.0f;
 			float LetterSpacing = 0.0f;
+			bool Bold = false;
 			float LineSpacing = 0.0f;
 			Font* FontPtr = nullptr;
 			TextAlignment Align = TextAlignment::Left;
@@ -141,6 +145,7 @@ namespace Funke {
 			out.OriginX = originX;
 			out.Scale = (tc.FontSize / bakedSize) * uniformScale;
 			out.LetterSpacing = tc.LetterSpacing;
+			out.Bold = tc.Bold;
 			out.LineSpacing = tc.LineSpacing;
 			out.FontPtr = font;
 			out.Align = tc.HAlign;
@@ -162,7 +167,7 @@ namespace Funke {
 		std::vector<std::pair<int, int>> InputVisualLines(const InputFieldOverlayLayout& layout, std::string_view text) {
 			std::vector<std::pair<size_t, size_t>> raw;
 			TextRenderer::ComputeVisualLines(*layout.FontPtr, text, layout.LetterSpacing,
-				layout.WrapMode, layout.WrapWidthPixels, raw);
+				layout.WrapMode, layout.WrapWidthPixels, raw, layout.Bold);
 			std::vector<std::pair<int, int>> lines;
 			lines.reserve(raw.size());
 			for (const auto& p : raw) lines.emplace_back(static_cast<int>(p.first), static_cast<int>(p.second));
@@ -671,6 +676,7 @@ namespace Funke {
 		float halfW, float halfH, EntityHandle worldRoot,
 		const std::vector<std::pair<EntityHandle, int>>& drawOrder)
 	{
+		FUNKE_PROFILE_SCOPE("UI.CollectAndDraw");
 		entt::registry& registry = const_cast<entt::registry&>(scene.GetRegistry());
 
 		// ── 1. Build hierarchy draw order ────────────────────────────
@@ -840,7 +846,7 @@ namespace Funke {
 		for (const auto& [entity, drawIndex] : drawOrder) {
 			if (!registry.all_of<RectTransform2DComponent, TextRendererComponent>(entity)) continue;
 			auto& text = registry.get<TextRendererComponent>(entity);
-			if (text.Text.empty()) continue;
+			if (text.GetDisplayText().empty()) continue;
 
 			const auto& rect = registry.get<RectTransform2DComponent>(entity);
 
@@ -892,7 +898,11 @@ namespace Funke {
 
 			TextDrawCmd cmd;
 			cmd.FontPtr = font;
-			cmd.Text = std::string_view(text.Text);
+			cmd.Text = std::string_view(text.GetDisplayText());
+			cmd.RichText = text.RichText;
+			cmd.Bold = text.Bold;
+			cmd.Italic = text.Italic;
+			cmd.FontSize = text.FontSize;
 			cmd.X = originX;
 			cmd.Y = baselineY;
 			cmd.Scale = drawScale;
@@ -926,6 +936,16 @@ namespace Funke {
 			cmd.SetEffects(text, uniformScale);
 			auto ifIt = inputFieldTextChildren.find(entity);
 			const InputFieldComponent* ifField = (ifIt != inputFieldTextChildren.end()) ? ifIt->second : nullptr;
+			cmd.RichText = text.RichText && !ifField;
+			if (cmd.RichText) {
+				const auto& layout = TextRenderer::GetLayout(cmd);
+				if (text.VAlign == TextVerticalAlignment::Top)
+					cmd.Y = tr.y - marginTopWorld - layout.Top * drawScale;
+				else if (text.VAlign == TextVerticalAlignment::Bottom)
+					cmd.Y = bl.y + marginBottomWorld - layout.Bottom * drawScale;
+				else cmd.Y = (bl.y + marginBottomWorld + tr.y - marginTopWorld) * 0.5f
+					- (layout.Top + layout.Bottom) * 0.5f * drawScale;
+			}
 			bool clipToField = false;
 			if (ifField && !ifField->Multiline) {
 				cmd.X -= ifField->ScrollOffsetX;
@@ -1012,9 +1032,10 @@ namespace Funke {
 				const Vec2 rowBL{ bl.x, rowBottom };
 				const Vec2 rowSize{ width, rowH };
 
-				const bool hovered = mouseUi.x >= rowBL.x && mouseUi.x <= rowBL.x + rowSize.x
+				const bool pointerHovered = mouseUi.x >= rowBL.x && mouseUi.x <= rowBL.x + rowSize.x
 					&& mouseUi.y >= rowBL.y && mouseUi.y <= rowBL.y + rowSize.y;
-				const bool pressed = hovered && mouseHeld;
+				const bool hovered = dd.NavigationIndex >= 0 ? i == dd.NavigationIndex : pointerHovered;
+				const bool pressed = pointerHovered && mouseHeld;
 				const bool selected = (i == dd.SelectedIndex);
 
 				const Color rowColor = resolveOptionColor(dd, hovered, pressed, selected);
@@ -1150,12 +1171,12 @@ namespace Funke {
 					const auto [ls, le] = lines[lineIdx];
 					std::string_view lineView{ field.Text.data() + ls, static_cast<size_t>(le - ls) };
 					const float lineW = MeasureUpToByteUI(*layout.FontPtr, lineView,
-						le - ls, layout.LetterSpacing) * layout.Scale;
+						le - ls, layout.LetterSpacing, layout.Bold) * layout.Scale;
 					float shift = 0.0f;
 					if (layout.Align == TextAlignment::Center) shift = -lineW * 0.5f;
 					else if (layout.Align == TextAlignment::Right) shift = -lineW;
 					const float w = MeasureUpToByteUI(*layout.FontPtr, lineView,
-						std::clamp(byte - ls, 0, le - ls), layout.LetterSpacing) * layout.Scale;
+						std::clamp(byte - ls, 0, le - ls), layout.LetterSpacing, layout.Bold) * layout.Scale;
 					return layout.OriginX + shift + w - field.ScrollOffsetX;
 				};
 
@@ -1236,14 +1257,14 @@ namespace Funke {
 			const float centerY = firstLineCaretCenterY(1);
 
 			const float fullLineW = MeasureUpToByteUI(*layout.FontPtr, measureText,
-				static_cast<int>(measureText.size()), layout.LetterSpacing) * layout.Scale;
+				static_cast<int>(measureText.size()), layout.LetterSpacing, layout.Bold) * layout.Scale;
 			float alignShift = 0.0f;
 			if (layout.Align == TextAlignment::Center) alignShift = -fullLineW * 0.5f;
 			else if (layout.Align == TextAlignment::Right) alignShift = -fullLineW;
 
 			auto byteToAbsX = [&](int byte) {
 				const float w = MeasureUpToByteUI(*layout.FontPtr, measureText,
-					convertByte(byte), layout.LetterSpacing) * layout.Scale;
+					convertByte(byte), layout.LetterSpacing, layout.Bold) * layout.Scale;
 				return layout.OriginX + alignShift + w - field.ScrollOffsetX;
 			};
 
@@ -1410,6 +1431,7 @@ namespace Funke {
 			passDesc.colorAttachments       = &colorAtt;
 			passDesc.depthStencilAttachment = target.HasDepth ? &depthAtt : nullptr;
 
+			GpuPassTrace passTrace(enc, passDesc);
 			wgpu::RenderPassEncoder pass = enc.BeginRenderPass(&passDesc);
 			WebGPUBackend::ApplyCachedViewportToPass(pass);
 			pass.SetPipeline(pipeline);
@@ -1486,6 +1508,7 @@ namespace Funke {
 			}
 
 			pass.End();
+			passTrace.Resolve();
 
 			if (target.IsSwapChain) {
 				WebGPUBackend::MarkSwapChainRendered();

@@ -216,6 +216,24 @@ public enum TextWrapMode { None = 0, Word = 1, Character = 2 }
 
 public class TextRenderer : Component
 {
+    public bool Bold
+    {
+        get => InternalCalls.TextRenderer_GetBold(RequireComponent<TextRenderer>());
+        set => InternalCalls.TextRenderer_SetBold(RequireComponent<TextRenderer>(), value);
+    }
+
+    public bool Italic
+    {
+        get => InternalCalls.TextRenderer_GetItalic(RequireComponent<TextRenderer>());
+        set => InternalCalls.TextRenderer_SetItalic(RequireComponent<TextRenderer>(), value);
+    }
+
+    public bool RichText
+    {
+        get => InternalCalls.TextRenderer_GetRichText(RequireComponent<TextRenderer>());
+        set => InternalCalls.TextRenderer_SetRichText(RequireComponent<TextRenderer>(), value);
+    }
+
     public string Text
     {
         get => InternalCalls.TextRenderer_GetText(RequireComponent<TextRenderer>());

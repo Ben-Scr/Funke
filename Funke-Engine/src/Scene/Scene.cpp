@@ -1185,6 +1185,7 @@ namespace Funke {
 	}
 
 	void Scene::ClearEntities() {
+		FUNKE_PROFILE_SCOPE("Scene.Teardown");
 		// Gate m_TearingDown so Camera2D destroy hooks don't re-enter RefreshMainCameraSelection mid-iteration.
 		m_MainCameraEntity = entt::null;
 		const bool wasTearingDown = std::exchange(m_TearingDown, true);

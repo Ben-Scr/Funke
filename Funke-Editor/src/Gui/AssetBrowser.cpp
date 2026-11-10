@@ -1,4 +1,5 @@
 #include <pch.hpp>
+#include "Profiling/Profiler.hpp"
 #include "Core/EngineModules.hpp"
 #include "Assets/AssetRegistry.hpp"
 #include "Core/Platform.hpp"
@@ -719,6 +720,7 @@ namespace Funke {
 		if (ext == ".xml")                                                   return "file_xml";
 		if (ext == ".bin")                                                   return "file_bin";
 		if (ext == ".zip")                                                   return "folder_zip";
+		if (ext == ".md" || ext == ".markdown")                              return "file_markdown";
 		if (ext == ".txt" || ext == ".cfg" || ext == ".ini" ||
 			ext == ".yaml" || ext == ".toml" || ext == ".lua")               return "file_txt";
 		if (ext == ".wav" || ext == ".mp3" || ext == ".ogg" || ext == ".flac") return "file_audio";
@@ -1461,6 +1463,7 @@ namespace Funke {
 	}
 
 	void AssetBrowser::Render() {
+		FUNKE_PROFILE_SCOPE("Editor.AssetBrowser");
 		m_SelectionActivated = false;
 		PumpExternalAssetImport();
 		PumpAssetDeletion();
@@ -2719,7 +2722,7 @@ namespace Funke {
 					}
 					ImGui::EndMenu();
 				}
-				if (EngineModules::IsActive(EngineModule::ThreeD) && EditorMenu::Item(Icon::Sprite, "Material")) {
+				if (EngineModules::IsActive(EngineModule::ThreeD) && EditorMenu::Item(Icon::Material, "Material")) {
 					CreateMaterial(m_CurrentDirectory);
 				}
 				if (EditorMenu::Begin(Icon::Animation, "Animation")) {
@@ -2740,13 +2743,13 @@ namespace Funke {
 					if (EditorMenu::Item(Icon::File, "Empty File")) {
 						CreateFile(m_CurrentDirectory, "NewFile", "", "");
 					}
-					if (EditorMenu::Item(Icon::File, "Text File")) {
+					if (EditorMenu::Item(Icon::TextFile, "Text File")) {
 						CreateFile(m_CurrentDirectory, "NewFile", ".txt", "");
 					}
-					if (EditorMenu::Item(Icon::File, "Binary File")) {
+					if (EditorMenu::Item(Icon::BinaryFile, "Binary File")) {
 						CreateFile(m_CurrentDirectory, "NewFile", ".bin", "");
 					}
-					if (EditorMenu::Item(Icon::Data, "JSON File")) {
+					if (EditorMenu::Item(Icon::Json, "JSON File")) {
 						CreateFile(m_CurrentDirectory, "NewFile", ".json", "{\n}\n");
 					}
 					ImGui::EndMenu();

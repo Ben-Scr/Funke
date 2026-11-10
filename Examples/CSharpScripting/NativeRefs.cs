@@ -9,7 +9,7 @@ public class NativeRefs : EntityScript
     public override void OnUpdate()
     {
         if (!HasNativeComponent<NativeTransform2D>()) return;
-        var copy = Entity.TransformRef;
+        var copy = Entity.TransformRefReadOnly;
         copy.LocalPosition += new Vector2(Speed * Time.DeltaTime, 0);
         ref var transform = ref Entity.TransformRef;
         transform.LocalPosition = copy.LocalPosition;

@@ -1,4 +1,5 @@
 #include "pch.hpp"
+#include "Profiling/Profiler.hpp"
 #include "Graphics/Texture2D.hpp"
 
 #include "Core/Log.hpp"
@@ -542,6 +543,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
 		wgpu::Extent3D writeSize{ static_cast<uint32_t>(w), static_cast<uint32_t>(h), 1 };
 
 		queue.WriteTexture(&dst, image.Pixels, byteCount, &layout, &writeSize);
+		FUNKE_PROFILE_VALUE("GPU.TextureUploadBytes", float(byteCount));
 
 		if (!GenerateMipChain(texture, format, mipLevelCount)) {
 			FNK_CORE_WARN_TAG("Texture2D", "Mip generation failed, sampling level 0 only: {}", sourcePath);
@@ -599,6 +601,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
 		layout.rowsPerImage = static_cast<uint32_t>(rowCount);
 		wgpu::Extent3D size{ static_cast<uint32_t>(m_Width), static_cast<uint32_t>(rowCount), 1 };
 		WebGPUBackend::GetQueue().WriteTexture(&dst, rgba, byteCount, &layout, &size);
+		FUNKE_PROFILE_VALUE("GPU.TextureUploadBytes", float(byteCount));
 		return true;
 	}
 
@@ -695,6 +698,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
 
 		wgpu::Extent3D writeSize{ static_cast<uint32_t>(m_Width), static_cast<uint32_t>(m_Height), 1 };
 		queue.WriteTexture(&dst, rgba, byteCount, &layout, &writeSize);
+		FUNKE_PROFILE_VALUE("GPU.TextureUploadBytes", float(byteCount));
 		if (slot->MipLevelCount > 1) {
 			GenerateMipChain(slot->Texture, slot->Texture.GetFormat(), slot->MipLevelCount);
 		}

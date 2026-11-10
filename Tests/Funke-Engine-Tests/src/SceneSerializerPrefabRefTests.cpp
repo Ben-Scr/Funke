@@ -141,6 +141,21 @@ TEST_CASE("Prefab instantiation remaps a child-to-child entity ref to the instan
 	REQUIRE(componentIt != scriptComponent.PendingFieldValues.end());
 	CHECK(componentIt->second == std::to_string(childBId) + ":Transform 2D");
 
+	REQUIRE(SceneSerializer::SaveEntityToFile(*scene, instanceRoot, filePathStr));
+	auto reopened = Scene::CreateDetachedScene("Upgraded prefab");
+	const auto reopenedRoot = SceneSerializer::LoadEntityFromFile(*reopened, filePathStr);
+	REQUIRE(reopenedRoot != entt::null);
+	EntityHandle reopenedA = entt::null, reopenedB = entt::null;
+	for (const auto child : reopened->GetEntity(reopenedRoot).GetChildren()) {
+		if (reopened->GetEntity(child).GetName() == "ChildA") reopenedA = child;
+		if (reopened->GetEntity(child).GetName() == "ChildB") reopenedB = child;
+	}
+	REQUIRE(reopenedA != entt::null);
+	REQUIRE(reopenedB != entt::null);
+	const auto& reopenedFields = reopened->GetComponent<ScriptComponent>(reopenedA).PendingFieldValues;
+	CHECK(reopenedFields.at("TestScript.Target") == std::to_string(reopened->GetEntityPersistentID(reopenedB)));
+	CHECK(reopenedFields.at("TestScript.TargetTransform") == std::to_string(reopened->GetEntityPersistentID(reopenedB)) + ":Transform 2D");
+
 	std::error_code removeError;
 	std::filesystem::remove(filePath, removeError);
 }

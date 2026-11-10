@@ -142,6 +142,96 @@ public class PlayerPrefsTests : IDisposable
 [Collection("PersistentStorage")]
 public class SaveDataTests : IDisposable
 {
+    [Fact]
+    public void VersionedSaveMigratesInOrderAndPersistsOnlyOnRequest()
+    {
+        SaveData.SaveVersioned("versioned", new Inventory { Gold = 5, Name = "Before" }, 1);
+        string path = Path.Combine(m_Dir.Path, "versioned.json");
+        string original = File.ReadAllText(path);
+        var steps = new List<int>();
+        System.Text.Json.Nodes.JsonNode Migrate(int from, System.Text.Json.Nodes.JsonNode data)
+        {
+            steps.Add(from);
+            if (from == 1) data["Gold"] = 15;
+            else if (from == 2) data["Name"] = "After";
+            else throw new InvalidOperationException("Missing step");
+            return data;
+        }
+
+        Assert.True(SaveData.TryLoadVersioned("versioned", 3, out Inventory? loaded, out string? error, Migrate));
+        Assert.Null(error);
+        Assert.Equal(new[] { 1, 2 }, steps);
+        Assert.Equal(15, loaded!.Gold);
+        Assert.Equal("After", loaded.Name);
+        Assert.Equal(original, File.ReadAllText(path));
+        Assert.True(SaveData.TryLoadVersioned("versioned", 3, out loaded, out error, Migrate, persistMigration: true));
+        Assert.True(SaveData.TryLoadVersioned("versioned", 3, out loaded, out error));
+        Assert.Equal(15, loaded!.Gold);
+        Assert.False(File.Exists(path + ".tmp"));
+    }
+
+    [Fact]
+    public void LegacySaveRequiresExplicitVersionAndKeepsUnknownData()
+    {
+        SaveData.Save("legacy", new Inventory { Gold = 7 });
+        string path = Path.Combine(m_Dir.Path, "legacy.json");
+        string original = File.ReadAllText(path);
+        Assert.False(SaveData.TryLoadVersioned("legacy", 1, out Inventory? value, out _));
+        Assert.Equal(original, File.ReadAllText(path));
+        Assert.True(SaveData.TryLoadVersioned("legacy", 1, out value, out _,
+            (version, data) => { Assert.Equal(0, version); data["UnknownToModel"] = 42; return data; },
+            unversionedVersion: 0, persistMigration: true));
+        Assert.Equal(7, value!.Gold);
+        Assert.Contains("UnknownToModel", File.ReadAllText(path));
+        Assert.True(SaveData.TryLoadVersioned("legacy", 1, out value, out _));
+    }
+
+    [Theory]
+    [InlineData("missing")]
+    [InlineData("throw")]
+    [InlineData("null")]
+    [InlineData("invalid-type")]
+    [InlineData("validation")]
+    [InlineData("future")]
+    public void FailedMigrationPreservesSlotAndDoesNotPublishValue(string failure)
+    {
+        SaveData.SaveVersioned("safe", new Inventory { Gold = 7 }, failure == "future" ? 9 : 0);
+        string path = Path.Combine(m_Dir.Path, "safe.json");
+        string original = File.ReadAllText(path);
+        System.Text.Json.Nodes.JsonNode Migrate(int version, System.Text.Json.Nodes.JsonNode data)
+        {
+            data["Gold"] = 99;
+            if (failure == "throw") throw new InvalidOperationException("Migration failed");
+            if (failure == "null") return null!;
+            if (failure == "invalid-type") data["Gold"] = "Not a number";
+            return data;
+        }
+
+        Assert.False(SaveData.TryLoadVersioned("safe", 1, out Inventory? value, out string? error,
+            failure == "missing" ? null : Migrate, candidate => failure != "validation", persistMigration: true));
+        Assert.Null(value);
+        Assert.False(string.IsNullOrEmpty(error));
+        Assert.Equal(original, File.ReadAllText(path));
+        Assert.False(File.Exists(path + ".tmp"));
+    }
+
+    [Theory]
+    [InlineData("{{{")]
+    [InlineData("null")]
+    [InlineData("{\"$funkeSave\":2,\"schemaVersion\":0,\"payload\":{}}")]
+    [InlineData("{\"$funkeSave\":1,\"schemaVersion\":-1,\"payload\":{}}")]
+    [InlineData("{\"$funkeSave\":1,\"schemaVersion\":0.5,\"payload\":{}}")]
+    [InlineData("{\"$funkeSave\":1,\"schemaVersion\":0}")]
+    public void InvalidVersionedFileIsPreserved(string content)
+    {
+        string path = Path.Combine(m_Dir.Path, "invalid.json");
+        File.WriteAllText(path, content);
+        Assert.False(SaveData.TryLoadVersioned("invalid", 1, out Inventory? value, out string? error, persistMigration: true));
+        Assert.Null(value);
+        Assert.NotNull(error);
+        Assert.Equal(content, File.ReadAllText(path));
+    }
+
     public class Inventory
     {
         public int Gold;

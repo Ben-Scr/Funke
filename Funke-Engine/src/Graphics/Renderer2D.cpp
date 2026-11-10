@@ -1092,6 +1092,7 @@ namespace Funke {
 			const size_t sceneCount = CollectSpriteInstances(scene, viewportAABB, g_InstancesScratch, g_TexturesScratch,
 				m_GraphicsSettings.ParticleQuality);
 			SortInstancesInPlace(sceneCount);
+			FUNKE_PROFILE_VALUE("Renderer2D.InstanceCopyBytes", float(g_InstancesScratch.size() * sizeof(Instance44)));
 			g_CombinedInstancesScratch.insert(g_CombinedInstancesScratch.end(), g_InstancesScratch.begin(), g_InstancesScratch.end());
 			g_CombinedTexturesScratch.insert(g_CombinedTexturesScratch.end(), g_TexturesScratch.begin(), g_TexturesScratch.end());
 			bool hasText = false;
@@ -1099,6 +1100,7 @@ namespace Funke {
 				auto text = scene.GetRegistry().view<TextRendererComponent, Transform2DComponent>(entt::exclude<DisabledTag>);
 				hasText = text.begin() != text.end();
 			}
+			FUNKE_PROFILE_VALUE("Renderer2D.SceneDrawGrowths", sceneDraws.size() == sceneDraws.capacity() ? 1.0f : 0.0f);
 			sceneDraws.push_back({ &scene, begin, g_CombinedInstancesScratch.size(), hasText });
 		});
 		g_InstancesScratch.swap(g_CombinedInstancesScratch);
@@ -1245,6 +1247,7 @@ namespace Funke {
 				queue.WriteBuffer(g_InstanceBuffer, 0,
 					g_GpuInstanceScratch.data(),
 					windowCount * sizeof(SpriteInstance));
+				FUNKE_PROFILE_VALUE("Renderer2D.UploadBytes", float(windowCount * sizeof(SpriteInstance)));
 				uploadedBegin = windowBegin;
 				uploadedEnd = windowEnd;
 			}

@@ -1,0 +1,17 @@
+{
+  "tool": "image_gen.imagegen",
+  "prompt": "Create one production-ready Markdown file icon for Funke game editor. The two supplied images are STYLE REFERENCES ONLY: match their softly dimensional upright document silhouette, folded upper-right corner, softly rounded corners, subtle bevels, gentle upper-left light and small contact shadows. New icon: a cool slate-blue document with a very large, clear raised ivory Markdown symbol centered on the front: a bold uppercase M followed by a bold downward arrow, side by side (M ↓). The M and down arrow should be plain, thick, highly readable shapes with generous spacing, no rectangular outline around the symbol. Match the reference document's scale and composition almost exactly: upright front-facing page filling about 88% of a square canvas, modest depth on right/bottom, balanced transparent margins. Opaque document and symbol, genuinely transparent background, no ground plane or external cast shadow. One icon only, no text labels, no extra decorations, no watermark. Not pixel art. Design must remain recognizable at 16, 32, 64, 128, and 256 pixels.",
+  "source": "file_markdown.png",
+  "export": {
+    "sizes": [
+      16,
+      32,
+      64,
+      128,
+      256
+    ],
+    "resampling": "Lanczos",
+    "preserve_alpha": true,
+    "destination": "Funke-Runtime/FunkeAssets/Textures/Editor/FileIcons/file_markdown"
+  }
+}

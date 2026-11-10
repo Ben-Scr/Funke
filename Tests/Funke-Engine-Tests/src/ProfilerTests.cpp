@@ -5,6 +5,7 @@
 #ifdef FUNKE_PROFILER_ENABLED
 
 #include "Profiling/Profiler.hpp"
+#include "../../../Funke-Editor/src/Editor/ApplicationEditorAccess.hpp"
 
 #include <chrono>
 #include <thread>
@@ -185,6 +186,66 @@ TEST_CASE("Profiler — SetTrackingSpan reshapes ring buffer and clears state") 
 	REQUIRE(m != nullptr);
 	CHECK(m->Samples.size() == 16);
 	CHECK(m->Count == 0); // resize discards prior samples — graph would otherwise show at wrong scale
+}
+
+TEST_CASE("Profiler frame capture sums views and threads without changing panel gates") {
+	ResetProfiler();
+	Profiler::SetPanelVisible(false);
+	Profiler::SetModuleEnabled("Physics", false);
+	Profiler::SetSamplingHz(1);
+	Profiler::SetFrameCaptureEnabled(true);
+	REQUIRE(Profiler::IsArmed());
+	std::thread worker([] { for (int i = 0; i < 40; ++i) Profiler::PushSample("Physics", .5f); });
+	for (int i = 0; i < 60; ++i) Profiler::PushSample("Physics", 1.0f);
+	worker.join();
+	std::vector<ProfilerFrameSample> samples;
+	Profiler::ConsumeFrameSamples(samples);
+	bool found = false;
+	for (const auto& sample : samples) if (sample.Name == "Physics") {
+		found = true;
+		CHECK(sample.Calls == 100);
+		CHECK(sample.Sum == doctest::Approx(80.0));
+	}
+	CHECK(found);
+	CHECK(Profiler::Find("Physics")->Count == 0);
+	Profiler::ConsumeFrameSamples(samples);
+	for (const auto& sample : samples) { CHECK(sample.Calls == 0); CHECK(sample.Sum == 0); }
+	Profiler::Register("Late view");
+	Profiler::PushSample("Late view", 3.0f);
+	Profiler::ConsumeFrameSamples(samples);
+	CHECK(samples.back().Name == "Late view");
+	CHECK(samples.back().Calls == 1);
+	CHECK(samples.back().Sum == doctest::Approx(3.0));
+	Profiler::SetFrameCaptureEnabled(false);
+	CHECK_FALSE(Profiler::IsArmed());
+	Profiler::Initialize();
+	CHECK_FALSE(Profiler::IsFrameCaptureEnabled());
+}
+
+TEST_CASE("Profiler panel freezes during editor play pause while diagnostic frames continue") {
+	Application app;
+	ResetProfiler();
+	Application::SetIsPlaying(true);
+	Profiler::PushSample("Physics", 1.0f);
+	REQUIRE(Profiler::Find("Physics")->Count == 1);
+	ApplicationEditorAccess::SetPlaymodePaused(true);
+	CHECK(Application::IsGameplayPaused());
+	CHECK_FALSE(Application::IsPaused());
+	CHECK_FALSE(Profiler::IsCollecting());
+	Profiler::SetFrameCaptureEnabled(true);
+	Profiler::PushSample("Physics", 2.0f);
+	CHECK(Profiler::Find("Physics")->Count == 1);
+	std::vector<ProfilerFrameSample> samples;
+	Profiler::ConsumeFrameSamples(samples);
+	for (const auto& sample : samples) if (sample.Name == "Physics") {
+		CHECK(sample.Calls == 1);
+		CHECK(sample.Sum == 2.0);
+	}
+	ApplicationEditorAccess::SetPlaymodePaused(false);
+	CHECK(Profiler::IsCollecting());
+	Profiler::PushSample("Physics", 3.0f);
+	CHECK(Profiler::Find("Physics")->Count == 2);
+	Profiler::SetFrameCaptureEnabled(false);
 }
 
 #endif // FUNKE_PROFILER_ENABLED

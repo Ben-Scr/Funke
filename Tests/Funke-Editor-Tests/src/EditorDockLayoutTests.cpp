@@ -83,6 +83,69 @@ TEST_CASE("EditorDockLayout builds the default arrangement into an empty dockspa
 	CHECK(NodeOf("Inspector")->Size.x > 100.0f);
 }
 
+TEST_CASE("EditorDockLayout preview reads a saved layout without changing the live context") {
+	HeadlessImGui imgui;
+	const ImGuiID dockspaceId = imgui.Frame("Dockspace", BuildDefaultWhenUndocked);
+	imgui.Frame("Dockspace");
+	ImGuiDockNode* views = NodeOf("Editor View");
+	const std::string ini = ImGui::SaveIniSettingsToMemory();
+	const auto preview = EditorDockLayout::ParsePreview(ini);
+	CHECK(preview.Panes.size() == 5);
+	CHECK(preview.Size.x > 0.0f);
+	CHECK(preview.Size.y > 0.0f);
+	float area = 0.0f;
+	int central = 0;
+	for (const auto& pane : preview.Panes) {
+		CHECK(pane.Position.x >= 0.0f);
+		CHECK(pane.Position.y >= 0.0f);
+		CHECK(pane.Position.x + pane.Size.x <= 1.00001f);
+		CHECK(pane.Position.y + pane.Size.y <= 1.00001f);
+		area += pane.Size.x * pane.Size.y;
+		central += pane.Central ? 1 : 0;
+	}
+	CHECK(area == doctest::Approx(1.0f));
+	CHECK(central == 1);
+	CHECK(ImGui::GetCurrentContext() == imgui.Context);
+	CHECK(NodeOf("Editor View") == views);
+	CHECK(EditorDockLayout::HasDockedPanels(dockspaceId));
+	CHECK(std::string(ImGui::SaveIniSettingsToMemory()) == ini);
+}
+
+TEST_CASE("EditorDockLayout preview respects nested split ratios and ignores other settings") {
+	const auto preview = EditorDockLayout::ParsePreview(
+		"[Window][Inspector]\r\nPos=42,24\r\nSize=500,500\r\n"
+		"[Docking][Data]\r\n"
+		"DockSpace ID=0x10 Pos=-100,50 Size=1000,600 Split=X\r\n"
+		"  DockNode ID=0x11 Parent=0x10 SizeRef=200,600\r\n"
+		"  DockNode ID=0x12 Parent=0x10 SizeRef=800,600 Split=Y\r\n"
+		"    DockNode ID=0x13 Parent=0x12 SizeRef=800,450 CentralNode=1\r\n"
+		"    DockNode ID=0x14 Parent=0x12 SizeRef=800,150\r\n"
+		"DockNode ID=0x20 Pos=0,0 Size=300,200\r\n"
+		"[Table][Other]\r\nDockNode ID=bad\r\n");
+	REQUIRE(preview.Panes.size() == 3);
+	CHECK(preview.Size.x == 1000.0f);
+	CHECK(preview.Panes[0].Size.x == doctest::Approx(0.2f));
+	CHECK(preview.Panes[1].Position.x == doctest::Approx(0.2f));
+	CHECK(preview.Panes[1].Size.y == doctest::Approx(0.75f));
+	CHECK(preview.Panes[1].Central);
+	CHECK(preview.Panes[2].Position.y == doctest::Approx(0.75f));
+	CHECK(preview.Panes[2].Size.y == doctest::Approx(0.25f));
+}
+
+TEST_CASE("EditorDockLayout preview handles missing and malformed docking data") {
+	for (const std::string& data : {
+		std::string(), std::string("[Window][Log]\nSize=200,100\n"),
+		std::string("[Docking][Data]\nDockSpace ID=0x1 Size=0,600\n"),
+		std::string("[Docking][Data]\nDockSpace ID=0x1 Size=1000,600 Split=X\n"),
+		std::string("[Docking][Data]\nDockSpace ID=0x1 Size=1000,600 Split=X\nDockNode ID=0x2 Parent=0x1 SizeRef=200,600\n"),
+		std::string("[Docking][Data]\nDockSpace ID=0x1 Size=1000,600\nDockNode ID=0x1 Parent=0x1 SizeRef=200,600\n"),
+		std::string("[Docking][Data]\nDockNode ID=0x1 Parent=0x2 SizeRef=200,600\n"),
+		std::string("[Docking][Data]\nDockSpace ID=0x1 Size=999999999999999999999999,600\n") }) {
+		CAPTURE(data);
+		CHECK(EditorDockLayout::ParsePreview(data).Panes.empty());
+	}
+}
+
 TEST_CASE("EditorDockLayout reset re-docks panels that already exist") {
 	HeadlessImGui imgui;
 	const ImGuiID dockspaceId = imgui.Frame("Dockspace", BuildDefaultWhenUndocked);
@@ -186,6 +249,45 @@ TEST_CASE("Editor window icons support script window IDs and stay context local"
 	ImGui::DestroyContext(other);
 	ImGui::SetCurrentContext(imgui.Context);
 	CHECK(ImGui::GetPlatformIO().WindowTitleIcon == &EditorWindowIcons::Draw);
+}
+
+TEST_CASE("Editor window icons use generated textures without loading during measurement") {
+	HeadlessImGui imgui;
+	static std::string requested;
+	static int requestedSize = 0;
+	static int requests = 0;
+	requests = 0;
+	struct ResetProvider {
+		~ResetProvider() { EditorWindowIcons::SetTextureProvider(nullptr); }
+	} resetProvider;
+	EditorWindowIcons::SetTextureProvider([](const char* name, int size) -> ImTextureID {
+		requested = name;
+		requestedSize = size;
+		++requests;
+		return 42;
+	});
+	CHECK(EditorWindowIcons::Draw("Log", nullptr, ImVec2(), 15.5f, 0) == doctest::Approx(20.15f));
+	CHECK(requests == 0);
+	ImGui::NewFrame();
+	ImGui::Begin("Icon textures");
+	ImDrawList* list = ImGui::GetWindowDrawList();
+	const int firstVertex = list->VtxBuffer.Size;
+	const ImU32 tint = IM_COL32(80, 120, 160, 90);
+	EditorWindowIcons::Draw("Log", list, ImVec2(20, 30), 15.5f, tint);
+	CHECK(requests == 1);
+	CHECK(requested == "ui_log");
+	CHECK(requestedSize == 16);
+	REQUIRE(list->VtxBuffer.Size == firstVertex + 4);
+	CHECK(list->VtxBuffer[firstVertex].col == tint);
+	CHECK(list->VtxBuffer[firstVertex].uv.y == 1.0f);
+	CHECK(list->VtxBuffer[firstVertex + 2].uv.y == 0.0f);
+	CHECK(list->VtxBuffer[firstVertex + 2].pos.x == doctest::Approx(35.5f));
+	EditorWindowIcons::SetTextureProvider(nullptr);
+	CHECK(EditorWindowIcons::Draw("Log", list, ImVec2(), 15.0f, tint) == doctest::Approx(19.5f));
+	CHECK(list->VtxBuffer.Size == firstVertex + 4);
+	CHECK(EditorWindowIcons::Draw("Unknown", list, ImVec2(), 15.0f, tint) == 0.0f);
+	ImGui::End();
+	ImGui::EndFrame();
 }
 
 TEST_CASE("Editor menu icons preserve native selection disabled state and item IDs") {

@@ -1,4 +1,6 @@
 #include "pch.hpp"
+#include "Profiling/GpuTimer.hpp"
+#include "Profiling/Profiler.hpp"
 #include "Graphics/Text/TextRenderer.hpp"
 
 #if FUNKE_WITH_2D
@@ -46,7 +48,7 @@ namespace Funke {
 			return TextEncoding::DecodeUtf8(s, idx, outCp, outLen);
 		}
 
-		float MeasureLineWidth(const Font& font, std::string_view line, float letterSpacing) {
+		float MeasureLineWidth(const Font& font, std::string_view line, float letterSpacing, bool bold) {
 			float width = 0.0f;
 			uint32_t prev = 0;
 			int glyphCount = 0;
@@ -60,7 +62,7 @@ namespace Funke {
 				const GlyphMetrics* g = font.GetGlyph(cp);
 				if (!g) { prev = 0; continue; }
 				if (prev != 0) width += font.GetKerning(prev, cp);
-				width += g->XAdvance;
+				width += g->XAdvance + (bold ? font.GetPixelSize() * 0.035f : 0.0f);
 				if (glyphCount > 0) width += letterSpacing;
 				++glyphCount;
 				prev = cp;
@@ -338,7 +340,6 @@ namespace Funke {
 				wgpu::Sampler       MaskSampler;
 			};
 
-			TextLayout::Cache Layouts;
 			wgpu::Buffer IndexBuffer;
 			uint32_t IndexGlyphCapacity = 0;
 			wgpu::Buffer VertexBuffer;
@@ -354,6 +355,7 @@ namespace Funke {
 			glm::mat4 PendingMvp{ 1.0f };
 		};
 		std::unordered_map<const TextRenderer*, PerInstance> g_PerInstance;
+		TextLayout::Cache g_Layouts;
 
 		PerInstance& GetPerInstance(const TextRenderer* self) {
 			return g_PerInstance[self];
@@ -552,7 +554,19 @@ namespace Funke {
 	// ── Static font resolution (backend-neutral logic) ──────────────────────
 
 	Vec2 TextRenderer::MeasureNaturalSize(Font& font, std::string_view text, float letterSpacing,
-		float lineSpacing) {
+		float lineSpacing, bool richText, float fontSize, bool bold, bool italic) {
+		if (richText) {
+			TextDrawCmd cmd;
+			cmd.FontPtr = &font;
+			cmd.Text = text;
+			cmd.RichText = true;
+			cmd.Bold = bold;
+			cmd.Italic = italic;
+			cmd.FontSize = fontSize;
+			cmd.LetterSpacing = letterSpacing;
+			cmd.LineSpacing = lineSpacing;
+			return GetLayout(cmd).NaturalSize;
+		}
 		if (text.empty()) return Vec2{ 0.0f, font.GetLineHeight() };
 
 		float maxLineWidth = 0.0f;
@@ -563,7 +577,7 @@ namespace Funke {
 			size_t lineEnd = text.find('\n', lineStart);
 			if (lineEnd == std::string_view::npos) lineEnd = textSize;
 			std::string_view line(text.data() + lineStart, lineEnd - lineStart);
-			const float w = MeasureLineWidth(font, line, letterSpacing);
+			const float w = MeasureLineWidth(font, line, letterSpacing, bold);
 			if (w > maxLineWidth) maxLineWidth = w;
 			++lineCount;
 			if (lineEnd == textSize) break;
@@ -580,7 +594,8 @@ namespace Funke {
 
 	Font* TextRenderer::ResolveFontAtPixelSize(TextRendererComponent& text, float pixelSize) {
 		constexpr float k_MaxBakedPixelSize = 192.0f;
-		const float requested = pixelSize > 0.0f ? pixelSize : text.FontSize;
+		const float richScale = text.RichText ? TextLayout::MaxRichTextScale(text.GetDisplayText(), text.FontSize) : 1.0f;
+		const float requested = (pixelSize > 0.0f ? pixelSize : text.FontSize) * richScale;
 		const float bakeRequest = std::min(requested, k_MaxBakedPixelSize);
 
 		uint64_t uuid = static_cast<uint64_t>(text.FontAssetId);
@@ -652,6 +667,7 @@ namespace Funke {
 		m_Runs.clear();
 		m_Runs.shrink_to_fit();
 		g_PerInstance.erase(this);
+		g_Layouts.Clear();
 		ReleaseGlobalState();
 		m_IsInitialized = false;
 	}
@@ -666,14 +682,24 @@ namespace Funke {
 	// Shared with EmitText (which renders the same rows) and the input-field caret/
 	// selection/hit-test code, so wrapped glyph rows and caret geometry never disagree.
 	void TextRenderer::ComputeVisualLines(Font& font, std::string_view text, float letterSpacing,
-		TextWrapMode wrapMode, float wrapWidthPixels, std::vector<std::pair<size_t, size_t>>& out)
+		TextWrapMode wrapMode, float wrapWidthPixels, std::vector<std::pair<size_t, size_t>>& out, bool bold)
 	{
-		TextLayout::VisualLines(font, text, letterSpacing, wrapMode, wrapWidthPixels, out);
+		TextLayout::VisualLines(font, text, letterSpacing, wrapMode, wrapWidthPixels, out, bold);
+	}
+
+	const TextLayout::Layout& TextRenderer::GetLayout(const TextDrawCmd& cmd) {
+		const TextLayout::Settings settings{ cmd.LetterSpacing, cmd.LineSpacing, cmd.WrapWidthPixels,
+			cmd.Wrap, cmd.Align, cmd.VAlign, cmd.RichText, cmd.FontSize, cmd.Bold, cmd.Italic };
+		return g_Layouts.Get(cmd.FontPtr->GetAtlasTexture(), cmd.Text, settings,
+			[&](TextLayout::Layout& result) {
+				std::vector<std::pair<size_t, size_t>> lines;
+				TextLayout::Build(*cmd.FontPtr, cmd.Text, settings, result, lines);
+			});
 	}
 
 	void TextRenderer::EmitText(const TextLayout::Layout& layout, const TextDrawCmd& command,
 		float offsetX, float offsetY, const Color& color,
-		const glm::mat4& mvp, const QuadVisibility::Clip& clip)
+		const glm::mat4& mvp, const QuadVisibility::Clip& clip, bool useTextColors)
 	{
 		if (layout.Glyphs.empty()) return;
 		const float rotationC = std::cos(command.Rotation);
@@ -718,9 +744,13 @@ namespace Funke {
 			}
 		}
 		for (const TextLayout::Glyph& glyph : layout.Glyphs) {
-			const std::array<Vec2, 4> corners{ transform(glyph.X0, glyph.Y1),
-				transform(glyph.X1, glyph.Y1), transform(glyph.X1, glyph.Y0),
-				transform(glyph.X0, glyph.Y0) };
+			prototype.R = useTextColors && glyph.HasColor ? glyph.Tint.r : color.r;
+			prototype.G = useTextColors && glyph.HasColor ? glyph.Tint.g : color.g;
+			prototype.B = useTextColors && glyph.HasColor ? glyph.Tint.b : color.b;
+			prototype.A = color.a * (glyph.HasColor ? glyph.Tint.a : 1.0f);
+			const std::array<Vec2, 4> corners{ transform(glyph.X0 + glyph.ShearBottom, glyph.Y1),
+				transform(glyph.X1 + glyph.ShearBottom, glyph.Y1), transform(glyph.X1 + glyph.ShearTop, glyph.Y0),
+				transform(glyph.X0 + glyph.ShearTop, glyph.Y0) };
 			if (visibility != QuadVisibility::Visibility::Inside && !QuadVisibility::IsVisible(corners, mvp, clip)) continue;
 			if (m_Runs.empty() || m_Runs.back().Key.AtlasTexture != glyph.Atlas) {
 				GlyphRun run;
@@ -753,6 +783,7 @@ namespace Funke {
 	void TextRenderer::RenderInstances(std::span<const TextDrawCmd> commands, const glm::mat4& mvp,
 		unsigned short /*viewId*/, unsigned short /*scissorCache*/, bool depthTest)
 	{
+		FUNKE_PROFILE_SCOPE("Text.GeometryAndSubmit");
 		m_LastFrameGlyphCount = 0;
 		m_LastFrameDrawCalls = 0;
 		if (!m_IsInitialized || commands.empty()) return;
@@ -848,12 +879,9 @@ namespace Funke {
 				WebGPUBackend::GetCachedViewport(vx, vy, vw, vh);
 				clip = QuadVisibility::FromScissor(sc.X, sc.Y, sc.W, sc.H, vx, vy, vw, vh);
 			}
-			const TextLayout::Settings settings{ cmd.LetterSpacing, cmd.LineSpacing, cmd.WrapWidthPixels,
-				cmd.Wrap, cmd.Align, cmd.VAlign };
-			const auto& layout = inst.Layouts.Get(cmd.FontPtr->GetAtlasTexture(), cmd.Text, settings,
-				[&](TextLayout::Layout& result) { TextLayout::Build(*cmd.FontPtr, cmd.Text, settings, result, m_WrapScratch); });
-			auto emit = [&](float dx, float dy, const Color& color) {
-				EmitText(layout, cmd, dx, dy, color, mvp, clip);
+			const auto& layout = GetLayout(cmd);
+			auto emit = [&](float dx, float dy, const Color& color, bool useTextColors = false) {
+				EmitText(layout, cmd, dx, dy, color, mvp, clip, useTextColors);
 			};
 			// Effects first so the text paints over them; they fade with the text.
 			if (cmd.ShadowColor.a > 0.0f && (cmd.ShadowOffset.x != 0.0f || cmd.ShadowOffset.y != 0.0f)) {
@@ -874,7 +902,7 @@ namespace Funke {
 					emit(direction[0] * cmd.OutlineWidth, direction[1] * cmd.OutlineWidth, outline);
 				}
 			}
-			emit(0.0f, 0.0f, cmd.Tint);
+			emit(0.0f, 0.0f, cmd.Tint, true);
 			for (const GlyphRun& glyphRun : m_Runs) {
 				Run run;
 				run.AtlasId = glyphRun.Key.AtlasTexture;
@@ -939,6 +967,7 @@ namespace Funke {
 		passDesc.colorAttachments       = &colorAtt;
 		passDesc.depthStencilAttachment = target.HasDepth ? &depthAtt : nullptr;
 
+		GpuPassTrace passTrace(encoder, passDesc);
 		wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&passDesc);
 		WebGPUBackend::ApplyCachedViewportToPass(pass);
 		pass.SetPipeline(pipeline);
@@ -970,6 +999,7 @@ namespace Funke {
 		}
 
 		pass.End();
+		passTrace.Resolve();
 
 		if (target.IsSwapChain) {
 			WebGPUBackend::MarkSwapChainRendered();
@@ -995,14 +1025,14 @@ namespace Funke {
 		entt::registry& registry = scene.GetRegistry();
 		auto view = registry.view<TextRendererComponent, Transform2DComponent>(entt::exclude<DisabledTag, RectTransform2DComponent>);
 		for (auto&& [entity, text, tr] : view.each()) {
-			if (text.Text.empty()) continue;
+			if (text.GetDisplayText().empty()) continue;
 
 			Font* font = ResolveFont(text);
 			if (!font || !font->IsLoaded()) continue;
 
 			const AABB approx = AABB::FromTransform(tr);
-			if (!AABB::Intersects(viewportAABB, approx)) {
-				const float radius = text.FontSize * static_cast<float>(text.Text.size()) * 0.5f;
+			if (!text.RichText && !AABB::Intersects(viewportAABB, approx)) {
+				const float radius = text.FontSize * static_cast<float>(text.GetDisplayText().size()) * 0.5f;
 				AABB textBounds{
 					{ tr.Position.x - radius, tr.Position.y - radius },
 					{ tr.Position.x + radius, tr.Position.y + radius }
@@ -1017,7 +1047,11 @@ namespace Funke {
 
 			TextDrawCmd cmd;
 			cmd.FontPtr = font;
-			cmd.Text = std::string_view(text.Text);
+			cmd.Text = std::string_view(text.GetDisplayText());
+			cmd.RichText = text.RichText;
+			cmd.Bold = text.Bold;
+			cmd.Italic = text.Italic;
+			cmd.FontSize = text.FontSize;
 			cmd.X = tr.Position.x + text.Margin.x * drawScale;
 			cmd.Y = tr.Position.y - text.Margin.y * drawScale;
 			cmd.Scale = drawScale;

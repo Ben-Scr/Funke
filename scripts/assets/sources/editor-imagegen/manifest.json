@@ -1,0 +1,988 @@
+{
+  "version": 1,
+  "tool": "image_gen.imagegen",
+  "scope": "Monochrome editor window, menu, toolbar and theme icons. Existing colored file, component, status and OS/platform icons remain unchanged.",
+  "monochromePreparation": "Preserve the ImageGen alpha silhouette and normalize RGB to white for runtime theme tinting. Export raster sizes only; no procedural drawing or shape reconstruction.",
+  "assets": [
+    {
+      "id": "arrow_down",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: a simple downward pointing chevron, two equal diagonal strokes.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "arrow_down.png"
+    },
+    {
+      "id": "arrow_left",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: a simple left pointing chevron, two equal diagonal strokes.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "arrow_left.png"
+    },
+    {
+      "id": "arrow_right",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: a simple right pointing chevron, two equal diagonal strokes.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "arrow_right.png"
+    },
+    {
+      "id": "arrow_up",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: a simple upward pointing chevron, two equal diagonal strokes.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "arrow_up.png"
+    },
+    {
+      "id": "aspect_ratio",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: a wide landscape rectangle with two small opposing inward corner marks to suggest screen aspect ratio.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "aspect_ratio.png"
+    },
+    {
+      "id": "bounding_box",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: four separated L-shaped corners forming a square selection outline, empty center.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "bounding_box.png"
+    },
+    {
+      "id": "caret",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: a small solid downward pointing triangle, exactly centered.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "caret.png"
+    },
+    {
+      "id": "circle_dot",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: one perfect outlined circle containing one small solid centered dot.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "circle_dot.png"
+    },
+    {
+      "id": "clear",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: a large X made of two equal diagonal strokes.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "clear.png"
+    },
+    {
+      "id": "copy",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: two overlapping upright rectangular document outlines, offset slightly diagonally.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "copy.png"
+    },
+    {
+      "id": "delete",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: a wastebasket outline with flat lid, short centered handle and two vertical interior slots.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "delete.png"
+    },
+    {
+      "id": "download",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: one downward arrow ending above a short horizontal tray with upturned ends.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "download.png"
+    },
+    {
+      "id": "entity",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: an isometric wireframe cube with exactly three visible faces, symmetric straight edges meeting in the middle.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "entity.png"
+    },
+    {
+      "id": "eye_closed",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: a simple closed-eye curve with a diagonal slash, recognizable hidden visibility symbol.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "eye_closed.png"
+    },
+    {
+      "id": "eye_open",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: a simple almond-shaped eye outline and one central circular pupil.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "eye_open.png"
+    },
+    {
+      "id": "file_manager",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: a small folder outline with one arrow pointing out towards the upper right.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "file_manager.png"
+    },
+    {
+      "id": "grid",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: four equal square outlines arranged in a precisely aligned 2 by 2 grid.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "grid.png"
+    },
+    {
+      "id": "launch_standalone",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: a square window outline with a diagonal outward arrow escaping through the open upper-right corner.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "launch_standalone.png"
+    },
+    {
+      "id": "link",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: two short interlocking chain links oriented diagonally.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "link.png"
+    },
+    {
+      "id": "lock_closed",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: a padlock with a closed rounded arch and simple rectangular body.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "lock_closed.png"
+    },
+    {
+      "id": "lock_open",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: a padlock with its rounded arch lifted open towards the right.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "lock_open.png"
+    },
+    {
+      "id": "minus",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: one short centered horizontal line with rounded ends.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "minus.png"
+    },
+    {
+      "id": "monitor",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: a wide desktop monitor outline, empty screen, short centered stem and short horizontal base.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "monitor.png"
+    },
+    {
+      "id": "move",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: a four-way move symbol, four straight arrows radiating up, down, left, right from one shared center.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "move.png"
+    },
+    {
+      "id": "pause",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: two equal solid vertical bars with a clear gap between them.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "pause.png"
+    },
+    {
+      "id": "pen",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: a diagonal pencil pointing down-left, straight parallel sides, clear tip and small top end cap.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "pen.png"
+    },
+    {
+      "id": "pin",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: a simple diagonal pushpin outline, a broad head, a short neck and one pointed stem.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "pin.png"
+    },
+    {
+      "id": "play",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: one solid right-facing equilateral play triangle.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "play.png"
+    },
+    {
+      "id": "plus",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: a symmetric plus sign of two equal perpendicular strokes.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "plus.png"
+    },
+    {
+      "id": "post_processing",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: one large four-point sparkle with one smaller four-point sparkle at its upper-right.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "post_processing.png"
+    },
+    {
+      "id": "redo",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: a curved arrow turning towards the right, clear right-pointing head.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "redo.png"
+    },
+    {
+      "id": "reset",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: one clockwise circular refresh arrow with a clear triangular arrowhead at upper-right and a visible gap.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "reset.png"
+    },
+    {
+      "id": "rotation",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: one clockwise circular rotate arrow, a clean near-complete circular arc and a distinct arrowhead at upper-right.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "rotation.png"
+    },
+    {
+      "id": "save",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: a compact floppy-disk outline with a small rectangular top inset and larger bottom label inset.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "save.png"
+    },
+    {
+      "id": "scale",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: one diagonal arrow pointing from a small lower-left square towards the upper-right.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "scale.png"
+    },
+    {
+      "id": "search",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: a perfect circular magnifying glass outline with a short diagonal handle at lower-right.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "search.png"
+    },
+    {
+      "id": "settings",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: two vertical adjustment sliders with two small knobs at different heights.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "settings.png"
+    },
+    {
+      "id": "settings_gear",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: one regular symmetric six-tooth gear outline with a circular center hole.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "settings_gear.png"
+    },
+    {
+      "id": "step_forward",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: one solid right-pointing play triangle followed by one thin vertical bar.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "step_forward.png"
+    },
+    {
+      "id": "stop",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: one solid centered square with very slightly rounded corners.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "stop.png"
+    },
+    {
+      "id": "undo",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: a curved arrow turning towards the left, clear left-pointing head.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "undo.png"
+    },
+    {
+      "id": "zoom_in",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: a magnifying glass with one simple plus sign inside the circular lens.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "zoom_in.png"
+    },
+    {
+      "id": "zoom_out",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: a magnifying glass with one simple minus sign inside the circular lens.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "zoom_out.png"
+    },
+    {
+      "id": "image",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: a small landscape picture frame outline with one sun dot and two simple mountain peaks.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "image.png"
+    },
+    {
+      "id": "flag",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: one simple flag outline on a straight vertical pole.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "flag.png"
+    },
+    {
+      "id": "hammer",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: a simple builder's hammer leaning diagonally, clear straight handle and broad rectangular head.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "hammer.png"
+    },
+    {
+      "id": "systems",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: three stacked horizontal rectangles connected by a short vertical line on their left, indicating systems.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "systems.png"
+    },
+    {
+      "id": "physics",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: a simple atom symbol, three clean elliptical orbits and one central dot, no extra particles.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "physics.png"
+    },
+    {
+      "id": "templates",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: two overlapping page outlines, the front page containing a simple two-panel layout.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "templates.png"
+    },
+    {
+      "id": "theme_light",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: a perfectly circular sun ring and exactly eight detached equal-length rays at 45-degree intervals.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "theme_light.png"
+    },
+    {
+      "id": "theme_dark",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: one upright crescent moon open to upper-right, two smooth circular arcs meeting in two tapered tips, no stars.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "theme_dark.png"
+    },
+    {
+      "id": "ui_entities",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: a compact hierarchy: one upper-left square node linked by an L-shaped line to one lower-right square node.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "ui_entities.png"
+    },
+    {
+      "id": "ui_inspector",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: three short horizontal adjustment sliders with small knobs placed at different positions.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "ui_inspector.png"
+    },
+    {
+      "id": "ui_game",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: a widescreen monitor outline with one small right-facing play triangle centered inside the screen.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "ui_game.png"
+    },
+    {
+      "id": "ui_folder",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: a simple folder outline with a raised upper-left tab, flat front view.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "ui_folder.png"
+    },
+    {
+      "id": "ui_log",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: a terminal prompt composed of a left angle chevron < and a short underscore _ at its lower right.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "ui_log.png"
+    },
+    {
+      "id": "ui_animation",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: a simple animation curve rising from left to right with two small diamond keyframe markers.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "ui_animation.png"
+    },
+    {
+      "id": "ui_animator",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: two square state nodes at upper-left and lower-right linked by one clean right-angle arrow.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "ui_animator.png"
+    },
+    {
+      "id": "ui_build_profiles",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: two offset overlapping document outlines with two short horizontal list lines on the front page.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "ui_build_profiles.png"
+    },
+    {
+      "id": "ui_package",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: a closed cardboard shipping box outline in isometric three-face view, with a short strip across the lid.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "ui_package.png"
+    },
+    {
+      "id": "ui_profiler",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: one compact heartbeat-style performance waveform, clear peaks and valleys, no frame.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "ui_profiler.png"
+    },
+    {
+      "id": "ui_script",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: a code symbol consisting of a left angle bracket, a short diagonal slash, and a right angle bracket, exactly </>.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "ui_script.png"
+    },
+    {
+      "id": "ui_quit",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: a simple open door outline with one straight arrow pointing right out of the doorway.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "ui_quit.png"
+    },
+    {
+      "id": "ui_layout",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: a rectangular editor layout frame divided into one narrow left sidebar and one larger right pane beneath a thin top bar.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "ui_layout.png"
+    },
+    {
+      "id": "ui_entity_2d",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: one plain square outline viewed straight on, no internal lines, no perspective.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "ui_entity_2d.png"
+    },
+    {
+      "id": "ui_camera",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: a camera outline, rectangular body, raised top housing and one circular centered lens.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "ui_camera.png"
+    },
+    {
+      "id": "ui_audio",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: a simple speaker silhouette facing right with one short curved sound-wave stroke.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "ui_audio.png"
+    },
+    {
+      "id": "ui_file",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: one empty upright document outline with a small folded upper-right corner.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "ui_file.png"
+    },
+    {
+      "id": "ui_data",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: a three-tier database cylinder, elliptical top, two curved tier separators, straight vertical sides and curved bottom.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "ui_data.png"
+    },
+    {
+      "id": "ui_scene_file",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: an upright document outline with a folded upper-right corner and a small play triangle inside.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "ui_scene_file.png"
+    },
+    {
+      "id": "ui_paste",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: a clipboard outline with a small top clip and two short horizontal lines inside.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "ui_paste.png"
+    },
+    {
+      "id": "ui_json",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: two matching curly braces, exactly { }, no other symbols or file frame.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "ui_json.png"
+    },
+    {
+      "id": "ui_material",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: one circular material-preview sphere outline with a small upper-left curved highlight and one lower-right curved terminator, no globe grid.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "ui_material.png"
+    },
+    {
+      "id": "ui_text",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: an upright document outline with a folded upper-right corner and three short horizontal text lines inside, last line shorter.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "ui_text.png"
+    },
+    {
+      "id": "ui_binary",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat vector-style UI icon for a professional desktop game editor, as a transparent PNG. Only solid dark graphite (#404040) contours, uniform smooth rounded strokes of medium weight, about 1/12 of the icon height. Precise balanced simple geometry, readable at 16 pixels. All gaps and interior spaces fully transparent. One centered icon in a square with equal 12.5% margins. No outlines around the strokes, no grain, speckles, texture, gradients, shadow, glow, background or presentation board. Do not use white. No labels or extra objects. Subject: the two large digits 01 side by side, a clear rounded zero and one with a short baseline, no file frame or extra digits.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "ui_binary.png"
+    }
+  ],
+  "preservedGroups": [
+    "FileIcons",
+    "PlatformIcons",
+    "colored General icons"
+  ]
+}

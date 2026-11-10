@@ -1,4 +1,5 @@
 #include "pch.hpp"
+#include "Scripting/ScriptBindingModuleSlots.hpp"
 #include "Scripting/ScriptBindingGuard.hpp"
 #include "Scripting/ScriptGlue.hpp"
 #include "Components/Physics/BoxCollider2DComponent.hpp"
@@ -755,78 +756,8 @@ namespace Funke {
 	#undef GET_COMPONENT
 
 	void PopulatePhysics2DBindings(NativeBindings& b) {
-		b.Rigidbody2D_ApplyForce = FNK_GUARDED_BINDING(Funke_Rigidbody2D_ApplyForce);
-		b.Rigidbody2D_ApplyImpulse = FNK_GUARDED_BINDING(Funke_Rigidbody2D_ApplyImpulse);
-		b.Rigidbody2D_GetLinearVelocity = FNK_GUARDED_BINDING(Funke_Rigidbody2D_GetLinearVelocity);
-		b.Rigidbody2D_SetLinearVelocity = FNK_GUARDED_BINDING(Funke_Rigidbody2D_SetLinearVelocity);
-		b.Rigidbody2D_GetAngularVelocity = FNK_GUARDED_BINDING(Funke_Rigidbody2D_GetAngularVelocity);
-		b.Rigidbody2D_SetAngularVelocity = FNK_GUARDED_BINDING(Funke_Rigidbody2D_SetAngularVelocity);
-		b.Rigidbody2D_GetBodyType = FNK_GUARDED_BINDING(Funke_Rigidbody2D_GetBodyType);
-		b.Rigidbody2D_SetBodyType = FNK_GUARDED_BINDING(Funke_Rigidbody2D_SetBodyType);
-		b.Rigidbody2D_GetGravityScale = FNK_GUARDED_BINDING(Funke_Rigidbody2D_GetGravityScale);
-		b.Rigidbody2D_SetGravityScale = FNK_GUARDED_BINDING(Funke_Rigidbody2D_SetGravityScale);
-		b.Rigidbody2D_GetMass = FNK_GUARDED_BINDING(Funke_Rigidbody2D_GetMass);
-		b.Rigidbody2D_SetMass = FNK_GUARDED_BINDING(Funke_Rigidbody2D_SetMass);
-		b.BoxCollider2D_GetScale = FNK_GUARDED_BINDING(Funke_BoxCollider2D_GetScale);
-		b.BoxCollider2D_GetCenter = FNK_GUARDED_BINDING(Funke_BoxCollider2D_GetCenter);
-		b.BoxCollider2D_SetEnabled = FNK_GUARDED_BINDING(Funke_BoxCollider2D_SetEnabled);
-		b.CircleCollider2D_GetRadius = FNK_GUARDED_BINDING(Funke_CircleCollider2D_GetRadius);
-		b.CircleCollider2D_SetRadius = FNK_GUARDED_BINDING(Funke_CircleCollider2D_SetRadius);
-		b.CircleCollider2D_GetCenter = FNK_GUARDED_BINDING(Funke_CircleCollider2D_GetCenter);
-		b.CircleCollider2D_SetCenter = FNK_GUARDED_BINDING(Funke_CircleCollider2D_SetCenter);
-		b.CircleCollider2D_SetEnabled = FNK_GUARDED_BINDING(Funke_CircleCollider2D_SetEnabled);
-		b.PolygonCollider2D_GetVertexCount = FNK_GUARDED_BINDING(Funke_PolygonCollider2D_GetVertexCount);
-		b.PolygonCollider2D_GetWorldPoints = FNK_GUARDED_BINDING(Funke_PolygonCollider2D_GetWorldPoints);
-		b.PolygonCollider2D_SetPoints = FNK_GUARDED_BINDING(Funke_PolygonCollider2D_SetPoints);
-		b.PolygonCollider2D_SetSides = FNK_GUARDED_BINDING(Funke_PolygonCollider2D_SetSides);
-		b.PolygonCollider2D_GetCenter = FNK_GUARDED_BINDING(Funke_PolygonCollider2D_GetCenter);
-		b.PolygonCollider2D_SetCenter = FNK_GUARDED_BINDING(Funke_PolygonCollider2D_SetCenter);
-		b.PolygonCollider2D_GetSize = FNK_GUARDED_BINDING(Funke_PolygonCollider2D_GetSize);
-		b.PolygonCollider2D_SetSize = FNK_GUARDED_BINDING(Funke_PolygonCollider2D_SetSize);
-		b.PolygonCollider2D_SetEnabled = FNK_GUARDED_BINDING(Funke_PolygonCollider2D_SetEnabled);
-		b.Physics2D_Raycast = FNK_GUARDED_BINDING(Funke_Physics2D_Raycast);
-		b.Physics2D_SetQueryLayerMask = FNK_GUARDED_BINDING(Funke_Physics2D_SetQueryLayerMask);
-		b.Collider2D_GetSensor = FNK_GUARDED_BINDING(Funke_Collider2D_GetSensor);
-		b.Collider2D_SetSensor = FNK_GUARDED_BINDING(Funke_Collider2D_SetSensor);
-		b.Collider2D_GetLayer = FNK_GUARDED_BINDING(Funke_Collider2D_GetLayer);
-		b.Collider2D_SetLayer = FNK_GUARDED_BINDING(Funke_Collider2D_SetLayer);
-		b.Collider2D_GetCollisionMask = FNK_GUARDED_BINDING(Funke_Collider2D_GetCollisionMask);
-		b.Collider2D_SetCollisionMask = FNK_GUARDED_BINDING(Funke_Collider2D_SetCollisionMask);
-		b.Collider2D_GetFriction = FNK_GUARDED_BINDING(Funke_Collider2D_GetFriction);
-		b.Collider2D_SetFriction = FNK_GUARDED_BINDING(Funke_Collider2D_SetFriction);
-		b.Collider2D_GetBounciness = FNK_GUARDED_BINDING(Funke_Collider2D_GetBounciness);
-		b.Collider2D_SetBounciness = FNK_GUARDED_BINDING(Funke_Collider2D_SetBounciness);
-		b.Physics2D_OverlapCircle = FNK_GUARDED_BINDING(Funke_Physics2D_OverlapCircle);
-		b.Physics2D_OverlapBox = FNK_GUARDED_BINDING(Funke_Physics2D_OverlapBox);
-		b.Physics2D_OverlapPolygon = FNK_GUARDED_BINDING(Funke_Physics2D_OverlapPolygon);
-		b.Physics2D_OverlapCircleAll = FNK_GUARDED_BINDING(Funke_Physics2D_OverlapCircleAll);
-		b.Physics2D_OverlapBoxAll = FNK_GUARDED_BINDING(Funke_Physics2D_OverlapBoxAll);
-		b.Physics2D_OverlapPolygonAll = FNK_GUARDED_BINDING(Funke_Physics2D_OverlapPolygonAll);
-		b.Physics2D_ContainsPoint = FNK_GUARDED_BINDING(Funke_Physics2D_ContainsPoint);
-		b.Physics2D_ContainsPointAll = FNK_GUARDED_BINDING(Funke_Physics2D_ContainsPointAll);
-		b.Rigidbody2D_GetFreezePositionX = FNK_GUARDED_BINDING(Funke_Rigidbody2D_GetFreezePositionX);
-		b.Rigidbody2D_SetFreezePositionX = FNK_GUARDED_BINDING(Funke_Rigidbody2D_SetFreezePositionX);
-		b.Rigidbody2D_GetFreezePositionY = FNK_GUARDED_BINDING(Funke_Rigidbody2D_GetFreezePositionY);
-		b.Rigidbody2D_SetFreezePositionY = FNK_GUARDED_BINDING(Funke_Rigidbody2D_SetFreezePositionY);
-		b.Rigidbody2D_GetFreezeRotation  = FNK_GUARDED_BINDING(Funke_Rigidbody2D_GetFreezeRotation);
-		b.Rigidbody2D_SetFreezeRotation  = FNK_GUARDED_BINDING(Funke_Rigidbody2D_SetFreezeRotation);
-		b.Joint2D_Get = FNK_GUARDED_BINDING(Funke_Joint2D_Get);
-		b.Joint2D_Set = FNK_GUARDED_BINDING(Funke_Joint2D_Set);
-		b.Joint2D_GetConnectedBody = FNK_GUARDED_BINDING(Funke_Joint2D_GetConnectedBody);
-		b.Joint2D_SetConnectedBody = FNK_GUARDED_BINDING(Funke_Joint2D_SetConnectedBody);
-		b.Joint2D_GetState = FNK_GUARDED_BINDING(Funke_Joint2D_GetState);
-		b.Collider2D_GetDensity = FNK_GUARDED_BINDING(Funke_Collider2D_GetDensity);
-		b.Collider2D_SetDensity = FNK_GUARDED_BINDING(Funke_Collider2D_SetDensity);
-		b.PolygonCollider2D_GetPathCount = FNK_GUARDED_BINDING(Funke_PolygonCollider2D_GetPathCount);
-		b.PolygonCollider2D_GetPath = FNK_GUARDED_BINDING(Funke_PolygonCollider2D_GetPath);
-		b.PolygonCollider2D_SetPaths = FNK_GUARDED_BINDING(Funke_PolygonCollider2D_SetPaths);
-		b.Physics2D_GetGravity = FNK_GUARDED_BINDING(Funke_Physics2D_GetGravity);
-		b.Physics2D_SetGravity = FNK_GUARDED_BINDING(Funke_Physics2D_SetGravity);
-		b.Rigidbody2D_GetDynamics = FNK_GUARDED_BINDING(Funke_Rigidbody2D_GetDynamics);
-		b.Rigidbody2D_SetDynamics = FNK_GUARDED_BINDING(Funke_Rigidbody2D_SetDynamics);
-		b.Rigidbody2D_ApplyAtPoint = FNK_GUARDED_BINDING(Funke_Rigidbody2D_ApplyAtPoint);
-		b.Rigidbody2D_ApplyAngular = FNK_GUARDED_BINDING(Funke_Rigidbody2D_ApplyAngular);
-		b.Collider2D_GetGroupIndex = FNK_GUARDED_BINDING(Funke_Collider2D_GetGroupIndex);
-		b.Collider2D_SetGroupIndex = FNK_GUARDED_BINDING(Funke_Collider2D_SetGroupIndex);
+#define FNK_ASSIGN_BINDING(slot) b.slot = FNK_GUARDED_BINDING(Funke_##slot);
+		FNK_FOR_EACH_PHYSICS2D_BINDING(FNK_ASSIGN_BINDING)
+#undef FNK_ASSIGN_BINDING
 	}
 }

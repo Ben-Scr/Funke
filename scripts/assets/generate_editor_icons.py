@@ -13,6 +13,7 @@ The preview command only writes contact sheets under tmp/ and never touches asse
 from __future__ import annotations
 
 import argparse
+import json
 import math
 from pathlib import Path
 
@@ -28,7 +29,7 @@ FILE_SIZES = (16, 32, 64, 128, 256)
 CUSTOM_FILE_ICONS = {
     "file_anim", "file_audio", "file_bin", "file_cpp", "file_cs", "file_dataasset",
     "file_fallback", "file_font", "file_header", "file_json", "file_material", "file_model", "file_prefab", "file_scene",
-    "file_shader", "file_txt", "file_xml", "folder_zip",
+    "file_shader", "file_txt", "file_xml", "file_markdown", "folder_zip",
 }
 CUSTOM_COMPONENT_ICONS = {
     "animator", "audio_source", "camera", "collider_box_2d", "collider_box_3d",
@@ -37,10 +38,15 @@ CUSTOM_COMPONENT_ICONS = {
     "prefab", "prefab_missing", "rigidbody_2d", "rigidbody_3d", "script",
 }
 CUSTOM_GLYPHS = {"open_folder"}
+IMAGEGEN_MANIFEST = Path(__file__).resolve().parent / "sources/editor-imagegen/manifest.json"
+CUSTOM_MONOCHROME_GLYPHS = {"rotation"} | {
+    asset["id"] for asset in json.loads(IMAGEGEN_MANIFEST.read_text(encoding="utf-8-sig"))["assets"]
+    if asset["group"] == "General"
+}
 FILE_256_NAMES = {
     "file_anim", "file_audio", "file_bin", "file_cpp", "file_cs", "file_dataasset",
     "file_fallback", "file_font", "file_header", "file_json", "file_material", "file_model", "file_scene", "file_shader",
-    "file_txt", "file_xml", "folder_zip",
+    "file_txt", "file_xml", "file_markdown", "folder_zip",
 }
 SUPERSAMPLE = 4
 
@@ -62,6 +68,7 @@ FILE_COLORS = {
     "file_audio": AUDIO, "file_prefab": PREFAB, "file_scene": "#3E80BA",
     "file_dataasset": "#4CB8A8", "file_json": "#F2B33D", "file_xml": "#8A86E8",
     "file_font": "#F26B66", "file_txt": "#A0A4AD", "file_bin": "#A0A4AD",
+    "file_markdown": "#6689B2",
     "file_fallback": "#A0A4AD", "file_material": "#28B5B0", "file_model": "#F0A44B",
 }
 
@@ -368,7 +375,7 @@ def file_icon(c: Canvas, name: str):
 def is_custom(name: str, family: str):
     return (family == "file" and name in CUSTOM_FILE_ICONS
             or family == "component" and name in CUSTOM_COMPONENT_ICONS
-            or family == "glyph" and name in CUSTOM_GLYPHS)
+            or family == "glyph" and (name in CUSTOM_GLYPHS or name in CUSTOM_MONOCHROME_GLYPHS))
 
 
 def render(name: str, family: str, size: int):

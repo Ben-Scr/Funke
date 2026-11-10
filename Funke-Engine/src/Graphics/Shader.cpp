@@ -271,6 +271,68 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 )WGSL";
 
 #if FUNKE_WITH_3D
+		constexpr const char* k_Grid3DWGSL = R"WGSL(
+struct Uniforms {
+	viewProj: mat4x4<f32>,
+};
+@group(0) @binding(0) var<uniform> u: Uniforms;
+
+struct VertexOutput {
+	@builtin(position) position: vec4<f32>,
+	@location(0) local: vec2<f32>,
+	@location(1) @interpolate(flat) centerSpacing: vec4<f32>,
+	@location(2) @interpolate(flat) color: vec4<f32>,
+	@location(3) @interpolate(flat) extent: f32,
+};
+
+@vertex
+fn vs_main(@builtin(vertex_index) vertex: u32,
+	@location(0) centerSpacing: vec4<f32>,
+	@location(1) color: vec4<f32>,
+	@location(2) originExtent: vec4<f32>) -> VertexOutput {
+	let corners = array<vec2<f32>, 6>(vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(1.0, 1.0),
+		vec2(-1.0, -1.0), vec2(1.0, 1.0), vec2(-1.0, 1.0));
+	var out: VertexOutput;
+	out.local = corners[vertex] * originExtent.w;
+	let relative = centerSpacing.xyz - originExtent.xyz + vec3(out.local.x, 0.0, out.local.y);
+	out.position = u.viewProj * vec4(relative, 1.0);
+	out.centerSpacing = centerSpacing;
+	out.color = color;
+	out.extent = originExtent.w;
+	return out;
+}
+
+fn gridCoverage(local: vec2<f32>, center: vec2<f32>, footprint: vec2<f32>, spacing: f32) -> f32 {
+	let phase = fract(center / spacing);
+	let distance = abs(fract(local / spacing + phase + 0.5) - 0.5) * spacing;
+	let pixels = distance / footprint;
+	let lines = vec2(1.0) - smoothstep(vec2(0.0), vec2(1.0), pixels);
+	let densityFade = vec2(1.0) - smoothstep(vec2(0.125), vec2(0.5), footprint / spacing);
+	let coverage = lines * densityFade;
+	return max(coverage.x, coverage.y);
+}
+
+@fragment
+fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+	let dx = dpdx(in.local);
+	let dy = dpdy(in.local);
+	let footprint = max(vec2(length(vec2(dx.x, dy.x)), length(vec2(dx.y, dy.y))), vec2(0.000001));
+	let level = log2(max(1.0, max(footprint.x, footprint.y) * 8.0 / in.centerSpacing.w)) / log2(10.0);
+	let spacing = in.centerSpacing.w * pow(10.0, floor(level));
+	let transition = smoothstep(0.0, 1.0, fract(level));
+	let fine = gridCoverage(in.local, in.centerSpacing.xz, footprint, spacing);
+	let major = gridCoverage(in.local, in.centerSpacing.xz, footprint, spacing * 10.0);
+	let coarse = gridCoverage(in.local, in.centerSpacing.xz, footprint, spacing * 100.0);
+	let coverage = max(max(fine * 0.45 * (1.0 - transition), major * mix(1.0, 0.45, transition)), coarse);
+	let axisDistance = abs(in.local + in.centerSpacing.xz) / footprint;
+	let axes = vec2(1.0) - smoothstep(vec2(0.35), vec2(1.35), axisDistance);
+	var color = mix(in.color.rgb, vec3(0.86, 0.31, 0.31), axes.y);
+	color = mix(color, vec3(0.31, 0.47, 0.90), axes.x);
+	let fade = 1.0 - smoothstep(0.25, 1.0, length(in.local) / in.extent);
+	return vec4(color, max(coverage, max(axes.x, axes.y)) * in.color.a * fade);
+}
+)WGSL";
+
 		constexpr const char* k_MeshWGSL = R"WGSL(
 const PI: f32 = 3.14159265;
 const MAX_LIGHTS: u32 = 64u;
@@ -1199,6 +1261,7 @@ fn fs_high(in: VertexOutput) -> @location(0) vec4<f32> {
 			{ "gizmo",               k_GizmoWGSL               },
 #if FUNKE_WITH_3D
 			{ "mesh",                k_MeshWGSL                },
+			{ "grid3d",              k_Grid3DWGSL              },
 			{ "sky",                 k_SkyWGSL                 },
 			{ "shadow3d",            k_Shadow3DWGSL            },
 			{ "particle3d",          k_Particle3DWGSL          },

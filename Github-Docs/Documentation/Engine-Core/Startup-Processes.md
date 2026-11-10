@@ -191,3 +191,9 @@ Main()
 - [Scripting](../Scripting/Scripting.md) — the C# scripts that run during the loop.
 - [Writing Packages](../Packages/Writing-Packages.md) — code loaded at the package step.
 - [Job System](Job-System.md) — the worker threads started early in boot.
+
+## Editor and Launcher source ownership
+
+`LauncherSettings` owns persisted launcher values, their existing JSON format and legacy-file migration, plus project-directory naming conventions. `LauncherLayer` owns the UI and async project workflows and delegates settings load/save to this object.
+
+The editor Inspector implementation is in `Systems/ImGuiEditorLayerInspector.cpp`. `InspectorSelectionCache` computes mixed field values and common/partial components independently of ImGui; the layer retains selection-version invalidation. Hierarchy and Inspector script drops share `Scripting/ScriptAttachment`, so attachment behavior is maintained once.

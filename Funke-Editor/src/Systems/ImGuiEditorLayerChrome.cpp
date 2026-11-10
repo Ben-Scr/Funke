@@ -23,7 +23,6 @@
 #include "Gui/EditorTheme.hpp"
 #include "Gui/EditorUI.hpp"
 #include "Inspector/PropertyDrawer.hpp"
-#include "Gui/GlassBackdrop.hpp"
 #include "Gui/ImGuiImplWebGPU.hpp"
 #include "Profiling/Profiler.hpp"
 #include "Graphics/Gizmo.hpp"
@@ -742,6 +741,10 @@ namespace Funke {
 				}
 			}
 			m_ShowEditorPreferences |= wants("preferences");
+			if (wants("preferences:layouts")) {
+				m_ShowEditorPreferences = true;
+				m_EditorPreferencesPanel.OpenLayouts();
+			}
 			m_ShowPackageManager |= wants("packages");
 			m_ShowProfiler |= wants("profiler");
 			m_ShowGameViewStats |= wants("gamestats");
@@ -1048,11 +1051,6 @@ namespace Funke {
 				}
 			}
 		}
-
-		if (EditorTheme::IsTranslucent()) {
-			GlassBackdrop::Draw();
-		}
-		GlassBackdrop::SyncViewportCaptions(GlassBackdrop::IsEnabled());
 
 		// MUST precede RenderDockspaceRoot: titlebar publishes its height so the dockspace offsets correctly.
 		{

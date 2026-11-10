@@ -9,8 +9,8 @@
 namespace Funke {
 
 	// Draws an animated model (.gltf/.glb mesh asset with a skin or node animation) and plays one of its clips,
-	// cross-fading when the clip changes. Skinning runs on the CPU, so materials, shadows and custom shaders behave
-	// exactly as on a MeshRenderer.
+	// cross-fading when the clip changes. Compute skinning falls back to the CPU when unavailable; both paths
+	// preserve MeshRenderer material, shadow and custom shader behavior.
 	struct FUNKE_API SkinnedMeshRendererComponent {
 		// Mesh asset GUID (.gltf/.glb); a model without a skeleton draws static.
 		uint64_t Model = 0;

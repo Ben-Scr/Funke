@@ -149,6 +149,7 @@ Things to know about Web builds:
 - `Application.Quit` stops the game and shows a message; a browser tab cannot close itself.
 - A frame-rate cap (`Application.TargetFrameRate`) applies when VSync is off, as on desktop, but cannot exceed the display's refresh rate.
 - A C# game currently ships the complete .NET class library (about 30 MB before compression); a web server that compresses `.wasm` files with gzip or Brotli cuts that considerably.
+- C# Web exports split runtime content files larger than 128 MiB into download parts under `game/__funke_parts/`. The loader reconstructs the original files using `funke-content.json` before starting the engine; asset bundle compression stays unchanged. This avoids itch.io's 200 MB limit per extracted file. Upload a ZIP with `index.html` at its root, and still check the host's total-size, file-count and path-length limits. Native-only Web exports do not use this content loader.
 - The game runs on the browser's frame loop and has no threads; the job system runs jobs one after another.
 
 ## Screen orientation on phones and tablets

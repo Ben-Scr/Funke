@@ -133,7 +133,9 @@ namespace Funke {
 		struct Entry {
 			Material Value;
 			std::string Path;
+			FileStamp Stamp;
 			bool Valid = false;
+			bool ReloadPending = false;
 			std::chrono::steady_clock::time_point LastAttempt{};
 		};
 
@@ -144,10 +146,16 @@ namespace Funke {
 
 		bool LoadEntry(uint64_t guid, Entry& entry) {
 			entry.LastAttempt = std::chrono::steady_clock::now();
-			entry.Path = AssetRegistry::ResolvePath(guid);
-			entry.Valid = !entry.Path.empty() && MaterialLibrary::LoadFromFile(entry.Path, entry.Value);
-			if (!entry.Valid) entry.Value = Material{};
-			return entry.Valid;
+			const std::string path = AssetRegistry::ResolvePath(guid);
+			if (!path.empty()) entry.Path = path;
+			entry.Stamp = FileStamp::Read(entry.Path);
+			Material replacement;
+			entry.ReloadPending = entry.Path.empty() || !MaterialLibrary::LoadFromFile(entry.Path, replacement);
+			// An exporter may truncate or temporarily remove its file while saving.
+			if (entry.ReloadPending) return false;
+			entry.Value = std::move(replacement);
+			entry.Valid = true;
+			return true;
 		}
 	}
 
@@ -243,7 +251,8 @@ namespace Funke {
 			it = entries.emplace(guid, Entry{}).first;
 			LoadEntry(guid, it->second);
 		}
-		else if (!it->second.Valid && std::chrono::steady_clock::now() - it->second.LastAttempt > std::chrono::seconds(1)) {
+		else if ((!it->second.Valid || it->second.ReloadPending)
+			&& std::chrono::steady_clock::now() - it->second.LastAttempt > std::chrono::seconds(1)) {
 			LoadEntry(guid, it->second);
 		}
 		return it->second.Valid ? &it->second.Value : nullptr;
@@ -277,7 +286,9 @@ namespace Funke {
 		Entry& entry = Entries()[guid];
 		entry.Value = material;
 		entry.Path = path;
+		entry.Stamp = FileStamp::Read(path);
 		entry.Valid = true;
+		entry.ReloadPending = false;
 		return true;
 	}
 
@@ -286,6 +297,7 @@ namespace Funke {
 		Entry& entry = Entries()[guid];
 		entry.Value = material;
 		entry.Valid = true;
+		entry.ReloadPending = false;
 	}
 
 	bool MaterialLibrary::SetProperty(uint64_t guid, const std::string& name, const MaterialPropertyValue& value) {
@@ -314,9 +326,8 @@ namespace Funke {
 	size_t MaterialLibrary::ReloadChangedFromDisk() {
 		size_t reloaded = 0;
 		for (auto& [guid, entry] : Entries()) {
-			if (entry.Path.empty() || !KnownFileStamps::HasChangedOnDisk(entry.Path)) continue;
-			LoadEntry(guid, entry);
-			++reloaded;
+			if (entry.Path.empty() || FileStamp::Read(entry.Path) == entry.Stamp) continue;
+			if (LoadEntry(guid, entry)) ++reloaded;
 		}
 		return reloaded;
 	}

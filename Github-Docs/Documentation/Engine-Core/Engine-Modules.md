@@ -80,3 +80,5 @@ python scripts/ci/physics_cmake_matrix.py
 The first command builds and runs native smoke tests on desktop platforms, auditing backend project references and source selection (MSBuild on Windows, Make on Linux/macOS). Use `--variant v2-2d-3d` for the rendering-only representative selected by Linux/macOS CI. The second configures all nine CMake graphs with dependency stand-ins; it is a graph check, not a cross-platform compiler or device test. Neither test establishes a physics performance improvement.
 
 See [Physics Modules Verification](Physics-Modules-Verification.md) for executed builds, runtime checks, compatibility evidence and remaining qualification work.
+
+The four `FNK_FOR_EACH_*_BINDING` lists in `Scripting/ScriptBindingModuleSlots.hpp` are the shared source for guarded registration and inactive-module stubs. Add a module slot there and implement its `Funke_<Slot>` function in the corresponding `ScriptBindings*.cpp`; do not maintain a second assignment list. Native/managed positional ABI declarations still need matching signatures and ordering, with the existing version handshake.

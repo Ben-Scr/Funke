@@ -2,6 +2,7 @@
 #include "Scene/BuiltInComponentRegistrationShared.hpp"
 
 #include "Audio/AudioManager.hpp"
+#include "Serialization/SceneSerializerShared.hpp"
 #include "Components/Audio/AudioSourceComponent.hpp"
 
 // Audio sources.
@@ -103,5 +104,43 @@ namespace Funke::BuiltInComponentRegistrationInternal {
 				MakeSpatialFloat("DopplerLevel", "Doppler Level", &AudioSpatialSettings::DopplerLevel, 0.0, 10.0, 0.01f,
 					"Pitch shift while the sound and the camera move towards or away from each other; 0 = off, 1 = physical."),
 			});
+		auto& info = *registry.GetInfo<AudioSourceComponent>();
+		info.serialize = [](Entity entity) -> Json::Value {
+			auto& audioSource = entity.GetComponent<AudioSourceComponent>();
+			Json::Value audioValue = Json::Value::MakeObject();
+			audioValue.AddMember("volume", Json::Value(audioSource.GetVolume()));
+			audioValue.AddMember("pitch", Json::Value(audioSource.GetPitch()));
+			audioValue.AddMember("loop", Json::Value(audioSource.IsLooping()));
+			audioValue.AddMember("playOnAwake", Json::Value(audioSource.GetPlayOnAwake()));
+
+			uint64_t audioAssetId = static_cast<uint64_t>(audioSource.GetAudioAssetId());
+			if (audioAssetId == 0) {
+				audioAssetId = AudioManager::GetAudioAssetUUID(audioSource.GetAudioHandle());
+				if (audioAssetId != 0) {
+					audioSource.SetAudioAssetId(UUID(audioAssetId));
+				}
+			}
+
+			if (audioAssetId != 0) {
+				audioValue.AddMember("clipAsset", Json::Value(std::to_string(audioAssetId)));
+			}
+			SceneSerializerShared::WriteAudioSpatial(audioValue, audioSource);
+
+			return audioValue;
+		};
+		info.deserialize = [](Entity entity, const Json::Value& componentValue) {
+			using namespace SceneSerializerShared;
+			auto& audioSource = entity.GetComponent<AudioSourceComponent>();
+			audioSource.SetVolume(GetFloatMember(componentValue, "volume", 1.0f));
+			audioSource.SetPitch(GetFloatMember(componentValue, "pitch", 1.0f));
+			audioSource.SetLoop(GetBoolMember(componentValue, "loop", false));
+			audioSource.SetPlayOnAwake(GetBoolMember(componentValue, "playOnAwake", false));
+			ReadAudioSpatial(componentValue, audioSource);
+
+			UUID audioAssetId = UUID(0);
+			const AudioHandle handle = LoadAudioFromValue(componentValue, "clipAsset", "clip", &audioAssetId);
+			audioSource.SetAudioHandle(handle, audioAssetId);
+		};
+
 	}
 }

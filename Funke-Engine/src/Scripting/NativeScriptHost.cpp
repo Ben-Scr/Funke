@@ -228,8 +228,10 @@ namespace Funke {
 		NativeDestroyFn newDestroyFn = reinterpret_cast<NativeDestroyFn>(getSymbol("FunkeDestroyScript"));
 		NativeHasFn newHasFn = reinterpret_cast<NativeHasFn>(getSymbol("FunkeHasScript"));
 		NativeAbiFn abiFn = reinterpret_cast<NativeAbiFn>(getSymbol("FunkeNativeScriptAbiVersion"));
-		if (!abiFn || abiFn() != k_NativeScriptAbiVersion) {
-			FNK_CORE_ERROR_TAG("NativeScriptHost", "Native script ABI mismatch in '{}'. Recompile the C++ scripts with this engine.", sourcePath.string());
+		const uint32_t suppliedAbi = abiFn ? abiFn() : 0;
+		if (!abiFn || suppliedAbi != k_NativeScriptAbiVersion) {
+			FNK_CORE_ERROR_TAG("NativeScriptHost", "Native script ABI mismatch in '{}': expected {}, received {}. Rebuild the project's NativeScripts CMake target using this engine's SDK and the matching build configuration, then retry.",
+				sourcePath.string(), k_NativeScriptAbiVersion, abiFn ? std::to_string(suppliedAbi) : "missing FunkeNativeScriptAbiVersion export");
 			UnloadLibraryHandle(newDllHandle);
 			RemoveShadowCopy(shadowPath);
 			return false;
@@ -238,7 +240,8 @@ namespace Funke {
 		if (!newCreateFn || !newDestroyFn)
 		{
 			FNK_CORE_ERROR_TAG("NativeScriptHost",
-				"DLL missing FunkeCreateScript/FunkeDestroyScript: {}", sourcePath.string());
+				"DLL '{}' missing required exports: {}{}. Rebuild the project's NativeScripts CMake target using this engine's SDK, then retry.",
+				sourcePath.string(), newCreateFn ? "" : "FunkeCreateScript ", newDestroyFn ? "" : "FunkeDestroyScript");
 			UnloadLibraryHandle(newDllHandle);
 			RemoveShadowCopy(shadowPath);
 			return false;

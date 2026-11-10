@@ -1,4 +1,5 @@
 #include "pch.hpp"
+#include "Scripting/ScriptBindingModuleSlots.hpp"
 #include "Scripting/ScriptBindingGuard.hpp"
 #include "Scripting/ScriptGlue.hpp"
 
@@ -683,72 +684,9 @@ namespace Funke {
 
 	void Populate2DBindings(NativeBindings& b)
 	{
-		b.Transform2D_GetPosition = FNK_GUARDED_BINDING(Funke_Transform2D_GetPosition);
-		b.Transform2D_SetPosition = FNK_GUARDED_BINDING(Funke_Transform2D_SetPosition);
-		b.Transform2D_GetRotation = FNK_GUARDED_BINDING(Funke_Transform2D_GetRotation);
-		b.Transform2D_SetRotation = FNK_GUARDED_BINDING(Funke_Transform2D_SetRotation);
-		b.Transform2D_GetScale = FNK_GUARDED_BINDING(Funke_Transform2D_GetScale);
-		b.Transform2D_SetScale = FNK_GUARDED_BINDING(Funke_Transform2D_SetScale);
-		b.Transform2D_GetEntity = FNK_GUARDED_BINDING(Funke_Transform2D_GetEntity);
-		b.Transform2D_GetLocalPosition = FNK_GUARDED_BINDING(Funke_Transform2D_GetLocalPosition);
-		b.Transform2D_SetLocalPosition = FNK_GUARDED_BINDING(Funke_Transform2D_SetLocalPosition);
-		b.Transform2D_GetLocalRotation = FNK_GUARDED_BINDING(Funke_Transform2D_GetLocalRotation);
-		b.Transform2D_SetLocalRotation = FNK_GUARDED_BINDING(Funke_Transform2D_SetLocalRotation);
-		b.Transform2D_GetLocalScale = FNK_GUARDED_BINDING(Funke_Transform2D_GetLocalScale);
-		b.Transform2D_SetLocalScale = FNK_GUARDED_BINDING(Funke_Transform2D_SetLocalScale);
-		b.SpriteRenderer_GetColor = FNK_GUARDED_BINDING(Funke_SpriteRenderer_GetColor);
-		b.SpriteRenderer_SetColor = FNK_GUARDED_BINDING(Funke_SpriteRenderer_SetColor);
-		b.SpriteRenderer_GetTexture = FNK_GUARDED_BINDING(Funke_SpriteRenderer_GetTexture);
-		b.SpriteRenderer_SetTexture = FNK_GUARDED_BINDING(Funke_SpriteRenderer_SetTexture);
-		b.SpriteRenderer_GetSortingOrder = FNK_GUARDED_BINDING(Funke_SpriteRenderer_GetSortingOrder);
-		b.SpriteRenderer_SetSortingOrder = FNK_GUARDED_BINDING(Funke_SpriteRenderer_SetSortingOrder);
-		b.SpriteRenderer_GetSortingLayer = FNK_GUARDED_BINDING(Funke_SpriteRenderer_GetSortingLayer);
-		b.SpriteRenderer_SetSortingLayer = FNK_GUARDED_BINDING(Funke_SpriteRenderer_SetSortingLayer);
-		b.Camera2D_GetOrthographicSize = FNK_GUARDED_BINDING(Funke_Camera2D_GetOrthographicSize);
-		b.Camera2D_SetOrthographicSize = FNK_GUARDED_BINDING(Funke_Camera2D_SetOrthographicSize);
-		b.Camera2D_GetPostProcessingEnabled = FNK_GUARDED_BINDING(Funke_Camera2D_GetPostProcessingEnabled);
-		b.Camera2D_SetPostProcessingEnabled = FNK_GUARDED_BINDING(Funke_Camera2D_SetPostProcessingEnabled);
-		b.Camera2D_GetZoom = FNK_GUARDED_BINDING(Funke_Camera2D_GetZoom);
-		b.Camera2D_SetZoom = FNK_GUARDED_BINDING(Funke_Camera2D_SetZoom);
-		b.Camera2D_GetClearColor = FNK_GUARDED_BINDING(Funke_Camera2D_GetClearColor);
-		b.Camera2D_SetClearColor = FNK_GUARDED_BINDING(Funke_Camera2D_SetClearColor);
-		b.Camera2D_ScreenToWorld = FNK_GUARDED_BINDING(Funke_Camera2D_ScreenToWorld);
-		b.Camera2D_GetViewportWidth = FNK_GUARDED_BINDING(Funke_Camera2D_GetViewportWidth);
-		b.Camera2D_GetViewportHeight = FNK_GUARDED_BINDING(Funke_Camera2D_GetViewportHeight);
-		b.Camera2D_GetMainEntity = FNK_GUARDED_BINDING(Funke_Camera2D_GetMainEntity);
-		b.Camera2D_GetFrustum = FNK_GUARDED_BINDING(Funke_Camera2D_GetFrustum);
-		b.ParticleSystem2D_Play = FNK_GUARDED_BINDING(Funke_ParticleSystem2D_Play);
-		b.ParticleSystem2D_Pause = FNK_GUARDED_BINDING(Funke_ParticleSystem2D_Pause);
-		b.ParticleSystem2D_Stop = FNK_GUARDED_BINDING(Funke_ParticleSystem2D_Stop);
-		b.ParticleSystem2D_IsPlaying = FNK_GUARDED_BINDING(Funke_ParticleSystem2D_IsPlaying);
-		b.ParticleSystem2D_GetPlayOnAwake = FNK_GUARDED_BINDING(Funke_ParticleSystem2D_GetPlayOnAwake);
-		b.ParticleSystem2D_SetPlayOnAwake = FNK_GUARDED_BINDING(Funke_ParticleSystem2D_SetPlayOnAwake);
-		b.ParticleSystem2D_GetColor = FNK_GUARDED_BINDING(Funke_ParticleSystem2D_GetColor);
-		b.ParticleSystem2D_SetColor = FNK_GUARDED_BINDING(Funke_ParticleSystem2D_SetColor);
-		b.ParticleSystem2D_GetLifeTime = FNK_GUARDED_BINDING(Funke_ParticleSystem2D_GetLifeTime);
-		b.ParticleSystem2D_SetLifeTime = FNK_GUARDED_BINDING(Funke_ParticleSystem2D_SetLifeTime);
-		b.ParticleSystem2D_GetSpeed = FNK_GUARDED_BINDING(Funke_ParticleSystem2D_GetSpeed);
-		b.ParticleSystem2D_SetSpeed = FNK_GUARDED_BINDING(Funke_ParticleSystem2D_SetSpeed);
-		b.ParticleSystem2D_GetScale = FNK_GUARDED_BINDING(Funke_ParticleSystem2D_GetScale);
-		b.ParticleSystem2D_SetScale = FNK_GUARDED_BINDING(Funke_ParticleSystem2D_SetScale);
-		b.ParticleSystem2D_GetEmitOverTime = FNK_GUARDED_BINDING(Funke_ParticleSystem2D_GetEmitOverTime);
-		b.ParticleSystem2D_SetEmitOverTime = FNK_GUARDED_BINDING(Funke_ParticleSystem2D_SetEmitOverTime);
-		b.ParticleSystem2D_Emit = FNK_GUARDED_BINDING(Funke_ParticleSystem2D_Emit);
-		b.EntityPicker_TryPickEntity = FNK_GUARDED_BINDING(Funke_EntityPicker_TryPickEntity);
-		b.SpriteRenderer_GetFilter = FNK_GUARDED_BINDING(Funke_SpriteRenderer_GetFilter);
-		b.SpriteRenderer_SetFilter = FNK_GUARDED_BINDING(Funke_SpriteRenderer_SetFilter);
-		b.SpriteRenderer_GetSpriteNameBuffer = FNK_GUARDED_BINDING(Funke_SpriteRenderer_GetSpriteNameBuffer);
-		b.SpriteRenderer_SetSpriteName       = FNK_GUARDED_BINDING(Funke_SpriteRenderer_SetSpriteName);
-		b.SpriteRenderer_GetMaterial = FNK_GUARDED_BINDING(Funke_SpriteRenderer_GetMaterial);
-		b.SpriteRenderer_SetMaterial = FNK_GUARDED_BINDING(Funke_SpriteRenderer_SetMaterial);
-		b.ParticleSystem2D_GetTexture = FNK_GUARDED_BINDING(Funke_ParticleSystem2D_GetTexture);
-		b.ParticleSystem2D_SetTexture = FNK_GUARDED_BINDING(Funke_ParticleSystem2D_SetTexture);
-		b.TerrainRenderer2D_Get = FNK_GUARDED_BINDING(Funke_TerrainRenderer2D_Get);
-		b.TerrainRenderer2D_Set = FNK_GUARDED_BINDING(Funke_TerrainRenderer2D_Set);
-		b.TerrainRenderer2D_GetPoints = FNK_GUARDED_BINDING(Funke_TerrainRenderer2D_GetPoints);
-		b.TerrainRenderer2D_SetPoints = FNK_GUARDED_BINDING(Funke_TerrainRenderer2D_SetPoints);
-		b.TerrainRenderer2D_GetTexture = FNK_GUARDED_BINDING(Funke_TerrainRenderer2D_GetTexture);
-		b.TerrainRenderer2D_SetTexture = FNK_GUARDED_BINDING(Funke_TerrainRenderer2D_SetTexture);
+#define FNK_ASSIGN_BINDING(slot) b.slot = FNK_GUARDED_BINDING(Funke_##slot);
+		FNK_FOR_EACH_2D_BINDING(FNK_ASSIGN_BINDING)
+#undef FNK_ASSIGN_BINDING
 	}
 
 }

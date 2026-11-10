@@ -88,9 +88,18 @@ class EditorScriptToolingSourceTests(unittest.TestCase):
         self.assertIn("bool ScriptEngine::LoadUserAssembly(const std::string& path)", engine)
         self.assertIn("return s_HasUserAssembly;", engine)
         self.assertIn("if (ScriptEngine::LoadUserAssembly(m_UserAssemblyPath))", system)
-        self.assertIn(
-            "C# build succeeded, but the rebuilt assembly could not be loaded.",
+        self.assertRegex(
             system,
+            r'if \(!ScriptEngine::PrepareUserAssembly\(m_UserAssemblyPath\)\)\s*\{\s*'
+            r'm_ManagedRebuildError = "C# build succeeded, but hot reload was refused: " '
+            r'\+ ScriptEngine::GetLastAssemblyError\(\);\s*'
+            r'FNK_ERROR_TAG\("ScriptSystem", "\{\}", m_ManagedRebuildError\);',
+        )
+        self.assertRegex(
+            system,
+            r'else\s*\{\s*ScriptEngine::ClearReloadState\(\);\s*'
+            r'm_ManagedRebuildError = "C# assembly exchange failed after teardown;[^"\n]+";'
+            r'[^}]+\}\s*FNK_ERROR_TAG\("ScriptSystem", "\{\}", m_ManagedRebuildError\);',
         )
 
     def test_missing_managed_project_blocks_play_rebuild(self) -> None:
@@ -546,12 +555,12 @@ class ModularStorageSourceTests(unittest.TestCase):
         fallback = STORAGE_FALLBACK.read_text(encoding="utf-8")
         premake = ENGINE_PREMAKE.read_text(encoding="utf-8")
         self.assertIn(
-            "#if !(FUNKE_WITH_RENDER && FUNKE_WITH_AUDIO && FUNKE_WITH_PHYSICS && FUNKE_WITH_SCRIPTING)",
+            "#if !(FUNKE_WITH_RENDER && FUNKE_WITH_AUDIO && FUNKE_WITH_SCRIPTING)",
             fallback,
         )
         gate = re.search(
             r'RemoveFilesUnlessModulesEnabled\(\{\s*"Render"\s*,\s*"Audio"\s*,\s*'
-            r'"Physics"\s*,\s*"Scripting"\s*\}\s*,\s*\{(?P<files>.*?)\}\s*\)',
+            r'"Scripting"\s*\}\s*,\s*\{(?P<files>.*?)\}\s*\)',
             premake,
             re.DOTALL,
         )

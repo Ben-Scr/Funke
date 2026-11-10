@@ -1,4 +1,5 @@
 #include "pch.hpp"
+#include "Profiling/Profiler.hpp"
 #include "Scene/SceneManager.hpp"
 #include "Scene/SceneExtensions.hpp"
 #include "Scene/Scene.hpp"
@@ -870,6 +871,7 @@ namespace Funke {
 	}
 
 	bool SceneManager::ActivateSuspendedScene(const std::shared_ptr<Scene>& scene, bool validateBaseline) {
+		FUNKE_PROFILE_SCOPE("Scene.Activate");
 		SceneManager* manager = TryGet();
 		if (!manager || !scene || !scene->m_IsLoaded || !scene->m_LifecycleSuspended) return false;
 		if (manager->m_LoadInProgress || manager->m_ReleaseDepth != 0) return false;

@@ -51,6 +51,12 @@ namespace Funke {
 		// the C# Localization.SetLanguage stores the player's choice in PlayerPrefs.
 		FUNKE_API bool SetLanguage(std::string_view code);
 
+		// Transient editor display tables; empty restores authored text. Never changes the player's language.
+		FUNKE_API bool SetPreviewLanguage(std::string_view code);
+		FUNKE_API const std::string& GetPreviewLanguage();
+		FUNKE_API const std::string& GetPreview(std::string_view key);
+		FUNKE_API std::size_t GetMissingPreviewKeyCount();
+
 		// Bumped by every change of language or tables; consumers re-resolve when it differs from what they applied.
 		FUNKE_API std::uint32_t GetRevision();
 

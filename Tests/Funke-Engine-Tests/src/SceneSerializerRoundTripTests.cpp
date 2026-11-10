@@ -10,6 +10,7 @@
 #include "Components/Graphics/Camera3DComponent.hpp"
 #include "Components/Graphics/ParticleSystem2DComponent.hpp"
 #include "Components/Graphics/SpriteRendererComponent.hpp"
+#include "Components/Graphics/TextRendererComponent.hpp"
 #include "Components/Physics/BoxCollider2DComponent.hpp"
 #include "Components/Physics/CircleCollider2DComponent.hpp"
 #include "Components/Physics/Rigidbody2DComponent.hpp"
@@ -40,6 +41,87 @@
 #include <system_error>
 
 using namespace Funke;
+
+TEST_CASE("Unsupported scene and prefab versions cannot replace existing files") {
+	const auto path = std::filesystem::temp_directory_path() / ("FunkeVersionGuard-"
+		+ std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".prefab");
+	struct Cleanup { std::filesystem::path Path; ~Cleanup() { std::error_code error; std::filesystem::remove(Path, error); } } cleanup{ path };
+	auto scene = Scene::CreateDetachedScene("Version guard");
+	const auto sentinel = scene->CreateEntity("Sentinel");
+	for (auto format : { SceneSerializationFormat::Json, SceneSerializationFormat::Binary }) {
+		for (const Json::Value version : { Json::Value(2), Json::Value(-1), Json::Value(0.5), Json::Value("1") }) {
+			auto root = SceneSerializer::SerializePrefabSource(*scene, sentinel.GetHandle(), 0);
+			root.AddMember("version", version);
+			REQUIRE(SceneSerializerStorage::WriteRootToFile(path.string(), root, format));
+			const auto original = File::ReadAllBytes(path.string());
+			CHECK(SceneSerializer::LoadEntityFromFile(*scene, path.string()) == entt::null);
+			CHECK_FALSE(SceneSerializer::LoadFromFile(*scene, path.string()));
+			CHECK_FALSE(SceneSerializer::SaveToFile(*scene, path.string(), format));
+			CHECK_FALSE(SceneSerializer::SaveEntityToFile(*scene, sentinel.GetHandle(), path.string(), format));
+			CHECK_FALSE(SceneSerializer::ConvertFileFormat(path.string(), format));
+			CHECK(File::ReadAllBytes(path.string()) == original);
+			CHECK(scene->GetEntityCount() == 1);
+			CHECK(scene->IsValid(sentinel.GetHandle()));
+		}
+	}
+}
+
+TEST_CASE("Archived version one scene upgrades identities without changing its asset reference") {
+	const auto fixture = std::filesystem::path(__FILE__).parent_path().parent_path() / "fixtures" / "serialization" / "217bf610.scene";
+	auto scene = Scene::CreateDetachedScene("Archived fixture");
+	const auto original = File::ReadAllBytes(fixture.string());
+	REQUIRE_FALSE(original.empty());
+	REQUIRE(SceneSerializer::LoadFromFile(*scene, fixture.string()));
+	CHECK(scene->GetEntityCount() == 2);
+	CHECK(File::ReadAllBytes(fixture.string()) == original);
+	const auto upgraded = SceneSerializer::SerializeScene(*scene);
+	auto restored = Scene::CreateDetachedScene("Restored archive");
+	REQUIRE(SceneSerializer::DeserializeScene(*restored, upgraded));
+	const auto again = SceneSerializer::SerializeScene(*restored);
+	CHECK(Json::Stringify(again) == Json::Stringify(upgraded));
+	int sprites = 0;
+	for (const auto [handle, sprite] : restored->GetRegistry().view<SpriteRendererComponent>().each()) {
+		(void)handle;
+		++sprites;
+		CHECK(static_cast<uint64_t>(sprite.TextureAssetId) == 123456789ull);
+	}
+	CHECK(sprites == 1);
+}
+
+TEST_CASE("Rich text survives both serialization ladders and resets to plain text") {
+	auto scene = Scene::CreateDetachedScene("Rich text round trip");
+	Entity source = scene->CreateEntity("Label");
+	auto& text = source.AddComponent<TextRendererComponent>();
+	text.RichText = true;
+	text.Bold = true;
+	text.Italic = true;
+	text.Text = "<b>A</b><color=#ff0000><size=48>B</size></color>";
+	const auto full = SceneSerializer::SerializeEntityFull(*scene, source.GetHandle());
+	const auto clone = SceneSerializer::DeserializeEntityFromValue(*scene, full);
+	REQUIRE(clone != entt::null);
+	CHECK(scene->GetComponent<TextRendererComponent>(clone).RichText);
+	CHECK(scene->GetComponent<TextRendererComponent>(clone).Bold);
+	CHECK(scene->GetComponent<TextRendererComponent>(clone).Italic);
+	CHECK(scene->GetComponent<TextRendererComponent>(clone).Text == text.Text);
+	const auto value = SceneSerializer::SerializeComponent(*scene, source.GetHandle(), "TextRenderer");
+	text.RichText = false;
+	text.Bold = false;
+	text.Italic = false;
+	REQUIRE(SceneSerializer::DeserializeComponent(*scene, source.GetHandle(), "TextRenderer", value));
+	CHECK(text.RichText);
+	CHECK(text.Bold);
+	CHECK(text.Italic);
+	REQUIRE(SceneSerializer::ResetComponent(*scene, source.GetHandle(), "TextRenderer"));
+	CHECK_FALSE(text.RichText);
+	CHECK_FALSE(text.Bold);
+	CHECK_FALSE(text.Italic);
+	const auto legacy = SceneSerializer::SerializeEntityFull(*scene, source.GetHandle());
+	const auto plain = SceneSerializer::DeserializeEntityFromValue(*scene, legacy);
+	REQUIRE(plain != entt::null);
+	CHECK_FALSE(scene->GetComponent<TextRendererComponent>(plain).RichText);
+	CHECK_FALSE(scene->GetComponent<TextRendererComponent>(plain).Bold);
+	CHECK_FALSE(scene->GetComponent<TextRendererComponent>(plain).Italic);
+}
 
 // These guard the audit's #1 risk: per-component serialize logic is hand-duplicated across THREE
 // ladders that must stay in lock-step — SerializeEntity (SceneSerializer.cpp), DeserializeFullEntity

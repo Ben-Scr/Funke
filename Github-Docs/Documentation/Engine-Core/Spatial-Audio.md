@@ -53,3 +53,5 @@ audio without opening an output device and checks direction spectra, ear delays,
 orientation, resampling, short clip tails, thread handoff, component playback, and scene
 serialization. `scripts/dev/Test.ps1 -Suite CSharp -Filter SpatialAudioTests` checks the
 managed one-shot packing and backward-compatible overload.
+
+`BuiltInComponentRegistrationAudio.cpp` owns the `AudioSource` serialization callbacks. Full scene/entity loads, Inspector paste/reset, and prefab snapshots all use that pair through the component registry. Preserve the `clipAsset` string GUID, legacy `clip` fallback, and optional spatial keys when extending it; `AudioSerializationTests.cpp` and `SpatialAudioTests.cpp` cover both loading paths and reset defaults.

@@ -1018,6 +1018,12 @@ namespace Funke::BuiltInComponentRegistrationInternal {
 			ComponentCategory::Component, "UI", "TextRenderer",
 			{
 				Properties::Make("Text", "Text", &TextRendererComponent::Text),
+				Properties::Make("RichText", "Rich Text", &TextRendererComponent::RichText,
+					Properties::Meta::Tooltip("Interpret formatting tags. Off skips rich-text parsing and displays tags literally.")),
+				Properties::Make("Bold", "Bold", &TextRendererComponent::Bold,
+					Properties::Meta::Tooltip("Make the entire text bold, also when Rich Text is off.")),
+				Properties::Make("Italic", "Italic", &TextRendererComponent::Italic,
+					Properties::Meta::Tooltip("Make the entire text italic, also when Rich Text is off.")),
 				Properties::MakeFontRef("Font", "Font",
 					[](const Entity& e) -> uint64_t {
 						return static_cast<uint64_t>(e.GetComponent<TextRendererComponent>().FontAssetId);

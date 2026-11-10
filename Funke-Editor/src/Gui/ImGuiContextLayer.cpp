@@ -9,10 +9,11 @@
 #include "Graphics/Text/FontHandle.hpp"
 #include "Gui/ColorPickerEyedropper.hpp"
 #include "Gui/ImGuiContextSetup.hpp"
+#include "Gui/EditorIcons.hpp"
 #include "Gui/EditorTheme.hpp"
-#include "Gui/GlassBackdrop.hpp"
 #include "Gui/EditorWindowIcons.hpp"
 #include "Gui/ImGuiFonts.hpp"
+#include "Serialization/File.hpp"
 #include "Serialization/Path.hpp"
 #include "Utils/ExpressionEvaluator.hpp"
 
@@ -35,6 +36,7 @@ namespace Funke {
 
 		// MUST be consumed at the start of OnPreRender BEFORE NewFrame: mid-frame ClearIniSettings+LoadIniSettingsFromDisk corrupts the dock context, leaving every dockable window floating.
 		std::string s_PendingLayoutReloadPath;
+		std::string s_ActiveLayoutPreset;
 		// Starts as DefaultIfUndocked so a fresh install, or a layout saved under another dockspace ID, gets the default.
 		ImGuiContextLayer::DockLayoutRequest s_DockLayoutRequest = ImGuiContextLayer::DockLayoutRequest::DefaultIfUndocked;
 
@@ -152,22 +154,7 @@ namespace Funke {
 			return GetLayoutPresetsDirectory() / (name + ".ini");
 		}
 
-		struct ThemeRounding {
-			float Window, Child, Frame, Popup, Scrollbar, Grab, Tab;
-		};
-		constexpr ThemeRounding k_DefaultRounding{ 6.0f, 4.0f, 4.0f, 6.0f, 8.0f, 3.0f, 4.0f };
-		constexpr ThemeRounding k_GlassRounding{ 14.0f, 10.0f, 9.0f, 14.0f, 9.0f, 8.0f, 8.0f };
 
-		// Truncates like ImGuiStyle::ScaleAllSizes so a theme switch lands on the same values as startup.
-		void SetRounding(ImGuiStyle& style, const ThemeRounding& r, float scale) {
-			style.WindowRounding    = std::trunc(r.Window * scale);
-			style.ChildRounding     = std::trunc(r.Child * scale);
-			style.FrameRounding     = std::trunc(r.Frame * scale);
-			style.PopupRounding     = std::trunc(r.Popup * scale);
-			style.ScrollbarRounding = std::trunc(r.Scrollbar * scale);
-			style.GrabRounding      = std::trunc(r.Grab * scale);
-			style.TabRounding       = std::trunc(r.Tab * scale);
-		}
 	}
 
 	void ImGuiContextLayer::OnAttach(Application& app) {
@@ -181,10 +168,14 @@ namespace Funke {
 		FNK_ASSERT(sdlWindow != nullptr, FunkeErrorCode::InvalidHandle, "Window has no SDL handle");
 
 		IMGUI_CHECKVERSION();
+		s_ActiveLayoutPreset.clear();
 		ImGui::CreateContext();
 
 		// Numeric fields accept arithmetic ("5/2", "/2", …) via this evaluator hook.
 		ImGui::SetScalarExpressionHook(&ScalarExpressionHook);
+		EditorWindowIcons::SetTextureProvider([](const char* name, int size) -> ImTextureID {
+			return static_cast<ImTextureID>(EditorIcons::Get(name, size));
+		});
 		ImGui::GetPlatformIO().WindowTitleIcon = &EditorWindowIcons::Draw;
 		ColorPickerEyedropper::Initialize();
 
@@ -274,6 +265,7 @@ namespace Funke {
 		}
 
 		ColorPickerEyedropper::Shutdown();
+		EditorWindowIcons::SetTextureProvider(nullptr);
 		EditorRuntime::ImGuiContextSetup::ShutdownBackends();
 		m_IniFilePath.clear();
 
@@ -309,7 +301,6 @@ namespace Funke {
 		if (!m_IsInitialized) {
 			return;
 		}
-		GlassBackdrop::DrawWindowEdges();
 		EditorRuntime::ImGuiContextSetup::RenderAndPresent();
 
 		FlushSettingsIfDirtyOrPeriodic();
@@ -401,6 +392,15 @@ namespace Funke {
 		return result;
 	}
 
+	std::string ImGuiContextLayer::ReadLayoutPreset(const std::string& name) {
+		if (!IsValidLayoutPresetName(name)) return {};
+		return File::ReadAllText(Path::ToUtf8(GetLayoutPresetPath(name)));
+	}
+
+	const std::string& ImGuiContextLayer::GetActiveLayoutPreset() {
+		return s_ActiveLayoutPreset;
+	}
+
 	bool ImGuiContextLayer::SaveLayoutPreset(const std::string& name) {
 		if (!IsValidLayoutPresetName(name)) {
 			FNK_CORE_WARN_TAG("ImGui",
@@ -417,15 +417,16 @@ namespace Funke {
 			return false;
 		}
 		const std::filesystem::path presetPath = GetLayoutPresetPath(name);
-		ImGui::SaveIniSettingsToDisk(presetPath.string().c_str());
-		ec.clear();
-		const bool exists = std::filesystem::is_regular_file(presetPath, ec);
-		if (!exists) {
+		size_t settingsSize = 0;
+		SyncDockIdsFromLiveNodes();
+		const char* settings = ImGui::SaveIniSettingsToMemory(&settingsSize);
+		if (!File::WriteAllText(Path::ToUtf8(presetPath), std::string(settings, settingsSize))) {
 			FNK_CORE_WARN_TAG("ImGui",
 				"SaveLayoutPreset: write failed (path not writable?): '{}'",
 				presetPath.string());
 			return false;
 		}
+		s_ActiveLayoutPreset = name;
 		FNK_CORE_INFO_TAG("ImGui", "Saved layout preset '{}' → {}",
 			name, presetPath.string());
 		return true;
@@ -461,6 +462,7 @@ namespace Funke {
 			return false;
 		}
 		s_PendingLayoutReloadPath = io.IniFilename;
+		s_ActiveLayoutPreset = name;
 		FNK_CORE_INFO_TAG("ImGui",
 			"Queued layout preset '{}' for reload from {}",
 			name, presetPath.string());
@@ -482,12 +484,15 @@ namespace Funke {
 				presetPath.string(), ec ? ec.message() : "file did not exist");
 			return false;
 		}
+		if (s_ActiveLayoutPreset == name) s_ActiveLayoutPreset.clear();
 		FNK_CORE_INFO_TAG("ImGui", "Deleted layout preset '{}' ({})",
 			name, presetPath.string());
 		return true;
 	}
 
 	void ImGuiContextLayer::ResetLayoutToDefault() {
+		s_ActiveLayoutPreset.clear();
+		s_PendingLayoutReloadPath.clear();
 		s_DockLayoutRequest = DockLayoutRequest::Default;
 		FNK_CORE_INFO_TAG("ImGui", "Queued reset of the editor layout to the default.");
 	}
@@ -509,7 +514,13 @@ namespace Funke {
 		style.ScrollbarSize     = 11.0f;
 		style.GrabMinSize       = 8.0f;
 
-		SetRounding(style, k_DefaultRounding, 1.0f);
+		style.WindowRounding = 6.0f;
+		style.ChildRounding = 4.0f;
+		style.FrameRounding = 4.0f;
+		style.PopupRounding = 6.0f;
+		style.ScrollbarRounding = 8.0f;
+		style.GrabRounding = 3.0f;
+		style.TabRounding = 4.0f;
 		style.DragDropTargetRounding = 4.0f;
 
 		style.WindowBorderSize  = 1.0f;
@@ -528,7 +539,10 @@ namespace Funke {
 
 	// Neutral graphite with the blue interactive accent from EditorTheme (the only accent source).
 	void ImGuiContextLayer::ApplyFunkeThemeColors(bool dark) {
-		ImGuiStyle& style = ImGui::GetStyle();
+		ConfigureFunkeThemeColors(ImGui::GetStyle(), dark);
+	}
+
+	void ImGuiContextLayer::ConfigureFunkeThemeColors(ImGuiStyle& style, bool dark) {
 		ImVec4* c = style.Colors;
 
 		auto pick = [dark](ImVec4 d, ImVec4 l) { return dark ? d : l; };
@@ -628,70 +642,6 @@ namespace Funke {
 		c[ImGuiCol_TableRowBgAlt]        = pick(ImVec4(1, 1, 1, 0.025f), ImVec4(0, 0, 0, 0.030f));
 
 		c[ImGuiCol_ModalWindowDimBg]     = pick(ImVec4(0, 0, 0, 0.55f), ImVec4(0.12f, 0.15f, 0.20f, 0.30f));
-	}
-
-	void ImGuiContextLayer::ApplyGlassThemeColors(bool dark) {
-		ApplyFunkeThemeColors(dark);
-
-		ImVec4* c = ImGui::GetStyle().Colors;
-		const ImVec4 accent    = EditorTheme::Colors::AccentFor(dark);
-
-		const ImVec4 surface = dark ? ImVec4(0.80f, 0.81f, 0.82f, 0.10f) : ImVec4(1.0f, 1.0f, 1.0f, 0.48f);
-		const ImVec4 surfaceHi = dark ? ImVec4(0.90f, 0.91f, 0.92f, 0.18f) : ImVec4(1.0f, 1.0f, 1.0f, 0.72f);
-		const ImVec4 surfaceAct = dark ? ImVec4(0.60f, 0.61f, 0.62f, 0.22f) : ImVec4(0.40f, 0.41f, 0.42f, 0.16f);
-		const ImVec4 chrome = dark ? ImVec4(0.10f, 0.105f, 0.11f, 0.35f) : ImVec4(0.94f, 0.945f, 0.95f, 0.42f);
-		const ImVec4 edge = dark ? ImVec4(1.0f, 1.0f, 1.0f, 0.14f) : ImVec4(0.10f, 0.11f, 0.12f, 0.14f);
-		const ImVec4 clear     (0.0f, 0.0f, 0.0f, 0.0f);
-
-		c[ImGuiCol_WindowBg]             = dark ? ImVec4(0.16f, 0.165f, 0.17f, 0.12f) : ImVec4(0.98f, 0.985f, 0.99f, 0.10f);
-		c[ImGuiCol_ChildBg]              = dark ? ImVec4(1, 1, 1, 0.015f) : ImVec4(1, 1, 1, 0.025f);
-		c[ImGuiCol_PopupBg]              = dark ? ImVec4(0.18f, 0.185f, 0.19f, 0.96f) : ImVec4(0.97f, 0.975f, 0.98f, 0.97f);
-
-		c[ImGuiCol_Border]               = edge;
-		c[ImGuiCol_Separator]            = ImVec4(edge.x, edge.y, edge.z, 0.12f);
-		c[ImGuiCol_TableBorderStrong]    = edge;
-		c[ImGuiCol_TableBorderLight]     = ImVec4(edge.x, edge.y, edge.z, 0.08f);
-
-		c[ImGuiCol_Text]                 = dark ? ImVec4(0.96f, 0.965f, 0.97f, 1) : ImVec4(0.10f, 0.105f, 0.11f, 1);
-		c[ImGuiCol_TextDisabled]         = dark ? ImVec4(0.67f, 0.68f, 0.69f, 1) : ImVec4(0.40f, 0.41f, 0.42f, 1);
-
-		c[ImGuiCol_FrameBg]              = surface;
-		c[ImGuiCol_FrameBgHovered]       = surfaceHi;
-		c[ImGuiCol_FrameBgActive]        = surfaceAct;
-		c[ImGuiCol_Button]               = surface;
-		c[ImGuiCol_ButtonHovered]        = surfaceHi;
-		c[ImGuiCol_ButtonActive]         = surfaceAct;
-		c[ImGuiCol_Header]               = surface;
-		c[ImGuiCol_HeaderHovered]        = surfaceHi;
-		c[ImGuiCol_HeaderActive]         = surfaceAct;
-
-		c[ImGuiCol_TitleBg]              = chrome;
-		c[ImGuiCol_TitleBgActive]        = chrome;
-		c[ImGuiCol_TitleBgCollapsed]     = ImVec4(chrome.x, chrome.y, chrome.z, 0.30f);
-		c[ImGuiCol_MenuBarBg]            = chrome;
-		c[ImGuiCol_TableHeaderBg]        = surface;
-		c[ImGuiCol_TableRowBgAlt]        = dark ? ImVec4(1, 1, 1, 0.03f) : ImVec4(0, 0, 0, 0.03f);
-
-		c[ImGuiCol_ScrollbarGrab]        = ImVec4(edge.x, edge.y, edge.z, 0.22f);
-		c[ImGuiCol_ScrollbarGrabHovered] = ImVec4(edge.x, edge.y, edge.z, 0.32f);
-		c[ImGuiCol_ScrollbarGrabActive]  = ImVec4(edge.x, edge.y, edge.z, 0.42f);
-
-		// Unselected tabs sit on the TitleBg strip; a fill of their own would double its tint.
-		c[ImGuiCol_Tab]                  = clear;
-		c[ImGuiCol_TabHovered]           = surfaceHi;
-		c[ImGuiCol_TabSelected]          = surface;
-		c[ImGuiCol_TabSelectedOverline]  = accent;
-		c[ImGuiCol_TabDimmed]            = clear;
-		c[ImGuiCol_TabDimmedSelected]    = ImVec4(surface.x, surface.y, surface.z, 0.12f);
-		c[ImGuiCol_TabDimmedSelectedOverline] = ImVec4(accent.x, accent.y, accent.z, 0.55f);
-
-		c[ImGuiCol_SliderGrab]           = ImVec4(accent.x, accent.y, accent.z, 0.85f);
-		c[ImGuiCol_DockingEmptyBg]       = dark ? ImVec4(0, 0, 0, 0.20f) : ImVec4(1, 1, 1, 0.20f);
-		c[ImGuiCol_ModalWindowDimBg]     = ImVec4(0, 0, 0, 0.40f);
-	}
-
-	void ImGuiContextLayer::ApplyThemeRounding(bool glass) {
-		SetRounding(ImGui::GetStyle(), glass ? k_GlassRounding : k_DefaultRounding, s_DpiScale);
 	}
 
 }

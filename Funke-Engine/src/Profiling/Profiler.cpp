@@ -33,9 +33,12 @@ namespace Funke {
 		bool g_BackgroundTracking = false;
 		// Mirrors (g_PanelVisible || g_BackgroundTracking); written under g_Mutex, read lock-free.
 		std::atomic<bool> g_Armed{ false };
+		std::atomic<bool> g_FrameCapture{ false };
+		struct FrameTotal { double Sum = 0; uint64_t Calls = 0; };
+		std::vector<FrameTotal> g_FrameTotals;
 
 		void UpdateArmedLocked() {
-			g_Armed.store(g_PanelVisible || g_BackgroundTracking, std::memory_order_relaxed);
+			g_Armed.store(g_PanelVisible || g_BackgroundTracking || g_FrameCapture.load(std::memory_order_relaxed), std::memory_order_relaxed);
 		}
 
 		int g_SamplingHz = 60;
@@ -47,7 +50,7 @@ namespace Funke {
 			// Tests run without an Application; skip the play/pause check there.
 			if (Application::GetInstance() != nullptr) {
 				if (!Application::GetIsPlaying()) return false;
-				if (Application::IsPaused()) return false;
+				if (Application::IsPaused() || Application::IsGameplayPaused()) return false;
 			}
 
 			return true;
@@ -127,6 +130,9 @@ namespace Funke {
 		std::scoped_lock lock(g_Mutex);
 		g_Modules.clear();
 		g_Index.clear();
+		g_FrameCapture.store(false, std::memory_order_relaxed);
+		g_FrameTotals.clear();
+		UpdateArmedLocked();
 		const char* names[] = {
 			// Internal: hidden from panel, used to derive "Others" residual.
 			"Frame Time",
@@ -154,6 +160,14 @@ namespace Funke {
 
 			// GPU category
 			"GPU",
+			"GPU.QueueSubmits", "GPU.TextureUploadBytes",
+			"Text.GeometryAndSubmit", "UI.CollectAndDraw", "Physics2D.BodyTransforms",
+			"Renderer2D.InstanceCopyBytes", "Renderer2D.UploadBytes", "Renderer2D.SceneDrawGrowths",
+			"Scripts.Snapshot", "Scripts.SnapshotBytes", "Scripts.SnapshotAllocations",
+			"Scripts.FixedUpdate", "Physics2D.Sync", "Physics2D.Step", "Physics2D.Callbacks",
+			"Physics2D.ContactEvents", "Assets.Request", "Assets.Decode", "Assets.Publish",
+			"Assets.Complete", "Assets.Pump", "Scene.Teardown", "Scene.Activate",
+			"Hierarchy Panel", "Editor PreRender", "Editor.AssetBrowser", "Editor.ProfilerPanel",
 
 			"UpdateScenes",
 			"OnPreRenderScenes",
@@ -168,6 +182,8 @@ namespace Funke {
 			"Renderer2D.Upload",
 			"Renderer2D.Submit",
 			"Renderer3D.RenderScene",
+			"Renderer3D.JointUploadBytes", "Renderer3D.InstanceUploadBytes",
+			"Renderer3D.Lights", "Renderer3D.OffscreenCasters",
 			"Renderer3D.Cull",
 			"Renderer3D.SkinningPose",
 			"Renderer3D.SkinningFallback",
@@ -214,6 +230,8 @@ namespace Funke {
 		g_Index.clear();
 		g_PanelVisible = false;
 		g_BackgroundTracking = false;
+		g_FrameCapture.store(false, std::memory_order_relaxed);
+		g_FrameTotals.clear();
 		UpdateArmedLocked();
 	}
 
@@ -267,12 +285,41 @@ namespace Funke {
 		return g_Modules[it->second]->CurrentValue;
 	}
 
+	void Profiler::SetFrameCaptureEnabled(bool enabled) {
+		std::scoped_lock lock(g_Mutex);
+		g_FrameCapture.store(enabled, std::memory_order_relaxed);
+		g_FrameTotals.assign(g_Modules.size(), {});
+		UpdateArmedLocked();
+	}
+
+	bool Profiler::IsFrameCaptureEnabled() {
+		return g_FrameCapture.load(std::memory_order_relaxed);
+	}
+
+	void Profiler::ConsumeFrameSamples(std::vector<ProfilerFrameSample>& outBuffer) {
+		std::scoped_lock lock(g_Mutex);
+		g_FrameTotals.resize(g_Modules.size());
+		outBuffer.resize(g_Modules.size());
+		for (size_t i = 0; i < g_Modules.size(); ++i) {
+			outBuffer[i].Name = g_Modules[i]->Name;
+			outBuffer[i].Sum = g_FrameTotals[i].Sum;
+			outBuffer[i].Calls = g_FrameTotals[i].Calls;
+			g_FrameTotals[i] = {};
+		}
+	}
+
 	void Profiler::PushValue(std::string_view name, float value) {
 		if (!g_Armed.load(std::memory_order_relaxed)) return;
 		std::scoped_lock lock(g_Mutex);
 		auto it = g_Index.find(name);
 		if (it == g_Index.end()) return;
 		ProfilerModule& m = *g_Modules[it->second];
+		if (g_FrameCapture.load(std::memory_order_relaxed)) {
+			g_FrameTotals.resize(g_Modules.size());
+			auto& total = g_FrameTotals[it->second];
+			total.Sum += value;
+			++total.Calls;
+		}
 		if (!m.Enabled) return;
 		if (!ShouldAcceptModuleSample(m)) return;
 		RecordSample(m, value);
@@ -318,7 +365,7 @@ namespace Funke {
 		if (!g_PanelVisible && !g_BackgroundTracking) return false;
 		if (Application::GetInstance() != nullptr) {
 			if (!Application::GetIsPlaying()) return false;
-			if (Application::IsPaused()) return false;
+			if (Application::IsPaused() || Application::IsGameplayPaused()) return false;
 		}
 		return true;
 	}

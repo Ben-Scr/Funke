@@ -1,7 +1,6 @@
 #include "Editor/EditorPreferences.hpp"
 
 #include "Core/Log.hpp"
-#include "Gui/GlassBackdrop.hpp"
 #include "Gui/ImGuiContextLayer.hpp"
 #include "Gui/ImGuiFonts.hpp"
 #include "Core/Application.hpp"
@@ -128,8 +127,6 @@ namespace Funke {
 				case EditorThemeMode::Light:         return "Light";
 				case EditorThemeMode::SystemDefault: return "SystemDefault";
 				case EditorThemeMode::Custom:        return "Custom";
-				case EditorThemeMode::Glass:         return "Glass";
-				case EditorThemeMode::GlassLight:    return "GlassLight";
 			}
 			return "SystemDefault";
 		}
@@ -140,12 +137,12 @@ namespace Funke {
 			if (value == "Light")         return EditorThemeMode::Light;
 			if (value == "SystemDefault") return EditorThemeMode::SystemDefault;
 			if (value == "Custom")        return EditorThemeMode::Custom;
-			if (value == "Glass")         return EditorThemeMode::Glass;
-			if (value == "GlassLight")    return EditorThemeMode::GlassLight;
+			if (value == "Glass")         return EditorThemeMode::Dark;
+			if (value == "GlassLight")    return EditorThemeMode::Light;
 			return EditorThemeMode::SystemDefault;
 		}
 
-		// Dev tooling: FUNKE_EDITOR_THEME=auto|dark|light|glass|custom (scripts/dev/Run.ps1 -Theme).
+		// Dev tooling: FUNKE_EDITOR_THEME=auto|dark|light|custom (scripts/dev/Run.ps1 -Theme).
 		void ApplyThemeFromEnvironment() {
 			const char* value = std::getenv("FUNKE_EDITOR_THEME");
 			if (!value || !*value) return;
@@ -157,8 +154,6 @@ namespace Funke {
 			if (name == "auto")        mode = EditorThemeMode::SystemDefault;
 			else if (name == "dark")   mode = EditorThemeMode::Dark;
 			else if (name == "light")  mode = EditorThemeMode::Light;
-			else if (name == "glass" || name == "glass-dark") mode = EditorThemeMode::Glass;
-			else if (name == "glass-light") mode = EditorThemeMode::GlassLight;
 			else if (name == "custom") mode = EditorThemeMode::Custom;
 			else {
 				FNK_CORE_WARN_TAG("EditorPrefs", "Ignoring unknown FUNKE_EDITOR_THEME '{}'.", value);
@@ -223,11 +218,7 @@ namespace Funke {
 			return 0.2126f * color.x + 0.7152f * color.y + 0.0722f * color.z;
 		}
 
-		Color ToColor(const ImVec4& color) {
-			return Color(color.x, color.y, color.z, color.w);
-		}
-
-		void ApplyNativeTitlebarFromStyle(bool glass = false) {
+		void ApplyNativeTitlebarFromStyle() {
 			Window* window = Application::GetWindow();
 			if (!window) return;
 
@@ -235,8 +226,8 @@ namespace Funke {
 			const bool dark = Luminance(style.Colors[ImGuiCol_WindowBg]) < 0.5f;
 			window->SetTitlebarDarkMode(dark);
 			// Alpha 0 restores the OS default caption.
-			window->SetTitlebarActiveColor(glass ? ToColor(GlassBackdrop::TitlebarColor(true)) : Color{ 0.0f, 0.0f, 0.0f, 0.0f });
-			window->SetTitlebarInactiveColor(glass ? ToColor(GlassBackdrop::TitlebarColor(false)) : Color{ 0.0f, 0.0f, 0.0f, 0.0f });
+			window->SetTitlebarActiveColor(Color{ 0.0f, 0.0f, 0.0f, 0.0f });
+			window->SetTitlebarInactiveColor(Color{ 0.0f, 0.0f, 0.0f, 0.0f });
 			window->SetTitlebarTextColor(Color{ 0.0f, 0.0f, 0.0f, 0.0f });
 		}
 
@@ -563,15 +554,8 @@ namespace Funke {
 
 	void EditorPreferences::ApplyTheme() {
 		const EditorThemeMode resolved = ResolveTheme(S().Theme);
-		ImGuiContextLayer::ApplyThemeRounding(/*glass=*/resolved == EditorThemeMode::Glass || resolved == EditorThemeMode::GlassLight);
 
 		switch (resolved) {
-			case EditorThemeMode::Glass:
-			case EditorThemeMode::GlassLight:
-				ImGuiContextLayer::ApplyGlassThemeColors(resolved == EditorThemeMode::Glass);
-				MarkThemeApplied(resolved);
-				ApplyNativeTitlebarFromStyle(/*glass=*/true);
-				return;
 			case EditorThemeMode::Light:
 				ImGuiContextLayer::ApplyFunkeThemeColors(/*dark=*/false);
 				MarkThemeApplied(resolved);
@@ -633,6 +617,11 @@ namespace Funke {
 		S().Theme = mode;
 		ApplyTheme();
 		Save();
+	}
+
+	ImVec4 EditorPreferences::GetCustomColor(int imGuiColIdx) {
+		assert(imGuiColIdx >= 0 && imGuiColIdx < ImGuiCol_COUNT);
+		return S().CustomColorsSeeded ? S().CustomColors[imGuiColIdx] : ImGui::GetStyle().Colors[imGuiColIdx];
 	}
 
 	ImVec4& EditorPreferences::CustomColor(int imGuiColIdx) {

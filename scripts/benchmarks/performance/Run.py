@@ -50,6 +50,9 @@ def export(output: Path, context: dict) -> dict:
         if context.get("assetInputsAfter") != context["assetInputs"]:
             raise ValueError("Asset inputs changed during capture")
         names |= {f"asset-io-mode-{mode}-files-{count}" for mode in range(5) for count in (1, 256)}
+    if context.get("extended"):
+        names |= {f"extra-{kind}-{count}-mode-{mode}" for kind in ("hit", "text") for count in (100, 1000, 5000) for mode in range(3)}
+        names |= {f"extra-profiler-snapshot-mode-{mode}" for mode in range(2)}
     names = {name for name in names if name.startswith(context.get("casePrefix", ""))}
     if not names:
         raise ValueError("Case prefix matched no workload")
@@ -66,8 +69,9 @@ def export(output: Path, context: dict) -> dict:
     if compiler is None:
         unavailable["build.compiler"] = "Historical capture without compiler metadata"
     metadata = {
-        "schemaVersion": 1, "status": "complete" if compiler and not context.get("conditions") else "incomplete",
-        "build": context["source"] | {"engineVersion": engine, "nativeConfiguration": "Release",
+        "schemaVersion": 1, "status": "complete" if compiler and context.get("buildSource") and not context.get("conditions") else "incomplete",
+        "sourceAtCapture": context["source"],
+        "build": context.get("buildSource", {"engineCommit": None, "dirty": None, "sourceFingerprint": None}) | {"engineVersion": engine, "nativeConfiguration": "Release",
             "managedConfiguration": None, "moduleProfile": "full", "compiler": compiler,
             "architecture": "x86_64", "binaries": context["binaries"],
             "layoutVisits": context.get("layoutVisits", "historical-unrecorded"),
@@ -75,6 +79,8 @@ def export(output: Path, context: dict) -> dict:
         "host": host, "packages": [], "runs": [], "unavailable": unavailable,
     }
     unavailable["build.managedConfiguration"] = "No managed code in this probe"
+    if not context.get("buildSource"):
+        unavailable["build.sourceFingerprint"] = "No build-time manifest; capture-time checkout cannot identify previously compiled binaries"
     if context.get("conditions"):
         metadata["captureConditions"] = context["conditions"]
         unavailable["controlledComparison"] = "Descriptive capture: " + context["conditions"]
@@ -99,6 +105,12 @@ def export(output: Path, context: dict) -> dict:
                         "2 metadata FileStamp.Read, 3 warmed ReadTextureMeta, 4 Path.CanonicalIdentity. "
                         "Includes path conversion, filesystem calls and result counting. No loading, decoding, GPU work or script dispatch. "
                         "OS cache uncontrolled; fixtures and metadata exist before setup; warmup and validation excluded.")
+        elif name.startswith("extra-hit-"):
+            boundary = "One UIEventSystem.PickInteractable call over overlapping ordered images; mode 0 top hit, 1 full miss, 2 moves the top rect before picking. Includes order rebuild and hit testing; no rendering or input dispatch."
+        elif name.startswith("extra-text-"):
+            boundary = "TextLayout.Build/cache lookup for a fixed synthetic font with 8-unit advance; mode 0 rebuild, 1 warm cache, 2 changed spacing/cache miss. Includes geometry allocation and cache eviction, excludes font rasterization, GPU work and validation."
+        elif name.startswith("extra-profiler-"):
+            boundary = "One Profiler.AllModules snapshot with 200 samples per ring; mode 0 returns a fresh vector, 1 reuses the caller buffer. No ImGui draw or connected Tracy viewer."
         timing = common.distribution([float(r["cpu_ms"]) for r in values], boundary)
         filename = f"{name}-r{repeat}.samples.csv"
         with (output / filename).open("w", newline="", encoding="utf-8") as file:
@@ -108,7 +120,7 @@ def export(output: Path, context: dict) -> dict:
         configuration = {"case": name, "entities": int(first["entities"]), "workers": int(first["workers"]),
             "operations": int(first["operations"]), "samples": context["samples"], "warmups": context["warmups"],
             "measurement": "isolated CPU call, not frame timing", "profiler": "enabled; panel disarmed outside profiler cases",
-            "fixtureVersion": 4}
+            "fixtureVersion": 5 if name.startswith("extra-") else 4}
         if name.startswith("asset-io-"):
             configuration["assetInputs"] = context["assetInputs"]
         workload_hash = hashlib.sha256(json.dumps(configuration, sort_keys=True).encode()).hexdigest()
@@ -158,12 +170,14 @@ def main():
     parser.add_argument("--warmups", type=int, default=20)
     parser.add_argument("--export-only", action="store_true")
     parser.add_argument("--case-prefix", default="", help="Select case names with this prefix")
+    parser.add_argument("--extended", action="store_true", help="Include bounded UI hit-test, text layout and profiler snapshot probes")
     parser.add_argument("--reference-layout-visits", action="store_true")
-    parser.add_argument("--reference-file-stamp", action="store_true")
+    parser.add_argument("--build-manifest", type=Path, help="Build-time source identity, harnessSha256 and binaries; must match the measured files")
+    parser.add_argument("--timeout", type=int, default=120, help="Maximum seconds for the native process")
     parser.add_argument("--asset-root", type=Path, help="Opt-in directory with large.tga, small-0..255.tga and their metadata")
     parser.add_argument("--conditions", help="Record concurrent work or other uncontrolled conditions; marks descriptive capture incomplete")
     args = parser.parse_args()
-    if min(args.samples, args.repeats, args.warmups) < 1:
+    if min(args.samples, args.repeats, args.warmups, args.timeout) < 1:
         parser.error("sample settings must be positive")
     output, binary = args.output.resolve(), args.binary.resolve()
     if args.export_only:
@@ -172,11 +186,19 @@ def main():
     output.mkdir(parents=True, exist_ok=False)
     context = {"source": common.identity(), "host": common.host_info(), "samples": args.samples,
         "warmups": args.warmups, "repeats": args.repeats,
-        "casePrefix": args.case_prefix, "layoutVisits": "reference" if args.reference_layout_visits else "dense",
-        "fileStampReads": "reference" if args.reference_file_stamp else "directory-entry",
+        "casePrefix": args.case_prefix, "extended": args.extended, "layoutVisits": "reference" if args.reference_layout_visits else "dense",
+        "fileStampReads": "filesystem",
         "harnessSha256": common.digest(ROOT / "Tests/Funke-Engine-Tests/src/PerformanceBenchmarkTests.cpp"),
         "binaries": {p.name: common.digest(p) for p in (binary, binary.parent / "Funke-Engine.dll")},
         "startedAt": dt.datetime.now(dt.timezone.utc).isoformat()}
+    if args.build_manifest:
+        manifest = json.loads(args.build_manifest.read_text(encoding="utf-8-sig"))
+        if manifest.get("binaries") != context["binaries"] or manifest.get("harnessSha256") != context["harnessSha256"]:
+            raise ValueError("Build manifest does not match measured binaries and harness")
+        source = manifest["source"]
+        if not source.get("engineCommit") or not isinstance(source.get("dirty"), bool) or source["dirty"] and not source.get("sourceFingerprint"):
+            raise ValueError("Build manifest has no complete source identity")
+        context["buildSource"] = source
     if args.conditions:
         context["conditions"] = args.conditions
     if args.asset_root:
@@ -186,21 +208,27 @@ def main():
     env = os.environ | {"FUNKE_CPU_BENCH_OUTPUT": str(output), "FUNKE_CPU_BENCH_SAMPLES": str(args.samples),
         "FUNKE_CPU_BENCH_REPEATS": str(args.repeats), "FUNKE_CPU_BENCH_WARMUPS": str(args.warmups),
         "FUNKE_CPU_BENCH_PREFIX": args.case_prefix, "FUNKE_REFERENCE_LAYOUT_VISITS": "1" if args.reference_layout_visits else "0"}
-    env["FUNKE_REFERENCE_FILE_STAMP"] = "1" if args.reference_file_stamp else "0"
+    env.pop("FUNKE_REFERENCE_FILE_STAMP", None)
+    env["FUNKE_CPU_EXTENDED"] = "1" if args.extended else "0"
     env.pop("FUNKE_CPU_ASSET_ROOT", None)
     if args.asset_root:
         env["FUNKE_CPU_ASSET_ROOT"] = context["assetRoot"]
     start = time.monotonic()
-    with (output / "process.log").open("w", encoding="utf-8") as log:
-        result = subprocess.run([str(binary), "--no-skip=true", "--test-case=CPU performance benchmark validates measured work",
-            "--reporters=xml", f"--out={output / 'tests.xml'}", "--no-breaks=true"], cwd=binary.parent,
-            env=env, stdout=log, stderr=subprocess.STDOUT, timeout=600)
-    context["wallDurationSeconds"] = time.monotonic() - start
-    context["exitCode"] = result.returncode
-    context["binariesAfter"] = {name: common.digest(binary.parent / name) for name in context["binaries"]}
-    if args.asset_root:
-        context["assetInputsAfter"] = {p.name: common.digest(p) for p in args.asset_root.iterdir() if p.is_file()}
-    common.write_json(output / "context.json", context)
+    try:
+        with (output / "process.log").open("w", encoding="utf-8") as log:
+            result = subprocess.run([str(binary), "--no-skip=true", "--test-case=CPU performance benchmark validates measured work",
+                "--reporters=xml", f"--out={output / 'tests.xml'}", "--no-breaks=true"], cwd=binary.parent,
+                env=env, stdout=log, stderr=subprocess.STDOUT, timeout=args.timeout)
+        context["exitCode"] = result.returncode
+    except subprocess.TimeoutExpired:
+        context.update(exitCode=None, failure="timeout", timeoutSeconds=args.timeout)
+        raise
+    finally:
+        context["wallDurationSeconds"] = time.monotonic() - start
+        context["binariesAfter"] = {name: common.digest(binary.parent / name) for name in context["binaries"]}
+        if args.asset_root:
+            context["assetInputsAfter"] = {p.name: common.digest(p) for p in args.asset_root.iterdir() if p.is_file()}
+        common.write_json(output / "context.json", context)
     if result.returncode or not (output / "complete.txt").is_file():
         raise RuntimeError(f"CPU probe failed; inspect {output}")
     if context["binariesAfter"] != context["binaries"]:

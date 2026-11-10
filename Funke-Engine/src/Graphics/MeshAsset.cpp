@@ -74,6 +74,7 @@ namespace Funke {
 			std::unordered_map<std::string, FileStamp> Dependencies;
 			bool Valid = false;
 			bool Runtime = false;
+			bool ReloadPending = false;
 			std::chrono::steady_clock::time_point LastAttempt{};
 			std::chrono::steady_clock::time_point LastUsed{};
 			bool UsedSincePurge = false;
@@ -109,14 +110,21 @@ namespace Funke {
 
 		bool LoadEntry(uint64_t guid, Entry& entry) {
 			entry.LastAttempt = std::chrono::steady_clock::now();
-			entry.Path = AssetRegistry::ResolvePath(guid);
-			entry.Value = MeshAsset{};
-			entry.Dependencies.clear();
-			entry.Valid = !entry.Path.empty() && LoadMeshAsset(entry.Path, entry.Value, &entry.Dependencies);
-			if (!entry.Valid) return false;
-
-			UpdateBounds(entry.Value);
-			entry.Value.Revision = NextRevision();
+			const std::string path = AssetRegistry::ResolvePath(guid);
+			if (!path.empty()) entry.Path = path;
+			MeshAsset replacement;
+			std::unordered_map<std::string, FileStamp> dependencies;
+			entry.ReloadPending = entry.Path.empty() || !LoadMeshAsset(entry.Path, replacement, &dependencies);
+			if (entry.ReloadPending) {
+				// Keep working GPU geometry and dependencies while a multi-file export is incomplete.
+				for (const auto& [dependency, stamp] : dependencies) entry.Dependencies[dependency] = stamp;
+				return false;
+			}
+			UpdateBounds(replacement);
+			replacement.Revision = NextRevision();
+			entry.Value = std::move(replacement);
+			entry.Dependencies = std::move(dependencies);
+			entry.Valid = true;
 			return true;
 		}
 	}
@@ -267,7 +275,8 @@ namespace Funke {
 			it = entries.emplace(guid, Entry{}).first;
 			LoadEntry(guid, it->second);
 		}
-		else if (!it->second.Valid && std::chrono::steady_clock::now() - it->second.LastAttempt > std::chrono::seconds(1)) {
+		else if ((!it->second.Valid || it->second.ReloadPending)
+			&& std::chrono::steady_clock::now() - it->second.LastAttempt > std::chrono::seconds(1)) {
 			LoadEntry(guid, it->second);
 		}
 		it->second.LastUsed = std::chrono::steady_clock::now();
@@ -369,8 +378,7 @@ namespace Funke {
 			if (entry.Path.empty() || !std::any_of(entry.Dependencies.begin(), entry.Dependencies.end(), [](const auto& dependency) {
 				return FileStamp::Read(dependency.first) != dependency.second;
 			})) continue;
-			LoadEntry(guid, entry);
-			++reloaded;
+			if (LoadEntry(guid, entry)) ++reloaded;
 		}
 		return reloaded;
 	}

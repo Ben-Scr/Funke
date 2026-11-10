@@ -98,6 +98,10 @@ namespace Funke {
 #endif
 	}
 
+	bool Application::IsGameplayPaused() {
+		return s_Instance && s_Instance->m_IsGameplayPaused;
+	}
+
 	GraphicsApplyStatus Application::ApplyGraphicsSettings(const GraphicsSettings& settings) {
 		if (!IsMainThread()) return GraphicsApplyStatus::WrongThread;
 		if (!m_HasInitialized) return GraphicsApplyStatus::NotInitialized;
@@ -1424,6 +1428,7 @@ namespace Funke {
 
 #ifdef FUNKE_PROFILER_ENABLED
 		// Profiler last so subsystems above can still emit profile marks during teardown.
+		RunAutomation::FinishFrameTrace();
 		Profiler::Shutdown();
 #endif
 

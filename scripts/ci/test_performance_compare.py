@@ -129,6 +129,28 @@ class PerformanceCompareTests(unittest.TestCase):
             runner.export(self.root, {"binaries": {"engine.dll": "before"},
                 "binariesAfter": {"engine.dll": "after"}, "exitCode": 0})
 
+    def test_sprite_render_scope_reads_its_explicit_column(self):
+        path = self.capture("sprite")
+        data = compare.read_json(path)
+        for run in data["runs"]:
+            item = run["rawSamples"][0]
+            raw = path.parent / item["file"]
+            raw.write_text(raw.read_text().replace("cpu_ms", "cpu_render_ms"))
+            item["timingScope"] = "cpu_render_ms"
+            item["sha256"] = hashlib.sha256(raw.read_bytes()).hexdigest()
+        self.write(path, data)
+        result = compare.compare(path, path, "cpuWork", .1, .05)
+        self.assertEqual(result["status"], "passed")
+
+    def test_capture_checkout_does_not_substitute_for_build_identity(self):
+        path = self.capture("unknown-build")
+        data = compare.read_json(path)
+        data["sourceAtCapture"] = data["build"].copy()
+        data["build"]["engineCommit"] = None
+        self.write(path, data)
+        with self.assertRaisesRegex(ValueError, "Missing build identity"):
+            compare.load_capture(path, "cpuWork", 30, 3)
+
 
 if __name__ == "__main__":
     unittest.main()

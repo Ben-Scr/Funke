@@ -269,6 +269,7 @@ namespace Funke {
 	}
 
 	void ProfilerPanel::Render(bool* pOpen) {
+		FUNKE_PROFILE_SCOPE("Editor.ProfilerPanel");
 		if (pOpen && !*pOpen) {
 			// Panel is hidden — make sure collection drops out.
 			Profiler::SetPanelVisible(false);

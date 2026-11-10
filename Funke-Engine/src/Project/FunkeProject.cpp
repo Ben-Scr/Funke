@@ -2192,9 +2192,8 @@ endif())");
 		if (!File::Exists(configPath)) {
 			return fail("Project file not found: " + configPath);
 		}
-		std::error_code assetsError;
 		const std::filesystem::path assetsPath = Path::FromUtf8(rootDir) / "Assets";
-		if (!std::filesystem::is_directory(assetsPath, assetsError) || assetsError) {
+		if (!File::IsDirectory(assetsPath)) {
 			return fail("Project Assets directory not found: " + Path::ToUtf8(assetsPath));
 		}
 

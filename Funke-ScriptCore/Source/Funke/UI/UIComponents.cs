@@ -326,7 +326,7 @@ public class Button : Component
         set => InternalCalls.Button_SetDisabledColor(RequireComponent<Button>(), value.X, value.Y, value.Z, value.W);
     }
 
-    // Alpha == 0 = no focus tint (falls through to Hovered/Normal).
+    // Alpha zero inherits HoveredColor.
     public Vector4 FocusedColor
     {
         get
@@ -1570,7 +1570,7 @@ public class CircularSlider : Component
         }
         set => InternalCalls.CircularSlider_SetDisabledColor(RequireComponent<CircularSlider>(), value.X, value.Y, value.Z, value.W);
     }
-    // Alpha == 0 sentinel = no focus tint; see Button.FocusedColor.
+    // Alpha zero inherits HoveredColor.
     public Vector4 FocusedColor
     {
         get

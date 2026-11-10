@@ -49,6 +49,12 @@ preserved in the engine's source distribution. Anyone redistributing
 the engine's compiled DLL alongside this repository's source tree
 satisfies the attribution requirement transitively.
 
+## Editor-only libraries
+
+| Component | License | Copyright | Source |
+|---|---|---|---|
+| MD4C 0.5.2 | MIT | Copyright (c) 2016-2024 Martin Mitáš | [External/md4c/LICENSE.md](External/md4c/LICENSE.md) |
+
 ## Shared libraries shipped alongside the executable
 
 | Component | License | Source |

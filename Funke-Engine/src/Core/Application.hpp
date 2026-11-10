@@ -116,6 +116,7 @@ namespace Funke {
 #endif
 		GuiRenderer* GetGuiRenderer() { return m_GuiRenderer.get(); }
 		Input& GetInput() { return m_Input; }
+		bool IsGameInputEnabled() const { return m_IsScriptInputEnabled; }
 		Time& GetTime() { return m_Time; }
 		const Time& GetTime() const { return m_Time; }
 
@@ -169,6 +170,7 @@ namespace Funke {
 			}
 		}
 		static bool IsPaused() { return s_Instance ? s_Instance->IsEnginePaused() : false; }
+		static bool IsGameplayPaused();
 		static bool IsShuttingDown() { return s_Instance ? s_Instance->m_IsShuttingDown : false; }
 		static bool IsMainThread() { return !s_Instance || s_Instance->m_MainThreadId == std::this_thread::get_id(); }
 

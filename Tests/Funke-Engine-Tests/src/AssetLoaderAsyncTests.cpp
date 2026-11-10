@@ -110,7 +110,7 @@ TEST_CASE("Async asset requests share the published cache entry") {
 TEST_CASE("Async asset publication obeys its per-frame count budget") {
 	AsyncAssetScope assets;
 	std::vector<uint64_t> requests;
-	for (uint64_t i = 0; i < 4; ++i) {
+	for (uint64_t i = 0; i < 24; ++i) {
 		const auto path = (assets.Root / ("Mesh" + std::to_string(i) + ".obj")).string();
 		REQUIRE(File::WriteAllText(path, k_TriangleObj));
 		AssetRegistry::RegisterBuiltInAsset(path, assets.Guid + i + 1, AssetKind::Mesh);
@@ -122,7 +122,7 @@ TEST_CASE("Async asset publication obeys its per-frame count budget") {
 	size_t completed = 0;
 	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
 	while (completed != requests.size() && std::chrono::steady_clock::now() < deadline) {
-		AssetLoader::Pump(1000.0, 1);
+		AssetLoader::Pump(0.0, 1);
 		size_t nowCompleted = 0;
 		for (auto id : requests) {
 			const auto result = AssetLoader::GetResult(id);

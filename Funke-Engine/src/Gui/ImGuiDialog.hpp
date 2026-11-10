@@ -25,7 +25,10 @@ namespace Funke::ImGuiDialog {
 
 	inline bool BeginModal(const char* title, bool* open = nullptr, ImGuiWindowFlags flags = 0) {
 		const ImVec2 work = GetWorkArea(ImGui::GetMainViewport()->GetCenter()).Size;
-		ImGui::SetNextWindowSizeConstraints(ImGui::GetStyle().WindowMinSize, ImVec2(work.x * 0.9f, work.y * 0.85f));
+		ImVec2 minSize = ImGui::GetStyle().WindowMinSize;
+		if (flags & ImGuiWindowFlags_AlwaysAutoResize)
+			minSize.x = std::min(std::max(minSize.x, ImGui::GetFontSize() * 32.0f), work.x * 0.9f);
+		ImGui::SetNextWindowSizeConstraints(minSize, ImVec2(work.x * 0.9f, work.y * 0.85f));
 		if (!ImGui::BeginPopupModal(title, open, flags)) return false;
 		const ImVec2 position = ImGui::GetWindowPos();
 		const ImVec2 size = ImGui::GetWindowSize();

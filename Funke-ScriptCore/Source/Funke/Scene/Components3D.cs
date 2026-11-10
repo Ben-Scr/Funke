@@ -45,6 +45,35 @@ public class Transform3D : Component
         set => InternalCalls.Transform3D_SetRotation(RequireComponent<Transform3D>(), value);
     }
 
+    /// <summary>Local rotation; stored as the existing Euler degrees, preserving scene and prefab formats.</summary>
+    public Quaternion LocalRotation
+    {
+        get => Quaternion.Euler(Rotation);
+        set => Rotation = value.EulerAngles;
+    }
+
+    /// <summary>Composes current ancestor rotations, independent of scale/shear and cached world matrices.</summary>
+    public Quaternion WorldRotation
+    {
+        get => ParentRotation() * LocalRotation;
+        set => LocalRotation = Quaternion.Inverse(ParentRotation()) * value;
+    }
+
+    private Quaternion ParentRotation()
+    {
+        RequireComponent<Transform3D>();
+        Quaternion rotation = Quaternion.Identity;
+        Entity? parent = Entity.Parent;
+        int depth = 0;
+        while (parent != null && parent != Entity.Invalid)
+        {
+            if (++depth > 1024) throw new System.InvalidOperationException("Transform hierarchy exceeds 1024 ancestors or contains a cycle.");
+            if (parent.GetComponent<Transform3D>() is { } transform) rotation = transform.LocalRotation * rotation;
+            parent = parent.Parent;
+        }
+        return rotation;
+    }
+
     public Vector3 Scale
     {
         get => InternalCalls.Transform3D_GetScale(RequireComponent<Transform3D>());

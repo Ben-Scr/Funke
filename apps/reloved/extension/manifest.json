@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "Reloved Connect",
+  "version": "1.0.0",
+  "description": "Verbinde dein Vinted-Inventar mit deinem lokalen Reloved Studio. Keine Passwörter, kein automatisches Veröffentlichen.",
+  "permissions": ["scripting", "storage"],
+  "host_permissions": ["https://www.vinted.de/*", "https://www.vinted.fr/*", "https://www.vinted.nl/*", "https://www.vinted.be/*", "https://www.vinted.it/*", "https://www.vinted.es/*", "https://www.vinted.at/*", "https://www.vinted.pl/*", "https://www.vinted.pt/*", "https://www.vinted.com/*", "https://www.vinted.co.uk/*"],
+  "background": {"service_worker": "background.js", "type": "module"},
+  "action": {"default_popup": "popup.html", "default_title": "Reloved öffnen"},
+  "content_scripts": [
+    {"matches": ["http://localhost:5173/*", "http://127.0.0.1:5173/*", "https://reloved-wardrobe-studio.rrainix.chatgpt.site/*"], "js": ["bridge.js"]},
+    {"matches": ["https://www.vinted.de/items/new*", "https://www.vinted.fr/items/new*", "https://www.vinted.nl/items/new*", "https://www.vinted.be/items/new*", "https://www.vinted.it/items/new*", "https://www.vinted.es/items/new*", "https://www.vinted.at/items/new*", "https://www.vinted.pl/items/new*", "https://www.vinted.pt/items/new*", "https://www.vinted.com/items/new*", "https://www.vinted.co.uk/items/new*"], "js": ["prepare.js"]}
+  ]
+}

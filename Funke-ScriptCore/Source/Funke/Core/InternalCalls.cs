@@ -1133,6 +1133,15 @@ internal static unsafe class InternalCalls
         values.Clear();
         fixed (float* p = values) NativeCallbacks.Bindings.AudioSource_GetSpatial(id, p, values.Length);
     }
+    internal static bool TextRenderer_GetBold(ulong entityId) => NativeCallbacks.Bindings.TextRenderer_GetBold(entityId) != 0;
+    internal static void TextRenderer_SetBold(ulong entityId, bool enabled) => NativeCallbacks.Bindings.TextRenderer_SetBold(entityId, enabled ? 1 : 0);
+
+    internal static bool TextRenderer_GetItalic(ulong entityId) => NativeCallbacks.Bindings.TextRenderer_GetItalic(entityId) != 0;
+    internal static void TextRenderer_SetItalic(ulong entityId, bool enabled) => NativeCallbacks.Bindings.TextRenderer_SetItalic(entityId, enabled ? 1 : 0);
+
+    internal static bool TextRenderer_GetRichText(ulong entityId) => NativeCallbacks.Bindings.TextRenderer_GetRichText(entityId) != 0;
+    internal static void TextRenderer_SetRichText(ulong entityId, bool enabled) => NativeCallbacks.Bindings.TextRenderer_SetRichText(entityId, enabled ? 1 : 0);
+
     internal static void TextRenderer_GetEffects(ulong id, Span<float> values)
     {
         fixed (float* p = values) NativeCallbacks.Bindings.TextRenderer_GetEffects(id, p, values.Length);

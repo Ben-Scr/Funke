@@ -15,6 +15,8 @@ namespace Funke {
 		// Authored field values, reapplied whenever an instance binds or reloads.
 		// Key: "ClassName.FieldName", Value: string representation.
 		std::unordered_map<std::string, std::string> PendingFieldValues;
+		// Preserve reference/list schemas when saving before the script assembly is available.
+		std::unordered_map<std::string, std::string> PendingFieldMetadata;
 		// Raw dynamic IComponent payloads captured when scene deserialization
 		// runs before the user assembly registers its dynamic component types.
 		std::unordered_map<std::string, std::string> PendingDynamicComponentValues;
@@ -56,6 +58,10 @@ namespace Funke {
 					auto node = PendingFieldValues.extract(oldKey);
 					node.key() = newKey;
 					PendingFieldValues.insert(std::move(node));
+					if (auto metadata = PendingFieldMetadata.extract(oldKey); !metadata.empty()) {
+						metadata.key() = newKey;
+						PendingFieldMetadata.insert(std::move(metadata));
+					}
 				}
 				if (auto node = PendingDynamicComponentValues.extract(oldName); !node.empty()) {
 					node.key() = newName;
@@ -124,6 +130,7 @@ namespace Funke {
 					const std::string prefix = className + ".";
 					for (auto fieldIt = PendingFieldValues.begin(); fieldIt != PendingFieldValues.end(); ) {
 						if (fieldIt->first.rfind(prefix, 0) == 0) {
+							PendingFieldMetadata.erase(fieldIt->first);
 							fieldIt = PendingFieldValues.erase(fieldIt);
 						}
 						else {

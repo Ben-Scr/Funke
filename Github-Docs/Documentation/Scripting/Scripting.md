@@ -333,6 +333,22 @@ if (SaveData.TryLoad("slot1", out Inventory? inv)) { ... }
 
 Writes are atomic: a crash while saving leaves the previous file intact.
 
+For an opt-in game-specific schema, use `SaveData.SaveVersioned("slot1", inventory, schemaVersion: 2)` and `TryLoadVersioned`. Existing `Save` / `TryLoad` slots stay plain JSON and are never automatically upgraded. The envelope has `$funkeSave: 1`, `schemaVersion`, and `payload`; the application schema version is independent of the engine version.
+
+```csharp
+bool loaded = SaveData.TryLoadVersioned<Inventory>("slot1", 2, out var inventory, out var error,
+    migrate: (fromVersion, data) =>
+    {
+        if (fromVersion != 1) throw new InvalidOperationException("Missing migration");
+        data["Gold"] = data["Coins"]?.GetValue<int>() ?? 0;
+        return data;
+    },
+    validate: value => value.Gold >= 0,
+    persistMigration: true);
+```
+
+The callback advances exactly one version at a time and receives detached JSON. An unversioned slot requires an explicit `unversionedVersion`; otherwise it is rejected. Missing migration steps, malformed or future versions, deserialization errors, callback exceptions and failed validation return `false` with `error`, without publishing a value or replacing the original slot. A successful load leaves disk unchanged unless `persistMigration: true` is supplied. When enabled, the migrated JSON (including unknown fields) is saved atomically only after deserialization and validation succeed. Keep callbacks free of unrelated external side effects: those cannot be rolled back by SaveData. Pass migration delegates per load instead of retaining script types in a global registry across hot reload.
+
 **Audio**:
 
 ```csharp
@@ -435,6 +451,36 @@ foreach (ref var t in Scene.QueryRef<NativeTransform2D>())
 **Math** — `Vector2/3/4`, `Quaternion`, `Color`, `Mathf` (sin, cos, clamp, lerp…), and `Random`. Palette colors go in as written: `Color.FromHex("#3A7BD5")` (also `#RRGGBBAA`, `#RGB`, `#RGBA`; `TryFromHex` doesn't throw, `ToHex()` writes one back).
 
 **UI text:** labels use `Funke.TextRenderer` (`using Funke;`), the same component used for world text. Import `using Funke.UI;` for widgets such as `Button` and `InputField`.
+
+**Whole-text style** — the TextRenderer inspector has independent **Bold**, **Italic**, and **Rich Text** switches. Bold and Italic style the entire text and work with Rich Text off. In C#:
+
+```csharp
+label.Bold = true;
+label.Italic = true;
+label.RichText = false;
+```
+
+With Rich Text off (the default), the renderer skips tag parsing, size-tag scanning and rich-style runs; it uses the plain-text layout even with Bold or Italic enabled. With Rich Text on, tags inherit the component style, and closing a tag restores it. The scene/prefab keys `bold`, `italic`, and `richText` default to false. InputField labels support whole-text styles while retaining literal markup and matching caret/selection metrics.
+
+**Rich text** — enable **Rich Text** in the TextRenderer inspector, or set `RichText = true` in C#. It is off by default, including when loading older scenes. The scene/prefab key is `richText`.
+
+```csharp
+var label = GetComponent<TextRenderer>()!;
+label.RichText = true;
+label.Text = "<b>Warning:</b> <i>Only</i> <color=#FFCC00><size=48>3</size> lives</color> left";
+```
+
+| Tag | Effect |
+| --- | --- |
+| `<b>text</b>` | Synthetic bold using the selected font |
+| `<i>text</i>` | Synthetic italic using the selected font |
+| `<color=#RRGGBB>text</color>` | RGB color override |
+| `<color=#RRGGBBAA>text</color>` | Color and opacity; alpha multiplies the component's alpha |
+| `<size=48>text</size>` | Absolute size in the same text pixels as `FontSize`; finite values from 1 through 1024 |
+
+Tags are case-sensitive and can nest; close them in reverse order to restore the enclosing style. Color also accepts `red`, `green`, `blue`, `white`, `black`, and `yellow`. Values may be quoted, such as `<color="red">`. Use `&lt;`, `&gt;`, and `&amp;` for literal angle brackets and ampersands. Unknown or invalid tags and unmatched closing tags remain visible. An unclosed valid opening tag applies to the rest of the text. Nesting is limited to 64 levels.
+
+UI word/character wrapping, alignment and automatic sizing use the visible styled text, including changing sizes. Outline and shadow retain their effect colors and follow glyph shapes and inline opacity. The font atlas resolution accounts for the largest inline size, within the renderer's existing 192-pixel bake limit; bold/italic do not switch to separate font faces. Rich text works for UI and world text, but InputField text remains literal even if its label has Rich Text enabled, preserving caret and selection behavior.
 
 **Text outline and shadow** — a Text Renderer's **Effects** draw an outline and a drop shadow under the glyphs, for world and UI text, sized in text pixels (Font Size units):
 
@@ -548,6 +594,10 @@ PCH is optional and defaults to off: configure with `-DFUNKE_NATIVE_USE_PCH=ON` 
 The SDK integration check is `python scripts/ci/native_scripting_test.py --sdk <EngineSDK> --test-exe <Funke-Editor-Tests> --output <fresh-test-directory>`. It compiles actual generator output, mixes old and new include styles in one library, loads/reloads it, checks fields and component mutation, and compiles full/2D/3D/no-module/core headers without PCH. Add `--benchmark` for local baseline/no-PCH/PCH timings (four translation units, initial build, one source edit, public header edit). Use a fresh output directory for initial-build measurements. This does not replace editor Play Mode, Inspector save/reopen or desktop export validation.
 
 See [native scripting verification](Native-Scripting-Verification.md) for the Editor/export procedure, recorded Windows/Linux and IDE results, evidence locations and the measurements behind the optional PCH default.
+
+Native replacement validates the exported `FunkeNativeScriptAbiVersion` and required create/destroy exports before unloading the current library. A mismatch reports the expected and supplied versions (or the missing export), and instructs you to rebuild the project's `NativeScripts` CMake target with the matching SDK and configuration. The same host diagnostic reaches Editor logs and command-line output. A failed replacement keeps the loaded library, its source path and class configuration; rebuilding a compatible library at that path allows the next reload to succeed without restarting the host. Each failed candidate's shadow copy is removed, and successful replacement/unload removes the prior shadow.
+
+`python scripts/ci/native_abi_boundary_test.py --test-exe <Funke-Engine-Tests> --output <fixture-directory>` builds actual shared libraries and tests old/future/missing ABI, each missing required export, retained configuration, recovery and shadow cleanup. This boundary test passed on Windows x64 Release with ABI 7; it does not replace the broader lifecycle, Inspector or export checks above. `FunkeHasScript` and `FunkeInitialize` retain their existing optional compatibility behavior.
 
 Inspector fields are optional. Add members and `FNK_NATIVE_FIELDS(...)` inside the class when needed:
 

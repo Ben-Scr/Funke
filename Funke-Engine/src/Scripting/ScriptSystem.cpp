@@ -577,6 +577,7 @@ namespace Funke {
 			const std::string prefix = className + ".";
 			for (auto it = scriptComp.PendingFieldValues.begin(); it != scriptComp.PendingFieldValues.end(); ) {
 				if (it->first.rfind(prefix, 0) == 0) {
+					scriptComp.PendingFieldMetadata.erase(it->first);
 					it = scriptComp.PendingFieldValues.erase(it);
 				}
 				else {
@@ -776,9 +777,12 @@ namespace Funke {
 		// Snapshot before user callbacks run — callbacks can invalidate the EnTT view.
 		std::vector<EntityHandle> CollectScriptEntities(Scene& scene)
 		{
+			FUNKE_PROFILE_SCOPE("Scripts.Snapshot");
 			std::vector<EntityHandle> result;
 			auto view = scene.GetRegistry().view<ScriptComponent>(entt::exclude<DisabledTag>);
 			result.reserve(view.size_hint());
+			FUNKE_PROFILE_VALUE("Scripts.SnapshotAllocations", view.size_hint() ? 1.0f : 0.0f);
+			FUNKE_PROFILE_VALUE("Scripts.SnapshotBytes", float(result.capacity() * sizeof(EntityHandle)));
 			for (auto entity : view) {
 				result.push_back(entity);
 			}
@@ -1600,6 +1604,7 @@ namespace Funke {
 		}
 
 		scriptComp.PendingFieldValues.clear();
+		scriptComp.PendingFieldMetadata.clear();
 	}
 
 	void ScriptSystem::SetScriptsEnabled(Entity entity, bool enabled)

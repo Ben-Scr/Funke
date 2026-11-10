@@ -21,7 +21,7 @@ namespace Funke {
 		Color PressedColor  { 0.65f, 0.65f, 0.65f, 1.0f };
 		Color DisabledColor { 0.50f, 0.50f, 0.50f, 0.5f };
 
-		// Alpha == 0 = "no focus tint"; precedence: disabled > pressed > focused > hovered > normal.
+		// Alpha zero inherits HoveredColor; disabled and pressed still take priority.
 		Color FocusedColor  { 0.00f, 0.00f, 0.00f, 0.0f };
 
 		UUID NormalSprite  { 0 };

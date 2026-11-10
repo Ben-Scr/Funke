@@ -6,10 +6,13 @@
 #include "Core/Log.hpp"
 #include "Core/Platform/SDLInputMapping.hpp"
 #include "Core/Window.hpp"
+#include "Core/Time.hpp"
 #include "DevTools/DevConsole.hpp"
 #include "DevTools/ScreenCapture.hpp"
 #include "Serialization/File.hpp"
 #include "Serialization/Json.hpp"
+#include "Serialization/Path.hpp"
+#include "Profiling/Profiler.hpp"
 #include "Utils/CharConv.hpp"
 
 #include <SDL3/SDL.h>
@@ -17,10 +20,101 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <array>
+#include <chrono>
+#include <cstdlib>
+#include <deque>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
+#include <locale>
 
 namespace Funke {
 
 	namespace {
+		class FrameTrace {
+		public:
+			explicit FrameTrace(std::filesystem::path path) : m_Path(std::move(path)) {
+				if (std::filesystem::exists(m_Path)) throw std::runtime_error("Frame trace output already exists");
+				int frames = 600;
+				if (const char* value = std::getenv("FUNKE_FRAME_TRACE_FRAMES")) frames = std::stoi(value);
+				if (frames < 1 || frames > 3600) throw std::runtime_error("Frame trace limit must be 1..3600");
+				m_Rows.resize(static_cast<size_t>(frames));
+			}
+			~FrameTrace() { Finish(); }
+			void Begin(bool ready) {
+				if (m_Finished || (!m_Started && !ready)) return;
+				if (!m_Started) {
+					Profiler::SetFrameCaptureEnabled(true);
+					Profiler::ConsumeFrameSamples(m_Metrics);
+					m_Started = true;
+				}
+				const auto now = Clock::now();
+				if (m_Count) m_Rows[m_Count - 1].IntervalMs = Milliseconds(now - m_Start);
+				m_Start = now;
+				m_FrameActive = true;
+			}
+			void End() {
+				if (!m_FrameActive || m_Finished) return;
+				m_FrameActive = false;
+				auto& row = m_Rows[m_Count];
+				row.WorkMs = Milliseconds(Clock::now() - m_Start);
+				row.Frame = Time::GetFrameCount();
+				row.Playing = Application::GetIsPlaying();
+				row.Paused = Application::IsPaused() || Application::IsGameplayPaused();
+				Profiler::ConsumeFrameSamples(m_Metrics);
+				if (m_Metrics.size() > row.Metrics.size()) {
+					FNK_CORE_ERROR_TAG("FrameTrace", "Metric capacity exceeded; capture is incomplete");
+					Finish();
+					return;
+				}
+				for (size_t i = 0; i < m_Metrics.size(); ++i) row.Metrics[i] = { m_Metrics[i].Sum, m_Metrics[i].Calls };
+				if (++m_Count == m_Rows.size()) Finish();
+			}
+			void Finish() noexcept {
+				if (m_Finished) return;
+				m_Finished = true;
+				if (m_Started) Profiler::SetFrameCaptureEnabled(false);
+				try {
+					if (!m_Path.parent_path().empty()) std::filesystem::create_directories(m_Path.parent_path());
+					std::ofstream file(m_Path);
+					file.imbue(std::locale::classic());
+					file << std::setprecision(12) << "frame,interval_ms,work_ms,playing,paused";
+					for (const auto& metric : m_Metrics) file << ',' << metric.Name << ".sum," << metric.Name << ".calls";
+					file << '\n';
+					for (size_t index = 0; index < m_Count; ++index) {
+						const auto& row = m_Rows[index];
+						file << row.Frame << ',';
+						if (row.IntervalMs >= 0) file << row.IntervalMs;
+						file << ',' << row.WorkMs << ',' << row.Playing << ',' << row.Paused;
+						for (size_t i = 0; i < m_Metrics.size() && i < row.Metrics.size(); ++i)
+							file << ',' << row.Metrics[i].Sum << ',' << row.Metrics[i].Calls;
+						file << '\n';
+					}
+					if (!file.good()) throw std::runtime_error("Cannot write frame trace");
+					FNK_CORE_INFO_TAG("FrameTrace", "Wrote {} frames to {}", m_Count, Path::ToUtf8(m_Path));
+				} catch (const std::exception& error) { FNK_CORE_ERROR_TAG("FrameTrace", "{}", error.what()); }
+			}
+		private:
+			using Clock = std::chrono::steady_clock;
+			static double Milliseconds(Clock::duration value) { return std::chrono::duration<double, std::milli>(value).count(); }
+			struct Counter { double Sum = 0; uint64_t Calls = 0; };
+			struct Row {
+				uint64_t Frame = 0;
+				double IntervalMs = -1, WorkMs = 0;
+				bool Playing = false, Paused = false;
+				std::array<Counter, 256> Metrics{};
+			};
+			std::filesystem::path m_Path;
+			std::vector<Row> m_Rows;
+			std::vector<ProfilerFrameSample> m_Metrics;
+			Clock::time_point m_Start{};
+			size_t m_Count = 0;
+			bool m_Started = false, m_FrameActive = false, m_Finished = false;
+		};
+		std::unique_ptr<FrameTrace> g_FrameTrace;
+		std::deque<std::string> g_QueuedText;
+
 		struct PendingRelease {
 			RunAutomation::Step::Kind Type;
 			int Code = 0;
@@ -199,8 +293,10 @@ namespace Funke {
 				}
 				break;
 			case Kind::Text: {
+				// SDL queues the pointer; TakeDueSteps' temporary strings die before PollEvents.
+				g_QueuedText.push_back(step.Text);
 				SDL_Event event{}; event.type = SDL_EVENT_TEXT_INPUT;
-				event.text.windowID = SDL_GetWindowID(window); event.text.text = step.Text.c_str();
+				event.text.windowID = SDL_GetWindowID(window); event.text.text = g_QueuedText.back().c_str();
 				SDL_PushEvent(&event);
 				break;
 			}
@@ -585,6 +681,10 @@ namespace Funke {
 
 	void RunAutomation::Configure(const Options& options) {
 		Reset();
+		if (const char* trace = std::getenv("FUNKE_FRAME_TRACE"); trace && *trace) {
+			try { g_FrameTrace = std::make_unique<FrameTrace>(Path::FromUtf8(trace)); }
+			catch (const std::exception& error) { FNK_CORE_ERROR_TAG("FrameTrace", "{}", error.what()); }
+		}
 		g_State.Options = options;
 		g_State.FixedStep = options.FixedStep;
 		if (!options.ScreenshotDirectory.empty()) ScreenCapture::SetDirectory(options.ScreenshotDirectory);
@@ -656,6 +756,8 @@ namespace Funke {
 	}
 
 	void RunAutomation::BeginFrame(bool gameStarted) {
+		g_QueuedText.clear();
+		if (g_FrameTrace) g_FrameTrace->Begin(gameStarted);
 		g_State.FrameActive = g_State.Active && gameStarted;
 		if (!g_State.FrameActive) return;
 
@@ -685,6 +787,7 @@ namespace Funke {
 	}
 
 	void RunAutomation::EndFrame(float unscaledDeltaTime) {
+		if (g_FrameTrace) g_FrameTrace->End();
 		if (!g_State.FrameActive) return;
 		g_State.ClockSeconds += unscaledDeltaTime;
 		++g_State.ClockFrame;
@@ -699,7 +802,10 @@ namespace Funke {
 		}
 	}
 
+	void RunAutomation::FinishFrameTrace() { g_FrameTrace.reset(); }
+
 	void RunAutomation::Reset() {
+		g_FrameTrace.reset();
 		for (const auto& held : g_State.Held) {
 			if (held.Type == Step::Kind::Key) Window::InjectKey(held.Code, false);
 			else if (held.Type == Step::Kind::MouseButton) Window::InjectMouseButton(held.Code, false);

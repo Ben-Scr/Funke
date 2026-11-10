@@ -9,6 +9,10 @@
 #include "Components/General/Transform2DComponent.hpp"
 #include "Components/General/Transform3DComponent.hpp"
 #include "Components/UI/GridLayoutGroupComponent.hpp"
+#include "Components/UI/InteractableComponent.hpp"
+#include "Components/Graphics/ImageComponent.hpp"
+#include "Graphics/Text/Font.hpp"
+#include "Graphics/Text/TextLayout.hpp"
 #include "Components/Physics/BoxCollider2DComponent.hpp"
 #include "Components/Physics/Rigidbody2DComponent.hpp"
 #include "Components/Physics3D/Collider3DComponents.hpp"
@@ -28,6 +32,7 @@
 #include "Systems/TransformHierarchySystem.hpp"
 #include "Systems/Transform3DHierarchySystem.hpp"
 #include "Systems/UILayoutSystem.hpp"
+#include "Systems/UIEventSystem.hpp"
 
 #include <chrono>
 #include <algorithm>
@@ -76,10 +81,24 @@ namespace {
 		test.Validate();
 		std::vector<double> times;
 		times.reserve(samples);
+		const bool profile = Setting("FUNKE_CPU_PROFILE_COMPONENTS", 0) != 0 && test.Name.starts_with("physics-");
+		if (profile) Profiler::SetFrameCaptureEnabled(true);
 		for (int i = 0; i < samples; ++i) {
 			const auto start = Clock::now();
 			test.Run();
 			times.push_back(std::chrono::duration<double, std::milli>(Clock::now() - start).count());
+		}
+		if (profile) {
+			std::vector<ProfilerFrameSample> metrics;
+			Profiler::ConsumeFrameSamples(metrics);
+			Profiler::SetFrameCaptureEnabled(false);
+			const char* output = std::getenv("FUNKE_CPU_BENCH_OUTPUT");
+			REQUIRE(output != nullptr);
+			std::ofstream detail(std::filesystem::path(output) / (test.Name + "-" + std::to_string(repeat) + ".metrics.csv"));
+			detail.imbue(std::locale::classic());
+			detail << std::setprecision(12) << "module,sum,calls\n";
+			for (const auto& metric : metrics) if (metric.Calls) detail << metric.Name << ',' << metric.Sum << ',' << metric.Calls << '\n';
+			REQUIRE(detail.good());
 		}
 		test.Validate();
 		test.Run();
@@ -251,6 +270,95 @@ namespace {
 			};
 			Measure(raw, test, repeat, warmups, samples);
 		}
+	}
+
+	void MeasureExtended(std::ofstream& raw, int repeat, int warmups, int samples) {
+		for (int count : { 100, 1000, 5000 }) for (int mode : { 0, 1, 2 }) {
+			BenchmarkCase test{ "extra-hit-" + std::to_string(count) + "-mode-" + std::to_string(mode), count };
+			if (!Selected(test.Name)) continue;
+			auto scene = Scene::CreateDetachedScene("UI pointer probe");
+			std::vector<Entity> entities;
+			for (int i = 0; i < count; ++i) {
+				auto entity = scene->CreateEmptyEntity();
+				auto& rect = entity.AddComponent<RectTransform2DComponent>();
+				rect.AnchoredPosition = { 0, 0 };
+				rect.SizeDelta = { 100, 100 };
+				entity.AddComponent<InteractableComponent>();
+				entity.AddComponent<ImageComponent>().SortingOrder = static_cast<short>(i);
+				entities.push_back(entity);
+			}
+			int tick = 0;
+			EntityHandle hit = entt::null;
+			test.Run = [&] {
+				++tick;
+				if (mode == 2) entities.back().GetComponent<RectTransform2DComponent>().AnchoredPosition.x = tick & 1 ? 500 : 0;
+				hit = UIEventSystem::PickInteractable(*scene, mode == 1 ? Vec2(5000, 5000) : Vec2(0, 0));
+			};
+			test.Validate = [&] {
+				const auto expected = mode == 1 ? entt::null : entities[count - (mode == 2 && (tick & 1) ? 2 : 1)].GetHandle();
+				REQUIRE(hit == expected);
+			};
+			Measure(raw, test, repeat, warmups, samples);
+		}
+		struct ProbeFont {
+			GlyphMetrics Letter{ 0, 0, 1, 1, 7, 10, 0, -8, 8, 1 };
+			const GlyphMetrics* GetGlyph(uint32_t) const { return &Letter; }
+			float GetKerning(uint32_t, uint32_t) const { return 0; }
+			float GetLineHeight() const { return 12; }
+			float GetPixelSize() const { return 10; }
+			float GetAscent() const { return 9; }
+			float GetDescent() const { return -3; }
+		};
+		for (int count : { 100, 1000, 5000 }) for (int mode : { 0, 1, 2 }) {
+			BenchmarkCase test{ "extra-text-" + std::to_string(count) + "-mode-" + std::to_string(mode), 0, 0, count };
+			if (!Selected(test.Name)) continue;
+			ProbeFont font;
+			TextLayout::Settings settings;
+			std::string text(count, 'A');
+			TextLayout::Layout layout;
+			TextLayout::Cache cache;
+			std::vector<std::pair<size_t, size_t>> lines;
+			const TextLayout::Layout* measured = nullptr;
+			int tick = 0, builds = 0;
+			test.Run = [&] {
+				++tick;
+				if (mode == 0) { TextLayout::Build(font, text, settings, layout, lines); measured = &layout; }
+				else {
+					if (mode == 2) settings.LetterSpacing = tick * 0.001f;
+					measured = &cache.Get(1, text, settings, [&](auto& output) { ++builds; TextLayout::Build(font, text, settings, output, lines); });
+				}
+			};
+			test.Validate = [&] {
+				REQUIRE(measured != nullptr);
+				REQUIRE(measured->Glyphs.size() == count);
+				REQUIRE(measured->Glyphs.back().X0 == doctest::Approx((count - 1) * (8.0f + settings.LetterSpacing)).epsilon(0.001));
+				if (mode == 1) REQUIRE(builds == 1);
+				if (mode == 2) REQUIRE(builds == tick);
+			};
+			Measure(raw, test, repeat, warmups, samples);
+		}
+#ifdef FUNKE_PROFILER_ENABLED
+		for (int mode : { 0, 1 }) {
+			BenchmarkCase test{ "extra-profiler-snapshot-mode-" + std::to_string(mode) };
+			if (!Selected(test.Name)) continue;
+			Profiler::SetPanelVisible(true);
+			Profiler::SetSamplingHz(0);
+			for (int i = 0; i < 200; ++i) Profiler::PushSample("Physics", static_cast<float>(i));
+			std::vector<ProfilerModule> modules;
+			test.Run = [&] {
+				if (mode == 0) modules = Profiler::AllModules();
+				else Profiler::AllModules(modules);
+			};
+			test.Validate = [&] {
+				REQUIRE(!modules.empty());
+				const auto physics = std::find_if(modules.begin(), modules.end(), [](const auto& item) { return item.Name == "Physics"; });
+				REQUIRE(physics != modules.end());
+				REQUIRE(physics->Count == 200);
+			};
+			Measure(raw, test, repeat, warmups, samples);
+		}
+		Profiler::SetPanelVisible(false);
+#endif
 	}
 }
 
@@ -493,6 +601,7 @@ TEST_CASE("CPU performance benchmark validates measured work" * doctest::skip())
 	for (int repeat = 0; repeat < repeats; ++repeat) {
 		MeasurePhysics2D(raw, repeat, warmups, samples);
 		MeasurePhysics3D(raw, repeat, warmups, samples);
+		if (Setting("FUNKE_CPU_EXTENDED", 0)) MeasureExtended(raw, repeat, warmups, samples);
 	}
 	if (const char* assetRoot = std::getenv("FUNKE_CPU_ASSET_ROOT")) {
 		const auto root = Path::FromUtf8(assetRoot);

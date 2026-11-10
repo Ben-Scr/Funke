@@ -1,7 +1,9 @@
 #pragma once
 #include "Core/Export.hpp"
+#include "Gui/EditorDockLayout.hpp"
 
 #include <string>
+#include <vector>
 
 namespace Funke {
 
@@ -9,6 +11,7 @@ namespace Funke {
 	public:
 		void Initialize();
 		void Shutdown();
+		void OpenLayouts() { m_OpenLayoutsRequest = true; m_SearchBuffer[0] = '\0'; }
 		// `pOpen` mirrors the BeginPopupModal / Begin pattern used by the
 		// other panels. The close-X button on the window's title bar
 		// flips it false; the caller suppresses the call next frame.
@@ -18,6 +21,7 @@ namespace Funke {
 		void RenderAppearanceTab();
 		void RenderScriptingTab();
 		void RenderLayoutsTab();
+		void RefreshLayoutPresets();
 		void RenderBehaviorTab();
 		void RenderCameraTab();
 
@@ -31,6 +35,15 @@ namespace Funke {
 		bool m_OpenSaveLayoutRequest = false;
 		std::string m_PendingDeleteLayoutName;
 		bool m_OpenDeleteLayoutRequest = false;
+		struct LayoutPreset {
+			std::string Name;
+			EditorDockLayout::Preview Preview;
+		};
+		std::vector<LayoutPreset> m_LayoutPresets;
+		bool m_LayoutPresetsDirty = true;
+		int m_LastLayoutsFrame = -1;
+		bool m_ShowLayoutStorage = false;
+		bool m_OpenLayoutsRequest = false;
 
 		char m_SearchBuffer[256]{};
 

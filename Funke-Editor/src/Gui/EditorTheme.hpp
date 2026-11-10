@@ -9,7 +9,6 @@ namespace Funke::EditorTheme {
 		return (0.2126f * bg.x + 0.7152f * bg.y + 0.0722f * bg.z) < 0.5f;
 	}
 
-	// Liquid Glass, or a Custom palette with see-through panels: the editor then draws GlassBackdrop behind them.
 	inline bool IsTranslucent() {
 		return ImGui::GetStyleColorVec4(ImGuiCol_WindowBg).w < 0.99f;
 	}

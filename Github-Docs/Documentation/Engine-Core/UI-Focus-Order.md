@@ -1,5 +1,46 @@
 # UI drawing, pointer focus and keyboard navigation
 
+This describes the game's entity/component UI. Enable `Interactable.Focusable`
+on participating controls (it defaults to false). Tab selects the next eligible
+control; Shift+Tab selects the previous one, wrapping at either end. Enter or
+Space activates the focused control. `Interactable.IsFocused` exposes selection.
+In ColorSwap mode, focus uses `HoveredColor` unless `FocusedColor` has nonzero
+alpha. In SpriteSwap mode, focus uses `FocusedSprite` when set, otherwise
+`HoveredSprite`, then `NormalSprite` if both are unset. Disabled and pressed
+states retain priority; None mode leaves visuals unchanged. Custom focus styles
+remain optional, and no outline is added automatically.
+Arrow keys also traverse controls, except while editing
+an input field, where they move the caret, or adjusting a slider/open dropdown.
+
+- Dropdowns: Enter/Space (gamepad A) opens the list. Up/Down previews an option;
+  Home/End jumps to the first/last option. Enter/Space confirms, Escape (gamepad B)
+  cancels without changing the selection or losing focus. Tab/Shift+Tab cancels
+  the preview and moves focus. Moving the pointer returns the highlight to mouse
+  hover. Empty/read-only dropdowns cannot be opened by keyboard.
+- Sliders: Left/Right adjusts horizontal sliders; Up/Down adjusts vertical sliders.
+  Reversed directions reverse the value change. Each press/deflection changes the
+  value by 1% of the range, or 1 for whole-number sliders, clamped to the bounds.
+  Home/End sets MinValue/MaxValue. Perpendicular arrows and Tab/Shift+Tab move focus.
+  Enter/Space does not synthesize a pointer drag. Read-only sliders remain focusable
+  but cannot be changed; an active pointer drag keeps control of the value.
+- Circular sliders: Right/Up increases the value toward MaxValue; Left/Down
+  decreases it toward MinValue. Clockwise and the arc angles only determine the
+  handle's path. Steps, bounds, Home/End and read-only/drag protection match linear
+  sliders; values do not wrap at the ring seam. Tab/Shift+Tab moves focus, while
+  Enter/Space does not initiate a pointer drag. Ring focus is shown on the handle,
+  including a handle with its own Interactable, using the hover fallback or custom
+  focus style. Handle visuals and value-change events update even with the pointer
+  outside the game surface.
+
+Preview uses `OptionHoverColor`. Only confirmed dropdown selections and actual
+slider changes enter the existing value-change event path; cancelling or reaching
+a bound does not emit a change. Keyboard/gamepad input is ignored while another
+editor panel owns game input or the developer console is open.
+
+In the editor, Game View and its toolbar reserve navigation for the game:
+Tab/Shift+Tab must not select editor controls while either has focus. Other
+editor panels retain keyboard navigation, as do toolbar popups opened by mouse.
+
 Pointer focus uses `UIEventSystem::PickInteractable`, the same picker as UI
 events. Its canvas ordering, image/text sort order, masks, visibility and world
 projection decide the frontmost interactive hit. Component insertion order does

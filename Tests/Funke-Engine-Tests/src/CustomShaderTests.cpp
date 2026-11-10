@@ -132,6 +132,31 @@ TEST_CASE("Functions inside comments do not count as the surface function") {
 	CHECK(HasError(result, 0));
 }
 
+TEST_CASE("Custom shader texture budgets identify the offending property and reserve target bindings") {
+	for (const auto target : { ShaderTarget::Mesh3D, ShaderTarget::Sprite2D, ShaderTarget::UI,
+		ShaderTarget::PostProcess, ShaderTarget::Skybox }) {
+		for (const int count : { 0, 6, 7, 16 }) {
+			std::string source = std::string("// @target ") + ShaderTargetToString(target) + "\n";
+			for (int i = 0; i < count; ++i) source += "// @property texture image" + std::to_string(i) + " = white\n";
+			source += "fn surface(in: SurfaceInput) -> SurfaceOutput { return defaultSurface(in); }\n";
+			const auto parsed = ParseCustomShader(source);
+			CHECK(parsed.HasErrors() == (count > 6));
+			if (count > 6) {
+				CHECK(HasError(parsed, 8));
+				CHECK(parsed.Diagnostics.front().Message.find("image6") != std::string::npos);
+			}
+			CHECK(ValidateCustomShaderTextureBudget(parsed.Description, 16, 16).empty() == (count <= 6));
+			const uint32_t reservedTextures = target == ShaderTarget::PostProcess ? 4
+				: target == ShaderTarget::Skybox ? 0 : target == ShaderTarget::Mesh3D ? 1 : 2;
+			const uint32_t reservedSamplers = target == ShaderTarget::Skybox ? 0 : target == ShaderTarget::Mesh3D ? 1 : 2;
+			CHECK(ValidateCustomShaderTextureBudget(parsed.Description, reservedTextures + 6, reservedSamplers + 6).empty() == (count <= 6));
+			CHECK(ValidateCustomShaderTextureBudget(parsed.Description, reservedTextures + 5, reservedSamplers + 6).empty() == (count == 0));
+			CHECK(ValidateCustomShaderTextureBudget(parsed.Description, reservedTextures + 6, reservedSamplers + 5).empty() == (count == 0));
+			if (reservedTextures > 0) CHECK_FALSE(ValidateCustomShaderTextureBudget(parsed.Description, reservedTextures - 1, 16).empty());
+		}
+	}
+}
+
 TEST_CASE("Composed shaders keep user lines addressable and declare properties for the template") {
 	const ShaderParseResult parsed = ParseCustomShader(k_WaterShader);
 	REQUIRE_FALSE(parsed.HasErrors());

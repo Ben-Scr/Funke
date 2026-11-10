@@ -204,6 +204,10 @@ The top-level `version` / `downloadUrl` / `sha256` describe one release; `versio
 
 `Funke-PackageTool` is a small stateless .NET command-line program the engine shells out to for network and archive work. It handles things like searching NuGet, downloading files with progress, zipping/unzipping projects, and the registry fetch/download/verify/extract operations above. The editor calls it behind the scenes — you rarely invoke it directly.
 
+Archive/file downloads are limited to 512 MiB, 30 seconds without transfer progress, and 15 minutes overall; callers can impose shorter process deadlines. `github-download` stages beside its output and replaces the old file only after a successful transfer and any supplied SHA-256 check. `registry-download` requires SHA-256. Registry extraction and `unzip` share a 10,000-entry / 2-GiB budget, verify entry lengths and CRC-32, and reject duplicate paths, traversal, absolute paths, Windows device/stream names, links and special files. Extraction never follows an existing directory junction or symlink.
+
+`unzip` accepts an absent or empty destination and publishes a fully extracted staging directory. It rejects a nonempty destination instead of partially merging files. Registry installs retain the existing no-overwrite rule. Handled failures clean staging files and do not emit a successful installation event; forcibly terminating the process can leave temporary files, but does not publish an incomplete download. See [download and archive verification](Download-Verification-2026-11.md) for the tested boundaries and deliberate trust differences between sources.
+
 ---
 
 ## Non-obvious rules (gotchas)

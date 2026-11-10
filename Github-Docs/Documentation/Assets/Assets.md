@@ -30,6 +30,12 @@ Funke recognizes these asset kinds (from the `AssetKind` list):
 
 Anything with an unknown extension is still tracked as **Other**, so nothing in your project is invisible to the engine.
 
+Selecting a `.md` or `.markdown` file in the Asset Browser displays a read-only Markdown preview in the Inspector. It renders headings, emphasis, lists and task lists, quotes, code blocks, links and tables, and refreshes after external edits. Web and email links open on click. The preview accepts UTF-8 files up to 1 MB and shows a message for empty or unreadable files.
+
+Local images work with both `![alt text](path)` and HTML `<img src="path" alt="text">`; relative paths resolve against the Markdown file's folder, including parent paths and URL-encoded spaces. Images load asynchronously and fit the Inspector width while preserving their aspect ratio unless both dimensions are specified. HTML images accept pixel widths/heights and percentage widths, so two images with `width="48%"` share a row when space permits. Hovering an image shows its alt text and source. Missing images display a placeholder; remote URLs and embedded data images are not loaded.
+
+The preview supports HTML paragraph/line breaks (`p`, `div`, `br`) and collapsible `<details><summary>Title</summary>...</details>` sections, including nested sections and the `open` attribute. Other HTML remains literal text; this is not a browser or a full GitHub HTML renderer. Code examples containing HTML remain code.
+
 ---
 
 ## How assets are identified: GUIDs and `.meta` files
@@ -226,18 +232,27 @@ Assign a font that contains the characters you need. The engine does not automat
 
 In the editor, changing an asset file on disk updates it live. For example, editing `player.png` in an image editor and saving triggers the Texture Manager to re-decode it and re-upload to the GPU, so the change appears in the editor without a restart. Thumbnails in the Asset Browser refresh the same way.
 
-This covers every file another program can change while the editor is open: an image or audio editor, a text editor, a `git pull`, or an AI agent working on the project.
+Changes can come from an external editor, a model export, a `git pull`, or another tool writing into the project's `Assets/` directory. Keep existing `.meta` files when replacing content so scene references retain the same GUID.
 
 | File | What happens when it changes on disk |
 |------|--------------------------------------|
 | Textures (`.png`, `.jpg`, `.bmp`, `.tga`) | Re-decoded and re-uploaded. |
 | Audio (`.wav`, `.mp3`, `.ogg`, `.flac`) | Re-decoded; Audio Sources keep the clip, and sources that were playing restart. |
 | Fonts (`.ttf`, `.otf`) | Every baked size is dropped and re-baked from the new file. |
+| Materials (`.material`) | The shared material updates for all referencing objects, including colors, textures and shader properties. Inspector edits update the live material when saved. |
+| Models (`.obj`, `.gltf`, `.glb`) | Geometry is re-imported and the renderer uploads the new revision, without replacing scene entities or their transforms. |
+| External glTF buffers (`.bin`) | Loaded models referencing the changed buffer are re-imported even if their `.gltf` files are unchanged. |
 | Data Assets (`.dataasset`) | Field values are re-read onto the live instance, so script references to it stay valid. |
 | Prefabs (`.prefab`) | New instances use the new file. |
 | Scenes (`.scene`) | A loaded scene without unsaved edits reloads (selection is kept, undo history is cleared). A scene with unsaved edits asks first: **Reload from Disk** or **Keep Editor Version**; auto-save waits until you choose. During Play the decision waits until Stop. |
 
-The editor only reacts to changes it did not make itself: its own saves are recognized and ignored. To be asked about every changed scene instead of reloading unsaved-free scenes automatically, turn off **Preferences › Behavior › External Changes › Reload scenes changed on disk**.
+The editor recognizes its own scene saves and does not reload them as external changes. To be asked about every changed scene instead of reloading unsaved-free scenes automatically, turn off **Preferences › Behavior › External Changes › Reload scenes changed on disk**.
+
+For materials and meshes, a temporarily missing, locked or incomplete file keeps the last successfully loaded version visible. A later file change retries immediately; a visible asset also retries a failed load at most once per second if no further notification arrives. Material and model changes invalidate prefab thumbnails as well. A failed reload is not reported as a successful refresh.
+
+On Windows, native filesystem notifications are processed on the editor update thread. The changed content becomes visible after decoding/import and GPU upload; large models can still take time and this is not a zero-latency guarantee. Platforms using the polling fallback can detect changes later. Change detection uses file timestamps and sizes, so a replacement preserving both may require a further save with an updated timestamp.
+
+Live reload does not imply complete material import. The current OBJ/glTF import loads geometry (and supported glTF animation), but does not automatically reconstruct glTF material slots, embedded textures or OBJ MTL materials. Standard materials expose base color/texture, metallic and roughness values, emissive color/intensity and opaque/transparent surfaces; normal, metallic/roughness and occlusion texture maps are not standard-material slots yet. A `.blend` edit becomes visible after exporting over the project's supported model file.
 
 ### Unloading and purging
 

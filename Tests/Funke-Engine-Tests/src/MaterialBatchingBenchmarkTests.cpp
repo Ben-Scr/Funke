@@ -2,16 +2,23 @@
 
 #include "Assets/AssetRegistry.hpp"
 #include "Components/General/Transform2DComponent.hpp"
+#include "Components/General/Transform3DComponent.hpp"
+#include "Components/Graphics/MeshRendererComponent.hpp"
+#include "Components/Graphics/SkinnedMeshRendererComponent.hpp"
 #include "Components/Graphics/SpriteRendererComponent.hpp"
 #include "Components/Tags.hpp"
 #include "Core/Application.hpp"
 #include "Core/Engine.hpp"
 #include "DevTools/RunAutomation.hpp"
 #include "Graphics/CustomShaderGpu.hpp"
+#include "Graphics/CustomShaderLibrary.hpp"
 #include "Graphics/Framebuffer.hpp"
 #include "Graphics/Material.hpp"
+#include "Graphics/MeshAsset.hpp"
 #include "Graphics/RenderApi.hpp"
 #include "Graphics/Renderer2D.hpp"
+#include "Graphics/Renderer3D.hpp"
+#include "Graphics/SkeletalAnimation.hpp"
 #include "Graphics/TextureManager.hpp"
 #include "Jobs/JobSystem.hpp"
 #include "Profiling/Profiler.hpp"
@@ -21,10 +28,13 @@
 #include "Serialization/File.hpp"
 #include "Serialization/Json.hpp"
 #include "Serialization/Path.hpp"
+#include "Systems/TransformHierarchySystem.hpp"
 
 #include <glm/ext/matrix_clip_space.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 
 #include <array>
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
@@ -191,6 +201,33 @@ fn surface(in: SurfaceInput) -> SurfaceOutput {
 			pixels = Pixels(target);
 			Require(pixels[center] <= 2 && std::abs(int(pixels[center + 2]) - 159) <= 2,
 				"Material mutation did not reach both shared references");
+			if (Environment("FUNKE_SPRITE_LIFECYCLE") == "1") {
+				const auto shaderPath = Path::ToUtf8(m_Output / "probe.wgsl");
+				std::string source = k_ShaderSource;
+				const auto tint = source.find("material.tint");
+				Require(tint != std::string::npos, "Missing shader edit location");
+				source.replace(tint, std::string("material.tint").size(), "vec4<f32>(1.0, 1.0, 0.0, 0.5)");
+				Require(File::WriteAllText(shaderPath, source), "Cannot edit test shader");
+				CustomShaderLibrary::Invalidate(k_Shader);
+				Draw(renderer, *scene, target);
+				pixels = Pixels(target);
+				Require(std::abs(int(pixels[center]) - 223) <= 3 && std::abs(int(pixels[center + 1]) - 223) <= 3,
+					"Shader replacement kept stale material bindings");
+				std::string invalid = source;
+				for (int i = 0; i < 7; ++i) invalid += "\n// @property texture image" + std::to_string(i) + " = white\n";
+				Require(File::WriteAllText(shaderPath, invalid), "Cannot write over-budget shader");
+				CustomShaderLibrary::Invalidate(k_Shader);
+				Draw(renderer, *scene, target);
+				Require(Pixels(target) == pixels, "Over-budget hot reload discarded the last working shader");
+				const auto diagnostics = CustomShaderLibrary::GetDiagnostics(k_Shader);
+				Require(std::any_of(diagnostics.begin(), diagnostics.end(), [](const auto& diagnostic) {
+					return diagnostic.IsError && diagnostic.Message.find("image6") != std::string::npos;
+				}), "Seventh texture has no named diagnostic");
+				Require(File::WriteAllText(shaderPath, k_ShaderSource), "Cannot restore test shader");
+				CustomShaderLibrary::Invalidate(k_Shader);
+				Draw(renderer, *scene, target);
+				Require(std::abs(int(Pixels(target)[center + 2]) - 159) <= 2, "Restored shader did not reach shared materials");
+			}
 			Renderer2D::ClearSceneCache(scene.get());
 		}
 
@@ -292,8 +329,245 @@ fn surface(in: SurfaceInput) -> SurfaceOutput {
 			Require(marker.good(), "Cannot write sprite matrix completion marker");
 		}
 
+		void CheckSpriteLifecycle(Renderer2D& renderer, Framebuffer& target, TextureHandle texture) {
+			const auto render = [&](Scene& scene, size_t expected, float halfExtent = 1.0f) {
+				renderer.BeginFrame();
+				RenderApi::BindFramebuffer(target);
+				RenderApi::SetViewport(0, 0, k_Width, k_Height);
+				RenderApi::SetClearColor(Color::Black());
+				RenderApi::Clear(ClearFlags::Color | ClearFlags::Depth);
+				renderer.RenderSceneWithVP(scene, glm::orthoRH_ZO(-halfExtent, halfExtent, -halfExtent, halfExtent, -1.0f, 1.0f),
+					AABB({ -halfExtent, -halfExtent }, { halfExtent, halfExtent }));
+				Require(renderer.GetRenderedInstancesCount() == expected, "Sprite lifecycle changed the visible set");
+				RenderApi::BindDefaultFramebuffer();
+				renderer.OnAfterPresent();
+				auto pixels = Pixels(target);
+				renderer.EndFrame();
+				return pixels;
+			};
+			SetTint(k_FirstMaterial, { 1, 1, 1, 1 });
+			const size_t center = (k_Height / 2 * k_Width + k_Width / 2) * 4;
+			for (float halfExtent : { 1.0f, 10000.0f }) {
+				auto scene = Scene::CreateDetachedScene("Oversized sprite and static grid viewport");
+				auto entity = scene->CreateEmptyEntity();
+				entity.AddComponent<Transform2DComponent>(Vec2(0), Vec2(100000));
+				auto& sprite = entity.AddComponent<SpriteRendererComponent>();
+				sprite.TextureHandle = texture;
+				sprite.Material = k_FirstMaterial;
+				const auto dynamicPixels = render(*scene, 1, halfExtent);
+				Require(dynamicPixels[center] == 255, "Oversized sprite did not cover the viewport");
+				entity.AddComponent<StaticTag>();
+				Require(render(*scene, 1, halfExtent) == dynamicPixels, "Static grid fallback changed a large sprite or viewport");
+			}
+			for (int count : { 4095, 4097 }) {
+				auto scene = Scene::CreateDetachedScene("Transparent sort boundary");
+				struct Reference { int Layer; int Order; glm::vec4 Color; };
+				std::vector<Reference> reference;
+				std::vector<Entity> entities;
+				for (int i = 0; i < count; ++i) {
+					auto entity = scene->CreateEmptyEntity();
+					entity.AddComponent<Transform2DComponent>(Vec2(0, 0), Vec2(0.05f, 0.05f));
+					auto& sprite = entity.AddComponent<SpriteRendererComponent>();
+					sprite.TextureHandle = texture;
+					sprite.Material = k_FirstMaterial;
+					sprite.SortingLayer = i % 3;
+					sprite.SortingOrder = static_cast<short>((i * 4051) % count - count / 2);
+					sprite.Color = Color((i % 5) / 4.0f, (i % 7) / 6.0f, (i % 11) / 10.0f, 0.5f);
+					reference.push_back({ sprite.SortingLayer, sprite.SortingOrder,
+						{ sprite.Color.r, sprite.Color.g, sprite.Color.b, sprite.Color.a } });
+					entities.push_back(entity);
+				}
+				std::stable_sort(reference.begin(), reference.end(), [](const auto& a, const auto& b) {
+					return a.Layer != b.Layer ? a.Layer < b.Layer : a.Order < b.Order;
+				});
+				glm::vec3 expected(0);
+				for (const auto& item : reference) expected = glm::vec3(item.Color) * item.Color.a + expected * (1 - item.Color.a);
+				const auto dynamicPixels = render(*scene, count);
+				for (size_t channel = 0; channel < 3; ++channel)
+					Require(std::abs(int(dynamicPixels[center + channel]) - int(std::round(expected[channel] * 255))) <= 3,
+						"Transparent radix/std sort disagrees with independent painter reference");
+				for (auto entity : entities) entity.AddComponent<StaticTag>();
+				Require(render(*scene, count) == dynamicPixels, "Static tagging changed transparent ordering");
+				SaveImage(dynamicPixels, "sort-boundary-" + std::to_string(count) + ".ppm");
+			}
+			for (int cycle = 0; cycle < 3; ++cycle) {
+				auto scene = Scene::CreateDetachedScene("Sprite cache lifecycle");
+				auto entity = scene->CreateEmptyEntity();
+				entity.AddComponent<Transform2DComponent>();
+				auto& sprite = entity.AddComponent<SpriteRendererComponent>();
+				sprite.TextureHandle = texture;
+				sprite.Material = k_FirstMaterial;
+				const auto initial = render(*scene, 1);
+				entity.AddComponent<StaticTag>();
+				Require(render(*scene, 1) == initial, "Static tag changed sprite image");
+				entity.GetComponent<Transform2DComponent>().SetPosition({ 4, 0 });
+				TransformHierarchySystem::Propagate(*scene);
+				Require(render(*scene, 0)[center] == 0, "Moved static sprite remained visible");
+				entity.GetComponent<Transform2DComponent>().SetPosition({ 0, 0 });
+				TransformHierarchySystem::Propagate(*scene);
+				Require(render(*scene, 1) == initial, "Returning static sprite did not invalidate grid");
+				entity.AddComponent<DisabledTag>();
+				Require(render(*scene, 0)[center] == 0, "Disabled sprite remained visible");
+				entity.RemoveComponent<DisabledTag>();
+				entity.RemoveComponent<StaticTag>();
+				Require(render(*scene, 1) == initial, "Removing tags lost a sprite");
+				scene->DestroyEntity(entity);
+				Require(render(*scene, 0)[center] == 0, "Destroyed sprite survived cache cleanup");
+			}
+			{
+				const uint8_t strip[] = { 255, 0, 0, 255, 0, 0, 255, 255 };
+				const auto id = TextureManager::CreateRuntimeTexture(2, 1, strip, Filter::Point);
+				const auto handle = TextureManager::LoadTextureByUUID(id);
+				auto scene = Scene::CreateDetachedScene("Sampler mutation");
+				auto entity = scene->CreateEmptyEntity();
+				entity.AddComponent<Transform2DComponent>();
+				auto& sprite = entity.AddComponent<SpriteRendererComponent>();
+				sprite.TextureHandle = handle;
+				sprite.Material = k_FirstMaterial;
+				const auto point = render(*scene, 1);
+				TextureManager::GetTexture(handle)->SetFilter(Filter::Bilinear);
+				const auto linear = render(*scene, 1);
+				Require(point[center] < 3 && point[center + 2] > 252, "Point texture reference is incorrect");
+				Require(linear[center] > 100 && linear[center + 2] > 100, "Changed sampler reused stale point bindings");
+				sprite.TextureHandle = texture;
+				Require(render(*scene, 1)[center] > 252, "Texture replacement reused stale bindings");
+				TextureManager::DestroyRuntimeTexture(id);
+			}
+			std::ofstream marker(m_Output / "sprite-lifecycle.complete.txt");
+			marker << "sort-boundaries=4095,4097; static-dynamic-images=equal; lifecycle-cycles=3; oversized-sprite=100000; viewport-half-extent=1,10000\n";
+			Require(marker.good(), "Cannot write lifecycle evidence");
+		}
+
+		void MeasureSkinning() {
+			constexpr uint64_t modelId = k_Shader + 2000;
+			const auto modelPath = Environment("FUNKE_SKINNING_MODEL");
+			Require(std::filesystem::is_regular_file(modelPath), "Missing skinning model fixture");
+			AssetRegistry::RegisterBuiltInAsset(modelPath, modelId, AssetKind::Mesh);
+			const auto* asset = MeshLibrary::Get(modelId);
+			Require(asset && asset->Skin && !asset->Skin->Clips.empty(), "Model must have vertices, bones and animation");
+			const auto& skin = *asset->Skin;
+			Require(!skin.BindVertices.empty() && !skin.Joints.empty(), "Empty model workload");
+			const glm::vec3 extent = asset->BoundsMax - asset->BoundsMin;
+			const float scale = 0.8f / std::max({ extent.x, extent.y, extent.z });
+			const glm::vec3 center = (asset->BoundsMin + asset->BoundsMax) * 0.5f;
+			const bool cpu = Environment("FUNKE_REFERENCE_CPU_SKINNING") == "1";
+			Profiler::SetBackgroundTracking(true);
+			Profiler::SetSamplingHz(0);
+			for (const char* scope : { "Renderer3D.SkinningPose", "Renderer3D.SkinningFallback" }) Profiler::Register(scope);
+			Renderer3D renderer;
+			Require(renderer.Initialize(), "Renderer3D initialization failed");
+			struct Cleanup {
+				Renderer3D& Renderer;
+				~Cleanup() { RenderApi::BindDefaultFramebuffer(); Renderer.Shutdown(); }
+			} cleanup{ renderer };
+			renderer.SetSkipBeginFrameRender(true);
+			GraphicsSettings settings;
+			settings.ShadowQuality = ShadowQualityLevel::Off;
+			settings.ToneMapping = ToneMappingMode::None;
+			renderer.SetGraphicsSettings(settings);
+			Framebuffer target(k_Width, k_Height);
+			Require(target.IsValid(), "No skinning framebuffer");
+			Camera3DView view;
+			view.Position = { 0, 0, 30 };
+			view.View = glm::lookAtRH(view.Position, glm::vec3(0), glm::vec3(0, 1, 0));
+			view.Projection = glm::orthoRH_ZO(-6.0f, 6.0f, -6.0f, 6.0f, 0.1f, 80.0f);
+			std::ofstream raw(m_Output / "skinning.samples.csv");
+			raw.imbue(std::locale::classic());
+			raw << std::setprecision(10) << "entities,mode,repeat,sample,cpu_ms,draws,visible,pose_updates,cpu_fallbacks\n";
+			const int samples = Setting("FUNKE_BATCH_SAMPLES", 30);
+			for (int count : { 1, 10, 100 }) {
+				for (int mode = 0; mode < 3; ++mode) {
+					auto scene = Scene::CreateDetachedScene("Skinning comparison");
+					for (int i = 0; i < count; ++i) {
+						auto entity = scene->CreateEmptyEntity();
+						auto& transform = entity.AddComponent<Transform3DComponent>();
+						transform.Scale = glm::vec3(scale);
+						transform.Position = glm::vec3(-4.5f + float(i % 10), -4.5f + float(i / 10), 0) - center * scale;
+						if (mode == 0) {
+							auto& mesh = entity.AddComponent<MeshRendererComponent>();
+							mesh.CustomMesh = modelId;
+							mesh.Lit = false;
+							mesh.CastShadows = false;
+						} else {
+							auto& mesh = entity.AddComponent<SkinnedMeshRendererComponent>();
+							mesh.Model = modelId;
+							mesh.Lit = false;
+							mesh.CastShadows = false;
+							mesh.Time = 0.125f;
+						}
+					}
+					for (int repeat = 0; repeat < 3; ++repeat) {
+						std::vector<uint8_t> pixels;
+						for (int sample = -5; sample < samples; ++sample) {
+							if (mode == 1) for (auto entity : scene->GetRegistry().view<SkinnedMeshRendererComponent>())
+								scene->GetRegistry().get<SkinnedMeshRendererComponent>(entity).Time = (float(sample + 5) + 1.0f) * 0.01f;
+							renderer.BeginFrame();
+							RenderApi::BindFramebuffer(target);
+							RenderApi::SetViewport(0, 0, k_Width, k_Height);
+							RenderApi::SetClearColor(Color::Black());
+							RenderApi::Clear(ClearFlags::Color | ClearFlags::Depth);
+							ClearSamples("Renderer3D.SkinningPose");
+							ClearSamples("Renderer3D.SkinningFallback");
+							const auto begin = BenchmarkClock::now();
+							renderer.RenderScene(*scene, view);
+							const double milliseconds = Milliseconds(begin);
+							RenderApi::BindDefaultFramebuffer();
+							pixels = Pixels(target);
+							Require(renderer.GetRenderedMeshCount() == uint32_t(count), "Missing visible model instance");
+							const auto* poses = Profiler::Find("Renderer3D.SkinningPose");
+							const auto* fallbacks = Profiler::Find("Renderer3D.SkinningFallback");
+							Require(poses && fallbacks, "Skinning counters unavailable");
+							if (sample >= 0) {
+								Require(poses->Count == (mode == 1 ? count : 0), "Unchanged poses were recomputed or animated poses skipped");
+								Require(fallbacks->Count == (mode == 1 && cpu ? count : 0), "Unexpected skinning backend or redundant fallback");
+								raw << count << ',' << mode << ',' << repeat << ',' << sample << ',' << milliseconds << ','
+									<< renderer.GetDrawCallsCount() << ',' << renderer.GetRenderedMeshCount() << ',' << poses->Count << ',' << fallbacks->Count << '\n';
+							}
+						}
+						size_t litPixels = 0;
+						for (size_t i = 0; i < pixels.size(); i += 4) if (pixels[i] > 8 || pixels[i + 1] > 8 || pixels[i + 2] > 8) ++litPixels;
+						Require(litPixels >= size_t(count) * 4, "Rendered model workload is blank");
+						SaveImage(pixels, "skinning-" + std::to_string(count) + "-" + std::to_string(mode) + "-" + std::to_string(repeat) + ".ppm");
+					}
+				}
+			}
+			Require(raw.good(), "Cannot write skinning samples");
+			std::ofstream metadata(m_Output / "skinning.complete.txt");
+			metadata << "vertices=" << skin.BindVertices.size() << "; bones=" << skin.Joints.size() << "; cpu=" << cpu
+				<< "; samples=" << samples << "; modes=static,animated,unchanged; scope=RenderScene CPU only; readback excluded\n";
+			Require(metadata.good(), "Cannot write skinning completion");
+		}
+
 		void Measure() {
 			Require(RenderApi::IsInitialized(), "No render backend");
+			if (Environment("FUNKE_SHADER_BUDGET") == "1") {
+				for (const auto target : { ShaderTarget::Mesh3D, ShaderTarget::Sprite2D, ShaderTarget::UI,
+					ShaderTarget::PostProcess, ShaderTarget::Skybox }) {
+					for (int count : { 0, 6, 7, 16 }) {
+						std::string source = std::string("// @target ") + ShaderTargetToString(target) + "\n";
+						for (int i = 0; i < count; ++i) source += "// @property texture image" + std::to_string(i) + " = white\n";
+						source += target == ShaderTarget::Skybox
+							? "fn surface(in: SurfaceInput) -> SurfaceOutput { var out: SurfaceOutput; out.color = vec3<f32>(1.0); return out; }\n"
+							: "fn surface(in: SurfaceInput) -> SurfaceOutput { return defaultSurface(in); }\n";
+						const auto path = Path::ToUtf8(m_Output / (std::string(ShaderTargetToString(target)) + std::to_string(count) + ".wgsl"));
+						Require(File::WriteAllText(path, source), "Cannot write texture budget fixture");
+						std::vector<ShaderDiagnostic> diagnostics;
+						const bool valid = CustomShaderLibrary::ValidateFile(path, diagnostics);
+						if (valid != (count <= 6)) {
+							std::string message = "Unexpected GPU texture budget validation result: " + path;
+							for (const auto& diagnostic : diagnostics) message += "\n" + CustomShaderLibrary::FormatDiagnostic(path, diagnostic);
+							throw std::runtime_error(message);
+						}
+					}
+				}
+				Completed = true;
+				return;
+			}
+			if (Environment("FUNKE_SKINNING_MATRIX") == "1") {
+				MeasureSkinning();
+				Completed = true;
+				return;
+			}
 			Require(TextureManager::IsValid(TextureManager::GetDefaultTexture(DefaultTexture::Square)),
 				"Missing default mask texture; stage Funke-Runtime/FunkeAssets next to the test executable");
 			const auto* program = CustomShaderGpu::GetProgram(k_Shader, ShaderTarget::Sprite2D);
@@ -317,6 +591,12 @@ fn surface(in: SurfaceInput) -> SurfaceOutput {
 			const auto texture = TextureManager::LoadTextureByUUID(textureId);
 			Require(TextureManager::IsValid(texture), "No explicit benchmark texture");
 			CheckTransparency(renderer, target, texture);
+			if (Environment("FUNKE_SPRITE_LIFECYCLE") == "1") {
+				CheckSpriteLifecycle(renderer, target, texture);
+				TextureManager::DestroyRuntimeTexture(textureId);
+				Completed = true;
+				return;
+			}
 			if (Environment("FUNKE_SPRITE_MATRIX") == "1") {
 				MeasureSpriteMatrix(renderer, target, texture);
 				TextureManager::DestroyRuntimeTexture(textureId);

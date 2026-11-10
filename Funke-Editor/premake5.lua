@@ -1,3 +1,21 @@
+group "Dependencies"
+project "MD4C"
+    location "../External/md4c"
+    kind "StaticLib"
+    language "C"
+    cdialect "C99"
+    staticruntime "off"
+    targetdir ("../bin/" .. outputdir .. "/%{prj.name}")
+    objdir ("../bin-int/" .. outputdir .. "/%{prj.name}")
+    files { path.join(ROOT_DIR, "External/md4c/md4c.c"), path.join(ROOT_DIR, "External/md4c/md4c.h") }
+    filter "configurations:Debug"
+        runtime "Debug"
+        symbols "On"
+    filter "configurations:Release or Dist"
+        runtime "Release"
+        optimize "On"
+    filter {}
+
 group "Runtime"
 project "Funke-Editor"
     location "."
@@ -72,6 +90,9 @@ project "Funke-Editor"
     pchheader "EditorPch.hpp"
     pchsource "src/EditorPch.cpp"
     forceincludes { "EditorPch.hpp" }
+
+    includedirs { path.join(ROOT_DIR, "External/md4c") }
+    links { "MD4C" }
     -- ScriptSystem loads Funke-ScriptCore.dll at runtime. The packaged-layout
     -- branch (ScriptSystem.cpp:194) finds it next to the editor exe; the
     -- copy lets a zipped Editor folder work standalone. The managed C# project

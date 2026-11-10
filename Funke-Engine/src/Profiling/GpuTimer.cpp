@@ -9,11 +9,14 @@
 
 #include <cstring>
 #include <string>
+#include <unordered_map>
+#include <vector>
 
 namespace Funke {
 	namespace {
 		size_t g_ActiveTimers = 0;
 		GpuTimer::Status g_UnavailableStatus = GpuTimer::Status::Uninitialized;
+		std::unordered_map<std::string, std::vector<std::unique_ptr<GpuTimer>>> g_PassTimers;
 
 		bool IsDeviceLost(const wgpu::Instance& instance, wgpu::Future future) {
 			if (!instance || future.id == 0) return true;
@@ -23,7 +26,7 @@ namespace Funke {
 		}
 	}
 
-	GpuTimer::GpuTimer() = default;
+	GpuTimer::GpuTimer(std::string moduleName) : m_ModuleName(std::move(moduleName)) {}
 	GpuTimer::~GpuTimer() { Shutdown(); }
 
 	bool GpuTimer::IsSupported() {
@@ -229,8 +232,8 @@ namespace Funke {
 			std::memcpy(ts, mapped, sizeof(ts));
 			const uint64_t deltaNs = ts[1] > ts[0] ? ts[1] - ts[0] : 0;
 			const float deltaMs = static_cast<float>(deltaNs) * 1.0e-6f;
-			Profiler::PushSample("GPU", deltaMs);
-			TracyPlot("GPU.ms", double(deltaMs));
+			Profiler::PushSample(m_ModuleName, deltaMs);
+			if (m_ModuleName == "GPU") TracyPlot("GPU.ms", double(deltaMs));
 			s.Readback.Unmap();
 			s.Result.reset();
 			s.State = SlotState::Empty;
@@ -241,7 +244,75 @@ namespace Funke {
 		return -1;
 	}
 
+	void GpuPassTrace::Begin(wgpu::CommandEncoder encoder, wgpu::StringView label) {
+		if (!Profiler::IsFrameCaptureEnabled() || !encoder) return;
+		const std::string name = "GPU." + std::string(label.data ? label.data : "unnamed",
+			label.data ? (label.length == WGPU_STRLEN ? std::strlen(label.data) : label.length) : 7);
+		Profiler::Register("GPU.PassRequests");
+		Profiler::Register("GPU.PassUnavailable");
+		Profiler::PushValue("GPU.PassRequests", 1);
+		if (GpuTimer::IsSupported()) {
+			auto& timers = g_PassTimers[name];
+			Profiler::Register(name);
+			for (size_t index = 0; index <= timers.size() && index < 16; ++index) {
+				if (index == timers.size()) {
+					auto timer = std::make_unique<GpuTimer>(name);
+					timer->Initialize();
+					if (timer->GetStatus() != GpuTimer::Status::Ready) break;
+					timers.push_back(std::move(timer));
+				}
+				const auto slots = timers[index]->BeginFrameWrites();
+				if (!slots.Valid) continue;
+				m_Timer = timers[index].get();
+				m_Encoder = encoder;
+				m_Writes.querySet = slots.QuerySet;
+				m_Writes.beginningOfPassWriteIndex = slots.BeginningOfPassWriteIndex;
+				m_Writes.endOfPassWriteIndex = slots.EndOfPassWriteIndex;
+				return;
+			}
+		}
+		Profiler::PushValue("GPU.PassUnavailable", 1);
+	}
+
+	GpuPassTrace::GpuPassTrace(wgpu::CommandEncoder encoder, wgpu::RenderPassDescriptor& desc) {
+		Begin(encoder, desc.label);
+		if (m_Timer) desc.timestampWrites = &m_Writes;
+	}
+
+	GpuPassTrace::GpuPassTrace(wgpu::CommandEncoder encoder, wgpu::ComputePassDescriptor& desc) {
+		Begin(encoder, desc.label);
+		if (m_Timer) desc.timestampWrites = &m_Writes;
+	}
+
+	void GpuPassTrace::Resolve() {
+		if (m_Timer) m_Timer->ResolveCurrentFrame(m_Encoder);
+		m_Timer = nullptr;
+		m_Encoder = nullptr;
+	}
+
+	void GpuPassTrace::AfterSubmit() {
+		for (auto& [name, timers] : g_PassTimers) for (auto& timer : timers) {
+			timer->OnFrameStart();
+			timer->PollAndPublish();
+		}
+	}
+
+	void GpuPassTrace::Shutdown() { g_PassTimers.clear(); }
+
 }  // namespace Funke
 
 #else  // !FUNKE_PROFILER_ENABLED
+namespace Funke {
+
+	GpuTimer::GpuTimer(std::string moduleName) : m_ModuleName(std::move(moduleName)) {}
+	GpuTimer::~GpuTimer() = default;
+	void GpuTimer::Initialize() { m_Status = Status::Unsupported; }
+	void GpuTimer::Shutdown() {}
+	GpuTimer::FrameSlots GpuTimer::BeginFrameWrites() { return {}; }
+	void GpuTimer::ResolveCurrentFrame(wgpu::CommandEncoder) {}
+	void GpuTimer::OnFrameStart() {}
+	void GpuTimer::PollAndPublish() {}
+	long long GpuTimer::QueryGpuMemoryMb() { return -1; }
+
+}
 #endif  // FUNKE_PROFILER_ENABLED

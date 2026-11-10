@@ -1248,6 +1248,12 @@ internal unsafe struct NativeBindingsStruct
     public delegate* unmanaged<ulong, int, int> Scene_ActivatePreloaded;
     public delegate* unmanaged<ulong, int*, float*, int> Scene_GetLoadProgress;
     public delegate* unmanaged<ulong, ulong> Entity_GetOwningSceneId;
+    public delegate* unmanaged<ulong, int> TextRenderer_GetRichText;
+    public delegate* unmanaged<ulong, int, void> TextRenderer_SetRichText;
+    public delegate* unmanaged<ulong, int> TextRenderer_GetBold;
+    public delegate* unmanaged<ulong, int, void> TextRenderer_SetBold;
+    public delegate* unmanaged<ulong, int> TextRenderer_GetItalic;
+    public delegate* unmanaged<ulong, int, void> TextRenderer_SetItalic;
 }
 
 internal static unsafe class NativeCallbacks

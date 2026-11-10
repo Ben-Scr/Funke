@@ -2120,6 +2120,36 @@ namespace Funke {
 		comp.LineSpacing = spacing;
 	}
 
+	static int Funke_TextRenderer_GetBold(uint64_t entityID) {
+		GET_COMPONENT(TextRendererComponent, entityID, 0);
+		return comp.Bold ? 1 : 0;
+	}
+
+	static void Funke_TextRenderer_SetBold(uint64_t entityID, int enabled) {
+		GET_COMPONENT(TextRendererComponent, entityID, );
+		comp.Bold = enabled != 0;
+	}
+
+	static int Funke_TextRenderer_GetItalic(uint64_t entityID) {
+		GET_COMPONENT(TextRendererComponent, entityID, 0);
+		return comp.Italic ? 1 : 0;
+	}
+
+	static void Funke_TextRenderer_SetItalic(uint64_t entityID, int enabled) {
+		GET_COMPONENT(TextRendererComponent, entityID, );
+		comp.Italic = enabled != 0;
+	}
+
+	static int Funke_TextRenderer_GetRichText(uint64_t entityID) {
+		GET_COMPONENT(TextRendererComponent, entityID, 0);
+		return comp.RichText ? 1 : 0;
+	}
+
+	static void Funke_TextRenderer_SetRichText(uint64_t entityID, int enabled) {
+		GET_COMPONENT(TextRendererComponent, entityID, );
+		comp.RichText = enabled != 0;
+	}
+
 	// values: outlineWidth, outline r g b a, shadowOffsetX, shadowOffsetY, shadow r g b a.
 	static void Funke_TextRenderer_GetEffects(uint64_t entityID, float* values, int count)
 	{
@@ -3490,6 +3520,12 @@ namespace Funke {
 		b.TextRenderer_SetLetterSpacing = FNK_GUARDED_BINDING(Funke_TextRenderer_SetLetterSpacing);
 		b.TextRenderer_GetLineSpacing = FNK_GUARDED_BINDING(Funke_TextRenderer_GetLineSpacing);
 		b.TextRenderer_SetLineSpacing = FNK_GUARDED_BINDING(Funke_TextRenderer_SetLineSpacing);
+		b.TextRenderer_GetBold = FNK_GUARDED_BINDING(Funke_TextRenderer_GetBold);
+		b.TextRenderer_SetBold = FNK_GUARDED_BINDING(Funke_TextRenderer_SetBold);
+		b.TextRenderer_GetItalic = FNK_GUARDED_BINDING(Funke_TextRenderer_GetItalic);
+		b.TextRenderer_SetItalic = FNK_GUARDED_BINDING(Funke_TextRenderer_SetItalic);
+		b.TextRenderer_GetRichText = FNK_GUARDED_BINDING(Funke_TextRenderer_GetRichText);
+		b.TextRenderer_SetRichText = FNK_GUARDED_BINDING(Funke_TextRenderer_SetRichText);
 		b.TextRenderer_GetEffects = FNK_GUARDED_BINDING(Funke_TextRenderer_GetEffects);
 		b.TextRenderer_SetEffects = FNK_GUARDED_BINDING(Funke_TextRenderer_SetEffects);
 		b.TextRenderer_GetHAlign = FNK_GUARDED_BINDING(Funke_TextRenderer_GetHAlign);

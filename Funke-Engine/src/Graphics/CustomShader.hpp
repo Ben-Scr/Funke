@@ -102,6 +102,9 @@ namespace Funke {
 	// checks the user functions. Pure text work: WGSL errors are only found when the composed module is compiled.
 	FUNKE_API ShaderParseResult ParseCustomShader(std::string_view source);
 
+	FUNKE_API std::vector<ShaderDiagnostic> ValidateCustomShaderTextureBudget(const ShaderDescription& description,
+		uint32_t maxTexturesPerStage, uint32_t maxSamplersPerStage);
+
 	struct FUNKE_API ComposedShader {
 		std::string Wgsl;
 		// Line 1 of the user source is line UserLineOffset + 1 of Wgsl.
