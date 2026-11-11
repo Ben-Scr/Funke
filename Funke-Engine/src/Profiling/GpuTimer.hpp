@@ -13,6 +13,7 @@
 
 namespace Funke {
 
+#ifdef FUNKE_PROFILER_ENABLED
 	// Methods and availability queries run on the render thread; callbacks own only detached results.
 	class FUNKE_API GpuTimer {
 	public:
@@ -30,13 +31,8 @@ namespace Funke {
 		};
 		Status GetStatus() const { return m_Status; }
 
-#ifdef FUNKE_PROFILER_ENABLED
 		static bool IsSupported();
 		static const char* GetUnavailableReason();
-#else
-		static bool IsSupported() { return false; }
-		static const char* GetUnavailableReason() { return "Profiling is disabled"; }
-#endif
 
 		// Allocates the QuerySet + resolve + readback buffers when the
 		// WebGPU device was created with TimestampQuery enabled. No-op
@@ -116,6 +112,16 @@ namespace Funke {
 		bool                          m_FrameWritesIssued = false;
 		std::string m_ModuleName;
 	};
+#else
+	class GpuTimer {
+	public:
+		static bool IsSupported() { return false; }
+		static const char* GetUnavailableReason() { return "Profiling is disabled"; }
+		static long long QueryGpuMemoryMb() { return -1; }
+	private:
+		GpuTimer() = delete;
+	};
+#endif
 
 #ifdef FUNKE_PROFILER_ENABLED
 	// Resolve after pass.End, before submitting the encoder. Capture is opt-in and never waits for GPU completion.

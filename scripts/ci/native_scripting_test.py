@@ -89,10 +89,23 @@ def main() -> None:
     shutil.copy2(fixture, matrix / fixture.name)
     (matrix / "ComponentHeader.cpp").write_text('#include <Funke/ScriptComponents.hpp>\n', encoding="utf-8")
     (matrix / "UmbrellaHeader.cpp").write_text('#include <Funke.hpp>\n', encoding="utf-8")
+    (matrix / "DisabledGpuProfiler.cpp").write_text(
+        '#include <Profiling/GpuTimer.hpp>\n'
+        'extern "C" FUNKE_API bool DisabledGpuProfiler() {\n'
+        '    Funke::GpuPassTrace::AfterSubmit();\n'
+        '    Funke::GpuPassTrace::Shutdown();\n'
+        '    return !Funke::GpuTimer::IsSupported()\n'
+        '        && Funke::GpuTimer::GetUnavailableReason() != nullptr\n'
+        '        && Funke::GpuTimer::QueryGpuMemoryMb() == -1;\n'
+        '}\n', encoding="utf-8")
     includes = ["Funke-Engine/src", "Funke-Engine/src/Generated", "External/glm", "External/entt/src",
                 "External/spdlog/include", "External/magic_enum/include", "External/rapidxml",
                 "External/SDL/include", "External/miniaudio", "External/dawn/include", "External/dawn/build/gen/include"]
     cmake = ["cmake_minimum_required(VERSION 3.20)", "project(HeaderMatrix LANGUAGES CXX)", "set(CMAKE_CXX_STANDARD 20)"]
+    cmake += ["add_library(disabled_gpu_profiler SHARED DisabledGpuProfiler.cpp)",
+              "target_compile_definitions(disabled_gpu_profiler PRIVATE FNK_BUILD_DLL FNK_DIST)",
+              "target_include_directories(disabled_gpu_profiler PRIVATE "
+              + " ".join('"' + (sdk / p).as_posix() + '"' for p in includes) + ")"]
     selections = [(f"modules_{two}_{three}", int(two > 0), int(three > 0), int(two == 2), int(three == 2))
                   for two in range(3) for three in range(3)] + [("core", 0, 0, 0, 0)]
     for name, two_d, three_d, physics2d, physics3d in selections:

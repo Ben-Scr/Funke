@@ -5,6 +5,7 @@ from __future__ import annotations
 import tempfile
 import io
 import contextlib
+import unicodedata
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -74,6 +75,7 @@ class ApplicationResourcePathTests(unittest.TestCase):
             for resource_log, expected_exit in (
                     ("", 1),
                     (application_smoke_test.RESOURCE_MARKER + f"'{cwd}'", 1),
+                    (application_smoke_test.RESOURCE_MARKER + f"'{root / 'missing'}'", 1),
                     (application_smoke_test.RESOURCE_MARKER + f"'{assets}'", 0)):
                 process = Mock(returncode=0)
                 process.communicate.return_value = (application_smoke_test.STABLE_MARKER + "\n" + resource_log, None)
@@ -83,6 +85,27 @@ class ApplicationResourcePathTests(unittest.TestCase):
                         contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                     self.assertEqual(application_smoke_test.main(), expected_exit)
                 self.assertEqual(launch.call_args.kwargs["cwd"], cwd.resolve())
+
+    def test_smoke_uses_filesystem_identity_for_unicode_resource_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            binary = root / "Prüfung/Bundle/Funke-Launcher"
+            assets = binary.parent / "FunkeAssets"
+            assets.mkdir(parents=True)
+            binary.touch()
+            decomposed = Path(unicodedata.normalize("NFD", str(assets)))
+            decomposed.mkdir(parents=True, exist_ok=True)
+            expected_exit = 0 if assets.samefile(decomposed) else 1
+            args = SimpleNamespace(binary=binary, working_directory=None, argument=[], editor_project=False, timeout=1)
+            process = Mock(returncode=0)
+            process.communicate.return_value = (
+                application_smoke_test.STABLE_MARKER + "\n"
+                + application_smoke_test.RESOURCE_MARKER + f"'{decomposed}'", None)
+            with patch.object(application_smoke_test, "parse_args", return_value=args), \
+                    patch.object(application_smoke_test.subprocess, "Popen", return_value=process), \
+                    patch.object(application_smoke_test, "log_snapshot", return_value=(None, 0)), \
+                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(application_smoke_test.main(), expected_exit)
 
 
 class SmokeLogPathTests(unittest.TestCase):

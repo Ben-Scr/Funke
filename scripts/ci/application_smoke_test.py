@@ -194,7 +194,11 @@ def main() -> int:
             return 1
 
     resolved = re.findall(re.escape(RESOURCE_MARKER) + r"'([^\r\n]*)'", output)
-    if not resolved or any(Path(path).resolve() != assets for path in resolved):
+    try:
+        matching_resources = bool(resolved) and all(assets.samefile(path) for path in resolved)
+    except (OSError, ValueError):
+        matching_resources = False
+    if not matching_resources:
         print(f"Application resource mismatch: expected {assets}; native resolver reported {resolved!r}.\n{output}",
               file=sys.stderr)
         return 1

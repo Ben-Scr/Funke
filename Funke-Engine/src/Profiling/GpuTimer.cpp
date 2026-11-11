@@ -301,18 +301,4 @@ namespace Funke {
 
 }  // namespace Funke
 
-#else  // !FUNKE_PROFILER_ENABLED
-namespace Funke {
-
-	GpuTimer::GpuTimer(std::string moduleName) : m_ModuleName(std::move(moduleName)) {}
-	GpuTimer::~GpuTimer() = default;
-	void GpuTimer::Initialize() { m_Status = Status::Unsupported; }
-	void GpuTimer::Shutdown() {}
-	GpuTimer::FrameSlots GpuTimer::BeginFrameWrites() { return {}; }
-	void GpuTimer::ResolveCurrentFrame(wgpu::CommandEncoder) {}
-	void GpuTimer::OnFrameStart() {}
-	void GpuTimer::PollAndPublish() {}
-	long long GpuTimer::QueryGpuMemoryMb() { return -1; }
-
-}
 #endif  // FUNKE_PROFILER_ENABLED
