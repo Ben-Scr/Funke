@@ -447,6 +447,49 @@ class BuildMetadataTests(unittest.TestCase):
 
 
 class RuntimeSmokeStagingTests(unittest.TestCase):
+    def test_bundle_staging_preserves_resources_frameworks_and_code_aliases(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="Funke Runtime Prüfung ") as temp_dir:
+            root = Path(temp_dir).resolve()
+            app = root / "Installed/Funke.app"
+            contents = app / "Contents"
+            binary = contents / "MacOS/Funke-Runtime"
+            binary.parent.mkdir(parents=True)
+            binary.write_bytes(b"runtime")
+            (contents / "Info.plist").write_bytes(b"bundle metadata")
+            resources = contents / "Resources"
+            (resources / "FunkeAssets").mkdir(parents=True)
+            (resources / "FunkeAssets/keep.txt").write_text("original", encoding="utf-8")
+            frameworks = contents / "Frameworks"
+            frameworks.mkdir()
+            (frameworks / "libFunke-Engine.dylib").write_bytes(b"engine")
+            alias = resources / binary.name
+            alias.symlink_to(Path("../MacOS") / binary.name)
+            for index, source in enumerate((binary, alias)):
+                with self.subTest(source=source):
+                    self.assertEqual(runtime_smoke_test.runtime_content_directory(source), resources)
+                    staged_binary = runtime_smoke_test.stage_runtime_copy(source, root / f"stage-{index}")
+                    staged_contents = staged_binary.parent.parent
+                    self.assertEqual(staged_binary.read_bytes(), b"runtime")
+                    self.assertEqual((staged_contents / "Frameworks/libFunke-Engine.dylib").read_bytes(), b"engine")
+                    self.assertEqual((staged_contents / "Info.plist").read_bytes(), b"bundle metadata")
+                    staged_resources = staged_contents / "Resources"
+                    self.assertTrue((staged_resources / binary.name).is_symlink())
+                    self.assertEqual((staged_resources / binary.name).resolve(), staged_binary)
+                    self.assertTrue((staged_resources / "project.json").is_file())
+                    self.assertTrue((staged_resources / "Assets/Scenes/SampleScene.scene").is_file())
+                    self.assertEqual((staged_resources / "FunkeAssets/keep.txt").read_text(encoding="utf-8"), "original")
+            self.assertFalse((resources / "project.json").exists())
+            self.assertFalse((binary.parent / "project.json").exists())
+
+            args = mock.Mock(binary=alias, require_scripting=True, expect_render_init_failure=False, timeout=1)
+            output = "\n".join((*runtime_smoke_test.REQUIRED_MARKERS, "Core assembly loaded:"))
+            with mock.patch.object(runtime_smoke_test, "parse_args", return_value=args), \
+                    mock.patch.object(runtime_smoke_test, "run_runtime", return_value=(0, output)) as launch, \
+                    mock.patch.object(runtime_smoke_test, "log_snapshot", return_value=(None, 0)), \
+                    redirect_stdout(StringIO()), redirect_stderr(StringIO()):
+                self.assertEqual(runtime_smoke_test.main(), 0)
+            launch.assert_called_once()
+
     def test_runtime_harness_uses_a_unicode_staging_path(self) -> None:
         script = SMOKE_SCRIPT_PATH.read_text(encoding="utf-8")
         self.assertIn('prefix="Funke Runtime Smoke Prüfung "', script)

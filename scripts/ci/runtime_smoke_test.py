@@ -224,7 +224,24 @@ def stage_smoke_project(runtime_dir: Path) -> None:
     )
 
 
+def runtime_content_directory(runtime_binary: Path) -> Path:
+    directory = runtime_binary.resolve().parent
+    if (directory.name == "MacOS" and directory.parent.name == "Contents"
+            and (directory.parent / "Info.plist").is_file()):
+        return directory.parent / "Resources"
+    return directory
+
+
 def stage_runtime_copy(runtime_binary: Path, staging_root: Path) -> Path:
+    runtime_binary = runtime_binary.resolve()
+    content = runtime_content_directory(runtime_binary)
+    if content != runtime_binary.parent:
+        app = runtime_binary.parents[2]
+        staged_app = staging_root / app.name
+        shutil.copytree(app, staged_app, symlinks=True)
+        stage_smoke_project(staged_app / "Contents/Resources")
+        return staged_app / runtime_binary.relative_to(app)
+
     staged_runtime_dir = staging_root / runtime_binary.parent.name
     shutil.copytree(runtime_binary.parent, staged_runtime_dir)
     stage_smoke_project(staged_runtime_dir)
@@ -356,10 +373,10 @@ def main() -> int:
         except FileNotFoundError as error:
             return fail(str(error))
 
-    runtime_dir = runtime_binary.parent
+    runtime_dir = runtime_content_directory(runtime_binary)
     funke_assets_dir = runtime_dir / "FunkeAssets"
     if not funke_assets_dir.is_dir():
-        return fail(f"Expected FunkeAssets next to the runtime binary at {funke_assets_dir}")
+        return fail(f"Expected runtime resources at {funke_assets_dir}")
 
     try:
         with tempfile.TemporaryDirectory(prefix="Funke Runtime Smoke Prüfung ") as temp_dir:
