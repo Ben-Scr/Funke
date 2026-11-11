@@ -559,8 +559,10 @@ jobs:
         run: python3 scripts/vendor_patches.py verify
 
       - name: Install Native Dependencies
+        timeout-minutes: 15
         run: |
-          sudo apt-get update
+          apt_options=(-o Acquire::Retries=2 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20)
+          sudo apt-get "${apt_options[@]}" --error-on=any update
           # xorg-dev, libwayland-dev, libxkbcommon-dev, wayland-protocols, libdbus-1-dev,
           # libudev-dev: SDL3's X11/Wayland video, portal dialogs and gamepad hotplug
           # (scripts/sdl/SetupSDL.py, run by Setup). pkg-config: Dawn's CMake dep probing when
@@ -569,7 +571,7 @@ jobs:
           # Keep GCC's default GNU linker: Dist uses GCC LTO, which LLD cannot read.
           # Dawn is shared, so its former static-archive linker memory issue no longer applies.
           # libx11-xcb-dev: Dawn's X11 backend needs X11/Xlib-xcb.h (not in xorg-dev).
-          sudo apt-get install -y xorg-dev libglu1-mesa-dev xvfb pkg-config clang libx11-xcb-dev lcov \
+          sudo apt-get "${apt_options[@]}" install -y xorg-dev libglu1-mesa-dev xvfb pkg-config clang libx11-xcb-dev lcov \
             libwayland-dev libxkbcommon-dev wayland-protocols libdbus-1-dev libudev-dev \
             libvulkan1 mesa-vulkan-drivers vulkan-tools
 
@@ -873,8 +875,10 @@ jobs:
         run: python3 scripts/vendor_patches.py verify
 
       - name: Install Native Dependencies
+        timeout-minutes: 15
         run: |
-          sudo apt-get update
+          apt_options=(-o Acquire::Retries=2 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20)
+          sudo apt-get "${apt_options[@]}" --error-on=any update
           # xorg-dev, libwayland-dev, libxkbcommon-dev, wayland-protocols, libdbus-1-dev,
           # libudev-dev: SDL3's X11/Wayland video, portal dialogs and gamepad hotplug
           # (scripts/sdl/SetupSDL.py, run by Setup). pkg-config: Dawn's CMake dep probing when
@@ -883,7 +887,7 @@ jobs:
           # Keep GCC's default GNU linker: Dist uses GCC LTO, which LLD cannot read.
           # Dawn is shared, so its former static-archive linker memory issue no longer applies.
           # libx11-xcb-dev: Dawn's X11 backend needs X11/Xlib-xcb.h (not in xorg-dev).
-          sudo apt-get install -y xorg-dev libglu1-mesa-dev xvfb pkg-config clang libx11-xcb-dev lcov \
+          sudo apt-get "${apt_options[@]}" install -y xorg-dev libglu1-mesa-dev xvfb pkg-config clang libx11-xcb-dev lcov \
             libwayland-dev libxkbcommon-dev wayland-protocols libdbus-1-dev libudev-dev \
             libvulkan1 mesa-vulkan-drivers vulkan-tools
 
