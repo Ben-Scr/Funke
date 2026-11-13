@@ -21,7 +21,7 @@ TOOLS = ("git", "cmake", "ninja", "msbuild", "cl", "clang", "clang-cl", "gcc", "
 CONTENT_DENY = ("engineSDK/funke-engine", "engineSDK/external", "engineSDK/bin", "engineSDK/Funke.sln", "engineSDK/premake5.lua",
                 "engineSDK/funke-scriptcore/source", "engineSDK/funke-scriptcore/funke-scriptcore.csproj",
                 "Funke-Engine", "External", "Funke-ScriptCore/Source", "Funke-ScriptCore/Funke-ScriptCore.csproj", ".git")
-ERROR_MARKERS = ("Unhandled exception at app boundary", "CrashReporter wrote minidump",
+ERROR_MARKERS = ("Unhandled exception at app boundary", "CrashReporter wrote minidump", "C# reload refused:",
                  "Failed to initialize .NET runtime", "interop mismatch", "WebGPU [Validation]",
                  "was compiled against other engine headers")
 STABLE_MARKER = "CI smoke test reached a stable frame; requesting graceful shutdown."

@@ -2066,8 +2066,7 @@ namespace Funke::GameBuilder {
 			try {
 				for (const auto& entry : std::filesystem::directory_iterator(userBinDir)) {
 					if (!entry.is_regular_file()) continue;
-					auto ext = entry.path().extension().string();
-					if (ext == ".dll" || ext == ".json" || (ext == ".pdb" && buildConfiguration == "Debug")) {
+					if (BuildOutputSafety::ShouldStageUserAssemblyArtifact(entry.path(), buildConfiguration == "Debug")) {
 						if (!copyRequiredFile(entry.path(), destBinDir / entry.path().filename(),
 							entry.path().filename().string())) return result;
 						copied++;

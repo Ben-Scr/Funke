@@ -8,6 +8,21 @@
 
 using namespace Funke::BuildOutputSafety;
 
+TEST_CASE("Game exports keep the runtime ScriptCore instead of the authoring copy") {
+	for (const bool debugSymbols : { false, true }) {
+		CHECK_FALSE(ShouldStageUserAssemblyArtifact("bin/Dist/Funke-ScriptCore.dll", debugSymbols));
+		CHECK_FALSE(ShouldStageUserAssemblyArtifact("Funke-ScriptCore.pdb", debugSymbols));
+		CHECK_FALSE(ShouldStageUserAssemblyArtifact("Funke-ScriptCore.deps.json", debugSymbols));
+		CHECK_FALSE(ShouldStageUserAssemblyArtifact("Funke-ScriptCore.runtimeconfig.json", debugSymbols));
+		CHECK(ShouldStageUserAssemblyArtifact("Game.dll", debugSymbols));
+		CHECK(ShouldStageUserAssemblyArtifact("Pkg.Game.Tools.dll", debugSymbols));
+		CHECK(ShouldStageUserAssemblyArtifact("Game.deps.json", debugSymbols));
+		CHECK(ShouldStageUserAssemblyArtifact("Game.runtimeconfig.json", debugSymbols));
+		CHECK(ShouldStageUserAssemblyArtifact("Game.pdb", debugSymbols) == debugSymbols);
+		CHECK_FALSE(ShouldStageUserAssemblyArtifact("Game.dll.defines", debugSymbols));
+	}
+}
+
 namespace {
 	struct ScopedBuildOutputDirectory {
 		std::filesystem::path Root;

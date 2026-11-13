@@ -11,6 +11,15 @@
 
 namespace Funke::BuildOutputSafety {
 
+	inline bool ShouldStageUserAssemblyArtifact(const std::filesystem::path& path, bool debugSymbols) {
+		const auto filename = path.filename().string();
+		// The runtime payload supplies ScriptCore; copy-local authoring binaries may use another configuration.
+		if (filename == "Funke-ScriptCore.dll" || filename == "Funke-ScriptCore.pdb"
+			|| filename == "Funke-ScriptCore.deps.json" || filename == "Funke-ScriptCore.runtimeconfig.json") return false;
+		const auto extension = path.extension().string();
+		return extension == ".dll" || extension == ".json" || (debugSymbols && extension == ".pdb");
+	}
+
 	enum class OutputPathError {
 		None,
 		Empty,

@@ -562,7 +562,15 @@ jobs:
         timeout-minutes: 15
         run: |
           apt_options=(-o Acquire::Retries=2 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20)
-          sudo apt-get "${apt_options[@]}" --error-on=any update
+          if ! sudo apt-get "${apt_options[@]}" --error-on=any update; then
+            # The hosted mirror list can keep choosing Azure after DNS failures; retry the official Ubuntu mirrors.
+            mirror_list=/etc/apt/apt-mirrors.txt
+            if [[ ! -f "$mirror_list" ]] || ! grep -q '://azure.archive.ubuntu.com/' "$mirror_list"; then
+              exit 1
+            fi
+            sudo sed -i '\|://azure.archive.ubuntu.com/|d' "$mirror_list"
+            sudo apt-get "${apt_options[@]}" --error-on=any update
+          fi
           # xorg-dev, libwayland-dev, libxkbcommon-dev, wayland-protocols, libdbus-1-dev,
           # libudev-dev: SDL3's X11/Wayland video, portal dialogs and gamepad hotplug
           # (scripts/sdl/SetupSDL.py, run by Setup). pkg-config: Dawn's CMake dep probing when
@@ -878,7 +886,15 @@ jobs:
         timeout-minutes: 15
         run: |
           apt_options=(-o Acquire::Retries=2 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20)
-          sudo apt-get "${apt_options[@]}" --error-on=any update
+          if ! sudo apt-get "${apt_options[@]}" --error-on=any update; then
+            # The hosted mirror list can keep choosing Azure after DNS failures; retry the official Ubuntu mirrors.
+            mirror_list=/etc/apt/apt-mirrors.txt
+            if [[ ! -f "$mirror_list" ]] || ! grep -q '://azure.archive.ubuntu.com/' "$mirror_list"; then
+              exit 1
+            fi
+            sudo sed -i '\|://azure.archive.ubuntu.com/|d' "$mirror_list"
+            sudo apt-get "${apt_options[@]}" --error-on=any update
+          fi
           # xorg-dev, libwayland-dev, libxkbcommon-dev, wayland-protocols, libdbus-1-dev,
           # libudev-dev: SDL3's X11/Wayland video, portal dialogs and gamepad hotplug
           # (scripts/sdl/SetupSDL.py, run by Setup). pkg-config: Dawn's CMake dep probing when

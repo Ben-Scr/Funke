@@ -88,6 +88,19 @@ namespace {
 	}
 }
 
+TEST_CASE("Asset GUID allocation retries null, runtime mesh ranges, and existing IDs") {
+	const std::array<uint64_t, 6> candidates = {
+		0, k_RuntimeMeshGuidBase, 0xF1D0752DF4013C13ULL, 0xF1D0FFFFFFFFFFFFULL, 123, 456
+	};
+	size_t next = 0;
+	const auto guid = GenerateAssetGuid([&] {
+		REQUIRE(next < candidates.size());
+		return candidates[next++];
+	}, [](uint64_t id) { return id == 123; });
+	CHECK(guid == 456);
+	CHECK(next == candidates.size());
+}
+
 TEST_CASE("Asset registry only exposes WGSL as assignable shaders") {
 	GraphicsAssetProject fixture;
 	const char* names[] = { "valid.wgsl", "upper.WGSL", "old.vs", "old.fs", "old.vert", "old.frag", "old.glsl", "old.hlsl", "old.shader" };
@@ -516,6 +529,8 @@ TEST_CASE("Mesh cache releases idle file assets without evicting frame consumers
 	REQUIRE(project.WriteBuffer(2.0f));
 	const uint64_t active = project.WriteMesh("active.gltf");
 	const uint64_t idle = project.WriteMesh("idle.gltf");
+	CAPTURE(active);
+	CAPTURE(idle);
 	const MeshAsset* activeAsset = MeshLibrary::Get(active);
 	const MeshAsset* idleAsset = MeshLibrary::Get(idle);
 	REQUIRE(activeAsset != nullptr);

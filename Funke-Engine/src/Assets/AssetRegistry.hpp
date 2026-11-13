@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Assets/AssetKind.hpp"
+#include "Assets/AssetGuid.hpp"
 #include "Assets/TextureMeta.hpp"
 #include "Core/Export.hpp"
 #include "Assets/AssetBundle.hpp"
@@ -215,9 +216,7 @@ namespace Funke {
 
 			uint64_t id = ReadMetaId(normalizedPath);
 			if (id == 0) {
-				do {
-					id = static_cast<uint64_t>(UUID());
-				} while (id != 0 && State().IdToRecord.find(id) != State().IdToRecord.end());
+				id = CreateAssetId();
 			} else if (auto existing = State().IdToRecord.find(id); existing != State().IdToRecord.end()) {
 				// GUID collision: a different asset already owns this GUID.
 				// Regenerate so we don't break the existing reference, but
@@ -226,9 +225,7 @@ namespace Funke {
 				FNK_CORE_WARN_TAG("AssetRegistry",
 					"GUID collision while indexing '{}': id {} already owned by '{}' — regenerating new GUID for '{}'",
 					normalizedPath, id, existing->second.Path, normalizedPath);
-				do {
-					id = static_cast<uint64_t>(UUID());
-				} while (id != 0 && State().IdToRecord.find(id) != State().IdToRecord.end());
+				id = CreateAssetId();
 			}
 
 			WriteMeta(normalizedPath, id, Classify(normalizedPath));
@@ -270,18 +267,14 @@ namespace Funke {
 
 			uint64_t id = ReadMetaId(normalizedPath);
 			if (id == 0) {
-				do {
-					id = static_cast<uint64_t>(UUID());
-				} while (id != 0 && State().IdToRecord.find(id) != State().IdToRecord.end());
+				id = CreateAssetId();
 			}
 			else if (auto existing = State().IdToRecord.find(id);
 				existing != State().IdToRecord.end() && existing->second.Path != normalizedPath) {
 				FNK_CORE_WARN_TAG("AssetRegistry",
 					"GUID collision while indexing '{}': id {} already owned by '{}' - regenerating new GUID for '{}'",
 					normalizedPath, id, existing->second.Path, normalizedPath);
-				do {
-					id = static_cast<uint64_t>(UUID());
-				} while (id != 0 && State().IdToRecord.find(id) != State().IdToRecord.end());
+				id = CreateAssetId();
 			}
 
 			const AssetKind kind = Classify(normalizedPath);
@@ -598,6 +591,11 @@ namespace Funke {
 		}
 
 	private:
+		static uint64_t CreateAssetId() {
+			return GenerateAssetGuid([] { return static_cast<uint64_t>(UUID()); }, [](uint64_t id) {
+				return State().IdToRecord.contains(id) || State().BuiltInById.contains(id);
+			});
+		}
 		static std::string GetAssetsRoot(bool forceRefresh = false) {
 			if (FunkeProject* project = ProjectManager::GetCurrentProject()) {
 				// Dirty notifications and explicit Sync recheck filesystem aliases; relative roots never match.
@@ -926,7 +924,7 @@ namespace Funke {
 			uint64_t id = ReadMetaId(assetPath);
 			if (id == 0) {
 				// Brand-new asset: mint an id and write its meta.
-				id = static_cast<uint64_t>(UUID());
+				id = CreateAssetId();
 				WriteMeta(assetPath, id, kind);
 			} else if (auto existing = State().IdToRecord.find(id); existing != State().IdToRecord.end()) {
 				// Two assets claim the same GUID. Surface the collision so
@@ -935,7 +933,7 @@ namespace Funke {
 				FNK_CORE_WARN_TAG("AssetRegistry",
 					"GUID collision while indexing '{}': id {} already owned by '{}' — regenerating new GUID for '{}'",
 					assetPath, id, existing->second.Path, assetPath);
-				id = static_cast<uint64_t>(UUID());
+				id = CreateAssetId();
 				WriteMeta(assetPath, id, kind);
 			}
 			Register(assetPath, id, kind);

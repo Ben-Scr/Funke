@@ -382,9 +382,11 @@ class StandaloneTests(unittest.TestCase):
 
     def test_process_log_scan_detects_marker_across_read_boundary(self):
         log = self.root / "editor.log"
-        log.write_bytes(b"x" * (64 * 1024 - 8) + b"WebGPU [Validation]\n")
-        with self.assertRaisesRegex(RuntimeError, "error marker"):
-            gate.require_clean_log(log, "Editor")
+        for marker in ("WebGPU [Validation]", "C# reload refused:"):
+            with self.subTest(marker=marker):
+                log.write_bytes(b"x" * (64 * 1024 - 8) + marker.encode("utf-8") + b"\n")
+                with self.assertRaisesRegex(RuntimeError, "error marker"):
+                    gate.require_clean_log(log, "Editor")
         log.write_text("V2|editor|package-ok\nNormal shutdown\n", encoding="utf-8")
         gate.require_clean_log(log, "Editor")
 
