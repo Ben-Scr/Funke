@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -84,13 +85,14 @@ TEST_CASE("External editor cancels pending solution launches on shutdown") {
 	using namespace std::chrono_literals;
 	ScriptSolutionFixture fixture;
 	const auto solution = ResolveProjectContext(&fixture.Project, "Player.cpp");
-	std::stop_source stop;
-	auto pending = std::async(std::launch::async, [&] { return WaitForProjectContext(solution, stop.get_token(), 5s); });
+	std::atomic_bool stop = false;
+	const auto cancelled = [&] { return stop.load(); };
+	auto pending = std::async(std::launch::async, [&] { return WaitForProjectContext(solution, cancelled, 5s); });
 	CHECK(pending.wait_for(30ms) == std::future_status::timeout);
-	stop.request_stop();
+	stop.store(true);
 	CHECK(pending.get() == ProjectContextStatus::Cancelled);
 	fixture.GenerateNativeSolution();
-	CHECK(WaitForProjectContext(solution, stop.get_token(), 0ms) == ProjectContextStatus::Cancelled);
+	CHECK(WaitForProjectContext(solution, cancelled, 0ms) == ProjectContextStatus::Cancelled);
 	CHECK(WaitForProjectContext("", {}, 0ms) == ProjectContextStatus::Ready);
 }
 

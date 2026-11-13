@@ -20,6 +20,7 @@
 #include <vector>
 
 #ifdef FNK_PLATFORM_WINDOWS
+#include <stop_token>
 #include <windows.h>
 #include <shellapi.h>
 #include <objbase.h>
@@ -596,10 +597,10 @@ namespace Funke {
 	}
 
 	ExternalEditorDetail::ProjectContextStatus ExternalEditorDetail::WaitForProjectContext(
-		const std::string& solution, std::stop_token stop, std::chrono::milliseconds timeout) {
+		const std::string& solution, const std::function<bool()>& isCancelled, std::chrono::milliseconds timeout) {
 		const auto deadline = std::chrono::steady_clock::now() + timeout;
 		const auto path = Path::FromUtf8(solution);
-		while (!stop.stop_requested()) {
+		while (!isCancelled || !isCancelled()) {
 			std::error_code ec;
 			if (solution.empty() || std::filesystem::is_regular_file(path, ec))
 				return ProjectContextStatus::Ready;
@@ -612,7 +613,7 @@ namespace Funke {
 
 #ifdef FNK_PLATFORM_WINDOWS
 	static bool WaitForSolutionBeforeLaunch(const std::string& solution, std::stop_token stop) {
-		const auto status = ExternalEditorDetail::WaitForProjectContext(solution, stop);
+		const auto status = ExternalEditorDetail::WaitForProjectContext(solution, [stop] { return stop.stop_requested(); });
 		if (status == ExternalEditorDetail::ProjectContextStatus::TimedOut) {
 			FNK_CORE_ERROR_TAG("ExternalEditor",
 				"Solution '{}' was not generated within 30 seconds. Check native compilation errors and rebuild scripts, then open the file again.",

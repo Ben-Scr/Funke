@@ -1,7 +1,7 @@
 #pragma once
 
 #include <chrono>
-#include <stop_token>
+#include <functional>
 #include <string>
 
 namespace Funke {
@@ -13,7 +13,7 @@ namespace Funke {
 		std::string ResolveProjectContext(const FunkeProject* project, const std::string& filePath);
 
 		enum class ProjectContextStatus { Ready, TimedOut, Cancelled };
-		ProjectContextStatus WaitForProjectContext(const std::string& solution, std::stop_token stop,
+		ProjectContextStatus WaitForProjectContext(const std::string& solution, const std::function<bool()>& isCancelled,
 			std::chrono::milliseconds timeout = std::chrono::seconds(30));
 	}
 }
