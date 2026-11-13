@@ -389,6 +389,12 @@ public class Slider : Component
 {
     public event Action<float>? ValueChanged;
 
+    [Obsolete("Use ValueChanged instead.")]
+    public event Action<float>? OnValueChanged
+    {
+        add => ValueChanged += value;
+        remove => ValueChanged -= value;
+    }
 
     public float Value
     {
@@ -568,6 +574,13 @@ public class Slider : Component
 public class Toggle : Component
 {
     public event Action<bool>? ValueChanged;
+
+    [Obsolete("Use ValueChanged instead.")]
+    public event Action<bool>? OnValueChanged
+    {
+        add => ValueChanged += value;
+        remove => ValueChanged -= value;
+    }
 
     public bool IsOn
     {

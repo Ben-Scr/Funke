@@ -95,6 +95,9 @@ public class Entity : IEquatable<Entity>
         return new EntityRef(ID);
     }
 
+    [Obsolete("Use Transform2D for explicit 2D access.")]
+    public Transform2D? Transform => Transform2D;
+
     /// <summary>Cached 2D component, or null when absent; never adds a transform.</summary>
     public Transform2D? Transform2D => GetComponent<Transform2D>();
 

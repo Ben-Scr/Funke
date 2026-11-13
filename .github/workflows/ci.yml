@@ -101,6 +101,19 @@ jobs:
           path: test-results/*.trx
           if-no-files-found: warn
 
+      - name: Compile locked installer packages against ScriptCore
+        if: matrix.os == 'windows-2022'
+        run: python scripts/ci/verify_installer_packages.py --script-core bin/Release-windows-x86_64/Funke-ScriptCore/Funke-ScriptCore.dll --output installer-package-check
+
+      - name: Upload installer package compilation results
+        if: always() && matrix.os == 'windows-2022'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Funke-Installer-Package-Compilation
+          path: |
+            installer-package-check/report.json
+            installer-package-check/**/*.log
+          if-no-files-found: error
 
       - name: Record per-lane CI evidence
         if: always()
@@ -119,7 +132,7 @@ jobs:
 
   windows-build:
     if: ${{ !inputs.linux_core_only && (github.event_name != 'workflow_dispatch' || inputs.platforms == 'all') }}
-    needs: script-tests
+    needs: [script-tests, managed-tests]
     runs-on: windows-2022
     outputs:
       version: ${{ steps.build_metadata.outputs.version }}
