@@ -506,7 +506,11 @@ def verify(harness: Harness, source: Path, dotnet: Path, forbidden: list[Path], 
     harness.evidence["managedPackage"]["initialCompilation"] = "Explicit dotnet build of shipped-Premake generated C# projects; package add/refresh do not compile source packages."
     scene_file = project / "Assets/Scenes/SampleScene.scene"
     scene = json.loads(scene_file.read_text(encoding="utf-8-sig"))
-    scene["entities"].append({"name": "Standalone Probe", "Scripts": [{"className": "StandaloneProbe", "enabled": True}]})
+    scene["entities"] = [
+        {"name": "Camera", "Transform2D": {"scaleX": 1, "scaleY": 1},
+         "Camera2D": {"orthoSize": 5, "zoom": 1}},
+        {"name": "Standalone Probe", "Scripts": [{"className": "StandaloneProbe", "enabled": True}]},
+    ]
     scene_file.write_text(json.dumps(scene, indent=2), encoding="utf-8")
     write_probe(project, "V1", tween)
     if editor:

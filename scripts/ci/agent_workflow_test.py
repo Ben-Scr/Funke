@@ -132,6 +132,7 @@ def verify(cli: Path, editor_exe: Path, root: Path, timeout: int) -> dict:
                 operations.append({"op": "property.set", "entity": {"localId": local}, "component": component,
                                    "property": prop, "value": value})
 
+            entity("camera", "Camera", ["Transform2D", "Camera2D"])
             entity("player", "Player", ["Transform2D", "SpriteRenderer", "script:type:AgentLoop"])
             field("player", "Transform2D", "Position", [-1, 0])
             field("player", "SpriteRenderer", "Color", [0.2, 0.65, 1, 1])

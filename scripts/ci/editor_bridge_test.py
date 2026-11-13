@@ -66,7 +66,9 @@ def verify(cli: Path, editor_exe: Path, root: Path, timeout: int) -> dict:
         project_file.write_text(json.dumps(settings, indent=2), encoding="utf-8")
         scene_file = project / "Assets/Scenes/SampleScene.scene"
         scene = json.loads(scene_file.read_text(encoding="utf-8-sig"))
-        scene["entities"] += [
+        scene["entities"] = [
+            {"name": "Camera", "Transform2D": {"scaleX": 1, "scaleY": 1},
+             "Camera2D": {"orthoSize": 5, "zoom": 1}},
             {"name": "Same name", "uuid": "9007199254740993", "Transform2D": {"posX": 3, "posY": 4},
              "Scripts": [{"className": "BridgeInspectionProbe", "enabled": True}]},
             {"name": "Same name", "uuid": "9007199254740995", "Transform2D": {"posX": 5, "posY": 6}},
