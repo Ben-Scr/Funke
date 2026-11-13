@@ -11,7 +11,7 @@ namespace Funke {
 	enum class FullscreenMode : uint8_t {
 		// True exclusive fullscreen at the desktop mode, lowest latency, expensive Alt-Tab restore. Platforms without exclusive modes (Wayland, mobile, Web) get desktop fullscreen.
 		Exclusive = 0,
-		// Decorated window sized to the monitor's video mode. Same look as
+		// Borderless desktop fullscreen. Same look as
 		// Exclusive to the player but Alt-Tab is instant and the OS
 		// compositor stays in charge. Common default for desktop games.
 		BorderlessWindowed = 1,

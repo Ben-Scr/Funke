@@ -1971,15 +1971,21 @@ namespace Funke {
 
 	std::vector<EntityHandle> Scene::ConsumeDirtyTransformEntities()
 	{
+		std::vector<EntityHandle> dirty;
+		ConsumeDirtyTransformEntities(dirty);
+		return dirty;
+	}
+
+	void Scene::ConsumeDirtyTransformEntities(std::vector<EntityHandle>& destination)
+	{
 		m_TransformHierarchyDirty = false;
 		m_TransformDirtyAll = false;
 		for (EntityHandle entity : m_DirtyTransformEntities) {
 			m_DirtyTransformEntityMarks[static_cast<size_t>(entt::to_entity(entity))] = entt::null;
 		}
 
-		std::vector<EntityHandle> dirty;
-		dirty.swap(m_DirtyTransformEntities);
-		return dirty;
+		destination.clear();
+		destination.swap(m_DirtyTransformEntities);
 	}
 
 	void Scene::MarkStaticRenderDataDirty()

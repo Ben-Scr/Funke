@@ -1,5 +1,6 @@
 #include "pch.hpp"
 #include "Win32BuildProgressWindow.hpp"
+#include "Utils/ElapsedTime.hpp"
 
 #ifdef FNK_PLATFORM_WINDOWS
 
@@ -16,7 +17,8 @@ namespace Funke::Win32BuildProgressWindow {
         // Logical (96-DPI) CLIENT size. The OS caption + border are added on
         // top via AdjustWindowRectExForDpi; the WndProc DPI-scales the content.
         constexpr int k_LogicalWidth  = 360;
-        constexpr int k_LogicalHeight = 70;
+        constexpr int k_LogicalHeight = 92;
+        constexpr UINT_PTR k_ElapsedTimer = 1;
 
         constexpr COLORREF k_ColBackground = RGB(28, 28, 28);
         constexpr COLORREF k_ColStage      = RGB(150, 150, 150);
@@ -31,6 +33,7 @@ namespace Funke::Win32BuildProgressWindow {
             float Progress = 0.0f;
             std::wstring Stage;
             std::wstring Title; // always set by Show() before the window appears
+            std::chrono::steady_clock::time_point StartedAt{};
         };
 
         State& Get() {
@@ -141,6 +144,11 @@ namespace Funke::Win32BuildProgressWindow {
             const wchar_t* stageText = st.Stage.empty() ? L"Working..." : st.Stage.c_str();
             DrawTextW(memDc, stageText, -1, &stageRect,
                 DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+            const std::wstring elapsed = Widen("Elapsed: " + FormatElapsedTime(st.StartedAt));
+            RECT elapsedRect{ padX, stageRect.bottom + Scale(6, dpi), w - padX,
+                              stageRect.bottom + Scale(6, dpi) + stageH };
+            DrawTextW(memDc, elapsed.c_str(), -1, &elapsedRect,
+                DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX);
             SelectObject(memDc, oldFont);
             DeleteObject(stageFont);
 
@@ -161,6 +169,13 @@ namespace Funke::Win32BuildProgressWindow {
                 case WM_PAINT:
                     PaintWindow(hwnd);
                     return 0;
+                case WM_TIMER:
+                    if (wparam == k_ElapsedTimer) {
+                        // Refresh even while progress and stage remain unchanged.
+                        InvalidateRect(hwnd, nullptr, FALSE);
+                        return 0;
+                    }
+                    break;
                 case WM_CLOSE:
                     // Ignore Alt+F4 / system-menu close — the build worker
                     // owns the popup lifetime; users can't cancel a build
@@ -168,6 +183,7 @@ namespace Funke::Win32BuildProgressWindow {
                     // down when the worker finishes.
                     return 0;
                 case WM_DESTROY:
+                    KillTimer(hwnd, k_ElapsedTimer);
                     Get().Hwnd = nullptr;
                     return 0;
                 default:
@@ -213,6 +229,11 @@ namespace Funke::Win32BuildProgressWindow {
         std::wstring wtitle = Widen(title);
         const bool titleChanged = wtitle != st.Title;
         st.Title = std::move(wtitle);
+        if (!st.Hwnd || titleChanged) {
+            st.StartedAt = std::chrono::steady_clock::now();
+            st.Progress = 0.0f;
+            st.Stage.clear();
+        }
 
         if (st.Hwnd) {
             // Already shown — just retitle and re-invalidate if the caller
@@ -279,6 +300,7 @@ namespace Funke::Win32BuildProgressWindow {
         DwmSetWindowAttribute(st.Hwnd, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */,
             &dark, sizeof(dark));
 
+        SetTimer(st.Hwnd, k_ElapsedTimer, 250, nullptr);
         ShowWindow(st.Hwnd, SW_SHOWNA);
         UpdateWindow(st.Hwnd);
     }
@@ -327,6 +349,11 @@ namespace Funke::Win32BuildProgressWindow {
 
     void Show(const std::string& title) {
         std::lock_guard lock(s_Mutex);
+        if (!s_State.Visible || s_State.Title != title) {
+            s_State.StartedAt = std::chrono::steady_clock::now();
+            s_State.Progress = 0.0f;
+            s_State.Stage.clear();
+        }
         s_State.Visible = true;
         s_State.Title = title;
     }

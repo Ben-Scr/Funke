@@ -21,6 +21,8 @@ def suite_report(name: str, cases: list[dict]) -> dict:
         raise ValueError("Skipped cases need a reason")
     if any("executed" in case and type(case["executed"]) is not bool for case in cases):
         raise ValueError("Executed flags must be boolean")
+    if any(case["status"] in {"passed", "failed"} and case.get("executed") is False for case in cases):
+        raise ValueError("Passed or failed cases must have executed")
     counts = Counter(case["status"] for case in cases)
     return {"name": name, "cases": cases, "testCases": len(cases),
             "executed": sum(case.get("executed", case["status"] != "skipped") for case in cases),
@@ -59,6 +61,34 @@ def read_python(path: Path) -> dict:
     if not isinstance(report, dict):
         raise ValueError("Python report must be an object")
     suite = suite_report("CI scripts (includes unit/mock builders)", report["cases"])
-    if not report.get("completed") or report.get("testsRun") != suite["testCases"]:
+    if (report.get("completed") is not True or type(report.get("testsRun")) is not int
+            or report["testsRun"] != suite["testCases"]):
         raise ValueError("Python discovery/execution did not complete")
+    return suite
+
+
+def read_doctest(path: Path) -> dict:
+    root = ET.parse(path).getroot()
+    totals = root.find("OverallResultsTestCases")
+    assertions = root.find("OverallResultsAsserts")
+    if root.tag != "doctest" or totals is None or assertions is None:
+        raise ValueError("Incomplete doctest report")
+    cases = []
+    for node in root.iter("TestCase"):
+        skipped = node.get("skipped") == "true"
+        outcome = node.find("OverallResultsAsserts")
+        if not skipped and outcome is None:
+            raise ValueError("Executed doctest case has no final outcome")
+        failed = not skipped and (int(outcome.get("failures", "-1")) != 0
+                                  or outcome.get("test_case_success") == "false")
+        cases.append({"id": f"{node.get('filename')}:{node.get('line')}:{node.get('name')}",
+                      "status": "skipped" if skipped else "failed" if failed else "passed",
+                      "reason": "Doctest skipped or filtered case" if skipped else ""})
+    suite = suite_report("Engine doctest (sanitized)", cases)
+    if (int(totals.get("successes", "-1")) != suite["passed"]
+            or int(totals.get("failures", "-1")) != suite["failed"]
+            or int(assertions.get("successes", "0")) <= 0
+            or int(assertions.get("failures", "-1")) != 0
+            or list(root.iter("Exception"))):
+        raise ValueError("Doctest totals disagree or assertions failed/missing")
     return suite

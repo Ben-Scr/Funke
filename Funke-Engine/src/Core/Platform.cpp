@@ -274,6 +274,16 @@ namespace Funke::Platform {
 #endif
 	}
 
+	const char* OpenInFileManagerLabel() {
+#if defined(FNK_PLATFORM_WINDOWS)
+		return "Open in Explorer";
+#elif defined(FNK_PLATFORM_MACOS)
+		return "Open in Finder";
+#else
+		return "Open in File Manager";
+#endif
+	}
+
 	const char* RevealInFileManagerLabel() {
 #if defined(FNK_PLATFORM_WINDOWS)
 		return "Show in Explorer";

@@ -1,4 +1,6 @@
 #include "pch.hpp"
+#include "Physics/PhysicsLayers.hpp"
+#include "Diagnostics/DebugStats.hpp"
 #include "DevTools/RunAutomation.hpp"
 #include "Scripting/ScriptBindingGuard.hpp"
 #include "Assets/AssetRegistry.hpp"
@@ -39,6 +41,7 @@
 #include "DevTools/RunAutomation.hpp"
 
 #include <algorithm>
+#include <cstring>
 
 namespace Funke {
 	EntityHandle ToEntityHandle(uint64_t id);
@@ -92,6 +95,7 @@ namespace Funke {
 	}
 
 	static float Funke_Application_GetTargetFrameRate() { return Application::GetTargetFramerate(); }
+	static float Funke_Application_GetFps() { return Time::GetFrameRate(); }
 	static void  Funke_Application_SetTargetFrameRate(float fps) { Application::SetTargetFramerate(fps); }
 
 	static void Funke_Application_Quit() {
@@ -565,6 +569,24 @@ namespace Funke {
 		if (window) window->MinimizeWindow();
 	}
 
+	static void Funke_Window_GetTitlebarColor(float* r, float* g, float* b, float* a)
+	{
+		const auto* window = Application::GetWindow();
+		const Color color = window ? window->GetTitlebarColor() : Color{ 0.0f, 0.0f, 0.0f, 0.0f };
+		if (r) *r = color.r;
+		if (g) *g = color.g;
+		if (b) *b = color.b;
+		if (a) *a = color.a;
+	}
+
+	static void Funke_Window_SetTitlebarColor(float r, float g, float b, float a)
+	{
+		static bool s_Logged = false;
+		if (IgnoreWindowChangeInEditor("Window.TitlebarColor", s_Logged)) return;
+		auto* window = Application::GetWindow();
+		if (window) window->SetTitlebarColor(Color{ r, g, b, a });
+	}
+
 	static void Funke_Window_Maximize()
 	{
 		static bool s_Logged = false;
@@ -688,6 +710,16 @@ namespace Funke {
 	{
 		return CopyToManagedBuffer(Engine::GetVersionLong(), outBuffer, capacity);
 	}
+
+    static int Funke_DebugStats_GetSnapshot(void* buffer, int size) {
+        using namespace Diagnostics;
+        if (!buffer) return size == 0 && DebugStats::IsAvailable() ? 1 : 0;
+        if (size != static_cast<int>(sizeof(DebugSnapshot))) return 0;
+        DebugSnapshot snapshot{};
+        const bool available = DebugStats::TryGetSnapshot(snapshot);
+        std::memcpy(buffer, &snapshot, sizeof(snapshot));
+        return available ? 1 : 0;
+    }
 
 	static int Funke_Engine_GetBuildConfiguration()
 	{
@@ -915,8 +947,31 @@ namespace Funke {
 		return GetEntityScriptId(*scene, entity.GetHandle());
 	}
 
+	static int Funke_PhysicsLayer_GetName(uint64_t index, char* buffer, int capacity) {
+		return CopyToManagedBuffer(index < PhysicsLayerSettings::Count
+			? GetPhysicsLayerSettings().Names[index] : std::string{}, buffer, capacity);
+	}
+	static int Funke_PhysicsLayer_GetIndex(const char* name) {
+		return name ? GetPhysicsLayerSettings().FindIndex(name) : -1;
+	}
+	static uint64_t Funke_Entity_GetLayer(uint64_t id) {
+		Scene* scene = nullptr;
+		EntityHandle handle = entt::null;
+		if (!ResolveEntityReference(id, scene, handle)) return 0;
+		return scene->GetEntity(handle).GetLayer();
+	}
+	static void Funke_Entity_SetLayer(uint64_t id, uint64_t mask) {
+		Scene* scene = nullptr;
+		EntityHandle handle = entt::null;
+		if (ResolveEntityReference(id, scene, handle)) scene->GetEntity(handle).SetLayer(mask);
+	}
+
 	void PopulateNonComponentBindings(NativeBindings& b)
 	{
+		b.PhysicsLayer_GetName = FNK_GUARDED_BINDING(Funke_PhysicsLayer_GetName);
+		b.PhysicsLayer_GetIndex = FNK_GUARDED_BINDING(Funke_PhysicsLayer_GetIndex);
+		b.Entity_GetLayer = FNK_GUARDED_BINDING(Funke_Entity_GetLayer);
+		b.Entity_SetLayer = FNK_GUARDED_BINDING(Funke_Entity_SetLayer);
 		b.Application_GetDeltaTime = FNK_GUARDED_BINDING(Funke_Application_GetDeltaTime);
 		b.Application_GetElapsedTime = FNK_GUARDED_BINDING(Funke_Application_GetTime);
 		b.Application_GetScreenWidth = FNK_GUARDED_BINDING(Funke_Application_GetScreenWidth);
@@ -925,6 +980,7 @@ namespace Funke {
 		b.Application_IsEditor = FNK_GUARDED_BINDING(Funke_Application_IsEditor);
 		b.Application_GetProcessorCount = FNK_GUARDED_BINDING(Funke_Application_GetProcessorCount);
 		b.Application_GetTargetFrameRate = FNK_GUARDED_BINDING(Funke_Application_GetTargetFrameRate);
+		b.Application_GetFps = FNK_GUARDED_BINDING(Funke_Application_GetFps);
 		b.Application_SetTargetFrameRate = FNK_GUARDED_BINDING(Funke_Application_SetTargetFrameRate);
 		b.Application_Quit = FNK_GUARDED_BINDING(Funke_Application_Quit);
 		b.Application_Reload = FNK_GUARDED_BINDING(Funke_Application_Reload);
@@ -991,6 +1047,8 @@ namespace Funke {
 		b.Window_GetHeight = FNK_GUARDED_BINDING(Funke_Window_GetHeight);
 		b.Window_GetTitleBuffer = FNK_GUARDED_BINDING(Funke_Window_GetTitleBuffer);
 		b.Window_SetTitle = FNK_GUARDED_BINDING(Funke_Window_SetTitle);
+		b.Window_GetTitlebarColor = FNK_GUARDED_BINDING(Funke_Window_GetTitlebarColor);
+		b.Window_SetTitlebarColor = FNK_GUARDED_BINDING(Funke_Window_SetTitlebarColor);
 		b.Window_Minimize = FNK_GUARDED_BINDING(Funke_Window_Minimize);
 		b.Window_Maximize = FNK_GUARDED_BINDING(Funke_Window_Maximize);
 		b.Window_Restore = FNK_GUARDED_BINDING(Funke_Window_Restore);
@@ -1009,6 +1067,7 @@ namespace Funke {
 		b.Engine_GetVersionBuffer = FNK_GUARDED_BINDING(Funke_Engine_GetVersionBuffer);
 		b.Engine_GetVersionLongBuffer = FNK_GUARDED_BINDING(Funke_Engine_GetVersionLongBuffer);
 		b.Engine_GetBuildConfiguration = FNK_GUARDED_BINDING(Funke_Engine_GetBuildConfiguration);
+        b.DebugStats_GetSnapshot = FNK_GUARDED_BINDING(Funke_DebugStats_GetSnapshot);
 		b.Engine_GetPlatformBuffer = FNK_GUARDED_BINDING(Funke_Engine_GetPlatformBuffer);
 		b.Engine_GetGraphicsApiBuffer = FNK_GUARDED_BINDING(Funke_Engine_GetGraphicsApiBuffer);
 		b.Engine_GetGpuVendorBuffer = FNK_GUARDED_BINDING(Funke_Engine_GetGpuVendorBuffer);

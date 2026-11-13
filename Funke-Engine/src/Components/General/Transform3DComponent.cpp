@@ -6,8 +6,12 @@
 namespace Funke {
 
 	glm::mat4 Transform3DComponent::GetLocalMatrix() const {
-		if (CachedLocalValid && CachedPosition == Position && CachedRotation == Rotation && CachedScale == Scale)
-			return CachedLocalMatrix;
+		if (CachedLocalValid && CachedRotation == Rotation && CachedScale == Scale) {
+			// Translation does not change the cached rotation/scale basis.
+			glm::mat4 matrix = CachedLocalMatrix;
+			matrix[3] = glm::vec4(Position, 1.0f);
+			return matrix;
+		}
 		// T * R * S assembled column-wise instead of two full mat4 multiplies.
 		const glm::mat3 rotation = glm::mat3_cast(GetLocalRotationQuat());
 		return glm::mat4(
@@ -18,12 +22,16 @@ namespace Funke {
 	}
 
 	const glm::mat4& Transform3DComponent::GetCachedLocalMatrix() {
-		if (!CachedLocalValid || CachedPosition != Position || CachedRotation != Rotation || CachedScale != Scale) {
+		if (!CachedLocalValid || CachedRotation != Rotation || CachedScale != Scale) {
 			CachedLocalMatrix = GetLocalMatrix();
 			CachedPosition = Position;
 			CachedRotation = Rotation;
 			CachedScale = Scale;
 			CachedLocalValid = true;
+		}
+		else if (CachedPosition != Position) {
+			CachedLocalMatrix[3] = glm::vec4(Position, 1.0f);
+			CachedPosition = Position;
 		}
 		return CachedLocalMatrix;
 	}

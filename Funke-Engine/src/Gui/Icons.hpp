@@ -43,6 +43,9 @@ namespace Funke::Icons {
 		Templates,
 		Info,
 		Download,
+		ThemeLight,
+		ThemeDark,
+		Monitor,
 	};
 
 	namespace Detail {
@@ -72,6 +75,9 @@ namespace Funke::Icons {
 			case Type::Templates:   return "templates";
 			case Type::Info:        return "info";
 			case Type::Download:    return "download";
+			case Type::ThemeLight:  return "theme_light";
+			case Type::ThemeDark:   return "theme_dark";
+			case Type::Monitor:     return "monitor";
 			}
 			return "";
 		}

@@ -1,6 +1,8 @@
 #include <doctest/doctest.h>
 
 #include "Components/Tags.hpp"
+#include "Components/General/Transform2DComponent.hpp"
+#include "Components/General/Transform3DComponent.hpp"
 #include "Core/Application.hpp"
 #include "Core/EngineModules.hpp"
 #include "Components/Physics/Rigidbody2DComponent.hpp"
@@ -8,6 +10,7 @@
 #include "Scene/Entity.hpp"
 #include "Scene/Scene.hpp"
 #include "Scene/SceneDefinition.hpp"
+#include "Scene/SceneExecutionContext.hpp"
 #include "Scene/SceneManager.hpp"
 #include "Scripting/ScriptBindings.hpp"
 #include "Scripting/ScriptComponent.hpp"
@@ -16,6 +19,10 @@
 #include <array>
 #include <cstdint>
 #include <vector>
+#include <chrono>
+#include <cstdlib>
+#include <fstream>
+#include <iomanip>
 
 using namespace Funke;
 
@@ -171,6 +178,66 @@ namespace {
 			CHECK(query("QueryCommon", "Rigidbody2D", "", 0) == 10000);
 			CHECK(physical.HasComponent<Rigidbody2DComponent>());
 			EngineModules::ActivateAllCompiled();
+			CheckTransformAccess(*first, *second, bindings);
+		}
+
+		static void CheckTransformAccess(Scene& scene, Scene& otherScene, const NativeBindings& bindings) {
+			SceneExecutionScope scope(scene);
+			auto entity = scene.CreateEmptyEntity();
+			const uint64_t id = scene.GetEntityPersistentID(entity.GetHandle());
+			CHECK(bindings.Entity_GetComponentPtr(id, "Transform 2D") == nullptr);
+			entity.AddComponent<Transform2DComponent>();
+			CHECK(bindings.Entity_GetComponentPtr(id, "Transform 2D") == &entity.GetComponent<Transform2DComponent>());
+			entity.RemoveComponent<Transform2DComponent>();
+			CHECK(bindings.Entity_GetComponentPtrReadOnly(id, "Transform 2D") == nullptr);
+			auto& transform = entity.AddComponent<Transform3DComponent>();
+			bindings.Transform3D_SetPosition(id, 4, -3, 9);
+			CHECK((transform.Position == Vec3(4, -3, 9)));
+			entity.RemoveComponent<Transform3DComponent>();
+			bindings.Transform3D_SetPosition(id, 1, 2, 3);
+			CHECK_FALSE(entity.HasComponent<Transform3DComponent>());
+			auto other = otherScene.CreateEmptyEntity();
+			other.AddComponent<Transform3DComponent>();
+			bindings.Transform3D_SetPosition(otherScene.GetEntityPersistentID(other.GetHandle()), 7, 8, 9);
+			CHECK((other.GetComponent<Transform3DComponent>().Position == Vec3(7, 8, 9)));
+			scene.DestroyEntity(entity);
+			CHECK(bindings.Entity_GetComponentPtr(id, "Transform 2D") == nullptr);
+			bindings.Transform3D_SetPosition(id, 1, 2, 3);
+
+			const char* path = std::getenv("FUNKE_MOVEMENT_BINDINGS_BENCH_OUTPUT");
+			if (!path) return;
+			std::ofstream output(path);
+			REQUIRE(output.good());
+			output << std::setprecision(17) << "case,count,sample,ms\n";
+			std::vector<uint64_t> ids;
+			std::vector<Transform2DComponent*> pointers;
+			std::vector<uint64_t> ids3D;
+			for (int i = 0; i < 10000; ++i) {
+				auto e = scene.CreateEmptyEntity();
+				e.AddComponent<Transform2DComponent>();
+				ids.push_back(scene.GetEntityPersistentID(e.GetHandle()));
+				auto e3D = scene.CreateEmptyEntity();
+				e3D.AddComponent<Transform3DComponent>();
+				ids3D.push_back(scene.GetEntityPersistentID(e3D.GetHandle()));
+			}
+			pointers.resize(ids.size());
+			for (int sample = -5; sample < 21; ++sample) {
+				auto begin = std::chrono::steady_clock::now();
+				for (size_t i = 0; i < ids.size(); ++i)
+					pointers[i] = static_cast<Transform2DComponent*>(bindings.Entity_GetComponentPtr(ids[i], "Transform 2D"));
+				auto end = std::chrono::steady_clock::now();
+				for (auto* pointer : pointers) REQUIRE(pointer != nullptr);
+				if (sample >= 0) output << "2d-native-ref,10000," << sample << ','
+					<< std::chrono::duration<double, std::milli>(end - begin).count() << '\n';
+				begin = std::chrono::steady_clock::now();
+				for (const uint64_t entityId : ids3D) bindings.Transform3D_SetPosition(entityId, float(sample), 2, 3);
+				end = std::chrono::steady_clock::now();
+				float x, y, z;
+				bindings.Transform3D_GetPosition(ids3D.back(), &x, &y, &z);
+				REQUIRE(x == float(sample));
+				if (sample >= 0) output << "3d-native-set-position,10000," << sample << ','
+					<< std::chrono::duration<double, std::milli>(end - begin).count() << '\n';
+			}
 		}
 	};
 }

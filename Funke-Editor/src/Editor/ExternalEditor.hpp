@@ -35,7 +35,6 @@ namespace Funke {
 		static void JoinPendingLaunchThreads();
 
 	private:
-		static std::string ResolveProjectContext(const std::string& filePath, const std::string& ext);
 		static void SavePreferences();
 		static void LoadPreferences();
 

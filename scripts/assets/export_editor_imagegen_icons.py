@@ -14,11 +14,14 @@ SOURCES = Path(__file__).resolve().parent / "sources" / "editor-imagegen"
 DESTINATION = ROOT / "Funke-Runtime/FunkeAssets/Textures/Editor"
 
 
-def prepare(source: Path) -> Image.Image:
+def prepare(source: Path, source_box=None) -> Image.Image:
     with Image.open(source) as original:
         if original.mode != "RGBA":
             raise ValueError(f"Missing transparency: {source}")
         alpha = original.getchannel("A")
+        # Atlas cells are packaging boundaries; preserve ImageGen's original silhouette.
+        if source_box is not None:
+            alpha = alpha.crop(tuple(source_box))
     low, high = alpha.getextrema()
     if low != 0 or high < 250:
         raise ValueError(f"Expected transparent background and opaque strokes: {source}")
@@ -81,7 +84,7 @@ def main():
         provenance = json.loads(source.with_suffix(".json").read_text(encoding="utf-8"))
         if provenance["tool"] != "image_gen.imagegen" or not provenance.get("prompt"):
             raise ValueError(f"Missing generation provenance: {source}")
-        assets.append((asset, prepare(source)))
+        assets.append((asset, prepare(source, asset.get("source_box"))))
     if missing and not args.partial:
         raise ValueError(f"Missing ImageGen originals: {', '.join(missing)}")
     if args.write:

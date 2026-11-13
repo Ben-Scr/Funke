@@ -1,5 +1,7 @@
 # Physics 3D
 
+See [Physics layers and project defaults](Physics-Layers.md) for named layers, the collision matrix, default gravity, and C# `PhysicsLayer` examples.
+
 Enable `Funke.Physics3D` to use this simulation. It also enables `Funke.3D`; selecting only `Funke.3D` provides rendering without Jolt. See [Engine Modules](Engine-Modules.md) for migration and export behavior.
 
 3D entities are simulated by [Jolt Physics](https://github.com/jrouwe/JoltPhysics), the engine behind *Horizon Forbidden West* and the default 3D physics of Godot. It runs multi-threaded and is statically linked into `Funke-Engine.dll`. 2D physics (Box2D, plus the optional Funke.Physics package) is separate and unchanged; the two stacks never interact, because an entity has either a Transform 2D or a Transform 3D.

@@ -24,6 +24,13 @@ namespace Funke {
 		void RefreshLayoutPresets();
 		void RenderBehaviorTab();
 		void RenderCameraTab();
+		void RenderGizmosTab();
+		void ResetAppearanceTab();
+		void ResetScriptingTab();
+		void ResetLayoutsTab();
+		void ResetBehaviorTab();
+		void ResetCameraTab();
+		void ResetGizmosTab();
 
 		void RenderLayoutModals();
 		bool IsPreferenceSearchActive() const;
@@ -42,7 +49,6 @@ namespace Funke {
 		std::vector<LayoutPreset> m_LayoutPresets;
 		bool m_LayoutPresetsDirty = true;
 		int m_LastLayoutsFrame = -1;
-		bool m_ShowLayoutStorage = false;
 		bool m_OpenLayoutsRequest = false;
 
 		char m_SearchBuffer[256]{};

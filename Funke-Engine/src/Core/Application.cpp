@@ -1,4 +1,5 @@
 #include "pch.hpp"
+#include "Diagnostics/DebugStats.hpp"
 #include "Application.hpp"
 #include "Assets/AssetRegistry.hpp"
 #include "Scene/SceneManager.hpp"
@@ -308,6 +309,7 @@ namespace Funke {
 		auto frameStart = Clock::now();
 		const float vsyncMs = std::chrono::duration<float, std::milli>(frameStart - vsyncStart).count();
 		float deltaTime = std::chrono::duration<float>(frameStart - m_LastFrameTime).count();
+        Diagnostics::DebugStats::BeginFrame(static_cast<double>(deltaTime) * 1000.0);
 
 		// --fixed-step: identical game time per frame however long the frame really took (reproducible test runs).
 		if (const float automationStep = RunAutomation::GetFixedStep(); automationStep > 0.0f) {
@@ -388,6 +390,7 @@ namespace Funke {
 
 			BeginFrame(enginePausedForFrame);
 			EndFrame(enginePausedForFrame);
+            Diagnostics::DebugStats::EndFrame();
 			TryCompleteQuitRequest();
 
 			m_LastFrameTime = frameStart;
@@ -489,15 +492,23 @@ namespace Funke {
 
 	bool Application::FinishRunCycle()
 	{
+		// Reload can be accepted from a native dialog or detached editor panel. Hand focus
+		// back to the main window before those platform windows are destroyed.
+		if (m_CanReload && IsEditor() && m_Window) m_Window->Focus();
 		Shutdown();
 
 		if (!m_CanReload) return false;
 		m_CanReload = false;
 		m_RestartWindow = false;
-		return StartRunCycle();
+		if (!StartRunCycle()) return false;
+		// A full restart recreates the window; a reload preserves it. Both return focus
+		// once the new cycle is ready. Window::Focus also respects background automation.
+		if (IsEditor() && m_Window) m_Window->Focus();
+		return true;
 	}
 
 	void Application::Initialize() {
+        Diagnostics::DebugStats::Reset();
 		Process::ResetCancellation();
 #ifdef FNK_PLATFORM_WINDOWS
 		// 1ms timer res for accurate sleep_until in the frame-cap path. Paired with timeEndPeriod in Shutdown.
@@ -1180,6 +1191,7 @@ namespace Funke {
 
 		if (m_Window) {
 			FUNKE_PROFILE_SCOPE("SwapBuffers");
+            Diagnostics::DebugStats::Scope presentTiming(Diagnostics::DebugStats::Timing::Present);
 			m_Window->SwapBuffers();
 		}
 
@@ -1191,7 +1203,7 @@ namespace Funke {
 #endif
 	}
 
-	void Application::RenderOnceForRefresh() {
+	void Application::RenderOnceForRefresh(bool refreshWindowSize) {
 		if (m_IsRenderingFrame || m_IsRenderingRefresh || !m_Window || m_ShouldQuit) {
 			return;
 		}
@@ -1213,6 +1225,11 @@ namespace Funke {
 
 		RefreshRenderGuard guard(*this);
 		LayerDispatchGuard refreshGuard(m_LayerStack);
+
+		// The native modal resize loop cannot drain SDL's queued pixel-size events. Dispatch the
+		// current size before drawing, under the refresh guard so handlers cannot re-enter rendering.
+		if (refreshWindowSize) m_Window->OnFramebufferResized();
+		if (m_ShouldQuit) return;
 
 		if (m_SceneManager) FUNKE_TRY_CATCH_LOG(m_SceneManager->OnPreRenderScenes());
 		for (Layer* layer : SnapshotLayerOrder()) {
@@ -1314,6 +1331,7 @@ namespace Funke {
 	}
 
 	void Application::Shutdown(bool invokeOnQuit, bool forceWindowShutdown) {
+        Diagnostics::DebugStats::Reset();
 		m_IsShuttingDown = true;
 		// Workers may still use scenes and scripts; an exiting application cannot abandon the drain.
 		while (!ScriptEngine::PrepareResourceRelease(false, true)) {}

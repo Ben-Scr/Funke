@@ -35,6 +35,12 @@ namespace Funke {
 
         static void RenderWithVP(const glm::mat4& vp, GizmoLayerMask layerMask = GizmoLayerMask::All);
 
+        // CPU-only 3D line selection, shared by runtime/editor. The span is valid until
+        // the next call. vp transforms coordinates relative to origin; output stays in world space.
+        // Invisible lines do not consume the per-view budget. Visible lines keep submission order.
+        static std::span<const Line3D> BuildLines3D(const glm::mat4& vp,
+            GizmoLayerMask layerMask = GizmoLayerMask::All, const Vec3& origin = Vec3(0.0f));
+
     private:
         // Returned span is backed by FrameArenas::Frame() and is invalidated
         // by the next Application::EndFrame. Do not cache across frames.

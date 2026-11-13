@@ -1,10 +1,12 @@
 #include "pch.hpp"
 #include "Gizmo.hpp"
+#include <glm/gtc/quaternion.hpp>
 
 namespace Funke {
 	std::vector<Square> Gizmo::s_Squares;
 	std::vector<Circle> Gizmo::s_Circles;
 	std::vector<Line> Gizmo::s_Lines;
+	std::vector<Line3D> Gizmo::s_Lines3D;
 	std::vector<ThickLine> Gizmo::s_ThickLines;
 	std::vector<Square> Gizmo::s_FilledSquares;
 	std::vector<Circle> Gizmo::s_FilledCircles;
@@ -29,6 +31,7 @@ namespace Funke {
 			size_t Squares = 0;
 			size_t Circles = 0;
 			size_t Lines = 0;
+			size_t Lines3D = 0;
 			size_t ThickLines = 0;
 			size_t FilledSquares = 0;
 			size_t FilledCircles = 0;
@@ -57,6 +60,9 @@ namespace Funke {
 		// which is applied per-view at build time). Reachable only by a pathological script
 		// drawing an extreme number of gizmos in a single frame.
 		constexpr size_t k_GizmoAccumCap = 8000000;
+		bool IsFinite(const Vec3& value) {
+			return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
+		}
 		bool ExceedsGizmoAccumCap(size_t registered, size_t cost) {
 			if (registered + cost < k_GizmoAccumCap) return false;
 			static bool s_Warned = false;
@@ -126,6 +132,49 @@ namespace Funke {
 		s_Lines.emplace_back(Line{ start, end, s_Color, s_Layer });
 	}
 
+	void Gizmo::DrawLine(const Vec3& start, const Vec3& end) {
+		if (!IsCurrentLayerEnabled() || !IsFinite(start) || !IsFinite(end)
+			|| ExceedsGizmoAccumCap(s_RegisteredVertices, 1)) return;
+		++s_RegisteredVertices;
+		s_Lines3D.push_back({ start, end, s_Color, s_Layer });
+	}
+
+	void Gizmo::DrawBox(const Vec3& center, const Vec3& size, const Vec3& rotation) {
+		if (!IsCurrentLayerEnabled() || !IsFinite(center) || !IsFinite(size) || !IsFinite(rotation)
+			|| ExceedsGizmoAccumCap(s_RegisteredVertices, 12)) return;
+		const glm::quat orientation(glm::radians(rotation));
+		Vec3 corners[8];
+		for (int i = 0; i < 8; ++i) {
+			const Vec3 local((i & 1) ? size.x : -size.x,
+				(i & 2) ? size.y : -size.y, (i & 4) ? size.z : -size.z);
+			corners[i] = center + orientation * (local * 0.5f);
+		}
+		for (int i = 0; i < 8; ++i)
+			for (int axis = 1; axis <= 4; axis <<= 1)
+				if (!(i & axis)) DrawLine(corners[i], corners[i | axis]);
+	}
+
+	void Gizmo::DrawSphere(const Vec3& center, float radius, int segments) {
+		segments = std::max(segments, 3);
+		if (!IsCurrentLayerEnabled() || !IsFinite(center) || !std::isfinite(radius) || radius <= 0.0f
+			|| ExceedsGizmoAccumCap(s_RegisteredVertices, std::min(size_t(segments), k_GizmoAccumCap) * 3)) return;
+		for (int plane = 0; plane < 3; ++plane) {
+			const int a = plane, b = (plane + 1) % 3;
+			Vec3 first = center;
+			first[a] += radius;
+			Vec3 previous = first;
+			for (int i = 1; i <= segments; ++i) {
+				const float angle = float(i) / float(segments) * 6.28318530717958647692f;
+				Vec3 point = center;
+				point[a] += std::cos(angle) * radius;
+				point[b] += std::sin(angle) * radius;
+				if (i == segments) point = first;
+				DrawLine(previous, point);
+				previous = point;
+			}
+		}
+	}
+
 	void Gizmo::DrawThickLine(const Vec2& start, const Vec2& end, float width) {
 		if (!IsCurrentLayerEnabled() || ExceedsGizmoAccumCap(s_RegisteredVertices, k_ThickLineVertices))
 			return;
@@ -138,6 +187,7 @@ namespace Funke {
 		DropRefreshBase(s_Squares, s_RefreshBase.Squares);
 		DropRefreshBase(s_Circles, s_RefreshBase.Circles);
 		DropRefreshBase(s_Lines, s_RefreshBase.Lines);
+		DropRefreshBase(s_Lines3D, s_RefreshBase.Lines3D);
 		DropRefreshBase(s_ThickLines, s_RefreshBase.ThickLines);
 		DropRefreshBase(s_FilledSquares, s_RefreshBase.FilledSquares);
 		DropRefreshBase(s_FilledCircles, s_RefreshBase.FilledCircles);
@@ -152,6 +202,7 @@ namespace Funke {
 		s_RefreshBase.Squares = s_Squares.size();
 		s_RefreshBase.Circles = s_Circles.size();
 		s_RefreshBase.Lines = s_Lines.size();
+		s_RefreshBase.Lines3D = s_Lines3D.size();
 		s_RefreshBase.ThickLines = s_ThickLines.size();
 		s_RefreshBase.FilledSquares = s_FilledSquares.size();
 		s_RefreshBase.FilledCircles = s_FilledCircles.size();
@@ -163,6 +214,7 @@ namespace Funke {
 		KeepRefreshBase(s_Squares, s_RefreshBase.Squares);
 		KeepRefreshBase(s_Circles, s_RefreshBase.Circles);
 		KeepRefreshBase(s_Lines, s_RefreshBase.Lines);
+		KeepRefreshBase(s_Lines3D, s_RefreshBase.Lines3D);
 		KeepRefreshBase(s_ThickLines, s_RefreshBase.ThickLines);
 		KeepRefreshBase(s_FilledSquares, s_RefreshBase.FilledSquares);
 		KeepRefreshBase(s_FilledCircles, s_RefreshBase.FilledCircles);
@@ -173,6 +225,7 @@ namespace Funke {
 	void Gizmo::Clear() {
 		s_Squares.clear();
 		s_Lines.clear();
+		s_Lines3D.clear();
 		s_ThickLines.clear();
 		s_Circles.clear();
 		s_FilledSquares.clear();

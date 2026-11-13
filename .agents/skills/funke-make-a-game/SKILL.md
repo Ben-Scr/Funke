@@ -26,10 +26,10 @@ For an existing game, read its design docs instead (`Design/`, `DesignLanguage.m
 3. **Assets and tuning are wired before runtime.** Sprites, sounds, fonts, prefabs, entity/component references, data assets and tuning numbers are set in JSON (`textureAsset`, `clipAsset`, `ScriptFields`, `Overrides`). Scripts don't look things up by path, GUID literal or name (`AssetManager.Load("…")`, `Texture.FromAssetUUID(123…)`, `FindByName`) when a serialized field can hold the reference.
 4. **Use what Funke already has** (table below). Write your own physics, collision, sprite-frame animation, tweening system, UI hit-testing, layout math, save-file format or localization only when the user explicitly asks for it.
 5. **Small scripts, one job each.** No `GameManager` that does input, score, spawning, audio and UI at once. Rough budget: ~150 lines and one reason to change. Name scripts after what they do (`PaddleMovement`, `WaveSpawner`, `ScoreLabel`). Singletons and static events decouple them. → `references/architecture.md`
-6. **Follow the design language.** Colours come from palette tokens, sizes from its scale rules, fonts from its typography table, art from the generators in `Tools/`. No colour, font or pixel size invented in a single file. → `funke-game-art`
+6. **Follow the design language, including the HUD.** Colours come from palette tokens, sizes from its scale rules, fonts from its typography table, art from the generators in `Tools/`. No colour, font or pixel size invented in a single file. Design UI as part of the game: derive its icons, shapes and feedback from the artwork and communicate gameplay state visually instead of defaulting to lists of labels and numbers. Read `funke-game-ui` → **Make the UI belong to the game** before designing visible UI; use `funke-game-art` for production.
 7. **Folder layout** (below). Every file has an obvious home, and nothing sits loose in `Assets/`.
 8. **A game must be playable, not just loadable.** Deliver the full core loop: the player acts, there is a goal, a way to fail, win/lose feedback and a restart. If the user asked for a single-mechanic prototype, say explicitly what is missing.
-9. **Menus work like real games.** The title screen has the title and a few big buttons (Play, Settings, Quit), nothing else. With several levels, Play opens a level select of cards (name, lock state, best result) where levels unlock in order. Results go on the result screen and the cards. Controls are learned in play.
+9. **Menus work like real games.** The title screen has the title and a few big buttons (Play, Settings, Quit), nothing else. With several levels, Play opens a level select of cards (name, lock state, best result) where levels unlock in order. Results go on the result screen and the cards. Teach controls only as needed with brief contextual hints or on-demand help; do not automatically fill the HUD or menus with permanent keybind lists, explanatory footers or debug information. Follow `funke-game-ui` → **Keep unnecessary information out of the UI**.
 10. **No overlapping geometry.** Level pieces don't intersect or share a surface (z-fighting, poking through). Props sit on surfaces. Check every joint in a screenshot.
 11. **Never claim it works without proof.** Validate, compile, run scripted tests of the core loop and grep the log (`references/testing.md`). Say plainly what was not verified (feel, fun, device performance).
 
@@ -90,6 +90,8 @@ Every asset file gets a `.meta` next to it. Folders get none. Use PascalCase, an
 
 ### 1. Plan
 Write down the scenes, the prefabs, the **Data Asset types and their entries** (from the brief's content table), the entities per scene with their built-in components, and the small scripts with one-line responsibilities and the events they raise or hear. Then check the core loop: input → goal → fail → win → feedback → restart. Every link needs an entity or a script. A responsibility with "and" in it twice gets split.
+
+For visible UI, plan the player's information needs and their visual representation with `funke-game-ui` before choosing widgets. Judge the HUD together with gameplay art, not as an isolated overlay; follow the same visual family for any requested menus or shop.
 
 3D game? Read `references/3d-games.md` first. 2D genre recipes (platformer, top-down, tile levels, pixel-perfect camera): `references/2d-games.md`.
 
@@ -186,7 +188,7 @@ Launcher → New Project, Hierarchy → create entities, Inspector → component
 | 3D: level generators, Jolt recipes, feel, looks, particles, PC + portrait UI | `references/3d-games.md` |
 | Pixel art, sprites, tiles, UI art, fonts, palettes | `funke-game-art` |
 | C# API (Input, Time, Physics, Audio, coroutines, queries, SceneManager) | `funke-game-scripting` |
-| UI widgets from C# (`Clicked`, layout groups, scroll views) | `funke-game-ui` |
+| UI that fits the game, visual HUD feedback, layouts and C# widget wiring | `funke-game-ui` |
 | Inspector attributes (`[ShowInEditor]`, `[ClampValue]`, `[Header]`) | `funke-inspector-ruleset` |
 | project.json fields, csproj, file formats | `funke-project-structure` |
 | Build profiles, splash, icon, Android/iOS/Web builds | `funke-build-and-ship` |

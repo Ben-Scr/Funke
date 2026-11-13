@@ -110,6 +110,7 @@
     <Compile Include="Source\Funke\Core\AssetManager.cs" />
     <Compile Include="Source\Funke\Core\Cursor.cs" />
     <Compile Include="Source\Funke\Core\DataAssetRuntime.cs" />
+    <Compile Include="Source\Funke\Core\DebugStats.cs" />
     <Compile Include="Source\Funke\Core\DevConsole.cs" />
     <Compile Include="Source\Funke\Core\Engine.cs" />
     <Compile Include="Source\Funke\Core\GlobalUsings.cs" />
@@ -188,6 +189,7 @@
     <Compile Include="Source\Funke\Physics\Collision3D.cs" />
     <Compile Include="Source\Funke\Physics\Physics2D.cs" />
     <Compile Include="Source\Funke\Physics\Physics3D.cs" />
+    <Compile Include="Source\Funke\Physics\PhysicsLayer.cs" />
     <Compile Include="Source\Funke\Physics\PhysicsLayers.cs" />
     <Compile Include="Source\Funke\Physics\PhysicsShared.cs" />
     <Compile Include="Source\Funke\Scene\AssetRef.cs" />

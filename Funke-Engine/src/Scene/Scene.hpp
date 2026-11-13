@@ -320,6 +320,12 @@ namespace Funke {
 
 		std::size_t GetEntityCount() const { return m_EntityCount; }
 
+		// Native and managed system instances; disabled instances are excluded.
+        size_t GetEnabledSystemCount() const {
+            size_t count = 0;
+            for (const auto& system : m_Systems) if (system && system->IsEnabled()) ++count;
+            return count;
+        }
 		const std::string& GetName() const { return m_Name; }
 		void SetName(const std::string& name) { m_Name = name; }
 		bool IsLoaded() const { return m_IsLoaded; }
@@ -343,6 +349,8 @@ namespace Funke {
 
 		void MarkTransformDirty(EntityHandle entity);
 		std::vector<EntityHandle> ConsumeDirtyTransformEntities();
+		// Exchanges with caller-owned scratch so repeated propagation retains both buffers' capacity.
+		void ConsumeDirtyTransformEntities(std::vector<EntityHandle>& destination);
 		bool HasDirtyTransforms() const { return m_TransformHierarchyDirty; }
 		// True when a blanket (non-entity-specific) dirty mark is pending: every root
 		// transform must be re-derived, not just the entities in the dirty list.

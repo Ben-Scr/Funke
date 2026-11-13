@@ -7,6 +7,7 @@
 #include "Gui/EditorIcons.hpp"
 #include "Gui/EditorTheme.hpp"
 #include "Gui/EditorUI.hpp"
+#include "Gui/ReorderUI.hpp"
 #include <imgui.h>
 #include <imgui_internal.h>
 #include <cmath>
@@ -293,7 +294,7 @@ namespace Funke::ImGuiUtils {
 					changed = true;
 				}
 				ImGui::Separator();
-				if (ImGui::MenuItem("Reset to defaults")) {
+				if (EditorUI::IconMenuItem("##ResetCurve", "reset", "Restore the default curve.", true, "Reset")) {
 					curve.Keys = Curve::DefaultKeys();
 					s_Selected = -1;
 					s_CtxKey = -1;
@@ -553,7 +554,7 @@ namespace Funke::ImGuiUtils {
 					s_SelList = -1; s_SelIdx = -1; changed = true;
 				}
 				ImGui::Separator();
-				if (ImGui::MenuItem("Reset to default")) {
+				if (EditorUI::IconMenuItem("##ResetGradient", "reset", "Restore the default gradient.", true, "Reset")) {
 					colorKeys = Gradient::DefaultColorKeys();
 					alphaKeys = Gradient::DefaultAlphaKeys();
 					s_SelList = -1; s_SelIdx = -1; changed = true;
@@ -1106,7 +1107,8 @@ namespace Funke::ImGuiUtils {
 			if (has("Rigidbody")) return "rigidbody_2d";
 			if (has("Sprite") || has("Image")) return "eye_open";
 			if (has("Tilemap") || has("Layout")) return "grid";
-			if (has("Text") || has("Label") || has("Input")) return "caret";
+			if (has("Input")) return "caret";
+			if (has("Text") || has("Label")) return "text";
 			if (has("Audio")) return "audio_source";
 			return "entity";
 		}
@@ -1139,7 +1141,9 @@ namespace Funke::ImGuiUtils {
 		const std::string iconName = icon.empty() ? std::string(ComponentIconName(text)) : std::string(icon);
 		if (const uint64_t iconTexture = EditorIcons::Get(iconName, static_cast<int>(iconSize))) {
 			const ImVec2 iconPos(textPos.x, itemMin.y + (itemMax.y - itemMin.y - iconSize) * 0.5f);
-			const ImU32 tint = ImGui::GetColorU32(ImVec4(1.0f, 1.0f, 1.0f, enabled ? 1.0f : ImGui::GetStyle().DisabledAlpha));
+			ImVec4 iconTint = iconName == "text" ? ImGui::GetStyleColorVec4(ImGuiCol_Text) : ImVec4(1, 1, 1, 1);
+			if (!enabled) iconTint.w *= ImGui::GetStyle().DisabledAlpha;
+			const ImU32 tint = ImGui::GetColorU32(iconTint);
 			ImGui::GetWindowDrawList()->AddImage(static_cast<ImTextureID>(static_cast<intptr_t>(iconTexture)), iconPos,
 				ImVec2(iconPos.x + iconSize, iconPos.y + iconSize), ImVec2(0, 1), ImVec2(1, 0), tint);
 		}
@@ -1162,8 +1166,7 @@ namespace Funke::ImGuiUtils {
 			const ImVec2 min = ImGui::GetWindowPos();
 			const float left = min.x + ImGui::GetWindowContentRegionMin().x;
 			const float right = min.x + ImGui::GetWindowContentRegionMax().x;
-			ImGui::GetWindowDrawList()->AddLine(ImVec2(left, y), ImVec2(right, y),
-				ImGui::GetColorU32(ImGuiCol_DragDropTarget), 2.0f);
+			ReorderUI::DrawInsertionMarker(left, right, y);
 		}
 
 		void FinishSectionDropLine() {
@@ -1186,6 +1189,7 @@ namespace Funke::ImGuiUtils {
 	{
 		removeRequested = false;
 		const std::optional<ComponentSectionDrag> drag = std::exchange(s_NextSectionDrag, std::nullopt);
+		const bool canDrag = drag && !drag->Payload.empty();
 
 		ImGui::PushID(label);
 
@@ -1204,13 +1208,14 @@ namespace Funke::ImGuiUtils {
 		const float spaceW = std::max(1.0f, ImGui::CalcTextSize(" ").x);
 		const int iconSpaces = static_cast<int>(std::ceil((iconSize + 6.0f) / spaceW));
 		const float moreW = ImGui::GetFrameHeight();
+		const float gripW = canDrag ? ImGui::GetFontSize() + style.ItemInnerSpacing.x : 0.0f;
 
 		constexpr const char* k_OverrideMarker = "*";
 		const float markerW = overridden ? ImGui::CalcTextSize(k_OverrideMarker).x + 2.0f : 0.0f;
 
 		bool truncated = false;
 		const float headerWidth = ImGui::GetContentRegionAvail().x - ImGui::GetStyle().FramePadding.x * 2.0f
-			- iconSpaces * spaceW - moreW - ImGui::GetFontSize() - markerW;
+			- iconSpaces * spaceW - moreW - gripW - ImGui::GetFontSize() - markerW;
 		const std::string displayLabel = Ellipsize(label, headerWidth, &truncated);
 		const std::string visibleLabel = std::string(static_cast<size_t>(iconSpaces), ' ') + displayLabel;
 		const std::string headerLabel = visibleLabel + "##" + label;
@@ -1222,12 +1227,16 @@ namespace Funke::ImGuiUtils {
 		ImGui::PopStyleColor(3);
 
 		bool dropLineAtEnd = false;
-		if (drag && !drag->Payload.empty()) {
+		const auto dragSource = [&] {
+			if (!canDrag) return;
 			if (ImGui::BeginDragDropSource()) {
 				ImGui::SetDragDropPayload("COMPONENT_REF", drag->Payload.c_str(), drag->Payload.size() + 1);
 				ImGui::TextUnformatted(drag->Tooltip.empty() ? label : drag->Tooltip.c_str());
 				ImGui::EndDragDropSource();
 			}
+		};
+		dragSource();
+		if (canDrag) {
 			if (drag->Reorderable && ImGui::BeginDragDropTarget()) {
 				const ImGuiPayload* peek = ImGui::GetDragDropPayload();
 				std::string dragged = peek && peek->IsDataType("COMPONENT_REF")
@@ -1290,8 +1299,9 @@ namespace Funke::ImGuiUtils {
 		const std::string iconName = icon.empty() ? std::string(ComponentIconName(label)) : std::string(icon);
 		if (const uint64_t iconTexture = EditorIcons::Get(iconName, static_cast<int>(iconSize))) {
 			const ImVec2 iconPos(headerMin.x + textOffsetX, headerMin.y + (headerH - iconSize) * 0.5f);
+			const ImU32 tint = iconName == "text" ? ImGui::GetColorU32(ImGuiCol_Text) : IM_COL32_WHITE;
 			headerDraw->AddImage(static_cast<ImTextureID>(static_cast<intptr_t>(iconTexture)), iconPos,
-				ImVec2(iconPos.x + iconSize, iconPos.y + iconSize), ImVec2(0, 1), ImVec2(1, 0));
+				ImVec2(iconPos.x + iconSize, iconPos.y + iconSize), ImVec2(0, 1), ImVec2(1, 0), tint);
 		}
 
 		// "..." opens the same context menu as right-clicking the header.
@@ -1314,6 +1324,15 @@ namespace Funke::ImGuiUtils {
 			for (int k = -1; k <= 1; ++k) {
 				headerDraw->AddCircleFilled(ImVec2(c.x + k * btn * 0.2f, c.y), std::max(1.5f, btn * 0.06f), dotCol);
 			}
+			ImGui::SetCursorScreenPos(resume);
+		}
+
+		if (canDrag) {
+			const ImVec2 resume = ImGui::GetCursorScreenPos();
+			const float btn = std::min(moreW, headerH - 4.0f);
+			ImGui::SetCursorScreenPos(ImVec2(headerMax.x - btn - 4.0f - gripW, headerMin.y));
+			ReorderUI::DragHandle("##ComponentDrag", ImVec2(gripW, headerH));
+			dragSource();
 			ImGui::SetCursorScreenPos(resume);
 		}
 

@@ -1,5 +1,7 @@
 # Sprite material batching — 3 November 2026
 
+The later [13 November command-reuse measurement](Sprite-Submission-Measurements.md) reduces CPU submission cost without changing material identities, draw order or draw counts. The measurements below describe the earlier implementation.
+
 With 10,000 visible sprites, material **runs in draw order** determined draw count. Reusing one material preserved the image and reduced 1,000 grouped draws to one. Interleaving only ten material GUIDs already produced 10,000 draws. No production batching or sort change was made.
 
 ## Capture

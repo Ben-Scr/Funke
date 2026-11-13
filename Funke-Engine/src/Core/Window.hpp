@@ -103,7 +103,7 @@ namespace Funke {
 		// Windows: the executable's embedded icon at this window's DPI. No-op elsewhere.
 		void SetEmbeddedWindowIcon();
 
-		// Info: If enabled equals true the window will become fullscreen else windowed
+		// Uses the configured startup fullscreen mode and restores the previous windowed bounds.
 		void SetFullScreen(bool enabled);
 		void SetDecorated(bool enabled);
 		void SetVisible(bool enabled);
@@ -337,9 +337,11 @@ namespace Funke {
 		// Relative mouse mode reports deltas only; integrating them keeps Input's absolute-position model.
 		Vec2 m_VirtualCursor{ 0.0f, 0.0f };
 		std::vector<std::string> m_PendingDrops;
+		Vec2Int m_LastNotifiedFramebufferSize{ -1, -1 };
 
 		Vec2Int m_MinSize;
 		Vec2Int m_MaxSize;
+		FullscreenMode m_FullscreenMode = FullscreenMode::Exclusive;
 		bool m_CustomTitlebar = false;
 		float m_AspectLock = 0.0f;
 		Color m_TitlebarColor         { 0.0f, 0.0f, 0.0f, 0.0f };

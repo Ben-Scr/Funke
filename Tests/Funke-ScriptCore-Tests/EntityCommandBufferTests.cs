@@ -442,6 +442,176 @@ public sealed unsafe class EntityCommandBufferTests : IDisposable
         Assert.Equal(0L, allocated);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void BulkCreationPreservesAllAritiesOffsetsAndFollowingCommands(bool parallel)
+    {
+        using var ecb = new EntityCommandBuffer(initialCapacity: 8);
+        var writer = ecb.AsParallelWriter();
+        for (int pass = 0; pass < 2; ++pass)
+        {
+            ecb.Clear();
+            ecb.CreateWith<Payload>();
+            EntityRef[] output = new EntityRef[4];
+            int expectedCommands = 1;
+            for (int arity = 1; arity <= 8; ++arity)
+            {
+                output[3] = new EntityRef(999u);
+                if (parallel)
+                {
+                    switch (arity)
+                    {
+                        case 1: writer.CreateEntitiesWith<Payload>(3, output); break;
+                        case 2: writer.CreateEntitiesWith<Payload, Payload>(3, output); break;
+                        case 3: writer.CreateEntitiesWith<Payload, Payload, Payload>(3, output); break;
+                        case 4: writer.CreateEntitiesWith<Payload, Payload, Payload, Payload>(3, output); break;
+                        case 5: writer.CreateEntitiesWith<Payload, Payload, Payload, Payload, Payload>(3, output); break;
+                        case 6: writer.CreateEntitiesWith<Payload, Payload, Payload, Payload, Payload, Payload>(3, output); break;
+                        case 7: writer.CreateEntitiesWith<Payload, Payload, Payload, Payload, Payload, Payload, Payload>(3, output); break;
+                        case 8: writer.CreateEntitiesWith<Payload, Payload, Payload, Payload, Payload, Payload, Payload, Payload>(3, output); break;
+                    }
+                    writer.AddComponent(output[2], new Payload { Value = arity });
+                }
+                else
+                {
+                    switch (arity)
+                    {
+                        case 1: ecb.CreateEntitiesWith<Payload>(3, output); break;
+                        case 2: ecb.CreateEntitiesWith<Payload, Payload>(3, output); break;
+                        case 3: ecb.CreateEntitiesWith<Payload, Payload, Payload>(3, output); break;
+                        case 4: ecb.CreateEntitiesWith<Payload, Payload, Payload, Payload>(3, output); break;
+                        case 5: ecb.CreateEntitiesWith<Payload, Payload, Payload, Payload, Payload>(3, output); break;
+                        case 6: ecb.CreateEntitiesWith<Payload, Payload, Payload, Payload, Payload, Payload>(3, output); break;
+                        case 7: ecb.CreateEntitiesWith<Payload, Payload, Payload, Payload, Payload, Payload, Payload>(3, output); break;
+                        case 8: ecb.CreateEntitiesWith<Payload, Payload, Payload, Payload, Payload, Payload, Payload, Payload>(3, output); break;
+                    }
+                    ecb.AddComponent(output[2], new Payload { Value = arity });
+                }
+                for (int i = 0; i < 3; ++i)
+                    Assert.Equal((uint)((parallel ? 0 : 1) + (arity - 1) * 3 + i), output[i].Index);
+                Assert.Equal(999u, output[3].Index);
+                expectedCommands += 3 * arity + 1;
+            }
+            Assert.Equal(25, ecb.EntityCount);
+            Assert.Equal(expectedCommands, ecb.CommandCount);
+            Assert.Equal(25, ecb.Playback());
+            List<Command> commands = ReadCommands();
+            Assert.Equal(expectedCommands, commands.Count);
+            int cursor = 1;
+            for (int arity = 1; arity <= 8; ++arity)
+            {
+                for (int i = 0; i < 3; ++i)
+                    for (int component = 0; component < arity; ++component)
+                    {
+                        Command command = commands[cursor++];
+                        Assert.Equal((byte)4, command.Opcode);
+                        Assert.Equal((uint)(1 + (arity - 1) * 3 + i), command.EntityIndex);
+                        Assert.Empty(command.Data);
+                    }
+                Command payload = commands[cursor++];
+                Assert.Equal((uint)(arity * 3), payload.EntityIndex);
+                Assert.Equal(arity, BinaryPrimitives.ReadInt32LittleEndian(payload.Data));
+            }
+        }
+    }
+
+    [Fact]
+    public void ThreadSlotsKeepInterleavedBuffersIndependent()
+    {
+        using var first = new EntityCommandBuffer();
+        using var second = new EntityCommandBuffer();
+        var a = first.AsParallelWriter();
+        var b = second.AsParallelWriter();
+        for (int pass = 0; pass < 3; ++pass)
+        {
+            first.Clear(); second.Clear();
+            for (int i = 0; i < 9; ++i)
+            {
+                a.AddComponent(a.Create(), new Payload { Value = i });
+                b.AddComponent(b.Create(), new Payload { Value = 100 + i });
+            }
+            Assert.Equal(9, first.Playback());
+            Assert.Equal(8, BinaryPrimitives.ReadInt32LittleEndian(ReadCommands()[8].Data));
+            Assert.Equal(9, second.Playback());
+            Assert.Equal(108, BinaryPrimitives.ReadInt32LittleEndian(ReadCommands()[8].Data));
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void BulkCreationRejectsInvalidLengthsWithoutChangingTheBuffer(bool parallel)
+    {
+        using var ecb = new EntityCommandBuffer();
+        var writer = ecb.AsParallelWriter();
+        if (parallel)
+        {
+            writer.CreateEntitiesWith<Payload>(0, Span<EntityRef>.Empty);
+            Assert.Throws<ArgumentOutOfRangeException>(() => writer.CreateEntitiesWith<Payload>(-1, Span<EntityRef>.Empty));
+            Assert.Throws<ArgumentException>(() => writer.CreateEntitiesWith<Payload>(2, new EntityRef[1]));
+        }
+        else
+        {
+            ecb.CreateEntitiesWith<Payload>(0, Span<EntityRef>.Empty);
+            Assert.Throws<ArgumentOutOfRangeException>(() => ecb.CreateEntitiesWith<Payload>(-1, Span<EntityRef>.Empty));
+            Assert.Throws<ArgumentException>(() => ecb.CreateEntitiesWith<Payload>(2, new EntityRef[1]));
+        }
+        Assert.Equal(0, ecb.EntityCount);
+        Assert.Equal(0, ecb.CommandCount);
+        Assert.Equal(0, ecb.Playback());
+    }
+
+    [Fact]
+    public void WorkerCacheDoesNotRetainAnAbandonedRecorder()
+    {
+        (WeakReference recorder, WeakReference slot) = RecordAndAbandon();
+        GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+        Assert.False(recorder.IsAlive);
+        Assert.False(slot.IsAlive);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static (WeakReference, WeakReference) RecordAndAbandon()
+    {
+        var ecb = new EntityCommandBuffer();
+        ecb.AsParallelWriter().CreateWith<Payload>();
+        return (new WeakReference(ecb), new WeakReference(ecb.GetOrCreateSlotForCurrentThread()));
+    }
+
+    [Fact]
+    public void DisposeReleasesStorageCachedOnAnotherLiveThread()
+    {
+        using var ecb = new EntityCommandBuffer();
+        var writer = ecb.AsParallelWriter();
+        using var ready = new ManualResetEventSlim();
+        using var finish = new ManualResetEventSlim();
+        WeakReference? slot = null;
+        var worker = new Thread(() =>
+        {
+            slot = RecordWorker(ecb, writer);
+            ready.Set();
+            finish.Wait();
+        });
+        worker.Start();
+        try
+        {
+            Assert.True(ready.Wait(TimeSpan.FromSeconds(10)));
+            Assert.Equal(1, ecb.Playback());
+            ecb.Dispose();
+            GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+            Assert.False(slot!.IsAlive);
+        }
+        finally { finish.Set(); worker.Join(); }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static WeakReference RecordWorker(EntityCommandBuffer ecb, EntityCommandBuffer.ParallelWriter writer)
+    {
+        writer.CreateWith<Payload>();
+        return new WeakReference(ecb.GetOrCreateSlotForCurrentThread());
+    }
+
     [Fact]
     public void DisposeReleasesWorkerStorageWhileRecorderRemainsAlive()
     {

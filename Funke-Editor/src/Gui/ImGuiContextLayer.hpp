@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Core/Layer.hpp"
+#include "Gui/EditorDockLayout.hpp"
 
 #include <chrono>
 #include <string>
@@ -51,6 +52,7 @@ namespace Funke {
 		void FlushSettingsIfDirtyOrPeriodic();
 
 		std::string m_IniFilePath;
+		EditorDockLayout::WindowSettings m_LayoutWindowSettings;
 		bool m_IsInitialized = false;
 		std::chrono::steady_clock::time_point m_LastSaveTime{};
 		static float s_DpiScale;

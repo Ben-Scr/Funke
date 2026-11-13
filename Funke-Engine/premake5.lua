@@ -162,14 +162,14 @@ project "Funke-Engine"
     -- include in engine code; the .cpp is excluded here and re-added by
     -- Funke-Editor's and Funke-Runtime's premake (same pattern as the
     -- ProfilerPanel cross-binary share).
-    removefiles { "src/Diagnostics/**.cpp" }
+    removefiles { "src/Diagnostics/*Overlay.cpp" }
 
 
     UseFunkeEngineModuleDependencies()
     defines(GetFunkeModuleDefines())
     ApplyFunkeEditorModuleDefine()
-    -- The editor's Rebuild Engine flow rewrites FunkeEntityBitsConfig.h
-    -- to override FUNKE_ENTITY_BITS without a premake regen. Every C++
+    -- Premake writes FunkeEntityBitsConfig.h with the source build's
+    -- entity-bit width. Every C++
     -- project that compiles entt-using code needs this folder on its
     -- include path so the EnTT patch's `#include "FunkeEntityBitsConfig.h"`
     -- resolves. See WriteFunkeEntityBitsConfigHeader() in root premake5.lua.

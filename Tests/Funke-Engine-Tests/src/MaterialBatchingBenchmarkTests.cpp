@@ -132,15 +132,15 @@ fn surface(in: SurfaceInput) -> SurfaceOutput {
 	private:
 		struct Sample { double Cpu; double Gpu; size_t Draws; size_t Visible; };
 
-		Sample Draw(Renderer2D& renderer, Scene& scene, Framebuffer& target) {
+		Sample Draw(Renderer2D& renderer, Scene& scene, Framebuffer& target, bool beginFrame = true, float cameraShift = 0) {
 			ClearSamples("Renderer2D.Submit");
 			ClearSamples("GPU");
-			renderer.BeginFrame();
+			if (beginFrame) renderer.BeginFrame();
 			RenderApi::BindFramebuffer(target);
-			RenderApi::SetViewport(0, 0, k_Width, k_Height);
+			RenderApi::SetViewport(0, 0, target.GetWidth(), target.GetHeight());
 			RenderApi::SetClearColor(Color::Black());
 			RenderApi::Clear(ClearFlags::Color | ClearFlags::Depth);
-			renderer.RenderSceneWithVP(scene, glm::orthoRH_ZO(-1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f),
+			renderer.RenderSceneWithVP(scene, glm::orthoRH_ZO(-1.0f + cameraShift, 1.0f + cameraShift, -1.0f, 1.0f, -1.0f, 1.0f),
 				AABB({ -1, -1 }, { 1, 1 }));
 			const auto* cpu = Profiler::Find("Renderer2D.Submit");
 			Require(cpu && cpu->Count == 1, "Expected exactly one CPU submit sample; enable the profiler");
@@ -164,14 +164,96 @@ fn surface(in: SurfaceInput) -> SurfaceOutput {
 
 		std::vector<uint8_t> Pixels(Framebuffer& target) {
 			std::vector<uint8_t> pixels;
-			Require(target.ReadPixelsRGBA8(pixels) && pixels.size() == k_Width * k_Height * 4,
+			Require(target.ReadPixelsRGBA8(pixels) && pixels.size() == static_cast<size_t>(target.GetWidth()) * target.GetHeight() * 4,
 				"Framebuffer readback failed");
 			return pixels;
 		}
 
-		void SaveImage(const std::vector<uint8_t>& pixels, const std::string& name) {
+		void CheckSpriteBundles(Renderer2D& renderer, Framebuffer& target, TextureHandle texture) {
+			auto scene = Scene::CreateDetachedScene("Sprite command reuse regression");
+			std::vector<Entity> entities;
+			SetTint(k_FirstMaterial, { 1, 0, 0, 0.5f });
+			SetTint(k_FirstMaterial + 1, { 0, 1, 0, 0.5f });
+			for (int i = 0; i < 128; ++i) {
+				auto entity = scene->CreateEmptyEntity();
+				entity.AddComponent<Transform2DComponent>(Vec2(-0.9f + (i % 16) * 0.12f, -0.84f + (i / 16) * 0.24f), Vec2(0.2f));
+				auto& sprite = entity.AddComponent<SpriteRendererComponent>();
+				sprite.TextureHandle = texture;
+				sprite.Material = k_FirstMaterial + i % 2;
+				sprite.SortingOrder = static_cast<short>(i);
+				entities.push_back(entity);
+			}
+			const bool reference = Environment("FUNKE_REFERENCE_SPRITE_SUBMIT") == "1";
+			auto capture = [&](const char* name, bool reuse) {
+				ClearSamples("Renderer2D.DrawBundle");
+				const auto sample = Draw(renderer, *scene, target);
+				Require(sample.Visible == 128, "Sprite bundle lost visible instances");
+				if (!reference) {
+					const auto* cached = Profiler::Find("Renderer2D.DrawBundle");
+					if (!cached || cached->Count != 1 || (cached->CurrentValue != 0) != reuse)
+						throw std::runtime_error(std::string("Sprite bundle reuse/invalidation mismatch: ") + name);
+				}
+				auto pixels = Pixels(target);
+				SaveImage(pixels, std::string("bundle-") + name + ".ppm", target.GetWidth(), target.GetHeight());
+				return pixels;
+			};
+			capture("cold", false);
+			const auto initial = capture("warm", true);
+			Require(capture("stable", true) == initial, "Stable sprite bundle changed the image");
+			SetTint(k_FirstMaterial, { 0, 0, 1, 0.5f });
+			Require(capture("material-edit", true) != initial, "Reused bundle kept stale material values");
+			entities[0].GetComponent<Transform2DComponent>().SetPosition({ -0.86f, -0.84f });
+			capture("movement", true);
+			entities[0].GetComponent<SpriteRendererComponent>().SortingOrder = 127;
+			capture("reorder", false);
+			capture("reorder-warm", true);
+			const uint8_t yellow[] = { 255, 255, 0, 255 };
+			const auto otherId = TextureManager::CreateRuntimeTexture(1, 1, yellow, Filter::Point);
+			const auto other = TextureManager::LoadTextureByUUID(otherId);
+			entities[64].GetComponent<SpriteRendererComponent>().TextureHandle = other;
+			capture("texture", false);
+			capture("texture-warm", true);
+			const auto shaderPath = Path::ToUtf8(m_Output / "probe.wgsl");
+			std::string source = k_ShaderSource;
+			source.replace(source.find("material.tint"), std::string("material.tint").size(), "vec4<f32>(1.0, 0.0, 1.0, 0.5)");
+			Require(File::WriteAllText(shaderPath, source), "Cannot replace bundle shader");
+			CustomShaderLibrary::Invalidate(k_Shader);
+			capture("shader", false);
+			capture("shader-warm", true);
+			Require(File::WriteAllText(shaderPath, k_ShaderSource), "Cannot restore bundle shader");
+			CustomShaderLibrary::Invalidate(k_Shader);
+			capture("shader-restored", false);
+			capture("shader-restored-warm", true);
+			TextureManager::DestroyRuntimeTexture(otherId);
+			capture("texture-destroyed", false);
+			capture("texture-destroyed-warm", true);
+			Require(target.Recreate(640, 360), "Cannot resize sprite bundle target");
+			capture("resized", true);
+			Require(target.Recreate(k_Width, k_Height), "Cannot restore sprite bundle target");
+			capture("size-restored", true);
+			RenderApi::SetPolygonMode(PolygonMode::Wireframe);
+			capture("wireframe", false);
+			RenderApi::SetPolygonMode(PolygonMode::Filled);
+			capture("filled", false);
+			capture("filled-warm", true);
+			Renderer2D::ClearSceneCache(scene.get());
+			capture("scene-reset", false);
+			Framebuffer secondTarget(640, 360);
+			for (int frame = 0; frame < 3; ++frame) {
+				Draw(renderer, *scene, target);
+				Draw(renderer, *scene, secondTarget, false, 0.15f);
+			}
+			if (!reference) {
+				const auto* cached = Profiler::Find("Renderer2D.DrawBundle");
+				Require(cached && cached->CurrentValue == 1, "Alternating views did not reuse sprite commands");
+			}
+			SaveImage(Pixels(target), "bundle-view-one.ppm");
+			SaveImage(Pixels(secondTarget), "bundle-view-two.ppm", 640, 360);
+		}
+
+		void SaveImage(const std::vector<uint8_t>& pixels, const std::string& name, int width = k_Width, int height = k_Height) {
 			std::ofstream image(m_Output / name, std::ios::binary);
-			image << "P6\n" << k_Width << " " << k_Height << "\n255\n";
+			image << "P6\n" << width << " " << height << "\n255\n";
 			for (size_t i = 0; i < pixels.size(); i += 4) image.write(reinterpret_cast<const char*>(pixels.data() + i), 3);
 			Require(image.good(), "Cannot save benchmark image");
 		}
@@ -591,6 +673,12 @@ fn surface(in: SurfaceInput) -> SurfaceOutput {
 			const auto texture = TextureManager::LoadTextureByUUID(textureId);
 			Require(TextureManager::IsValid(texture), "No explicit benchmark texture");
 			CheckTransparency(renderer, target, texture);
+			if (Environment("FUNKE_SPRITE_BUNDLES") == "1") {
+				CheckSpriteBundles(renderer, target, texture);
+				TextureManager::DestroyRuntimeTexture(textureId);
+				Completed = true;
+				return;
+			}
 			if (Environment("FUNKE_SPRITE_LIFECYCLE") == "1") {
 				CheckSpriteLifecycle(renderer, target, texture);
 				TextureManager::DestroyRuntimeTexture(textureId);

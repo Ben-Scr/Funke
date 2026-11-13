@@ -4,6 +4,8 @@ Ground truth: `Funke-Engine/src/Gui/NineSlice.hpp`, `Gui/GuiRenderer.cpp` (9-sli
 
 ## The kit: one generator, one family
 
+Start with `funke-game-ui` → **Make the UI belong to the game**. Select only the pieces the game needs and derive their appearance from its art. The catalogue and recipes below are implementation options, not a mandatory visual style or a reason to wrap every HUD value in a panel. Icons may retain the game's colours and shading; monochrome tinting is appropriate only for the chosen icon family.
+
 Generate the whole UI kit from `Design/palette.json` in one script (`Tools/art_ui.py`), and render a contact sheet of every piece in every state (`Tools/out/ui_kit.png`) for review:
 
 | Piece | Use | States |
@@ -19,7 +21,7 @@ Generate the whole UI kit from `Design/palette.json` in one script (`Tools/art_u
 | `Ribbon` / header | titles on panels, result screens | — |
 | Icons (white on transparent, tinted by the Image colour) | play, pause, settings, back, lock, star, coin, heart, sound on/off | — |
 
-## Two styles, two recipes
+## Two example styles and recipes
 
 **Smooth (vector) UI** for flat, rounded and soft looks (MarbleSky, Erdwerk, Funkenfall):
 - `pixelkit.rounded_panel(w, h, fill, radius, outline, outline_w, lip, lip_colour, gradient)` draws 4× supersampled with LANCZOS down to the exact size it is shown at, with a vertical gradient (top a little lighter), an outline ring and a bottom lip about 10 % of the height. Save with `upscale=1, filter="Bilinear"`: the edge colours are bled into transparent pixels, which prevents dark fringes.
@@ -34,6 +36,8 @@ Generate the whole UI kit from `Design/palette.json` in one script (`Tools/art_u
 - States as tints: hover ×1.16, pressed ×0.78, disabled ×0.5. Selection is a separate frame sprite drawn over the item.
 
 ## Image 9-slice in scene JSON
+
+Follow `funke-game-ui` → **Preserve texture shape when resizing** for the sizing and review rules. Prepare each resizable asset with protected corners/end caps and a stretchable or tileable centre. Export track, fill, handle, icons and text separately where they need different sizing behavior. Inspect generated artwork before choosing borders; do not copy arbitrary border values from this example. Sprite-sheet slicing selects a subimage, whereas 9-slice borders control how that selected image resizes; configure both when using an atlas.
 
 ```json
 "Image": { "textureAsset": "7300000000000000501", "imageType": 1, "border": [12, 12, 12, 12], "borderScale": 0.5,
@@ -61,10 +65,11 @@ Generate the whole UI kit from `Design/palette.json` in one script (`Tools/art_u
 
 ## Motion
 
-Panels pop in (`Funke.Tween` `ScaleTo` 0.9 → 1, `Ease.OutBack`, 0.18 s), screens fade through a full-screen overlay, buttons press down on `ClickDown`, counters count up, stars on the result screen appear one after another with a pop and a sound. Put the durations in the design language's motion section.
+Choose motion that fits the game's feel and clarifies state. Possible techniques include panel pop-in (`Funke.Tween` `ScaleTo` 0.9 → 1, `Ease.OutBack`, 0.18 s), screen fades, press-down on `ClickDown` and counter transitions. These are optional recipes; keep urgent information immediately readable. Put the selected behavior and durations in the design language's motion section.
 
 ## Review
 
 1. Contact sheet of the kit (all pieces, all states) → inspect it with `view_image`.
 2. In-game screenshots of every screen at the reference size **and** at a different aspect (portrait phone for mobile games) → check crisp edges, text contrast, nothing overlapping, the same density everywhere.
 3. `pixelkit.py check` on pixel UI textures (`--scale 4`).
+4. Resize the actual textured widgets: narrow/wide buttons and their states, slider tracks and fills at zero/low/middle/full values, and supported UI scales. Check protected corners, end caps, outline thickness, handle proportions, seams and fill containment. Verify slicing on the rendered Image components, not just in texture metadata.

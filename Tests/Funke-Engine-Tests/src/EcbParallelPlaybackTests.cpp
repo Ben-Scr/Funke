@@ -24,9 +24,13 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
+#include <cstdlib>
 #include <cstdint>
 #include <cstring>
 #include <exception>
+#include <fstream>
+#include <iomanip>
 #include <limits>
 #include <numeric>
 #include <random>
@@ -1141,5 +1145,42 @@ TEST_CASE("ECB parallel scratch remains reusable after fallback and nested playb
 	REQUIRE(CreationBuffer(2, types, false).Play(bindings, 2, later) == 2);
 	for (uint64_t id : later) CheckParallelValues(*scene, ResolveParallelEntity(*scene, id), 0, false);
 	CHECK(scene->GetEntityCount() == 133);
+}
+
+TEST_CASE("ECB creation playback benchmark (opt-in)")
+{
+	const char* output = std::getenv("FUNKE_ECB_CREATION_BENCH_OUTPUT");
+	if (!output || !*output) return;
+	Application app;
+	const auto types = RegisterParallelTypes();
+	const NativeBindings bindings = ParallelBindings();
+	ScopedEcbWorkers workers(4);
+	std::ofstream csv(output);
+	REQUIRE(csv.is_open());
+	csv << "count,payload,mode,sample,playback_ms\n" << std::setprecision(9);
+	for (uint32_t count : { 1000u, 10000u, 100000u }) {
+		for (bool payload : { false, true }) {
+			const auto buffer = CreationBuffer(count, types, payload);
+			for (int mode : { 1, 2, 0 }) {
+				auto scene = Scene::CreateDetachedScene("ECB Creation Benchmark");
+				SceneExecutionScope scope(*scene);
+				std::vector<uint64_t> ids(count);
+				for (int sample = -3; sample < 15; ++sample) {
+					const auto begin = std::chrono::steady_clock::now();
+					const int created = buffer.Play(bindings, mode, ids);
+					const auto end = std::chrono::steady_clock::now();
+					REQUIRE(created == count);
+					REQUIRE(scene->GetEntityCount() == count);
+					CheckParallelValues(*scene, ResolveParallelEntity(*scene, ids.front()), 0, payload);
+					CheckParallelValues(*scene, ResolveParallelEntity(*scene, ids.back()), count - 1, payload);
+					if (sample >= 0)
+						csv << count << ',' << payload << ',' << mode << ',' << sample << ','
+							<< std::chrono::duration<double, std::milli>(end - begin).count() << '\n';
+					for (uint64_t id : ids) scene->DestroyEntity(ResolveParallelEntity(*scene, id));
+					REQUIRE(scene->GetEntityCount() == 0);
+				}
+			}
+		}
+	}
 }
 #endif

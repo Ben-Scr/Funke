@@ -7,12 +7,15 @@ The editor exports games for the desktop platform it runs on: **Windows x64**, *
 Before exporting:
 
 1. Open **Project Settings** and set the executable name, company, version, window mode, icon, and splash screen.
+   Set **Launcher > Settings > Projects > Default company** to prefill the company for future projects; it remains editable per project.
 2. Add every required scene to **Build Scenes** and choose a valid startup scene.
 3. Select a build profile for your desktop platform (new projects get `Windows`, `Linux` and `macOS` profiles).
 4. Use **Development** while testing and **Release** for distribution. **Debug** adds debug binaries and symbols for attaching a debugger. Build profiles can carry their own configuration, defines and test switches; see [Test Builds and Debug Tools](Testing.md).
 5. Choose an empty output directory (outside the project or under its `Builds` folder) and click **Build**.
 
 The output directory defaults to `<project>/Builds/<Platform>`. While its last folder is a platform name (`Windows`, `Linux`, `MacOS`, `Android`, `Web`, ...), it follows the active profile's platform; any other folder name is kept as typed.
+
+The build profile's **Rendering API** applies to the exported game, including **Build and Play**. It can differ from the editor's API: building leaves the editor's rendering setting unchanged and does not request an editor reload. Change the editor's API separately in **Project Settings**.
 
 What the build produces:
 

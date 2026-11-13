@@ -978,6 +978,133 @@
         128
       ],
       "source": "ui_binary.png"
+    },
+    {
+      "id": "text",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create one production-ready flat typography UI icon for a desktop game editor: exactly the letters \"Aa\", a capital A beside a lowercase a, on one baseline. Rounded clean sans-serif letterforms, medium-bold weight with open counters, readable at 16 pixels. Solid dark graphite (#404040), all counters and background transparent. The letters together form one centered compact glyph with equal 12.5% margins in a square. No document, no caret, no border, no decoration, no shadow, no gradient, no texture, no extra text. Transparent PNG.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "text.png"
+    },
+    {
+      "id": "view_shaded",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create a production-ready game editor UI icon sprite sheet: exactly six monochrome icons in a strict 3 columns by 2 rows grid, canvas 1536 by 1024 pixels, each cell exactly 512x512. Transparent background everywhere, no labels, no grid lines, no text, no decorative background. Each glyph centered in its own cell with 96 pixel empty margin on every side. Matching simple vector-style solid dark graphite contours, uniform medium bold smooth strokes, fully transparent holes. No gradients, lighting rendering, grain, bevel, glow or soft shadows. These icons must read at 20px. Row 1 left: a circular sphere with a curved solid crescent filling its right side, representing shaded rendering. Row 1 center: a sphere outline floating just above a small solid oval ground shadow, representing cast shadows. Row 1 right: a sphere top half with three short bold horizontal mist lines across its lower half, representing fog. Row 2 left: a hemisphere dome over a straight horizon line with a tiny four-point star inside, representing skybox visibility. Row 2 center: a sphere outline containing three broad meridian curves and one equator, representing wireframe rendering. Row 2 right: a sphere outline with a single small four-point sparkle overlapping its upper right edge, representing custom material shaders. Exactly six isolated glyphs. Consistent optical weight and footprint. Flat silhouette suitable for recoloring by UI tint.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "view_rendering_sheet.png",
+      "source_box": [
+        0,
+        0,
+        512,
+        512
+      ]
+    },
+    {
+      "id": "view_shadows",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create a production-ready game editor UI icon sprite sheet: exactly six monochrome icons in a strict 3 columns by 2 rows grid, canvas 1536 by 1024 pixels, each cell exactly 512x512. Transparent background everywhere, no labels, no grid lines, no text, no decorative background. Each glyph centered in its own cell with 96 pixel empty margin on every side. Matching simple vector-style solid dark graphite contours, uniform medium bold smooth strokes, fully transparent holes. No gradients, lighting rendering, grain, bevel, glow or soft shadows. These icons must read at 20px. Row 1 left: a circular sphere with a curved solid crescent filling its right side, representing shaded rendering. Row 1 center: a sphere outline floating just above a small solid oval ground shadow, representing cast shadows. Row 1 right: a sphere top half with three short bold horizontal mist lines across its lower half, representing fog. Row 2 left: a hemisphere dome over a straight horizon line with a tiny four-point star inside, representing skybox visibility. Row 2 center: a sphere outline containing three broad meridian curves and one equator, representing wireframe rendering. Row 2 right: a sphere outline with a single small four-point sparkle overlapping its upper right edge, representing custom material shaders. Exactly six isolated glyphs. Consistent optical weight and footprint. Flat silhouette suitable for recoloring by UI tint.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "view_rendering_sheet.png",
+      "source_box": [
+        512,
+        0,
+        1024,
+        512
+      ]
+    },
+    {
+      "id": "view_fog",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create a production-ready game editor UI icon sprite sheet: exactly six monochrome icons in a strict 3 columns by 2 rows grid, canvas 1536 by 1024 pixels, each cell exactly 512x512. Transparent background everywhere, no labels, no grid lines, no text, no decorative background. Each glyph centered in its own cell with 96 pixel empty margin on every side. Matching simple vector-style solid dark graphite contours, uniform medium bold smooth strokes, fully transparent holes. No gradients, lighting rendering, grain, bevel, glow or soft shadows. These icons must read at 20px. Row 1 left: a circular sphere with a curved solid crescent filling its right side, representing shaded rendering. Row 1 center: a sphere outline floating just above a small solid oval ground shadow, representing cast shadows. Row 1 right: a sphere top half with three short bold horizontal mist lines across its lower half, representing fog. Row 2 left: a hemisphere dome over a straight horizon line with a tiny four-point star inside, representing skybox visibility. Row 2 center: a sphere outline containing three broad meridian curves and one equator, representing wireframe rendering. Row 2 right: a sphere outline with a single small four-point sparkle overlapping its upper right edge, representing custom material shaders. Exactly six isolated glyphs. Consistent optical weight and footprint. Flat silhouette suitable for recoloring by UI tint.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "view_rendering_sheet.png",
+      "source_box": [
+        1024,
+        0,
+        1536,
+        512
+      ]
+    },
+    {
+      "id": "view_skybox",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create a production-ready game editor UI icon sprite sheet: exactly six monochrome icons in a strict 3 columns by 2 rows grid, canvas 1536 by 1024 pixels, each cell exactly 512x512. Transparent background everywhere, no labels, no grid lines, no text, no decorative background. Each glyph centered in its own cell with 96 pixel empty margin on every side. Matching simple vector-style solid dark graphite contours, uniform medium bold smooth strokes, fully transparent holes. No gradients, lighting rendering, grain, bevel, glow or soft shadows. These icons must read at 20px. Row 1 left: a circular sphere with a curved solid crescent filling its right side, representing shaded rendering. Row 1 center: a sphere outline floating just above a small solid oval ground shadow, representing cast shadows. Row 1 right: a sphere top half with three short bold horizontal mist lines across its lower half, representing fog. Row 2 left: a hemisphere dome over a straight horizon line with a tiny four-point star inside, representing skybox visibility. Row 2 center: a sphere outline containing three broad meridian curves and one equator, representing wireframe rendering. Row 2 right: a sphere outline with a single small four-point sparkle overlapping its upper right edge, representing custom material shaders. Exactly six isolated glyphs. Consistent optical weight and footprint. Flat silhouette suitable for recoloring by UI tint.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "view_rendering_sheet.png",
+      "source_box": [
+        0,
+        512,
+        512,
+        1024
+      ]
+    },
+    {
+      "id": "view_wireframe",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create a production-ready game editor UI icon sprite sheet: exactly six monochrome icons in a strict 3 columns by 2 rows grid, canvas 1536 by 1024 pixels, each cell exactly 512x512. Transparent background everywhere, no labels, no grid lines, no text, no decorative background. Each glyph centered in its own cell with 96 pixel empty margin on every side. Matching simple vector-style solid dark graphite contours, uniform medium bold smooth strokes, fully transparent holes. No gradients, lighting rendering, grain, bevel, glow or soft shadows. These icons must read at 20px. Row 1 left: a circular sphere with a curved solid crescent filling its right side, representing shaded rendering. Row 1 center: a sphere outline floating just above a small solid oval ground shadow, representing cast shadows. Row 1 right: a sphere top half with three short bold horizontal mist lines across its lower half, representing fog. Row 2 left: a hemisphere dome over a straight horizon line with a tiny four-point star inside, representing skybox visibility. Row 2 center: a sphere outline containing three broad meridian curves and one equator, representing wireframe rendering. Row 2 right: a sphere outline with a single small four-point sparkle overlapping its upper right edge, representing custom material shaders. Exactly six isolated glyphs. Consistent optical weight and footprint. Flat silhouette suitable for recoloring by UI tint.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "view_rendering_sheet.png",
+      "source_box": [
+        512,
+        512,
+        1024,
+        1024
+      ]
+    },
+    {
+      "id": "view_shaders",
+      "family": "monochrome",
+      "group": "General",
+      "prompt": "Create a production-ready game editor UI icon sprite sheet: exactly six monochrome icons in a strict 3 columns by 2 rows grid, canvas 1536 by 1024 pixels, each cell exactly 512x512. Transparent background everywhere, no labels, no grid lines, no text, no decorative background. Each glyph centered in its own cell with 96 pixel empty margin on every side. Matching simple vector-style solid dark graphite contours, uniform medium bold smooth strokes, fully transparent holes. No gradients, lighting rendering, grain, bevel, glow or soft shadows. These icons must read at 20px. Row 1 left: a circular sphere with a curved solid crescent filling its right side, representing shaded rendering. Row 1 center: a sphere outline floating just above a small solid oval ground shadow, representing cast shadows. Row 1 right: a sphere top half with three short bold horizontal mist lines across its lower half, representing fog. Row 2 left: a hemisphere dome over a straight horizon line with a tiny four-point star inside, representing skybox visibility. Row 2 center: a sphere outline containing three broad meridian curves and one equator, representing wireframe rendering. Row 2 right: a sphere outline with a single small four-point sparkle overlapping its upper right edge, representing custom material shaders. Exactly six isolated glyphs. Consistent optical weight and footprint. Flat silhouette suitable for recoloring by UI tint.",
+      "sizes": [
+        16,
+        32,
+        64,
+        128
+      ],
+      "source": "view_rendering_sheet.png",
+      "source_box": [
+        1024,
+        512,
+        1536,
+        1024
+      ]
     }
   ],
   "preservedGroups": [

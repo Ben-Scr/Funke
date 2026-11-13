@@ -986,6 +986,27 @@ namespace Funke {
 		m_SpriteEditorPanel.Initialize();
 		m_ScriptWindows.Initialize();
 
+		if (auto* settings = EditorDockLayout::WindowSettings::Get()) {
+			const std::map<std::string, bool*> windows{
+				{ "Build", &m_ShowBuildPanel }, { "Build Profiles", &m_ShowBuildProfilesPanel },
+				{ "Project Settings", &m_ShowProjectSettings }, { "Package Manager", &m_ShowPackageManager },
+				{ "Editor Preferences", &m_ShowEditorPreferences }, { "Profiler", &m_ShowProfiler },
+				{ "Animation", &m_ShowAnimationWindow }, { "Animator", &m_ShowAnimatorWindow },
+				{ "Sprite Editor", &m_ShowSpriteEditor }
+			};
+			settings->SetCallbacks([this, windows]() {
+				EditorDockLayout::WindowVisibility state;
+				for (const auto& [name, open] : windows) state[name] = *open;
+				m_ScriptWindows.CaptureLayoutWindows(state);
+				return state;
+			}, [this, windows](const EditorDockLayout::WindowVisibility& state) {
+				for (const auto& [name, open] : windows) {
+					if (const auto found = state.find(name); found != state.end()) *open = found->second;
+				}
+				m_ScriptWindows.ApplyLayoutWindows(state);
+			});
+		}
+
 		// Load BEFORE ApplyTheme: ImGuiContextLayer already ran ApplyFunkeTheme on its OnAttach; this reskins the live style with the user's saved choice.
 		EditorPreferences::Load();
 		EditorPreferences::ApplyTheme();
@@ -1050,6 +1071,7 @@ namespace Funke {
 	}
 
 	void ImGuiEditorLayer::OnDetach(Application& app) {
+		if (auto* settings = EditorDockLayout::WindowSettings::Get()) settings->ClearCallbacks();
 		GameLocalization::SetPreviewLanguage({});
 		m_SceneOpenLifetime.reset();
 		if (m_SceneOpenOperation != 0) SceneManager::CancelSceneLoad(m_SceneOpenOperation);
@@ -1632,6 +1654,7 @@ namespace Funke {
 			|| TryComponentIcon<ParticleSystem2DComponent>(scene, handle, icon)
 			|| TryComponentIcon<ParticleSystem3DComponent>(scene, handle, icon)
 			|| TryComponentIcon<AudioSourceComponent>(scene, handle, icon)
+			|| TryComponentIcon<TextRendererComponent>(scene, handle, icon)
 			|| TryComponentIcon<RectTransform2DComponent>(scene, handle, icon);
 		return icon;
 	}
@@ -1703,11 +1726,16 @@ namespace Funke {
 	}
 
 	void ImGuiEditorLayer::OpenPanel(const char* windowName, bool& showPanel) {
+		if (Application::GetIsPlaying()) return;
 		showPanel = true;
 		m_PendingPanelFocus = windowName;
 	}
 
 	void ImGuiEditorLayer::ApplyPanelFocusRequest() {
+		if (Application::GetIsPlaying()) {
+			m_PendingPanelFocus.clear();
+			return;
+		}
 		if (m_PendingPanelFocus.empty()) return;
 		ImGuiWindow* window = ImGui::FindWindowByName(m_PendingPanelFocus.c_str());
 		m_PendingPanelFocus.clear();
@@ -1730,7 +1758,8 @@ namespace Funke {
 
 	void ImGuiEditorLayer::RenderMainMenu(Scene& scene) {
 		using Icon = EditorMenu::Icon;
-		if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_K)) {
+		const bool canUseEditorCommands = !Application::GetIsPlaying();
+		if (canUseEditorCommands && ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_K)) {
 			m_OpenCommandPalette = true;
 		}
 		RenderCommandPalette(scene);
@@ -1750,7 +1779,7 @@ namespace Funke {
 			}
 			EditorUI::Tooltip("Closing the editor ends all scene, prefab and asset undo/redo histories, even after saving.");
 			const bool reloadPending = EditorRestart::HasPending();
-			if (EditorMenu::Item(Icon::Reload, reloadPending ? "Reload App (pending)" : "Reload App")) {
+			if (EditorMenu::Item(Icon::Reload, reloadPending ? "Reload App (pending)" : "Reload App", nullptr, false, canUseEditorCommands)) {
 				RequestEditorAction(reloadPending && EditorRestart::GetPendingKind() == EditorRestart::Kind::Restart
 					? PendingEditorAction::Restart : PendingEditorAction::Reload);
 			}
@@ -1768,6 +1797,7 @@ namespace Funke {
 
 
 		if (ImGui::BeginMenu("Project")) {
+			ImGui::BeginDisabled(!canUseEditorCommands);
 			bool hasProject = ProjectManager::HasProject();
 			if (EditorMenu::Item(Icon::Build, "Build", nullptr, false, hasProject && !Application::GetIsPlaying())) {
 				OpenPanel("Build", m_ShowBuildPanel);
@@ -1790,6 +1820,7 @@ namespace Funke {
 				OpenPanel("Package Manager", m_ShowPackageManager);
 			}
 
+			ImGui::EndDisabled();
 			ImGui::EndMenu();
 		}
 
@@ -1819,7 +1850,7 @@ namespace Funke {
 				RenderGameViewSettingsMenu();
 				ImGui::EndMenu();
 			}
-			if (EditorMenu::Begin(Icon::Layout, "Layout")) {
+			if (EditorMenu::Begin(Icon::Layout, "Layout", canUseEditorCommands)) {
 				if (EditorMenu::Item(Icon::Layout, "Default")) {
 					ImGuiContextLayer::ResetLayoutToDefault();
 				}
@@ -1837,13 +1868,14 @@ namespace Funke {
 				}
 				ImGui::EndMenu();
 			}
-			if (EditorMenu::Item(Icon::Preferences, "Preferences...")) {
+			if (EditorMenu::Item(Icon::Preferences, "Preferences...", nullptr, false, canUseEditorCommands)) {
 				OpenPanel("Editor Preferences", m_ShowEditorPreferences);
 			}
 			ImGui::EndMenu();
 		}
 
 		if (ImGui::BeginMenu("Tools")) {
+			ImGui::BeginDisabled(!canUseEditorCommands);
 			if (EditorMenu::Item(Icon::Search, "Search Commands...", EditorShortcuts::k_CommandPaletteLabel)) {
 				m_OpenCommandPalette = true;
 			}
@@ -1853,6 +1885,7 @@ namespace Funke {
 			EditorMenu::Item(Icon::Animator, "Animator", nullptr, &m_ShowAnimatorWindow);
 			// Windows written in C# by the game or its packages (Funke.Editor.EditorWindow).
 			m_ScriptWindows.DrawMenuItems();
+			ImGui::EndDisabled();
 			ImGui::EndMenu();
 		}
 
@@ -1919,6 +1952,16 @@ namespace Funke {
 
 	void ImGuiEditorLayer::RenderCommandPalette(Scene& scene) {
 		constexpr const char* k_PaletteId = "##CommandPalette";
+		if (Application::GetIsPlaying()) {
+			// Play can begin asynchronously while the palette is open. Discard pending
+			// requests and close it before it can consume gameplay input or run a command.
+			m_OpenCommandPalette = false;
+			if (ImGui::BeginPopup(k_PaletteId)) {
+				ImGui::CloseCurrentPopup();
+				ImGui::EndPopup();
+			}
+			return;
+		}
 		const bool justOpened = m_OpenCommandPalette;
 		if (m_OpenCommandPalette) {
 			ImGui::OpenPopup(k_PaletteId);
@@ -2355,6 +2398,7 @@ namespace Funke {
 		// Stop/Play. Built games get this for free at Application::Initialize.
 		if (const FunkeProject* project = ProjectManager::GetCurrentProject()) {
 			Time::SetFixedDeltaTime(project->GetFixedDeltaTimeSeconds());
+			ProjectManager::ApplyPhysicsDefaults();
 			RenderSettings::Apply(project->Graphics);
 		}
 		for (const auto& weakScene : SceneManager::GetLoadedScenes()) {
@@ -2490,9 +2534,17 @@ namespace Funke {
 		const bool standaloneDisabled = (m_BuildState > 0) || (m_ReserializeState > 0)
 			|| !ProjectManager::GetCurrentProject();
 		if (standaloneDisabled) ImGui::BeginDisabled();
-		if (IconButton("##LaunchStandalone", "launch_standalone", iconSize, btnSize)) {
+		// The window + arrow needs more room than the solid play/stop glyphs at normal text zoom.
+		// Spend the existing padding on the image, keeping the same button bounds and group alignment.
+		const float standaloneIconSize = std::max(iconSize, std::min(24.0f, frameH - 4.0f));
+		ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
+			ImVec2((buttonW - standaloneIconSize) * 0.5f, (frameH - standaloneIconSize) * 0.5f));
+		// Avoid the crowded 16px raster even when the displayed icon is smaller than 32px.
+		if (IconButton("##LaunchStandalone", "launch_standalone", std::max(32.0f, standaloneIconSize),
+			ImVec2(standaloneIconSize, standaloneIconSize))) {
 			LaunchStandalone();
 		}
+		ImGui::PopStyleVar();
 		if (standaloneDisabled) ImGui::EndDisabled();
 
 		ImGui::PopStyleColor();
@@ -2509,12 +2561,12 @@ namespace Funke {
 					"Launches the game in\n"
 					"a separate window.");
 		}
-		// Status text sits beside the buttons, nudged down to their vertical center.
-		if (isPlaying) {
+		// Show the paused state beside the buttons, aligned to their vertical center.
+		if (isPlaying && isPaused) {
 			ImGui::SameLine(0.0f, 10.0f);
 			ImGui::AlignTextToFramePadding();
 			ImGui::PushStyleColor(ImGuiCol_Text, EditorTheme::Colors::Highlight());
-			ImGui::TextUnformatted(isPaused ? "Paused" : "Playing");
+			ImGui::TextUnformatted("Paused");
 			ImGui::PopStyleColor();
 		}
 		if (m_PlayModeRecompilePending) {
@@ -3010,6 +3062,7 @@ namespace Funke {
 				Time::SetTimeScale(1.0f);
 				if (const FunkeProject* project = ProjectManager::GetCurrentProject()) {
 					Time::SetFixedDeltaTime(project->GetFixedDeltaTimeSeconds());
+					ProjectManager::ApplyPhysicsDefaults();
 					RenderSettings::Apply(project->Graphics);
 				}
 				ReapplyScriptFieldOverrides(restoredScenes);
@@ -5062,8 +5115,8 @@ namespace Funke {
 						const float entityIconSize = ImGui::GetTextLineHeight();
 						const uint64_t entityIcon = EditorIcons::Get(entityIconName, static_cast<int>(entityIconSize));
 						if (entityIcon) {
-							// Prefab and component glyphs carry their own color; the plain entity glyph follows the theme text color.
-							const ImVec4 entityIconTint = std::string_view(entityIconName) == "entity"
+							// Monochrome entity and text glyphs follow the theme text color.
+							const ImVec4 entityIconTint = (std::string_view(entityIconName) == "entity" || std::string_view(entityIconName) == "text")
 								? ImGui::GetStyleColorVec4(ImGuiCol_Text) : ImVec4(1, 1, 1, 1);
 							ImGui::ImageWithBg(static_cast<ImTextureID>(static_cast<intptr_t>(entityIcon)),
 								ImVec2(entityIconSize, entityIconSize), ImVec2(0, 1), ImVec2(1, 0),

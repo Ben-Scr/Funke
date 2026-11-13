@@ -39,6 +39,11 @@ namespace Funke::EditorUI {
 	bool IconButton(const char* id, const char* iconName, const char* tooltip = nullptr,
 		bool active = false, bool keepIconColors = false, float size = 0.0f, const char* fallbackLabel = nullptr);
 
+	// Icon-only menu action with normal keyboard navigation and popup closing.
+	// Uses the text fallback only when the icon is unavailable.
+	bool IconMenuItem(const char* id, const char* iconName, const char* tooltip,
+		bool enabled = true, const char* fallbackLabel = nullptr);
+
 	// Text button with the same on/off fill as an active IconButton (e.g. "Gizmos", "Stats").
 	bool ToggleButton(const char* label, bool active, const char* tooltip = nullptr);
 

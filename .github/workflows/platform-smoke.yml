@@ -11,6 +11,16 @@ on:
         description: Exact artifact name in that run
         required: true
         type: string
+      build_evidence_artifact:
+        description: Optional build-evidence artifact from the same successful source run
+        required: false
+        default: ''
+        type: string
+      expected_commit:
+        description: Full expected source commit (required with build evidence)
+        required: false
+        default: ''
+        type: string
       entry:
         description: HTML entry relative to the artifact root
         required: true
@@ -48,6 +58,39 @@ jobs:
           python -m pip install Pillow
           npm install --prefix "$RUNNER_TEMP/funke-browser" playwright@1.62.1
           "$RUNNER_TEMP/funke-browser/node_modules/.bin/playwright" install --with-deps chromium
+      - name: Verify build evidence source
+        shell: python
+        env:
+          SOURCE_RUN: ${{ inputs.source_run_id }}
+          EVIDENCE_ARTIFACT: ${{ inputs.build_evidence_artifact }}
+          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          import json, os, re, sys, urllib.request
+          sys.path.insert(0, "scripts/ci")
+          from build_export_evidence import validate_source_run
+          artifact, commit = os.environ["EVIDENCE_ARTIFACT"], os.environ["EXPECTED_COMMIT"]
+          if bool(artifact) != bool(commit):
+              raise SystemExit("Build evidence artifact and expected commit must be supplied together.")
+          if artifact:
+              run_id = os.environ["SOURCE_RUN"]
+              if not run_id.isdecimal() or not re.fullmatch(r"[0-9a-f]{40}", commit):
+                  raise SystemExit("Invalid source run ID or full commit hash.")
+              repository = os.environ["GITHUB_REPOSITORY"]
+              request = urllib.request.Request(
+                  f"{os.environ['GITHUB_API_URL']}/repos/{repository}/actions/runs/{run_id}",
+                  headers={"Authorization": "Bearer " + os.environ["GH_TOKEN"],
+                           "Accept": "application/vnd.github+json"})
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  validate_source_run(json.load(response), repository, commit)
+      - name: Download build evidence
+        if: inputs.build_evidence_artifact != ''
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.source_run_id }}
+          name: ${{ inputs.build_evidence_artifact }}
+          path: ${{ runner.temp }}/funke-build-evidence
       - name: Download exported game
         uses: actions/download-artifact@v4
         with:
@@ -58,6 +101,8 @@ jobs:
       - name: Run the actual WebAssembly export
         shell: python
         env:
+          EVIDENCE_ARTIFACT: ${{ inputs.build_evidence_artifact }}
+          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
           WEB_ENTRY: ${{ inputs.entry }}
           SCRIPT_MARKER: ${{ inputs.script_marker }}
           EXPECTED_PIXEL: ${{ inputs.expected_pixel }}
@@ -73,11 +118,15 @@ jobs:
           if not entry.is_relative_to(root) or not entry.is_file():
               raise SystemExit("The entry must be an existing file inside the downloaded artifact.")
           os.environ["NODE_PATH"] = str(temporary / "funke-browser/node_modules")
+          provenance = (["--build-evidence", str(temporary / "funke-build-evidence/build-evidence.json"),
+                         "--expected-commit", os.environ["EXPECTED_COMMIT"]]
+                        if os.environ["EVIDENCE_ARTIFACT"] else [])
           subprocess.run([
               sys.executable, "scripts/ci/platform_export_smoke.py",
               "--output", "output/platform-web-smoke",
               "--expect-log", os.environ["SCRIPT_MARKER"],
               "--expect-pixel", os.environ["EXPECTED_PIXEL"],
+          ] + provenance + [
               "web", "--entry", str(entry),
               "--browser-arg=--enable-unsafe-webgpu",
               "--browser-arg=--use-angle=swiftshader",
@@ -104,5 +153,5 @@ jobs:
               for level in ("unit_mock", "real_build", "real_runtime", "physical_device"):
                   status = result.get("evidenceLevels", {}).get(level, {}).get("status", "unverified")
                   summary.write(f"| {level} | {status} |\n")
-              summary.write("\nThis runtime check does not attest the export's source commit or compiler. "
+              summary.write("\nBuild provenance is verified only when supplied from a trusted source run. "
                             "Platform qualification remains **unverified**.\n")

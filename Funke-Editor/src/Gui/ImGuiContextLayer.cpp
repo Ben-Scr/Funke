@@ -170,6 +170,7 @@ namespace Funke {
 		IMGUI_CHECKVERSION();
 		s_ActiveLayoutPreset.clear();
 		ImGui::CreateContext();
+		m_LayoutWindowSettings.Install();
 
 		// Numeric fields accept arithmetic ("5/2", "/2", …) via this evaluator hook.
 		ImGui::SetScalarExpressionHook(&ScalarExpressionHook);
@@ -254,7 +255,7 @@ namespace Funke {
 
 		// Explicit flush before DestroyContext: the timer-driven auto-save may not have fired yet.
 		const ImGuiIO& io = ImGui::GetIO();
-		if (io.IniFilename != nullptr && *io.IniFilename != '\0') {
+		if (s_PendingLayoutReloadPath.empty() && io.IniFilename != nullptr && *io.IniFilename != '\0') {
 			SyncDockIdsFromLiveNodes();
 			ImGui::SaveIniSettingsToDisk(io.IniFilename);
 			std::error_code ec;
@@ -264,6 +265,8 @@ namespace Funke {
 				exists ? "ok" : "WRITE FAILED — path not writable?");
 		}
 
+		// We flushed above (or kept a pending preset). DestroyContext must not overwrite that file again.
+		ImGui::GetIO().IniFilename = nullptr;
 		ColorPickerEyedropper::Shutdown();
 		EditorWindowIcons::SetTextureProvider(nullptr);
 		EditorRuntime::ImGuiContextSetup::ShutdownBackends();
@@ -320,7 +323,7 @@ namespace Funke {
 	void ImGuiContextLayer::FlushSettingsIfDirtyOrPeriodic() {
 		constexpr float k_PeriodicSaveSeconds = 5.0f;
 
-		if (!m_IsInitialized) return;
+		if (!m_IsInitialized || !s_PendingLayoutReloadPath.empty()) return;
 		ImGuiIO& io = ImGui::GetIO();
 		if (io.IniFilename == nullptr || *io.IniFilename == '\0') return;
 
@@ -340,7 +343,7 @@ namespace Funke {
 
 	void ImGuiContextLayer::OnEvent(Application& app, FunkeEvent& event) {
 		(void)app;
-		if (!m_IsInitialized) return;
+		if (!m_IsInitialized || !s_PendingLayoutReloadPath.empty()) return;
 		const EventType type = event.GetEventType();
 		if (type == EventType::WindowLostFocus || type == EventType::WindowClose) {
 			ImGuiIO& io = ImGui::GetIO();

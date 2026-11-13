@@ -45,7 +45,7 @@ project "Funke-Runtime"
     -- Same cross-binary share as ProfilerPanel: the .cpp files use ImGui
     -- and are excluded from the engine DLL; we compile them into the
     -- runtime exe so the F6/F7 toggle layers can drive them.
-    files { path.join(ROOT_DIR, "Funke-Engine/src/Diagnostics/**.cpp") }
+    files { path.join(ROOT_DIR, "Funke-Engine/src/Diagnostics/*Overlay.cpp") }
 
     -- The ImGui WebGPU backend lives inside Funke-Engine.dll so the
     -- runtime exe and engine share one wgpu::Device. RuntimeImGuiHost.cpp

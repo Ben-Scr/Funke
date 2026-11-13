@@ -1,5 +1,6 @@
 #include "pch.hpp"
 #include "Editor/ExternalEditor.hpp"
+#include "Editor/ExternalEditorProjectContext.hpp"
 #include "Core/Platform.hpp"
 #include "Serialization/File.hpp"
 #include "Serialization/Json.hpp"
@@ -29,9 +30,10 @@ namespace Funke {
 
 #ifdef FNK_PLATFORM_WINDOWS
 	namespace {
-		// Tracked (not detached) so editor shutdown can join them; join may block ~4s on the cold-start VS thread.
+		// Tracked so editor shutdown can cancel pending solution waits and join launchers.
 		std::mutex s_LaunchMutex;
 		std::vector<std::thread> s_LaunchThreads;
+		std::stop_source s_LaunchStop;
 
 		struct VisualStudioCandidate {
 			std::string DisplayName;
@@ -303,10 +305,15 @@ namespace Funke {
 		std::vector<std::thread> drained;
 		{
 			std::scoped_lock lock(s_LaunchMutex);
+			s_LaunchStop.request_stop();
 			drained.swap(s_LaunchThreads);
 		}
 		for (auto& t : drained) {
 			if (t.joinable()) t.join();
+		}
+		{
+			std::scoped_lock lock(s_LaunchMutex);
+			s_LaunchStop = std::stop_source{};
 		}
 #endif
 	}
@@ -562,33 +569,58 @@ namespace Funke {
 		return fallback;
 	}
 
-	std::string ExternalEditor::ResolveProjectContext(const std::string& filePath, const std::string& ext) {
-		FunkeProject* project = ProjectManager::GetCurrentProject();
+	std::string ExternalEditorDetail::ResolveProjectContext(const FunkeProject* project, const std::string& filePath) {
 		if (!project) return "";
 
-		// C# scripts → project .sln
-		if (ext == ".cs") {
-			if (std::filesystem::exists(project->SlnPath))
-				return std::filesystem::canonical(project->SlnPath).string();
-		}
+		std::string ext = Path::FromUtf8(filePath).extension().string();
+		std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char ch) {
+			return static_cast<char>(std::tolower(ch));
+		});
 
 		// C++ native scripts → NativeScripts .sln
 		if (ext == ".cpp" || ext == ".cc" || ext == ".cxx" || ext == ".c"
 			|| ext == ".h" || ext == ".hh" || ext == ".hpp" || ext == ".hxx" || ext == ".inl" || ext == ".ipp") {
-			auto nativeSln = std::filesystem::path(project->NativeScriptsDir)
+			if (project->NativeScriptsDir.empty()) return "";
+			auto nativeSln = Path::FromUtf8(project->NativeScriptsDir)
 				/ "build" / (project->GetNativeScriptTargetName() + ".sln");
-			if (std::filesystem::exists(nativeSln))
-				return std::filesystem::canonical(nativeSln).string();
+			// A newly created script can be opened before CMake writes the solution.
+			// Falling through here would route it to an already-open C# instance.
+			return Path::ToUtf8(std::filesystem::weakly_canonical(nativeSln));
 		}
 
 		// Fallback: project .sln if available
-		if (std::filesystem::exists(project->SlnPath))
-			return std::filesystem::canonical(project->SlnPath).string();
+		if (std::filesystem::exists(Path::FromUtf8(project->SlnPath)))
+			return Path::ToUtf8(std::filesystem::canonical(Path::FromUtf8(project->SlnPath)));
 
 		return "";
 	}
 
+	ExternalEditorDetail::ProjectContextStatus ExternalEditorDetail::WaitForProjectContext(
+		const std::string& solution, std::stop_token stop, std::chrono::milliseconds timeout) {
+		const auto deadline = std::chrono::steady_clock::now() + timeout;
+		const auto path = Path::FromUtf8(solution);
+		while (!stop.stop_requested()) {
+			std::error_code ec;
+			if (solution.empty() || std::filesystem::is_regular_file(path, ec))
+				return ProjectContextStatus::Ready;
+			if (std::chrono::steady_clock::now() >= deadline)
+				return ProjectContextStatus::TimedOut;
+			std::this_thread::sleep_for(std::chrono::milliseconds(100));
+		}
+		return ProjectContextStatus::Cancelled;
+	}
+
 #ifdef FNK_PLATFORM_WINDOWS
+	static bool WaitForSolutionBeforeLaunch(const std::string& solution, std::stop_token stop) {
+		const auto status = ExternalEditorDetail::WaitForProjectContext(solution, stop);
+		if (status == ExternalEditorDetail::ProjectContextStatus::TimedOut) {
+			FNK_CORE_ERROR_TAG("ExternalEditor",
+				"Solution '{}' was not generated within 30 seconds. Check native compilation errors and rebuild scripts, then open the file again.",
+				solution);
+		}
+		return status == ExternalEditorDetail::ProjectContextStatus::Ready;
+	}
+
 	// Check if Visual Studio specifically has a window open containing the search string.
 	// Requires BOTH the search title AND "Visual Studio" to be in the window title,
 	// to avoid false positives from the Funke editor or other windows.
@@ -836,13 +868,10 @@ namespace Funke {
 		}
 
 		const auto& editor = GetSelected();
-		std::string absPath = std::filesystem::absolute(filePath).string();
-
-		std::string ext = std::filesystem::path(filePath).extension().string();
-		std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+		std::string absPath = Path::ToUtf8(std::filesystem::absolute(Path::FromUtf8(filePath)));
 
 		// Resolve .sln path for VS/Rider, folder path for VS Code
-		std::string slnPath = ResolveProjectContext(filePath, ext);
+		std::string slnPath = ExternalEditorDetail::ResolveProjectContext(ProjectManager::GetCurrentProject(), filePath);
 		std::string projectFolder;
 		FunkeProject* project = ProjectManager::GetCurrentProject();
 		if (project) projectFolder = project->RootDirectory;
@@ -852,6 +881,11 @@ namespace Funke {
 
 #ifdef FNK_PLATFORM_WINDOWS
 		std::string fullCmd;
+		std::stop_token launchStop;
+		{
+			std::scoped_lock lock(s_LaunchMutex);
+			launchStop = s_LaunchStop.get_token();
+		}
 
 		switch (editor.Type) {
 		case ExternalEditorType::VSCode: {
@@ -875,7 +909,8 @@ namespace Funke {
 			std::string file = absPath;
 			int lineNum = line;
 
-			std::thread vsLauncher([devenvPath, sln, file, lineNum]() {
+			std::thread vsLauncher([devenvPath, sln, file, lineNum, launchStop]() {
+				if (!WaitForSolutionBeforeLaunch(sln, launchStop)) return;
 				HRESULT comHr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 				const bool needUninit = SUCCEEDED(comHr);
 
@@ -969,7 +1004,9 @@ namespace Funke {
 
 		// Launch async so we don't block the engine editor.
 		// M29: tracked instead of detached so editor shutdown can join.
-		std::thread launcher([fullCmd]() {
+		const std::string requiredSolution = editor.Type == ExternalEditorType::Rider ? slnPath : "";
+		std::thread launcher([fullCmd, requiredSolution, launchStop]() {
+			if (!WaitForSolutionBeforeLaunch(requiredSolution, launchStop)) return;
 			std::wstring wcmd = Utf8ToWide(fullCmd);
 			std::vector<wchar_t> buf(wcmd.begin(), wcmd.end());
 			buf.push_back(L'\0');
@@ -987,6 +1024,9 @@ namespace Funke {
 		});
 		TrackLaunchThread(std::move(launcher));
 #else
+		// Non-Windows native builds commonly use Ninja/Makefiles and have no .sln.
+		if (!slnPath.empty() && !std::filesystem::is_regular_file(Path::FromUtf8(slnPath)))
+			slnPath.clear();
 		std::vector<std::string> command{ editor.ExecutablePath };
 		switch (editor.Type) {
 		case ExternalEditorType::VSCode:

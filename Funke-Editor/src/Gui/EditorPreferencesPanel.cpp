@@ -3,6 +3,7 @@
 
 #include "Assets/AssetKind.hpp"
 #include "Core/Application.hpp"
+#include "Core/Platform.hpp"
 #include "Editor/EditorPreferences.hpp"
 #include "Editor/EditorRestart.hpp"
 #include "Editor/ExternalEditor.hpp"
@@ -11,6 +12,7 @@
 #include "Gui/EditorIcons.hpp"
 #include "Gui/EditorShortcuts.hpp"
 #include "Gui/EditorTheme.hpp"
+#include "Gui/ThemePicker.hpp"
 #include "Gui/EditorUI.hpp"
 #include "Gui/ImGuiContextLayer.hpp"
 #include "Gui/ImGuiFonts.hpp"
@@ -118,117 +120,21 @@ namespace Funke {
 			return "100%";
 		}
 
-		void DrawThemePreview(ImDrawList* drawList, const ImVec2& min, const ImVec2& size,
-			const ImGuiStyle& theme, bool custom) {
-			auto point = [&](float x, float y) { return ImVec2(min.x + size.x * x, min.y + size.y * y); };
-			auto color = [&](ImGuiCol role) { return ImGui::GetColorU32(theme.Colors[role]); };
-			auto rect = [&](float x, float y, float w, float h, ImGuiCol role) {
-				drawList->AddRectFilled(point(x, y), point(x + w, y + h), color(role));
-			};
-			rect(0, 0, 1, 1, ImGuiCol_WindowBg);
-			rect(0, 0, 1, 0.15f, ImGuiCol_TitleBg);
-			rect(0, 0.17f, 0.23f, 0.59f, ImGuiCol_FrameBg);
-			rect(0.77f, 0.17f, 0.23f, 0.59f, ImGuiCol_FrameBg);
-			rect(0, 0.78f, 1, 0.22f, ImGuiCol_FrameBg);
-			for (int i = 0; i < 3; ++i) {
-				rect(0.04f + i * 0.06f, 0.06f, 0.025f, 0.035f, ImGuiCol_TextDisabled);
-				for (float x : { 0.04f, 0.81f }) {
-					rect(x, 0.26f + i * 0.13f, i == 2 ? 0.10f : 0.15f, 0.035f,
-						i == 1 ? ImGuiCol_TabSelectedOverline : ImGuiCol_TextDisabled);
-				}
-				const ImVec2 swatchMin = point(0.04f + i * 0.12f, 0.84f);
-				const ImVec2 swatchMax = point(0.12f + i * 0.12f, 0.94f);
-				if (custom) {
-					constexpr ImGuiCol k_Swatches[] = { ImGuiCol_WindowBg, ImGuiCol_Text, ImGuiCol_CheckMark };
-					drawList->AddRectFilled(swatchMin, swatchMax, color(k_Swatches[i]));
-				}
-				drawList->AddRect(swatchMin, swatchMax, color(ImGuiCol_TextDisabled));
-			}
-			rect(0.90f, 0.06f, 0.04f, 0.035f, ImGuiCol_TabSelectedOverline);
-			const float half = std::min(size.x * 0.10f, size.y * 0.14f);
-			const ImVec2 center = point(0.50f, 0.46f);
-			const ImVec2 objectMin(center.x - half, center.y - half);
-			const ImVec2 objectMax(center.x + half, center.y + half);
-			drawList->AddRectFilled(objectMin, objectMax, color(ImGuiCol_TextSelectedBg));
-			drawList->AddRect(objectMin, objectMax, color(ImGuiCol_TabSelectedOverline));
-		}
-
-		bool ThemeChoice(const char* label, EditorThemeMode mode, bool selected, const ImVec2& size,
-			const ImGuiStyle& light, const ImGuiStyle& dark, const ImGuiStyle& custom) {
-			const float font = ImGui::GetFontSize();
-			const float padding = font * 0.5f;
-			const ImVec2 min = ImGui::GetCursorScreenPos();
-			const ImVec2 max(min.x + size.x, min.y + size.y);
-			const bool clicked = ImGui::InvisibleButton(label, size, ImGuiButtonFlags_EnableNav);
-			if (!ImGui::IsItemVisible()) return clicked;
-			const bool hovered = ImGui::IsItemHovered();
-			const ImGuiStyle& style = ImGui::GetStyle();
-			ImDrawList* drawList = ImGui::GetWindowDrawList();
-			const ImU32 accent = ImGui::GetColorU32(EditorTheme::Colors::Accent());
-			drawList->AddRectFilled(min, max, ImGui::GetColorU32(ImGui::IsItemActive() ? ImGuiCol_FrameBgActive
-				: hovered ? ImGuiCol_FrameBgHovered : ImGuiCol_WindowBg), style.FrameRounding);
-			if (selected) {
-				ImVec4 tint = EditorTheme::Colors::Accent();
-				tint.w = 0.10f;
-				drawList->AddRectFilled(min, max, ImGui::GetColorU32(tint), style.FrameRounding);
-			}
-			drawList->AddRect(min, max, selected ? accent : ImGui::GetColorU32(ImGuiCol_Border),
-				style.FrameRounding, 0, selected ? std::max(1.0f, font * 0.1f) : 1.0f);
-			const ImVec2 previewMin(min.x + padding, min.y + padding);
-			const ImVec2 previewSize(size.x - padding * 2.0f, size.y - padding * 3.0f - font * 1.4f);
-			const ImVec2 previewMax(previewMin.x + previewSize.x, previewMin.y + previewSize.y);
-			drawList->PushClipRect(previewMin, previewMax, true);
-			DrawThemePreview(drawList, previewMin, previewSize,
-				mode == EditorThemeMode::Light ? light : mode == EditorThemeMode::Custom ? custom : dark,
-				mode == EditorThemeMode::Custom);
-			if (mode == EditorThemeMode::SystemDefault) {
-				drawList->PushClipRect(previewMin, ImVec2(previewMin.x + previewSize.x * 0.5f, previewMax.y), true);
-				DrawThemePreview(drawList, previewMin, previewSize, light, false);
-				drawList->PopClipRect();
-			}
-			drawList->PopClipRect();
-			drawList->AddRect(previewMin, previewMax, ImGui::GetColorU32(ImGuiCol_Border));
-			const ImVec2 labelMin(min.x + padding, previewMax.y + padding);
-			const ImU32 text = ImGui::GetColorU32(ImGuiCol_Text);
-			const char* icon = mode == EditorThemeMode::Light ? "theme_light"
-				: mode == EditorThemeMode::Dark ? "theme_dark"
-				: mode == EditorThemeMode::SystemDefault ? "monitor" : "pen";
-			const auto texture = EditorIcons::Get(icon, static_cast<int>(std::ceil(font)));
-			if (texture) drawList->AddImage(static_cast<ImTextureID>(texture), labelMin,
-				ImVec2(labelMin.x + font, labelMin.y + font), ImVec2(0, 1), ImVec2(1, 0), text);
-			drawList->AddText(ImVec2(labelMin.x + font * 1.4f, labelMin.y), text, label);
-			const ImVec2 indicator(max.x - padding - font * 0.4f, labelMin.y + font * 0.5f);
-			drawList->AddCircle(indicator, font * 0.35f, selected ? accent : ImGui::GetColorU32(ImGuiCol_TextDisabled));
-			if (selected) drawList->AddCircleFilled(indicator, font * 0.18f, accent);
-			EditorUI::Tooltip(mode == EditorThemeMode::SystemDefault ? "Follow the system light/dark appearance."
-				: mode == EditorThemeMode::Custom ? "Use your saved palette and edit it in Custom Colors." : label);
-			return clicked;
-		}
-
 		EditorThemeMode ThemeChoices(EditorThemeMode currentMode) {
 			static const ImGuiStyle light = [] { ImGuiStyle theme; ImGuiContextLayer::ConfigureFunkeThemeColors(theme, false); return theme; }();
 			static const ImGuiStyle dark = [] { ImGuiStyle theme; ImGuiContextLayer::ConfigureFunkeThemeColors(theme, true); return theme; }();
 			ImGuiStyle custom = ImGui::GetStyle();
 			for (int i = 0; i < ImGuiCol_COUNT; ++i) custom.Colors[i] = EditorPreferences::GetCustomColor(i);
-			constexpr EditorThemeMode k_Modes[] = { EditorThemeMode::Light, EditorThemeMode::Dark,
+			constexpr EditorThemeMode modes[] = { EditorThemeMode::Light, EditorThemeMode::Dark,
 				EditorThemeMode::SystemDefault, EditorThemeMode::Custom };
-			constexpr const char* k_Labels[] = { "Light", "Dark", "System", "Custom" };
-			const float font = ImGui::GetFontSize();
-			const float gap = ImGui::GetStyle().ItemSpacing.x;
-			const float available = ImGui::GetContentRegionAvail().x;
-			float minimumWidth = font * 9.0f;
-			for (const char* label : k_Labels) minimumWidth = std::max(minimumWidth, ImGui::CalcTextSize(label).x + font * 4.0f);
-			const int columns = available >= minimumWidth * 4.0f + gap * 3.0f ? 4
-				: available >= minimumWidth * 2.0f + gap ? 2 : 1;
-			const ImVec2 size(std::max(1.0f, std::min(font * 14.0f, (available - gap * (columns - 1)) / columns)), font * 9.0f);
-			EditorThemeMode chosen = currentMode;
-			ImGui::PushID("EditorThemeChoices");
-			for (int i = 0; i < 4; ++i) {
-				if (i % columns != 0) ImGui::SameLine(0.0f, gap);
-				if (ThemeChoice(k_Labels[i], k_Modes[i], k_Modes[i] == currentMode, size, light, dark, custom)) chosen = k_Modes[i];
-			}
-			ImGui::PopID();
-			return chosen;
+			const char* labels[] = { "Light", "Dark", "System", "Custom" };
+			const char* tooltips[] = { "Light", "Dark", "Follow the system light/dark appearance.",
+				"Use your saved palette and edit it in Custom Colors." };
+			int current = 0;
+			for (int i = 0; i < 4; ++i) if (modes[i] == currentMode) current = i;
+			const auto chosen = ThemePicker::Draw(static_cast<ThemePicker::Mode>(current), light, dark, custom,
+				EditorTheme::Colors::Accent(), [](const char* icon, int size) { return EditorIcons::Get(icon, size); }, labels, tooltips);
+			return modes[static_cast<int>(chosen)];
 		}
 
 		std::string LowerCopy(std::string value) {
@@ -286,6 +192,7 @@ namespace Funke {
 					RenderLayoutsTab();
 					RenderBehaviorTab();
 					RenderCameraTab();
+					RenderGizmosTab();
 				}
 				ImGui::EndChild();
 			}
@@ -294,22 +201,42 @@ namespace Funke {
 					const char* Label;
 					const char* ScrollId;
 					void (EditorPreferencesPanel::*Render)();
+					void (EditorPreferencesPanel::*Reset)();
+					const char* ResetTooltip;
 				};
 				const Category categories[] = {
-					{ "Appearance", "##AppearanceScroll", &EditorPreferencesPanel::RenderAppearanceTab },
-					{ "Scripting", "##ScriptingScroll", &EditorPreferencesPanel::RenderScriptingTab },
-					{ "Layouts", "##LayoutsScroll", &EditorPreferencesPanel::RenderLayoutsTab },
-					{ "Behavior", "##BehaviorScroll", &EditorPreferencesPanel::RenderBehaviorTab },
-					{ "Editor Camera", "##CameraScroll", &EditorPreferencesPanel::RenderCameraTab },
+					{ "Appearance", "##AppearanceScroll", &EditorPreferencesPanel::RenderAppearanceTab,
+						&EditorPreferencesPanel::ResetAppearanceTab, "Restore all Appearance preferences to their defaults." },
+					{ "Gizmos", "##GizmosScroll", &EditorPreferencesPanel::RenderGizmosTab,
+						&EditorPreferencesPanel::ResetGizmosTab, "Restore all gizmo colors to their defaults." },
+					{ "Scripting", "##ScriptingScroll", &EditorPreferencesPanel::RenderScriptingTab,
+						&EditorPreferencesPanel::ResetScriptingTab, "Restore script compilation defaults and select the first detected script editor." },
+					{ "Layouts", "##LayoutsScroll", &EditorPreferencesPanel::RenderLayoutsTab,
+						&EditorPreferencesPanel::ResetLayoutsTab, "Restore the default editor layout. Saved presets are kept." },
+					{ "Behavior", "##BehaviorScroll", &EditorPreferencesPanel::RenderBehaviorTab,
+						&EditorPreferencesPanel::ResetBehaviorTab, "Restore all Behavior preferences to their defaults." },
+					{ "Editor Camera", "##CameraScroll", &EditorPreferencesPanel::RenderCameraTab,
+						&EditorPreferencesPanel::ResetCameraTab, "Restore all 3D editor camera preferences to their defaults." },
 				};
 				const Category* active = nullptr;
 				for (const auto& category : categories) {
+					ImGui::PushID(category.Label);
 					const auto flags = m_OpenLayoutsRequest && category.Render == &EditorPreferencesPanel::RenderLayoutsTab
 						? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None;
 					if (EditorUI::BeginTabItem(category.Label, nullptr, flags)) {
 						active = &category;
 						EditorUI::EndTabItem();
 					}
+					// EndTabItem restores the ID scope, so active and inactive tabs share stable popup IDs.
+					EditorUI::Tooltip("Right-click to restore this tab's defaults.");
+					if (ImGui::BeginPopupContextItem("##ResetCategory")) {
+						ImGui::TextDisabled("%s", category.Label);
+						ImGui::Separator();
+						if (EditorUI::IconMenuItem("##Reset", "reset", category.ResetTooltip, true, "Reset"))
+							(this->*category.Reset)();
+						ImGui::EndPopup();
+					}
+					ImGui::PopID();
 				}
 				m_OpenLayoutsRequest = false;
 				EditorUI::EndTabBar();
@@ -329,6 +256,67 @@ namespace Funke {
 		RenderLayoutModals();
 
 		ImGui::End();
+	}
+
+	void EditorPreferencesPanel::ResetAppearanceTab() {
+		// A selection queued by the font picker must not overwrite the restored default.
+		(void)ReferencePicker::ConsumeSelection(k_FontPickerKey);
+		const uint64_t previousFont = EditorPreferences::GetEditorFontAssetId();
+		EditorPreferences::ResetAppearance();
+		if (EditorPreferences::GetEditorFontAssetId() != previousFont)
+			EditorRestart::Request("editor-font", "Editor font changed", EditorRestart::Kind::Restart);
+	}
+
+	void EditorPreferencesPanel::ResetScriptingTab() {
+		EditorPreferences::ResetScripting();
+		ExternalEditor::SetSelectedIndex(0);
+	}
+
+	void EditorPreferencesPanel::ResetLayoutsTab() {
+		ImGuiContextLayer::ResetLayoutToDefault();
+		m_LayoutError.clear();
+	}
+
+	void EditorPreferencesPanel::ResetBehaviorTab() {
+		EditorPreferences::ResetBehavior();
+	}
+
+	void EditorPreferencesPanel::ResetCameraTab() {
+		EditorPreferences::ResetCamera3DSettings();
+	}
+
+	void EditorPreferencesPanel::ResetGizmosTab() {
+		EditorPreferences::ResetGizmoColors();
+	}
+
+	void EditorPreferencesPanel::RenderGizmosTab() {
+		if (!PreferenceSectionVisible("Gizmo Colors",
+			"gizmos physics collider box circle polygon particle system emitter camera frame sprite outline halo rect transform ui text margin opacity alpha")) return;
+		if (EditorUI::BeginSection("Gizmo Colors", "Applies immediately", true, IsPreferenceSearchActive())) {
+			ImGui::TextWrapped("Colors for built-in 2D component gizmos. Shared across projects and independent of the editor theme.");
+			struct ColorSetting { EditorGizmoColor Gizmo; const char* Label; };
+			constexpr ColorSetting settings[] = {
+				{ EditorGizmoColor::PhysicsCollider, "Physics colliders" },
+				{ EditorGizmoColor::ParticleSystem, "Particle systems" },
+				{ EditorGizmoColor::CameraFrame, "Camera frames" },
+				{ EditorGizmoColor::SpriteOutline, "Sprite outlines" },
+				{ EditorGizmoColor::SpriteOutlineHalo, "Sprite outline halos" },
+				{ EditorGizmoColor::RectTransform, "UI rect outlines" },
+				{ EditorGizmoColor::TextMargin, "Text margins" },
+			};
+			for (const auto& setting : settings) {
+				ImGui::PushID(static_cast<int>(setting.Gizmo));
+				EditorUI::BeginSettingsRow(setting.Label);
+				auto channels = EditorPreferences::GetGizmoColor(setting.Gizmo).ToArray();
+				if (ImGui::ColorEdit4("##GizmoColor", channels.data(),
+					ImGuiColorEditFlags_AlphaBar | ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel)) {
+					EditorPreferences::SetGizmoColor(setting.Gizmo, Color::FromArray(channels));
+				}
+				EditorUI::EndSettingsRow();
+				ImGui::PopID();
+			}
+			EditorUI::EndSection();
+		}
 	}
 
 	bool EditorPreferencesPanel::IsPreferenceSearchActive() const {
@@ -373,15 +361,6 @@ namespace Funke {
 			if (EditorUI::BeginSection("Custom Colors", customActive ? "Custom theme active" : "Custom theme only",
 				customActive, IsPreferenceSearchActive())) {
 				ImGui::BeginDisabled(!customActive);
-
-				if (ImGui::Button("Reset to Default##ResetCustomColors")) {
-					EditorPreferences::ResetCustomColorsToDefault();
-					// Refresh live swatches after reseeding the palette.
-					EditorPreferences::ApplyTheme();
-				}
-				if (customActive) {
-					EditorUI::Tooltip("Resets the custom theme back to it's default");
-				}
 
 				// Keep the long palette list from displacing the remaining sections.
 				ImGui::BeginChild("##CustomColorsScroll",
@@ -431,11 +410,9 @@ namespace Funke {
 				fontId, AssetKind::Font, fontMissing, &fontSecondary);
 			const std::string fontSummary = fontDisplay + " / " + FontZoomLabel(EditorPreferences::GetEditorFontZoomPercent());
 			if (EditorUI::BeginSection("Editor Font", fontSummary.c_str(), true, IsPreferenceSearchActive())) {
-				const float resetWidth = ImGui::CalcTextSize("Reset").x + ImGui::GetStyle().FramePadding.x * 2.0f;
-
 				ImGui::PushID("EditorFontPicker");
 				EditorUI::BeginSettingsRow("Font");
-				const float pickerWidth = std::max(1.0f, ImGui::GetContentRegionAvail().x - resetWidth - ImGui::GetStyle().ItemSpacing.x);
+				const float pickerWidth = std::max(1.0f, ImGui::GetContentRegionAvail().x);
 				if (ImGui::Button(fontDisplay.c_str(), ImVec2(pickerWidth, 0.0f))) {
 					ReferencePicker::OpenForFieldKey(k_FontPickerKey, "Select Editor Font",
 						ReferencePicker::CollectAssetsByKind(AssetKind::Font),
@@ -444,21 +421,12 @@ namespace Funke {
 				if (!fontSecondary.empty()) {
 					EditorUI::Tooltip(fontSecondary.c_str());
 				}
-				ImGui::SameLine();
-				if (ImGui::Button("Reset##EditorFontReset")) {
-					const uint64_t before = EditorPreferences::GetEditorFontAssetId();
-					EditorPreferences::SetEditorFontAssetId(k_DefaultFontAssetId);
-					if (EditorPreferences::GetEditorFontAssetId() != before) {
-						EditorRestart::Request("editor-font", "Editor font changed", EditorRestart::Kind::Restart);
-					}
-				}
 				EditorUI::EndSettingsRow();
 				ImGui::PopID();
 
 				ImGui::PushID("EditorFontZoom");
 				int fontZoom = EditorPreferences::GetEditorFontZoomPercent();
 				EditorUI::BeginSettingsRow("Text scale");
-				ImGui::SetNextItemWidth(std::max(1.0f, ImGui::GetContentRegionAvail().x - resetWidth - ImGui::GetStyle().ItemSpacing.x));
 				if (EditorUI::BeginCombo("##FontSize", FontZoomLabel(fontZoom))) {
 					for (int percent = EditorPreferences::k_MinEditorFontZoomPercent;
 						percent <= EditorPreferences::k_MaxEditorFontZoomPercent;
@@ -473,11 +441,6 @@ namespace Funke {
 					}
 					EditorUI::EndCombo();
 				}
-				ImGui::SameLine();
-				if (ImGui::Button("Reset##EditorFontZoomReset")) {
-					EditorPreferences::SetEditorFontZoomPercent(
-						EditorPreferences::k_DefaultEditorFontZoomPercent);
-				}
 				EditorUI::EndSettingsRow();
 				ImGui::PopID();
 				EditorUI::EndSection();
@@ -490,8 +453,6 @@ namespace Funke {
 			ImGui::PushID("HierarchyRowScale");
 			float rowScale = EditorPreferences::GetHierarchyRowScale();
 			EditorUI::BeginSettingsRow("Row size");
-			const float resetWidth = ImGui::CalcTextSize("Reset").x + ImGui::GetStyle().FramePadding.x * 2.0f;
-			ImGui::SetNextItemWidth(std::max(1.0f, ImGui::GetContentRegionAvail().x - resetWidth - ImGui::GetStyle().ItemSpacing.x));
 			if (EditorUI::SliderFloat("##RowSize", &rowScale,
 					EditorPreferences::k_MinHierarchyRowScale,
 					EditorPreferences::k_MaxHierarchyRowScale,
@@ -499,11 +460,6 @@ namespace Funke {
 				EditorPreferences::SetHierarchyRowScale(rowScale);
 			}
 			EditorUI::Tooltip("Scales the entity rows in the Entities panel.");
-			ImGui::SameLine();
-			if (ImGui::Button("Reset##HierarchyRowScaleReset")) {
-				EditorPreferences::SetHierarchyRowScale(
-					EditorPreferences::k_DefaultHierarchyRowScale);
-			}
 			EditorUI::EndSettingsRow();
 			ImGui::PopID();
 			EditorUI::EndSection();
@@ -686,16 +642,17 @@ namespace Funke {
 		ImGui::PopStyleVar();
 		ImGui::Spacing();
 		ImGui::Separator();
-		if (EditorUI::Button("Reset to default", EditorUI::ButtonVariant::Ghost)) {
-			ImGuiContextLayer::ResetLayoutToDefault();
-			m_LayoutError.clear();
+		const char* openFolderLabel = Platform::OpenInFileManagerLabel();
+		const float storageWidth = ImGui::CalcTextSize(openFolderLabel).x + style.FramePadding.x * 2.0f;
+		ImGui::SetCursorPosX(startX + std::max(0.0f, available - storageWidth));
+		if (EditorUI::Button(openFolderLabel, EditorUI::ButtonVariant::Ghost)) {
+			const auto folder = Path::FromUtf8(LayoutsFolderDisplay());
+			std::error_code error;
+			std::filesystem::create_directories(folder, error);
+			if (error) m_LayoutError = "Could not create layouts folder: " + error.message();
+			else m_LayoutError = Platform::OpenPath(folder) ? "" : "Could not open layouts folder.";
 		}
-		const float resetWidth = ImGui::GetItemRectSize().x;
-		const float storageWidth = ImGui::CalcTextSize("Storage location").x + style.FramePadding.x * 2.0f;
-		if (available > resetWidth + storageWidth + font) ImGui::SameLine(startX + available - storageWidth);
-		if (EditorUI::Button("Storage location", EditorUI::ButtonVariant::Ghost)) m_ShowLayoutStorage = !m_ShowLayoutStorage;
 		EditorUI::Tooltip(LayoutsFolderDisplay());
-		if (m_ShowLayoutStorage) EditorUI::StatusText(EditorUI::Tone::Neutral, LayoutsFolderDisplay().c_str());
 		if (!m_LayoutError.empty()) EditorUI::StatusText(EditorUI::Tone::Error, m_LayoutError.c_str());
 
 		EditorUI::EndSection();
@@ -826,8 +783,7 @@ namespace Funke {
 			"editor camera 3d scene viewport movement speed fly boost shift distance scale pan world up vertical qe");
 		const bool showLook = PreferenceSectionVisible("Camera Look & Zoom",
 			"editor camera 3d scene viewport look sensitivity mouse rotation invert x y zoom wheel field of view fov");
-		const bool showReset = PreferenceSectionVisible("Reset Editor Camera", "editor camera 3d scene viewport reset defaults");
-		if (!showNavigation && !showMovement && !showLook && !showReset) return;
+		if (!showNavigation && !showMovement && !showLook) return;
 
 		EditorCamera3DSettings settings = EditorPreferences::GetCamera3DSettings();
 		bool changed = false;
@@ -906,8 +862,6 @@ namespace Funke {
 		}
 
 		if (changed) EditorPreferences::SetCamera3DSettings(settings);
-		if (showReset && EditorUI::Button("Reset Editor Camera")) EditorPreferences::ResetCamera3DSettings();
-		if (showReset) EditorUI::Tooltip("Restore all 3D editor camera preferences to their defaults.");
 	}
 
 	void EditorPreferencesPanel::RenderLayoutModals() {

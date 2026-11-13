@@ -1,0 +1,23 @@
+{
+  "steps": [
+    { "at": "0.5s", "command": "bench.state; bench.check 0 0" },
+    { "at": "1s", "screenshot": "ready" },
+    { "at": "1.5s", "command": "bench.run Create 1000 false 1 3" },
+    { "at": "3s", "command": "bench.check 1 1000; bench.run Destroy 1000 false 1 3" },
+    { "at": "4.5s", "command": "bench.check 2 0; bench.run Move 1000 false 1 3" },
+    { "at": "6s", "command": "bench.check 3 1000; bench.run Render2D 1000 false 1 3" },
+    { "at": "7.5s", "screenshot": "render-2d" },
+    { "at": "9.5s", "command": "bench.check 4 1000; bench.run Render3D 1000 true 1 3" },
+    { "at": "11s", "screenshot": "render-3d" },
+    { "at": "13s", "command": "bench.check 5 1000; bench.run Create 1000 true 1 3" },
+    { "at": "14.5s", "command": "bench.check 6 1000; bench.run Destroy 1000 true 1 3" },
+    { "at": "16s", "command": "bench.check 7 0; bench.run Move 1000 true 1 3" },
+    { "at": "17.5s", "command": "bench.check 8 1000; bench.run Render2D 1000 true 1 3" },
+    { "at": "21s", "command": "bench.check 9 1000; bench.run Render3D 1000 false 1 3" },
+    { "at": "24.5s", "command": "bench.check 10 1000; bench.run Render2D 1000 true 10 3" },
+    { "at": "26s", "command": "bench.cancel; bench.check 10 1000" },
+    { "at": "27s", "command": "bench.export; bench.clear; bench.check 10 0" },
+    { "at": "28s", "screenshot": "completed" },
+    { "at": "29s", "quit": true }
+  ]
+}

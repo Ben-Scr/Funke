@@ -1,0 +1,13 @@
+{
+  "id": "Funke.3D",
+  "displayName": "3D",
+  "description": "A ready-to-run 3D scene with physics, a camera, ground and a falling box. Includes Assets/Help.md.",
+  "category": "3D",
+  "sortOrder": 20,
+  "modules": [
+    "Funke.3D",
+    "Funke.Physics3D"
+  ],
+  "startupScene": "SampleScene",
+  "moduleRequirementsVersion": 2
+}

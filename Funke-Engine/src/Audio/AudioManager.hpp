@@ -23,6 +23,8 @@ namespace Funke {
 	/// AudioManager — global audio facade. THREAD CONTRACT: all public statics are main-thread-only; calling from a worker thread is UB.
 	class FUNKE_API AudioManager {
 	public:
+        // Successfully loaded entries only; never initiates a load.
+        static size_t GetLoadedCount();
 		static constexpr uint32_t MAX_CONCURRENT_SOUNDS = 64;
 		static constexpr uint32_t MAX_SOUNDS_PER_FRAME = 8;
 		static constexpr uint32_t MAX_QUEUED_SOUNDS = 256;

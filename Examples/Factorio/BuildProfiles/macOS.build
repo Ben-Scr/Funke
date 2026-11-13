@@ -1,0 +1,9 @@
+{
+  "name": "macOS",
+  "platform": "MacOS",
+  "renderBackend": "Metal",
+  "bundleDotNetRuntime": true,
+  "bundleAssets": false,
+  "compressAssetBundles": false,
+  "assetBundleCompression": "LZ4"
+}

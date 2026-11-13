@@ -4,7 +4,9 @@
 #include "Collections/Color.hpp"
 #include "Components/Graphics/Camera3DComponent.hpp"
 #include "Graphics/PosColorVertex.hpp"
+#include "Graphics/Gizmo.hpp"
 #include "Graphics/RenderStatistics.hpp"
+#include "Graphics/RenderViewOptions.hpp"
 
 #include <glm/glm.hpp>
 
@@ -94,6 +96,9 @@ namespace Funke {
 
 		// Editor View toggle (also gates anti-aliasing); the Game View and the runtime keep it on.
 		void SetPostProcessingEnabled(bool enabled) { m_PostProcessingEnabled = enabled; }
+		bool IsPostProcessingEnabled() const { return m_PostProcessingEnabled; }
+		void SetViewOptions(const RenderViewOptions& options) { m_ViewOptions = options; }
+		const RenderViewOptions& GetViewOptions() const { return m_ViewOptions; }
 		// With an effect enabled in `settings` (the camera's Post Processing) or anti-aliasing on, redirects drawing
 		// into an intermediate target cleared to clearColor and returns true; EndPostProcess then runs anti-aliasing
 		// and the effects into the original target. False = draw straight to the target and skip EndPostProcess.
@@ -109,6 +114,8 @@ namespace Funke {
 		// Lines queued while on stay visible behind meshes: full color where visible, faded where hidden (collider gizmos).
 		void SetLinesSeeThrough(bool seeThrough) { m_LinesSeeThrough = seeThrough; }
 		void FlushLines(const Camera3DView& view, bool depthTested);
+		// Append script gizmos for this view; FlushLines submits them with the other debug lines.
+		void QueueGizmos(const Camera3DView& view, GizmoLayerMask layerMask);
 
 		uint32_t GetDrawCallsCount() const { return m_DrawCalls; }
 		uint32_t GetRenderedMeshCount() const { return m_RenderedMeshes; }
@@ -143,6 +150,7 @@ namespace Funke {
 		std::vector<PosColorVertex> m_SeeThroughLines;
 		std::vector<PosColorVertex> m_LineUpload;
 		GraphicsSettings m_Settings;
+		RenderViewOptions m_ViewOptions;
 
 		uint32_t m_DrawCalls = 0;
 		uint32_t m_RenderedMeshes = 0;

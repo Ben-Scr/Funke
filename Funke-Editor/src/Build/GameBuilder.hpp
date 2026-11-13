@@ -59,8 +59,8 @@ namespace Funke::GameBuilder {
 		std::optional<BuildPlatform> platform, std::string& outError);
 
 	// Validates the project's active profile and build scenes and fills `outRequest` (output directory
-	// excluded). Sets project.StartupScene, and ActiveRenderBackend for host-desktop targets; never saves.
-	// The profile's configuration, defines and test switches land in outRequest.Project only.
+	// excluded). Sets project.StartupScene; never saves or changes the editor's rendering backend.
+	// The profile's rendering backend, configuration, defines and test switches land in outRequest.Project only.
 	bool Prepare(FunkeProject& project, Request& outRequest, std::string& outError);
 
 	Result Build(Request request, const ProgressCallback& onProgress = {});

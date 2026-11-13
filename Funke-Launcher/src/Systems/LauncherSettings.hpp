@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <array>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -27,6 +28,7 @@ namespace Funke {
 			Auto = 0,
 			Dark = 1,
 			Light = 2,
+			Custom = 3,
 		};
 
 		enum class DirectoryNameConvention : uint8_t {
@@ -49,10 +51,13 @@ namespace Funke {
 		bool SortReverse = false;
 		FontScale Scale = FontScale::Auto;
 		ThemeSetting Theme = ThemeSetting::Auto;
+		// Stable ImGui color names keep saved palettes independent of enum ordering.
+		std::unordered_map<std::string, std::array<float, 4>> CustomColors;
 		DirectoryNameConvention DirectoryConvention = DirectoryNameConvention::TitleCase;
 		// Preserve follow-OS intent independently of the resolved language.
 		bool LanguageAuto = false;
 		std::string DefaultProjectsLocation;
+		std::string DefaultCompany;
 		// Trust is persisted per source URL.
 		std::unordered_map<std::string, bool> AssetLibraryTrustAck;
 		ProjectViewMode ProjectView = ProjectViewMode::List;

@@ -28,6 +28,7 @@
 #include "Packages/PackageManager.hpp"
 #include "Editor/EditorCamera.hpp"
 #include "Editor/EditorCamera3D.hpp"
+#include "Editor/EditorViewSettings.hpp"
 #include "Graphics/Framebuffer.hpp"
 #include "Graphics/Gizmo.hpp"
 #include "Graphics/Texture2D.hpp"
@@ -351,7 +352,8 @@ namespace Funke {
 			bool uiInWorldSpace = false,
 			EditorViewDrawMode drawMode = EditorViewDrawMode::Default,
 			GizmoLayerMask gizmoLayerMask = GizmoLayerMask::All,
-			const Camera3DView* view3D = nullptr);
+			const Camera3DView* view3D = nullptr,
+			const EditorViewSettings* editorSettings = nullptr);
 
 		// 3D Editor View (ImGuiEditorLayerViewport3D.cpp). Returns the image's top-left screen position.
 		Vec2 RenderEditorView3D(Scene& scene, const Vec2& viewportSize, bool overlayHovered);
@@ -569,6 +571,7 @@ namespace Funke {
 		void RenderToolbarLeft();
 		// Editor View options (3D, draw mode, gizmos, ...) in the viewport's top-right pill and their visibility menu (ImGuiEditorLayerViewport.cpp).
 		bool RenderEditorViewToolbarOptions();
+		void RenderEditorViewRenderingMenu();
 		void RenderGameViewSettingsMenu();
 		void RenderEditorViewSettingsMenu();
 		// Width of the view options pill last frame; it is right-aligned before it can be measured.
@@ -655,6 +658,7 @@ namespace Funke {
 		std::string m_PendingEngineRebuildWorkingDirectory;
 		uint64_t m_EditorSceneDefinitionSerial = 0;
 		uint64_t m_SceneOpenOperation = 0;
+		std::chrono::steady_clock::time_point m_SceneOpenStartedAt{};
 		std::string m_SceneOpenFallbackPath;
 		std::shared_ptr<int> m_SceneOpenLifetime = std::make_shared<int>(0);
 		std::unordered_map<std::string, std::string> m_EditorSceneDefinitionsBySceneName;

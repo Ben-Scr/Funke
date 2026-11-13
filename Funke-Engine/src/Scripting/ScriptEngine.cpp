@@ -868,6 +868,13 @@ namespace Funke {
 		}
 	}
 
+    size_t ScriptEngine::GetEnabledGlobalSystemCount() {
+        if (!s_Initialized) return 0;
+        size_t count = 0;
+        for (const auto& instance : s_GlobalSystems) if (instance.Handle != 0 && instance.Enabled) ++count;
+        return count;
+    }
+
 	void ScriptEngine::UpdateGlobalSystems()
 	{
 		if (!s_Initialized || !s_Callbacks.InvokeGlobalSystemUpdate) return;

@@ -2335,6 +2335,15 @@ namespace Funke {
 	// ── Gizmos ──────────────────────────────────────────────────────────
 
 	static void Funke_Gizmo_DrawLine(float x1, float y1, float x2, float y2) { Gizmo::DrawLine({ x1, y1 }, { x2, y2 }); }
+	static void Funke_Gizmo_DrawLine3D(float x1, float y1, float z1, float x2, float y2, float z2) {
+		Gizmo::DrawLine(Vec3(x1, y1, z1), Vec3(x2, y2, z2));
+	}
+	static void Funke_Gizmo_DrawBox(float x, float y, float z, float sx, float sy, float sz, float rx, float ry, float rz) {
+		Gizmo::DrawBox({ x, y, z }, { sx, sy, sz }, { rx, ry, rz });
+	}
+	static void Funke_Gizmo_DrawSphere(float x, float y, float z, float radius, int segments) {
+		Gizmo::DrawSphere({ x, y, z }, radius, segments);
+	}
 	static void Funke_Gizmo_DrawWireSquare(float cx, float cy, float sx, float sy, float degrees) { Gizmo::DrawWireSquare({ cx, cy }, { sx, sy }, degrees); }
 	static void Funke_Gizmo_DrawWireCircle(float cx, float cy, float radius, int segments) { Gizmo::DrawWireCircle({ cx, cy }, radius, segments); }
 	static void Funke_Gizmo_DrawSquare(float cx, float cy, float sx, float sy, float degrees) { Gizmo::DrawSquare({ cx, cy }, { sx, sy }, degrees); }
@@ -3611,6 +3620,9 @@ namespace Funke {
 
 
 		b.Gizmo_DrawLine = FNK_GUARDED_BINDING(Funke_Gizmo_DrawLine);
+		b.Gizmo_DrawLine3D = FNK_GUARDED_BINDING(Funke_Gizmo_DrawLine3D);
+		b.Gizmo_DrawBox = FNK_GUARDED_BINDING(Funke_Gizmo_DrawBox);
+		b.Gizmo_DrawSphere = FNK_GUARDED_BINDING(Funke_Gizmo_DrawSphere);
 		b.Gizmo_DrawWireSquare = FNK_GUARDED_BINDING(Funke_Gizmo_DrawWireSquare);
 		b.Gizmo_DrawWireCircle = FNK_GUARDED_BINDING(Funke_Gizmo_DrawWireCircle);
 		b.Gizmo_DrawSquare = FNK_GUARDED_BINDING(Funke_Gizmo_DrawSquare);

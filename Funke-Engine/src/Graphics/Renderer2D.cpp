@@ -1,4 +1,5 @@
 #include "pch.hpp"
+#include "Diagnostics/DebugStats.hpp"
 #include "Graphics/Renderer2D.hpp"
 
 #include "Components/General/Transform2DComponent.hpp"
@@ -23,6 +24,7 @@
 #include "Graphics/StaticRenderData.hpp"
 #include "Graphics/SpriteQuad.hpp"
 #include "Graphics/SpriteResources.hpp"
+#include "Graphics/SpriteDrawBundle.hpp"
 #include "Graphics/SpriteUVResolver.hpp"
 #include "Graphics/Texture2D.hpp"
 #include "Graphics/TextureManager.hpp"
@@ -68,6 +70,15 @@ namespace Funke {
 		std::vector<Instance44>     g_CombinedInstancesScratch;
 		std::vector<TextureHandle>  g_CombinedTexturesScratch;
 		std::vector<SpriteInstance> g_GpuInstanceScratch;
+		std::vector<SpriteDrawBundle::Draw> g_SpriteDraws;
+		std::array<SpriteDrawBundle, 16> g_SpriteDrawBundles;
+		size_t g_SpriteDrawBundleIndex = 0;
+
+		void ClearSpriteDrawBundles() {
+			g_SpriteDraws.clear();
+			for (auto& bundle : g_SpriteDrawBundles) bundle.Reset();
+			g_SpriteDrawBundleIndex = 0;
+		}
 		std::vector<size_t>         g_SortIndexScratch;
 		std::vector<std::pair<uint32_t, Renderer2D::InstanceContributor>> g_InstanceContributors;
 		uint32_t g_NextInstanceContributorToken = 1;
@@ -904,6 +915,7 @@ namespace Funke {
 	Renderer2D::~Renderer2D() = default;
 
 	void Renderer2D::Initialize() {
+		Profiler::Register("Renderer2D.DrawBundle");
 		WebGPUSpriteResources::Acquire();
 		// Evict cache entry before GPU teardown — stale group holding freed TextureView causes use-after-free on next draw.
 		if (g_TextureDestroyListenerToken == 0) {
@@ -912,6 +924,7 @@ namespace Funke {
 					Texture2D* tex = TextureManager::GetTexture(handle);
 					if (!tex) return;
 					g_BindGroupCache.clear();
+					ClearSpriteDrawBundles();
 				});
 		}
 
@@ -947,6 +960,7 @@ namespace Funke {
 			if (effect.Shutdown) effect.Shutdown();
 		}
 		if (!m_IsInitialized) return;
+		ClearSpriteDrawBundles();
 		WebGPUSpriteResources::Release();
 
 		if (g_TextureDestroyListenerToken != 0) {
@@ -986,6 +1000,7 @@ namespace Funke {
 	}
 
 	void Renderer2D::ClearSceneCache(const Scene* scene) {
+		ClearSpriteDrawBundles();
 		if (!scene) {
 			g_StaticSpriteGrids.clear();
 			// Also clear: a dangling ptr at the same address would silently skip on_destroy connect for the new registry.
@@ -998,6 +1013,8 @@ namespace Funke {
 	}
 
 	void Renderer2D::BeginFrame() {
+		for (size_t i = g_SpriteDrawBundleIndex; i < g_SpriteDrawBundles.size(); ++i) g_SpriteDrawBundles[i].Reset();
+		g_SpriteDrawBundleIndex = 0;
 		m_DrawCallsCount = 0;
 		// Preserve while enabled: the throttled Game View would otherwise flicker the overlay to 0 between renders.
 		m_RenderLoopDuration = 0.0f;
@@ -1072,6 +1089,7 @@ namespace Funke {
 		if (!WebGPUSpriteResources::IsReady()) return;
 
 		const auto renderStart = std::chrono::steady_clock::now();
+        Diagnostics::DebugStats::Scope debugTiming(Diagnostics::DebugStats::Timing::RenderCpu);
 		auto finishTiming = [&]() {
 			m_RenderLoopDuration = std::chrono::duration<float, std::milli>(
 				std::chrono::steady_clock::now() - renderStart).count();
@@ -1090,7 +1108,7 @@ namespace Funke {
 		scenes([&](Scene& scene) {
 			const size_t begin = g_CombinedInstancesScratch.size();
 			const size_t sceneCount = CollectSpriteInstances(scene, viewportAABB, g_InstancesScratch, g_TexturesScratch,
-				m_GraphicsSettings.ParticleQuality);
+				m_ViewOptions.Particles ? m_GraphicsSettings.ParticleQuality : ParticleQualityLevel::Off);
 			SortInstancesInPlace(sceneCount);
 			FUNKE_PROFILE_VALUE("Renderer2D.InstanceCopyBytes", float(g_InstancesScratch.size() * sizeof(Instance44)));
 			g_CombinedInstancesScratch.insert(g_CombinedInstancesScratch.end(), g_InstancesScratch.begin(), g_InstancesScratch.end());
@@ -1152,7 +1170,7 @@ namespace Funke {
 		const bool antiAlias = m_PostProcessor.IsInitialized() && m_PostProcessingEnabled
 			&& m_GraphicsSettings.AntiAliasing == AntiAliasingMode::FXAA && (n > 0 || hasWorldText);
 		std::vector<SceneEffect> sceneEffects;
-		if (m_PostProcessor.IsInitialized() && RenderApi::GetPolygonMode() != PolygonMode::Wireframe) {
+		if (m_ViewOptions.SceneEffects && m_PostProcessor.IsInitialized() && RenderApi::GetPolygonMode() != PolygonMode::Wireframe) {
 			for (const auto& [token, effect] : g_SceneEffects) {
 				if (effect.IsActive(scenes)) sceneEffects.push_back(effect);
 			}
@@ -1324,7 +1342,7 @@ namespace Funke {
 			};
 			const std::uint32_t indexCount = WebGPUSpriteResources::GetQuadIndexCount(pipelineMode);
 			// Wireframe debug view keeps the standard pipeline for every sprite.
-			const bool anyCustom = !wireframePass && g_CustomSprites && std::any_of(
+			const bool anyCustom = m_ViewOptions.CustomShaders && !wireframePass && g_CustomSprites && std::any_of(
 				g_InstancesScratch.begin() + static_cast<std::ptrdiff_t>(firstInstance),
 				g_InstancesScratch.begin() + static_cast<std::ptrdiff_t>(endInstance), [](const Instance44& instance) { return instance.Material != 0; });
 			if (anyCustom) {
@@ -1339,6 +1357,14 @@ namespace Funke {
 			std::array<std::byte, 4096> materialScratch;
 			std::pmr::monotonic_buffer_resource materialMemory(materialScratch.data(), materialScratch.size());
 			std::pmr::unordered_map<uint64_t, CustomSpriteDrawer::Draw> resolvedMaterials{ &materialMemory };
+			static const bool referenceSubmit = [] {
+				const char* value = std::getenv("FUNKE_REFERENCE_SPRITE_SUBMIT");
+				return value && std::strcmp(value, "1") == 0;
+			}();
+			g_SpriteDraws.clear();
+			wgpu::BindGroup previousGroup;
+			TextureHandle previousTexture{}, previousMask{};
+			bool directSubmit = referenceSubmit;
 			size_t i = firstInstance;
 			while (i < endInstance) {
 				const TextureHandle runHandle = resolveHandle(g_TexturesScratch[i]);
@@ -1355,14 +1381,24 @@ namespace Funke {
 					++runEnd;
 				}
 				const uint32_t count = static_cast<uint32_t>(runEnd - i);
+				if (i == firstInstance && runEnd == endInstance) directSubmit = true;
 
-				wgpu::BindGroup bg = ResolveBindGroup(device, runHandle, runMaskHandle);
+				wgpu::BindGroup bg = !referenceSubmit && previousGroup
+					&& previousTexture == runHandle && previousMask == runMaskHandle
+					? previousGroup : ResolveBindGroup(device, runHandle, runMaskHandle);
 				if (!bg) {
 					i = runEnd;
 					continue;
 				}
+				if (!referenceSubmit) {
+					previousGroup = bg;
+					previousTexture = runHandle;
+					previousMask = runMaskHandle;
+				}
 				CustomSpriteDrawer::Draw custom;
-				if (runMaterial != 0) {
+				const Material* material = runMaterial != 0 && !m_ViewOptions.DisabledShaders.empty()
+					? MaterialLibrary::Get(runMaterial) : nullptr;
+				if (runMaterial != 0 && (!material || m_ViewOptions.AllowsShader(material->Shader))) {
 					if (cacheMaterials && (i != firstInstance || runEnd != endInstance)) {
 						auto [resolved, inserted] = resolvedMaterials.try_emplace(runMaterial);
 						if (inserted) resolved->second = g_CustomSprites->Resolve(
@@ -1373,17 +1409,18 @@ namespace Funke {
 					}
 				}
 				wgpu::RenderPipeline runPipeline = custom.Pipeline ? custom.Pipeline : pipeline;
-				if (runPipeline.Get() != boundPipeline.Get()) {
-					pass.SetPipeline(runPipeline);
-					boundPipeline = runPipeline;
+				if (directSubmit) {
+					if (runPipeline.Get() != boundPipeline.Get()) {
+						pass.SetPipeline(runPipeline);
+						boundPipeline = runPipeline;
+					}
+					if (custom.Pipeline) pass.SetBindGroup(1, custom.Group);
+					pass.SetBindGroup(0, bg);
+					pass.DrawIndexed(indexCount, count, 0, 0, static_cast<uint32_t>(i - uploadedBegin));
+				} else {
+					g_SpriteDraws.push_back({ runPipeline, bg, custom.Pipeline ? custom.Group : nullptr,
+						count, static_cast<uint32_t>(i - uploadedBegin) });
 				}
-				if (custom.Pipeline) pass.SetBindGroup(1, custom.Group);
-				pass.SetBindGroup(0, bg);
-				pass.DrawIndexed(/*indexCount=*/indexCount,
-					/*instanceCount=*/count,
-					/*firstIndex=*/0,
-					/*baseVertex=*/0,
-					/*firstInstance=*/static_cast<uint32_t>(i - uploadedBegin));
 				++m_DrawCallsCount;
 				// The editor's wireframe overlay redraws the same sprites as lines.
 				if (!wireframePass) m_RenderedInstancesTotal += count;
@@ -1391,6 +1428,19 @@ namespace Funke {
 				i = runEnd;
 			}
 
+			if (!referenceSubmit) {
+				const SpriteDrawBundle::PassKey key{ WebGPUSpriteResources::GetQuadVertexBuffer(), g_InstanceBuffer,
+					WebGPUSpriteResources::GetQuadIndexBuffer(pipelineMode), indexCount, target.ColorFormat,
+					target.HasDepth ? wgpu::TextureFormat::Depth24PlusStencil8 : wgpu::TextureFormat::Undefined, target.SampleCount };
+				bool reused = false;
+				if (g_SpriteDrawBundleIndex < g_SpriteDrawBundles.size()) {
+					reused = g_SpriteDrawBundles[g_SpriteDrawBundleIndex++].Submit(device, pass, key, g_SpriteDraws);
+				} else {
+					SpriteDrawBundle::Encode(pass, key, g_SpriteDraws);
+				}
+				FUNKE_PROFILE_VALUE("Renderer2D.DrawBundle", reused ? 1.0f : 0.0f);
+				g_SpriteDraws.clear();
+			}
 			pass.End();
 			g_InstanceSubmitSerial = WebGPUBackend::GetFrameSubmitSerial();
 

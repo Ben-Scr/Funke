@@ -1,11 +1,13 @@
 #pragma once
 #include "Core/Export.hpp"
+#include <chrono>
 #include <string>
 
 // Build / import progress popup. Windows shows a real OS window (it stays responsive while the editor is busy);
 // elsewhere these calls only record the state and BuildProgressOverlay (Funke-EditorRuntime) draws it with ImGui.
 namespace Funke::Win32BuildProgressWindow {
 
+    // Starts elapsed time on opening or changing operations (title); repeated calls preserve it.
     FUNKE_API void Show(const std::string& title);
 
     // Pushes the latest progress (0..1) and stage label into the popup.
@@ -24,6 +26,7 @@ namespace Funke::Win32BuildProgressWindow {
         std::string Title;
         std::string Stage;
         float Progress = 0.0f;
+        std::chrono::steady_clock::time_point StartedAt{};
     };
     FUNKE_API State GetState();
 #endif

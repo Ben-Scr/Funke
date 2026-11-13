@@ -22,6 +22,7 @@
 #endif
 
 #include <algorithm>
+#include <cmath>
 #include <array>
 #include <chrono>
 #include <cctype>
@@ -1461,6 +1462,30 @@ endif())");
 			graphics.AddMember("antiAliasingQuality", std::string(AntiAliasingQualityToString(project.Graphics.AntiAliasingQuality)));
 			root.AddMember("graphics", std::move(graphics));
 		}
+		{
+			Json::Value layers = Json::Value::MakeObject();
+			Json::Value names = Json::Value::MakeArray();
+			Json::Value matrix = Json::Value::MakeArray();
+			for (uint32_t i = 0; i < PhysicsLayerSettings::Count; ++i) {
+				names.Append(project.PhysicsLayers.Names[i]);
+				matrix.Append(project.PhysicsLayers.CollisionMasks[i]);
+			}
+			layers.AddMember("names", std::move(names));
+			layers.AddMember("collisionMasks", std::move(matrix));
+			layers.AddMember("visibleCount", static_cast<int>(project.PhysicsLayers.VisibleCount));
+			root.AddMember("physicsLayers", std::move(layers));
+		}
+		{
+			Json::Value gravity2D = Json::Value::MakeArray();
+			gravity2D.Append(project.PhysicsGravity2D.x);
+			gravity2D.Append(project.PhysicsGravity2D.y);
+			root.AddMember("physicsGravity2D", std::move(gravity2D));
+			Json::Value gravity3D = Json::Value::MakeArray();
+			gravity3D.Append(project.PhysicsGravity3D.x);
+			gravity3D.Append(project.PhysicsGravity3D.y);
+			gravity3D.Append(project.PhysicsGravity3D.z);
+			root.AddMember("physicsGravity3D", std::move(gravity3D));
+		}
 		if (project.PhysicsTickRate != 50) {
 			root.AddMember("physicsTickRate", project.PhysicsTickRate);
 		}
@@ -2575,6 +2600,43 @@ endif())");
 					if (const Json::Value* v = root.FindMember("enablePostProcessing"))
 						project.Graphics.PostProcessingEnabled = v->AsBoolOr(true);
 				}
+				if (const Json::Value* layers = root.FindMember("physicsLayers"); layers && layers->IsObject()) {
+					auto& settings = project.PhysicsLayers;
+					if (const auto* count = layers->FindMember("visibleCount"))
+						settings.VisibleCount = static_cast<uint32_t>(std::clamp(count->AsIntOr(16), 16, 64));
+					if (const auto* names = layers->FindMember("names"); names && names->IsArray()) {
+						// Clear first so valid swapped names also round-trip. Repair invalid/duplicate names below.
+						settings.Names.fill("");
+						for (uint32_t i = 0; i < std::min<size_t>(names->GetArray().size(), PhysicsLayerSettings::Count); ++i)
+							settings.SetName(i, names->GetArray()[i].AsStringOr());
+						for (uint32_t i = 0; i < PhysicsLayerSettings::Count; ++i) {
+							if (!settings.Names[i].empty()) continue;
+							std::string fallback = i == 0 ? "Default" : "Layer " + std::to_string(i);
+							while (settings.FindIndex(fallback) >= 0) fallback += "_";
+							settings.Names[i] = std::move(fallback);
+						}
+					}
+					if (const auto* matrix = layers->FindMember("collisionMasks"); matrix && matrix->IsArray()) {
+						for (uint32_t i = 0; i < std::min<size_t>(matrix->GetArray().size(), PhysicsLayerSettings::Count); ++i)
+							settings.CollisionMasks[i] = matrix->GetArray()[i].AsUInt64Or(UINT64_MAX);
+						// An asymmetric hand edit disables the pair in both directions.
+						for (uint32_t a = 0; a < PhysicsLayerSettings::Count; ++a)
+							for (uint32_t b = a; b < PhysicsLayerSettings::Count; ++b)
+								settings.SetCollision(a, b, settings.CanCollide(a, b) && settings.CanCollide(b, a));
+					}
+				}
+				const auto loadGravity = [&root](const char* key, auto& gravity) {
+					if (const auto* value = root.FindMember(key); value && value->IsArray()) {
+						const auto& values = value->GetArray();
+						if (values.size() != static_cast<size_t>(gravity.length())) return;
+						for (int i = 0; i < gravity.length(); ++i) {
+							const float component = static_cast<float>(values[i].AsDoubleOr(gravity[i]));
+							if (std::isfinite(component)) gravity[i] = component;
+						}
+					}
+				};
+				loadGravity("physicsGravity2D", project.PhysicsGravity2D);
+				loadGravity("physicsGravity3D", project.PhysicsGravity3D);
 				if (const Json::Value* v = root.FindMember("physicsTickRate"))
 					project.PhysicsTickRate = std::clamp(v->AsIntOr(50),
 						FunkeProject::k_MinPhysicsHz, FunkeProject::k_MaxPhysicsHz);
@@ -2864,31 +2926,13 @@ endif())");
 	}
 
 	Json::Value FunkeProject::BuildStarterScene(const std::string& sceneName) {
-		// An empty scene with only a Camera2D: the deserializer no longer auto-injects a camera.
+		// No starter content: cameras and gameplay belong to the selected template or the user.
 		Json::Value sceneRoot = Json::Value::MakeObject();
 		sceneRoot.AddMember("version", 1);
 		sceneRoot.AddMember("name", sceneName);
 		sceneRoot.AddMember("systems", Json::Value::MakeArray());
 
-		Json::Value transform2D = Json::Value::MakeObject();
-		transform2D.AddMember("posX", 0.0);
-		transform2D.AddMember("posY", 0.0);
-		transform2D.AddMember("rotation", 0.0);
-		transform2D.AddMember("scaleX", 1.0);
-		transform2D.AddMember("scaleY", 1.0);
-
-		Json::Value camera2D = Json::Value::MakeObject();
-		camera2D.AddMember("orthoSize", 5.0);
-		camera2D.AddMember("zoom", 1.0);
-
-		Json::Value cameraEntity = Json::Value::MakeObject();
-		cameraEntity.AddMember("name", std::string("Camera"));
-		cameraEntity.AddMember("Transform2D", std::move(transform2D));
-		cameraEntity.AddMember("Camera2D", std::move(camera2D));
-
-		Json::Value entities = Json::Value::MakeArray();
-		entities.Append(std::move(cameraEntity));
-		sceneRoot.AddMember("entities", std::move(entities));
+		sceneRoot.AddMember("entities", Json::Value::MakeArray());
 		return sceneRoot;
 	}
 
@@ -3179,7 +3223,7 @@ endif())");
 		}
 
 		// Funke-ScriptCore is linked via DLL reference in the .csproj — no project entry needed.
-		ReportCreateProgress(progressCallback, 0.72f, "Generating solution and starter scripts...");
+		ReportCreateProgress(progressCallback, 0.72f, "Generating solution...");
 		std::string projGuid = GenerateGUID();
 
 		std::string sln = R"(
@@ -3208,25 +3252,6 @@ EndGlobal
 )";
 		if (!File::WriteAllText(project.SlnPath, sln)) {
 			throw std::runtime_error("Could not write Visual Studio solution: " + project.SlnPath);
-		}
-
-		// Templates ship their own scripts; without one the project gets an empty GameScript.
-		if (!projectTemplate) {
-			std::string starterScript = R"(using Funke;
-
-public class GameScript : EntityScript
-{
-    public override void OnStart()
-    {
-        Log.Info("Hello from )" + name + R"(!");
-    }
-
-    public override void OnUpdate()
-    {
-    }
-}
-)";
-			(void)File::WriteAllText(Path::Combine(project.ScriptsDirectory, "GameScript.cs"), starterScript);
 		}
 
 		// Generate .vscode/settings.json

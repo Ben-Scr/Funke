@@ -69,6 +69,10 @@ namespace Funke {
 			return e;
 		}
 
+		// Entity-wide physics membership; overrides legacy per-collider layers when assigned.
+		uint64_t GetLayer() const;
+		void SetLayer(uint64_t mask);
+
 		void Destroy();
 		static const Entity Null;
 

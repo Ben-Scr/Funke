@@ -24,6 +24,71 @@ except ImportError:
 
 
 class PlatformExportSmokeTests(unittest.TestCase):
+    def test_build_receipt_binds_commit_platform_hash_and_real_compiler_evidence(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            receipt = Path(temporary) / "build.json"
+            args = argparse.Namespace(platform="web", build_evidence=receipt, expected_commit="a" * 40)
+            valid = {"formatVersion": 1, "platform": "web", "sourceCommit": "a" * 40,
+                     "artifactSha256": "b" * 64, "evidenceLevel": "real_build", "passed": True,
+                     "buildToolchain": {"emcc": "4.0.0", "dotnet": "10.0.403"}}
+            receipt.write_text(json.dumps(valid), encoding="utf-8")
+            self.assertEqual(smoke.build_provenance(args, {"sha256": "b" * 64})["sourceCommit"], "a" * 40)
+            for change in ({"sourceCommit": "c" * 40}, {"artifactSha256": "c" * 64},
+                           {"evidenceLevel": "unit_mock"}, {"passed": False},
+                           {"platform": "android"}, {"buildToolchain": {}},
+                           {"buildToolchain": {"emcc": ""}}):
+                receipt.write_text(json.dumps(valid | change), encoding="utf-8")
+                with self.subTest(change=change), self.assertRaises(ValueError):
+                    smoke.build_provenance(args, {"sha256": "b" * 64})
+
+    @unittest.skipIf(Image is None, "Pillow is needed for rendered-pixel assertions")
+    def test_smoke_without_build_receipt_does_not_attest_real_runtime(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            apk = root / "game.apk"
+            apk.write_bytes(b"dummy compiler output")
+            output = root / "evidence"
+            def fake_runtime(args, evidence):
+                Image.new("RGB", (2, 2), (0, 0, 0)).save(evidence / "game.png")
+            with patch.object(smoke, "android", side_effect=fake_runtime), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(0, smoke.main(["--output", str(output), "--expect-log", "OK",
+                    "--expect-pixel", "0,0,0,0,0", "android", "--apk", str(apk),
+                    "--serial", "fixture", "--package", "dev.funke.test"]))
+            result = json.loads((output / "result.json").read_text(encoding="utf-8"))
+            self.assertTrue(result["passed"])
+            self.assertEqual("unverified", result["evidenceLevels"]["real_runtime"]["status"])
+            self.assertEqual("unverified", result["evidenceLevels"]["real_build"]["status"])
+
+    @unittest.skipIf(Image is None, "Pillow is needed for rendered-pixel assertions")
+    def test_receipt_is_checked_before_runtime_and_propagated_on_success(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            apk = root / "game.apk"
+            apk.write_bytes(b"fixture, not an actual compiled app")
+            receipt = root / "receipt.json"
+            artifact = smoke.artifact_identity(argparse.Namespace(platform="android", apk=apk, output=root / "evidence"))
+            valid = {"formatVersion": 1, "platform": "android", "sourceCommit": "a" * 40,
+                     "artifactSha256": artifact["sha256"], "evidenceLevel": "real_build", "passed": True,
+                     "buildToolchain": {"clang": "fixture"}}
+            def fake_runtime(args, evidence):
+                Image.new("RGB", (2, 2), (0, 0, 0)).save(evidence / "game.png")
+            for same_commit in (False, True):
+                output = root / str(same_commit)
+                receipt.write_text(json.dumps(valid | {"sourceCommit": ("a" if same_commit else "c") * 40}), encoding="utf-8")
+                with patch.object(smoke, "android", side_effect=fake_runtime) as runtime, \
+                        contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    code = smoke.main(["--output", str(output), "--expect-log", "OK", "--expect-pixel", "0,0,0,0,0",
+                        "--build-evidence", str(receipt), "--expected-commit", "a" * 40,
+                        "android", "--apk", str(apk), "--serial", "fixture", "--package", "dev.funke.test"])
+                self.assertEqual(code, 0 if same_commit else 1)
+                self.assertEqual(runtime.call_count, int(same_commit))
+                result = json.loads((output / "result.json").read_text(encoding="utf-8"))
+                self.assertEqual(result["evidenceLevels"]["real_runtime"]["status"], "passed" if same_commit else "failed")
+                if same_commit:
+                    self.assertEqual(result["sourceCommit"], "a" * 40)
+                    self.assertEqual(result["buildToolchain"], {"clang": "fixture"})
+                    self.assertEqual(len(result["receiptSha256"]), 64)
+
     def test_artifact_digest_covers_web_resources_and_is_location_independent(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

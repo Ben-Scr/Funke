@@ -1,0 +1,17 @@
+{
+  "steps": [
+    { "at": "0.5s", "command": "bench.playback Sequential; bench.once Create 1 false" },
+    { "at": "1.5s", "command": "bench.check 1 1; bench.check-result Create false false 1; bench.once Create 1 true" },
+    { "at": "2.5s", "command": "bench.check 2 1; bench.check-result Create true false 1; bench.once Create 1023 true" },
+    { "at": "3.5s", "command": "bench.check 3 1023; bench.once Create 1024 true" },
+    { "at": "4.5s", "command": "bench.check 4 1024; bench.once Create 1025 true" },
+    { "at": "5.5s", "command": "bench.check 5 1025; bench.playback Parallel; bench.once Create 1025 false" },
+    { "at": "6.5s", "command": "bench.check 6 1025; bench.once Create 1025 true" },
+    { "at": "7.5s", "command": "bench.check 7 1025; bench.playback Automatic; bench.once Create 100000 true" },
+    { "at": "10s", "command": "bench.check 8 100000; bench.once Destroy 100000 true" },
+    { "at": "13s", "command": "bench.check 9 0; bench.once Create 100000 false" },
+    { "at": "16s", "command": "bench.check 10 100000; bench.once Destroy 100000 false" },
+    { "at": "19s", "command": "bench.check 11 0; bench.check-export; bench.clear; bench.check 11 0" },
+    { "at": "20s", "quit": true }
+  ]
+}

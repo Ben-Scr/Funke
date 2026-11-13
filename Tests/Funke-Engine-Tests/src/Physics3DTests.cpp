@@ -1,3 +1,4 @@
+#include "Project/ProjectManager.hpp"
 #include <doctest/doctest.h>
 
 #include "Components/General/HierarchyComponent.hpp"
@@ -736,4 +737,58 @@ TEST_CASE("Physics3D: independent child bodies preserve rotation and scale under
 	world.Present(*scene, 0.75f);
 	CHECK((parent.GetComponent<Transform3DComponent>().Position == editedParentPosition));
 	CHECK((child.GetComponent<Transform3DComponent>().Position == editedChildPosition));
+}
+
+
+TEST_CASE("Physics layers: live matrix and entity membership filter 3D triggers") {
+    const bool temporaryProject = !ProjectManager::HasProject();
+    if (temporaryProject) ProjectManager::SetCurrentProject(std::make_unique<FunkeProject>());
+    auto& settings = ProjectManager::GetCurrentProject()->PhysicsLayers;
+    struct Restore {
+        PhysicsLayerSettings Saved;
+        bool Temporary;
+        ~Restore() { if (Temporary) ProjectManager::SetCurrentProject(nullptr); else ProjectManager::GetCurrentProject()->PhysicsLayers = Saved; }
+    } restore{settings, temporaryProject};
+    settings.SetCollision(1, 2, false);
+    auto scene = Scene::CreateDetachedScene("Layer matrix 3D");
+    auto a = CreateBox(*scene, Vec3(0));
+    a.SetLayer(2);
+    a.GetComponent<BoxCollider3DComponent>().IsTrigger = true;
+    a.AddComponent<Rigidbody3DComponent>();
+    auto b = CreateBox(*scene, Vec3(0));
+    b.SetLayer(4);
+    PhysicsWorld3D world;
+    world.SetGravity(Vec3(0));
+    ContactLog log;
+    Run(*scene, world, 3, &log);
+    CHECK_FALSE(log.Has(CollisionPhase3D::Enter, a.GetHandle(), b.GetHandle(), true));
+    settings.SetCollision(1, 2, true);
+    Run(*scene, world, 3, &log);
+    CHECK(log.Has(CollisionPhase3D::Enter, a.GetHandle(), b.GetHandle(), true));
+    log.Events.clear();
+    settings.SetCollision(1, 2, false);
+    Run(*scene, world, 3, &log);
+    CHECK(log.Has(CollisionPhase3D::Exit, a.GetHandle(), b.GetHandle(), true));
+    log.Events.clear();
+    a.SetLayer(8);
+    Run(*scene, world, 3, &log);
+    CHECK(log.Has(CollisionPhase3D::Enter, a.GetHandle(), b.GetHandle(), true));
+}
+
+TEST_CASE("Physics defaults: new 3D worlds use the saved project gravity") {
+    const bool temporaryProject = !ProjectManager::HasProject();
+    if (temporaryProject) ProjectManager::SetCurrentProject(std::make_unique<FunkeProject>());
+    auto& project = *ProjectManager::GetCurrentProject();
+    struct Restore {
+        Vec3 Saved;
+        bool Temporary;
+        ~Restore() { if (Temporary) ProjectManager::SetCurrentProject(nullptr); else ProjectManager::GetCurrentProject()->PhysicsGravity3D = Saved; }
+    } restore{project.PhysicsGravity3D, temporaryProject};
+    project.PhysicsGravity3D = {1, -2, 3};
+    PhysicsWorld3D world;
+    CHECK((world.GetGravity() == project.PhysicsGravity3D));
+    world.SetGravity(Vec3(0));
+    CHECK((world.GetGravity() == Vec3(0)));
+    PhysicsWorld3D nextScene;
+    CHECK((nextScene.GetGravity() == project.PhysicsGravity3D));
 }

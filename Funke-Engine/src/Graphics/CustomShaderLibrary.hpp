@@ -14,6 +14,10 @@ namespace Funke {
 	class FUNKE_API CustomShaderLibrary {
 	public:
 		CustomShaderLibrary() = delete;
+        static size_t GetLoadedCount();
+        static size_t GetCompiledCount();
+        // Distinct custom shader assets requested by renderers in this engine frame; excludes fallbacks.
+        static size_t GetRequestedCount(int frame);
 
 		// Header and properties of the last version that parsed; nullptr for 0, unknown GUIDs and files that never parsed.
 		static const ShaderDescription* GetDescription(uint64_t guid);

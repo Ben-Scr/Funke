@@ -248,6 +248,15 @@ class StandaloneTests(unittest.TestCase):
         self.assertNotIn(diagnostic, Path(phase["log"]).read_text(encoding="utf-8"))
         self.assertIn(diagnostic, Path(phase["stderrLog"]).read_text(encoding="utf-8"))
 
+    def test_every_json_command_rejects_stdout_noise_and_keeps_original_log(self):
+        harness = self.harness()
+        for output in ('diagnostic\n{}', '{}\ntrailing', ''):
+            with self.subTest(output=output), self.assertRaisesRegex(RuntimeError, "pure JSON"):
+                harness.run("editor-play", [sys.executable, "-c", "print(" + repr(output) + ")", "--json"])
+            self.assertEqual(output + "\n", Path(harness.evidence["phases"][-1]["log"]).read_text(encoding="utf-8"))
+        harness.run("editor-stop", [sys.executable, "-c", "print('{}')", "--json"])
+        self.assertEqual("passed", harness.evidence["phases"][-1]["jsonStdout"])
+
     def test_fatal_stderr_is_still_rejected_with_successful_json_stdout(self):
         harness = self.harness()
         with self.assertRaisesRegex(RuntimeError, "error marker"):
@@ -389,6 +398,28 @@ class StandaloneTests(unittest.TestCase):
                     gate.require_clean_log(log, "Editor")
         log.write_text("V2|editor|package-ok\nNormal shutdown\n", encoding="utf-8")
         gate.require_clean_log(log, "Editor")
+
+    def test_initial_bridge_query_cannot_exceed_shared_readiness_deadline(self):
+        harness = self.harness()
+        harness.timeout = 0.25
+        editor = Mock(pid=42)
+        editor.poll.return_value = None
+        now = [0.0]
+        budgets = []
+
+        def query(label, command, **kwargs):
+            budgets.append(kwargs["timeout"])
+            now[0] += kwargs["timeout"]
+            harness.evidence["phases"].append({"exitCode": 4})
+            return '{}'
+
+        with patch.object(gate.subprocess, "Popen", return_value=editor), \
+                patch.object(gate.time, "monotonic", side_effect=lambda: now[0]), \
+                patch.object(harness, "run", side_effect=query), patch.object(gate, "kill_tree") as cleanup:
+            with self.assertRaisesRegex(RuntimeError, "bridge unavailable"):
+                gate.editor_roundtrip(harness, self.root / "install", self.root / "project", False)
+        self.assertEqual(budgets, [0.25])
+        cleanup.assert_called_once_with(editor)
 
 
 if __name__ == "__main__":

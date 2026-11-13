@@ -1254,6 +1254,22 @@ internal unsafe struct NativeBindingsStruct
     public delegate* unmanaged<ulong, int, void> TextRenderer_SetBold;
     public delegate* unmanaged<ulong, int> TextRenderer_GetItalic;
     public delegate* unmanaged<ulong, int, void> TextRenderer_SetItalic;
+    // Window appearance and measured frame rate (append-only native table).
+    public delegate* unmanaged<float*, float*, float*, float*, void> Window_GetTitlebarColor;
+    public delegate* unmanaged<float, float, float, float, void> Window_SetTitlebarColor;
+    public delegate* unmanaged<float> Application_GetFps;
+
+    // 3D gizmos (appended; order matches NativeBindings).
+    public delegate* unmanaged<float, float, float, float, float, float, void> Gizmo_DrawLine3D;
+    public delegate* unmanaged<float, float, float, float, float, float, float, float, float, void> Gizmo_DrawBox;
+    public delegate* unmanaged<float, float, float, float, int, void> Gizmo_DrawSphere;
+    public delegate* unmanaged<void*, int, int> DebugStats_GetSnapshot;
+    // Named physics layers (append-only; matches NativeBindings).
+    public delegate* unmanaged<ulong, byte*, int, int> PhysicsLayer_GetName;
+    public delegate* unmanaged<byte*, int> PhysicsLayer_GetIndex;
+    public delegate* unmanaged<ulong, ulong> Entity_GetLayer;
+    public delegate* unmanaged<ulong, ulong, void> Entity_SetLayer;
+
 }
 
 internal static unsafe class NativeCallbacks

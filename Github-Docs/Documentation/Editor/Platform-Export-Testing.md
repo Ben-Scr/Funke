@@ -80,6 +80,64 @@ Replacing an installed simulator app also requires `--replace`. Keep a separate 
 
 Keep `result.json`, `runtime.json`, `game.log` and `game.png` together. Report format 2 records `evidenceLevels`, the selected target and a SHA-256 inventory of the APK, complete Web entry directory or iOS app directory. The inventory hashes the canonical JSON file list (sorted paths, byte counts and SHA-256 per file); the source directory itself is not part of the digest. The harness hashes before and after the run and rejects an artifact changed during validation. Keep the evidence directory outside the export, and use regular files rather than linked payloads. Runtime versions are recorded when the selected tool starts successfully.
 
-`passed` describes only this runtime invocation. `qualification` remains `unverified`, and `sourceCommit`/`buildToolchain` remain null because this harness does not attest the build. It cannot reject an unchanged older export based on its source commit or prove which compiler produced it. Bind the inventory to retained build provenance before treating it as release evidence; a dummy compiler's unit-test pass is never a real-build or platform pass. Missing runtime tools/devices produce a blocked runtime result, while unavailable build or physical-device evidence remains unverified. The workflow summary lists these levels independently.
+`passed` describes only this runtime invocation. Without build provenance, even a successful smoke leaves `real_runtime`, `sourceCommit` and `buildToolchain` unverified/null. `qualification` always remains `unverified`; a smoke is not a complete platform qualification. Missing runtime tools/devices produce a blocked runtime result.
+
+For a build-bound runtime check, supply both `--build-evidence receipt.json` and
+`--expected-commit <full-lowercase-40-character-commit>` before the platform name.
+The expected commit must come from the calling build job. The receipt must come
+from a trusted successful **real compiler build**, with its compiler logs retained:
+
+```json
+{
+  "formatVersion": 1,
+  "platform": "web",
+  "sourceCommit": "<full source commit>",
+  "artifactSha256": "<sha256-file-inventory-v1 digest>",
+  "evidenceLevel": "real_build",
+  "passed": true,
+  "buildToolchain": {"emcc": "<actual version>", "dotnet": "<actual version>"}
+}
+```
+
+Produce the digest using `artifact_identity` on the final export; keep the receipt
+outside that export. The harness rejects a different commit, platform, artifact,
+mock-build receipt or missing toolchain before launching the runtime. It retains
+the receipt hash, commit and toolchain in the result. Successful runtime checks
+then produce `real_runtime: passed`, while `real_build` explicitly cites the
+separate build receipt. This is provenance validation, not a cryptographic
+compiler attestation: a caller-supplied fabricated receipt is not trustworthy.
+Use `scripts/ci/build_export_evidence.py` in the trusted build job to produce the
+receipt automatically around the actual export command. It requires a clean
+checkout at the full expected commit both before and after the command, a fresh
+export path, successful tool-version queries and a successful build. A failed
+build retains its log and a failed receipt. Put the evidence directory outside
+the checkout and the export. For example (replace the paths and commit):
+
+```bash
+python scripts/ci/build_export_evidence.py \
+  --platform web --source-root /work/checkout --expected-commit "$COMMIT" \
+  --artifact /work/export/MyGame/index.html --output /work/build-proof \
+  --tool emcc=/sdk/emscripten/emcc --tool dotnet=/sdk/dotnet \
+  -- python platforms/Funke.Platform.Web/Builder/build.py build --request /work/request.json
+```
+
+The receipt and `build.log` are created in `/work/build-proof`. Publish that
+folder as a separate artifact from the Web export. The wrapper trusts the CI
+job's chosen build command and tool paths; it cannot distinguish a deliberately
+substituted compiler or arbitrary file-generating command. Git cleanliness also
+does not attest ignored files, external inputs or dependency downloads. Keep
+those inputs versioned or separately pinned in the trusted build job. No
+compiler or device qualification is inferred from unit-test fixtures.
+
+In the exported-Web workflow, set `build_evidence_artifact` to that artifact's
+name and `expected_commit` to the same full commit. Both are optional as a pair.
+Before downloading proof, the workflow checks that the source run succeeded,
+uses the expected commit and is a push/dispatch from this repository, not a fork
+or PR run. The game and proof are downloaded from the same run. Without both
+inputs, it remains an unbound diagnostic smoke.
+
+Inventory ordering uses case-sensitive POSIX-relative strings on every OS.
+Recreate older Windows receipts with mixed-case filenames; the earlier
+Windows-specific ordering could differ from a Linux runtime check.
 
 A failed browser startup also saves `failure.png` when possible. Each invocation requires a new output directory, so a failed run cannot reuse a previous screenshot or result. Missing SDKs, devices or WebGPU support must remain explicitly unverified in release notes.

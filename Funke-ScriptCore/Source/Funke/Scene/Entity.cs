@@ -30,7 +30,6 @@ public class Entity : IEquatable<Entity>
     private Dictionary<Type, Component>? m_ComponentCache;
     private ulong m_ComponentCacheVersion;
     private readonly ulong m_PrefabAssetGUID;
-    private Transform2D? m_TransformComponent;
 
     protected Entity()
     {
@@ -96,24 +95,23 @@ public class Entity : IEquatable<Entity>
         return new EntityRef(ID);
     }
 
-    /// <summary>Legacy 2D access; null when absent. Never adds a transform.</summary>
-    public Transform2D? Transform
-    {
-        get
-        {
-            EnsureComponentCacheCurrent();
-            if (m_TransformComponent is null || ((Component)m_TransformComponent).Entity.ID == 0)
-                m_TransformComponent = GetComponent<Transform2D>();
-            return m_TransformComponent;
-        }
-        set => m_TransformComponent = value;
-    }
-
     /// <summary>Cached 2D component, or null when absent; never adds a transform.</summary>
     public Transform2D? Transform2D => GetComponent<Transform2D>();
 
     /// <summary>Cached 3D component, or null when absent; never adds a transform.</summary>
     public Transform3D? Transform3D => GetComponent<Transform3D>();
+
+    /// <summary>Physics membership for this entity, including colliders added later. Combine layers with |.
+    /// Assigning this overrides individual 2D collider layers; 3D compound bodies use their Rigidbody owner's layer.</summary>
+    public PhysicsLayer Layer
+    {
+        get => IsPrefabAsset ? PhysicsLayer.None : PhysicsLayer.FromMask(InternalCalls.Entity_GetLayer(ID));
+        set
+        {
+            if (IsPrefabAsset) throw new InvalidOperationException("Set Layer on a scene entity or prefab instance.");
+            InternalCalls.Entity_SetLayer(ID, value.Mask);
+        }
+    }
 
     public string Name
     {
@@ -477,7 +475,6 @@ public class Entity : IEquatable<Entity>
         if (m_ComponentCacheVersion == s_ManagedComponentStoreVersion)
             return;
         m_ComponentCache = null;
-        m_TransformComponent = null;
         m_ComponentCacheVersion = s_ManagedComponentStoreVersion;
     }
 
@@ -485,9 +482,6 @@ public class Entity : IEquatable<Entity>
     {
         if (m_ComponentCache != null && m_ComponentCache.Remove(type, out Component? cached))
             cached.Invalidate();
-
-        if (type == typeof(Transform2D))
-            m_TransformComponent = null;
 
         InvalidateManagedComponent(ID, type);
     }
@@ -501,8 +495,6 @@ public class Entity : IEquatable<Entity>
                 pair.Value.Invalidate();
             m_ComponentCache.Clear();
         }
-
-        m_TransformComponent = null;
     }
 
     private static void InvalidateManagedComponent(ulong entityID, Type type)

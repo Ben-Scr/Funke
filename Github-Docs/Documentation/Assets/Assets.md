@@ -30,6 +30,8 @@ Funke recognizes these asset kinds (from the `AssetKind` list):
 
 Anything with an unknown extension is still tracked as **Other**, so nothing in your project is invisible to the engine.
 
+Every selected asset has **Open** and **Open in Explorer** (Windows), **Open in Finder** (macOS), or **Open in File Manager** (other platforms) buttons at the top of the Inspector. **Open** uses the same action as double-clicking in the Asset Browser: scenes and prefabs open in the editor, animation assets open in Animation or Animator, scripts use the configured external editor, and other files use their OS-associated application. Selected folders open in the Asset Browser. The file-manager button reveals the asset where supported, otherwise opens its containing folder.
+
 Selecting a `.md` or `.markdown` file in the Asset Browser displays a read-only Markdown preview in the Inspector. It renders headings, emphasis, lists and task lists, quotes, code blocks, links and tables, and refreshes after external edits. Web and email links open on click. The preview accepts UTF-8 files up to 1 MB and shows a message for empty or unreadable files.
 
 Local images work with both `![alt text](path)` and HTML `<img src="path" alt="text">`; relative paths resolve against the Markdown file's folder, including parent paths and URL-encoded spaces. Images load asynchronously and fit the Inspector width while preserving their aspect ratio unless both dimensions are specified. HTML images accept pixel widths/heights and percentage widths, so two images with `width="48%"` share a row when space permits. Hovering an image shows its alt text and source. Missing images display a placeholder; remote URLs and embedded data images are not loaded.

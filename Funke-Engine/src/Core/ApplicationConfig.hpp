@@ -94,7 +94,7 @@ namespace Funke {
 		float TargetFrameRate = 144.0f;
 		bool UseTargetFrameRateForMainLoop = true;
 
-		// F11 toggles true exclusive fullscreen (SDL_SetWindowFullscreen with a display mode). Games
+		// F11 toggles the configured fullscreen mode and restores the windowed bounds. Games
 		// want it; the editor and launcher do NOT — exclusive fullscreen takes
 		// over the display and breaks their multi-window UI (secondary OS
 		// windows get covered / auto-iconified). Those apps set this false.

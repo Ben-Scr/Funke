@@ -4,6 +4,7 @@
 #include "Core/Log.hpp"
 #include "Graphics/Backend/WebGPUBackend.hpp"
 #include "Graphics/Shader.hpp"
+#include "Graphics/Frustum.hpp"
 #include "Graphics/Text/Font.hpp"
 #include "Graphics/Text/FontManager.hpp"
 #include "Graphics/Text/TextRenderer.hpp"
@@ -513,6 +514,21 @@ namespace Funke {
 				"On-screen gizmo render budget ({}) exceeded this view; the gizmos farthest from the "
 				"view centre were dropped. Raise it via Gizmo::SetMaxVertices.", budget);
 		}
+	}
+
+	std::span<const Line3D> GizmoRenderer2D::BuildLines3D(const glm::mat4& vp,
+		GizmoLayerMask layerMask, const Vec3& origin) {
+		static std::vector<Line3D> lines;
+		lines.clear();
+		const auto frustum = ExtractFrustum(vp);
+		for (const Line3D& line : Gizmo::s_Lines3D) {
+			if (lines.size() >= Gizmo::GetMaxVertices()) break;
+			if (!HasAnyLayer(line.Layer, layerMask)) continue;
+			const Vec3 start = line.Start - origin, end = line.End - origin;
+			if (!IntersectsFrustum(frustum, start * 0.5f + end * 0.5f, glm::abs(end - start) * 0.5f)) continue;
+			lines.push_back(line);
+		}
+		return lines;
 	}
 
 	void GizmoRenderer2D::RenderWithVP(const glm::mat4& vp, GizmoLayerMask layerMask) {

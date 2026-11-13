@@ -6,6 +6,7 @@
 #endif
 #include "Core/Application.hpp"
 #include "Core/Log.hpp"
+#include "Core/PlatformShortcuts.hpp"
 #include "Core/Time.hpp"
 #include "DevTools/PhysicsDebugOverlay.hpp"
 #include "DevTools/ScreenCapture.hpp"
@@ -329,7 +330,7 @@ namespace Funke {
 				ScreenCapture::Request(path);
 				return DevCommandResult::Ok("Screenshot: " + path);
 			});
-		Register("physics.debug", "[on|off|toggle]", "Collider wireframes, triggers and contacts (also F8).",
+		Register("physics.debug", "[on|off|toggle]", std::string("Collider wireframes, triggers and contacts (also ") + PlatformShortcuts::k_PhysicsDebugLabel + ").",
 			[](const std::vector<std::string>& args) {
 				return OnOffCommand(args, PhysicsDebugOverlay::IsEnabled(), &PhysicsDebugOverlay::SetEnabled, "physics.debug");
 			});

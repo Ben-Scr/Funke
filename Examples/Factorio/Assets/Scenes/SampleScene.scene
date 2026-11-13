@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "name": "SampleScene",
+  "systems": [],
+  "entities": [
+    {
+      "name": "Camera",
+      "Transform2D": {
+        "posX": 0,
+        "posY": 0,
+        "rotation": 0,
+        "scaleX": 1,
+        "scaleY": 1
+      },
+      "Camera2D": {
+        "orthoSize": 5,
+        "zoom": 1
+      }
+    }
+  ]
+}

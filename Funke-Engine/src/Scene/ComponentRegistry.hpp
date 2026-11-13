@@ -77,8 +77,9 @@ namespace Funke {
             // Skip empty tag types — no addressable payload in EnTT's empty-type storage.
             if constexpr (!std::is_empty_v<T>) {
                 info.getRaw = [](Entity e) -> void* {
-                    if (!e.HasComponent<T>()) return nullptr;
-                    return static_cast<void*>(&e.GetComponent<T>());
+                    T* component = nullptr;
+                    e.TryGetComponent(component);
+                    return static_cast<void*>(component);
                 };
                 info.fillRawPointers = [](entt::registry& registry, void** outPointers, int maxRows, int enableFilter) -> int {
                     int count = 0;

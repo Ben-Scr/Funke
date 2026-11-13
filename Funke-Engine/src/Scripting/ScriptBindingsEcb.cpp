@@ -303,8 +303,8 @@ namespace Funke {
 		if (currentCount + totalEntityCount64 > kMaxLiveEntities) {
 			FNK_CORE_ERROR_TAG("Ecb",
 				"Ecb_Playback rejected: batch would exceed entity cap "
-				"(current={}, requested={}+{} prefab children, cap={}). Raise 'entityBits' in "
-				"project.json and rebuild (Project Settings > Entity ID bits).",
+				"(current={}, requested={}+{} prefab children, cap={}). Reduce the number of live "
+				"entities. A higher cap requires rebuilding the engine from source with a larger 'entityBits' value.",
 				currentCount, header.entityCount, totalExtraChildren, kMaxLiveEntities);
 			return kEcbErrorEntityCapExceeded;
 		}

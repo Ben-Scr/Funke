@@ -110,6 +110,7 @@ namespace Funke {
 
 		static void InitializeGlobalSystems(const std::vector<std::string>& classNames);
 		static void UpdateGlobalSystems();
+        static size_t GetEnabledGlobalSystemCount();
 		static void FixedUpdateGlobalSystems();
 		static void ShutdownGlobalSystems();
 		static void SetGlobalSystemEnabled(const std::string& className, bool enabled);

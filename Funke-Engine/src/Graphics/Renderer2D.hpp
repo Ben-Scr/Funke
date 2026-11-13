@@ -9,6 +9,7 @@
 #include "Graphics/Framebuffer.hpp"
 #include "Graphics/FramebufferCache.hpp"
 #include "Graphics/IRenderer.hpp"
+#include "Graphics/RenderViewOptions.hpp"
 #include "Graphics/PostProcessing/PostProcessor.hpp"
 
 #include <glm/glm.hpp>
@@ -50,6 +51,8 @@ namespace Funke {
 		// after the Editor-View pass each frame.
 		void SetPostProcessingEnabled(bool enabled) { m_PostProcessingEnabled = enabled; }
 		bool IsPostProcessingEnabled() const { return m_PostProcessingEnabled; }
+		void SetViewOptions(const RenderViewOptions& options) { m_ViewOptions = options; }
+		const RenderViewOptions& GetViewOptions() const { return m_ViewOptions; }
 		bool IsInitialized() const override { return m_IsInitialized; }
 		void SetGraphicsSettings(const GraphicsSettings& settings) {
 			m_GraphicsSettings = ClampGraphicsSettings(settings);
@@ -109,6 +112,7 @@ namespace Funke {
 		bool m_SkipBeginFrameRender = false;
 		bool m_ComposeOverTarget = false;
 		GraphicsSettings m_GraphicsSettings{};
+		RenderViewOptions m_ViewOptions;
 
 		std::vector<Instance44> m_Instances;
 

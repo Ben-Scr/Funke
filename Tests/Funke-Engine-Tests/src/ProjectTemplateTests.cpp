@@ -1,12 +1,22 @@
 #include <doctest/doctest.h>
 
+#include "Components/Graphics/Camera2DComponent.hpp"
+#include "Components/Graphics/Camera3DComponent.hpp"
+#include "Components/Graphics/MeshRendererComponent.hpp"
+#include "Components/Graphics/SpriteRendererComponent.hpp"
+#include "Components/Physics/BoxCollider2DComponent.hpp"
+#include "Components/Physics/Rigidbody2DComponent.hpp"
+#include "Components/Physics3D/Collider3DComponents.hpp"
+#include "Components/Physics3D/Rigidbody3DComponent.hpp"
 #include "Project/FunkeProject.hpp"
 #include "Project/ProjectTemplate.hpp"
 #include "Scene/BuiltInComponentRegistration.hpp"
 #include "Scene/ComponentRegistry.hpp"
+#include "Scene/Scene.hpp"
 #include "Serialization/File.hpp"
 #include "Serialization/Json.hpp"
 #include "Serialization/Path.hpp"
+#include "Serialization/SceneSerializer.hpp"
 #include "Serialization/SceneSerializerStorage.hpp"
 
 #include <cctype>
@@ -44,7 +54,7 @@ namespace {
 	}
 }
 
-TEST_CASE("Repository ships the empty 2D and 3D project templates") {
+TEST_CASE("Repository ships starter and empty 2D and 3D project templates") {
 	const std::vector<ProjectTemplate> templates = DiscoverRepositoryTemplates();
 	auto find = [&](std::string_view id) -> const ProjectTemplate* {
 		for (const ProjectTemplate& projectTemplate : templates) {
@@ -53,14 +63,16 @@ TEST_CASE("Repository ships the empty 2D and 3D project templates") {
 		return nullptr;
 	};
 
-	CHECK(templates.size() == 2);
-	for (const char* id : { "Funke.Empty2D", "Funke.Empty3D" }) {
+	CHECK(templates.size() == 4);
+	for (const char* id : { "Funke.2D", "Funke.3D", "Funke.Empty2D", "Funke.Empty3D" }) {
 		CAPTURE(id);
 		REQUIRE(find(id));
 	}
 	CHECK(find("Funke.Empty2D")->Modules == std::vector<std::string>{ "Funke.2D" });
 	CHECK(find("Funke.Empty3D")->Modules == std::vector<std::string>{ "Funke.3D" });
 	CHECK(find("Funke.Empty3D")->Category == "3D");
+	CHECK(find("Funke.2D")->Modules == std::vector<std::string>{ "Funke.2D", "Funke.Physics2D" });
+	CHECK(find("Funke.3D")->Modules == std::vector<std::string>{ "Funke.3D", "Funke.Physics3D" });
 	CHECK(find(ProjectTemplates::k_DefaultTemplateId));
 }
 
@@ -118,7 +130,8 @@ TEST_CASE("Every template creates a project whose startup scene only uses regist
 		const Json::Value* entities = sceneRoot.FindMember("entities");
 		REQUIRE(entities);
 		REQUIRE(entities->IsArray());
-		CHECK_FALSE(entities->GetArray().empty());
+		const bool empty = projectTemplate.Id.starts_with("Funke.Empty");
+		CHECK(entities->GetArray().empty() == empty);
 		for (const Json::Value& entity : entities->GetArray()) {
 			REQUIRE(entity.IsObject());
 			for (const auto& [key, value] : entity.GetObject()) {
@@ -130,9 +143,57 @@ TEST_CASE("Every template creates a project whose startup scene only uses regist
 			}
 		}
 
-		const std::string gameScript = File::ReadAllText(Path::Combine(loaded.ScriptsDirectory, "GameScript.cs"));
-		CHECK(gameScript.find("TemplateGame") != std::string::npos);
-		CHECK(gameScript.find("{{") == std::string::npos);
+		CHECK(std::filesystem::is_empty(Path::FromUtf8(loaded.ScriptsDirectory)));
+		const std::string helpPath = Path::Combine(loaded.AssetsDirectory, "Help.md");
+		CHECK(File::Exists(helpPath) == !empty);
+		if (!empty) {
+			const std::string help = File::ReadAllText(helpPath);
+			CHECK(help.find("TemplateGame") != std::string::npos);
+			CHECK(help.find("{{") == std::string::npos);
+		}
+
+		// Load through the real serializer: valid component names alone do not catch
+		// incorrect body types, collider dimensions or incompatible serialization keys.
+		auto scene = Scene::CreateDetachedScene("Template validation");
+		REQUIRE(SceneSerializer::DeserializeScene(*scene, sceneRoot));
+		if (empty) {
+			CHECK(scene->GetEntityCount() == 0);
+		}
+		else if (projectTemplate.Category == "2D") {
+			CHECK(scene->GetEntityCount() == 3);
+			CHECK(scene->GetRegistry().view<Camera2DComponent>().size() == 1);
+			int dynamicBodies = 0, staticBodies = 0;
+			for (auto [entity, body] : scene->GetRegistry().view<Rigidbody2DComponent>().each()) {
+				dynamicBodies += body.GetBodyType() == BodyType::Dynamic;
+				staticBodies += body.GetBodyType() == BodyType::Static;
+				CHECK(scene->HasComponent<SpriteRendererComponent>(entity));
+				REQUIRE(scene->HasComponent<BoxCollider2DComponent>(entity));
+				const auto& collider = scene->GetComponent<BoxCollider2DComponent>(entity);
+				CHECK_FALSE(collider.IsSensor());
+				CHECK(collider.GetLocalScale(*scene).x == doctest::Approx(1.0f));
+				CHECK(collider.GetLocalScale(*scene).y == doctest::Approx(1.0f));
+			}
+			CHECK(dynamicBodies == 1);
+			CHECK(staticBodies == 1);
+		}
+		else {
+			CHECK(scene->GetEntityCount() == 4);
+			CHECK(scene->GetRegistry().view<Camera3DComponent>().size() == 1);
+			int dynamicBodies = 0, staticBodies = 0;
+			for (auto [entity, body] : scene->GetRegistry().view<Rigidbody3DComponent>().each()) {
+				dynamicBodies += body.Type == BodyType::Dynamic;
+				staticBodies += body.Type == BodyType::Static;
+				CHECK(scene->HasComponent<MeshRendererComponent>(entity));
+				REQUIRE(scene->HasComponent<BoxCollider3DComponent>(entity));
+				const auto& collider = scene->GetComponent<BoxCollider3DComponent>(entity);
+				CHECK_FALSE(collider.IsTrigger);
+				CHECK(collider.Size.x == doctest::Approx(1.0f));
+				CHECK(collider.Size.y == doctest::Approx(1.0f));
+				CHECK(collider.Size.z == doctest::Approx(1.0f));
+			}
+			CHECK(dynamicBodies == 1);
+			CHECK(staticBodies == 1);
+		}
 
 		if (!keep) {
 			std::error_code ec;

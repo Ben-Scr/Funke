@@ -123,6 +123,8 @@ namespace Funke {
 	class FUNKE_API AnimationClipLibrary {
 	public:
 		AnimationClipLibrary() = delete;
+		// Successfully loaded cache entries; does not load or retain assets. Main thread.
+		static size_t GetLoadedCount();
 
 		// nullptr for 0, unknown GUIDs and unreadable files (retried at most once per second).
 		static std::shared_ptr<const AnimationClip> Get(uint64_t guid);

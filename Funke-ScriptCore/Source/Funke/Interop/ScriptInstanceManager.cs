@@ -2240,6 +2240,7 @@ internal static class ScriptInstanceManager
         if (t == typeof(uint)) return "uint";
         if (t == typeof(ushort)) return "ushort";
         if (t == typeof(sbyte)) return "sbyte";
+        if (t == typeof(PhysicsLayer)) return "physicslayer";
         if (t == typeof(ulong)) return "ulong";
         if (t == typeof(bool)) return "bool";
         if (t == typeof(string)) return "string";
@@ -2313,6 +2314,7 @@ internal static class ScriptInstanceManager
         if (t == typeof(uint)) return ((uint)val).ToString(ic);
         if (t == typeof(ushort)) return ((ushort)val).ToString(ic);
         if (t == typeof(sbyte)) return ((sbyte)val).ToString(ic);
+        if (t == typeof(PhysicsLayer)) return unchecked((long)((PhysicsLayer)val).Mask).ToString(ic);
         if (t == typeof(ulong)) return ((ulong)val).ToString(ic);
         if (t == typeof(bool)) return (bool)val ? "true" : "false";
         if (t == typeof(string)) return (string)val;
@@ -2489,6 +2491,8 @@ internal static class ScriptInstanceManager
             if (t == typeof(uint)) return uint.Parse(s, ic);
             if (t == typeof(ushort)) return ushort.Parse(s, ic);
             if (t == typeof(sbyte)) return sbyte.Parse(s, ic);
+            if (t == typeof(PhysicsLayer)) return PhysicsLayer.FromMask(s.StartsWith("-", StringComparison.Ordinal)
+                ? unchecked((ulong)long.Parse(s, ic)) : ulong.Parse(s, ic));
             if (t == typeof(ulong)) return ulong.Parse(s, ic);
             if (t == typeof(bool)) return s == "true" || s == "True" || s == "1";
             if (t == typeof(string)) return s;

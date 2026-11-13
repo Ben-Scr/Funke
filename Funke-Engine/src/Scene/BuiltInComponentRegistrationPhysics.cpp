@@ -8,6 +8,7 @@
 #include "Components/Physics/Rigidbody2DComponent.hpp"
 #include "Components/Physics/Joint2DComponents.hpp"
 #include "Physics/PhysicsTypes.hpp"
+#include "Project/PhysicsLayerSettings.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -19,13 +20,13 @@
 // Split out of BuiltInComponentRegistration.cpp, which owns the call order.
 namespace Funke::BuiltInComponentRegistrationInternal {
 	namespace {
-		constexpr int k_InspectorPhysicsLayerCount = 16;
+		constexpr int k_InspectorPhysicsLayerCount = PhysicsLayerSettings::Count;
 
 		std::shared_ptr<EnumDescriptor> MakePhysicsLayerOptions() {
 			auto options = std::make_shared<EnumDescriptor>();
 			options->IsFlags = true;
 			for (int i = 0; i < k_InspectorPhysicsLayerCount; ++i) {
-				options->Options.push_back({ i == 0 ? std::string("Layer 0 (Default)") : "Layer " + std::to_string(i), int64_t{ 1 } << i });
+				options->Options.push_back({ i == 0 ? std::string("Default") : "Layer " + std::to_string(i), static_cast<int64_t>(uint64_t{1} << i) });
 			}
 			return options;
 		}
@@ -41,6 +42,7 @@ namespace Funke::BuiltInComponentRegistrationInternal {
 			desc.DisplayName = displayName;
 			desc.Type = PropertyType::FlagEnum;
 			desc.Metadata.Enum = s_Options;
+			desc.Metadata.IsPhysicsLayerMask = true;
 			desc.Get = [getter](const Entity& e) {
 				PropertyValue v;
 				v.Type = PropertyType::FlagEnum;

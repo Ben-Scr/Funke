@@ -22,7 +22,7 @@ New projects use project format **2** and explicitly store `modules`. These are 
 | 3D rendering | 2 | `["Funke.3D"]` |
 | 3D with physics | 2 | `["Funke.3D", "Funke.Physics3D"]` |
 
-Mixed worlds can enable both dimensions and either, both or neither physics module. IDs are case-sensitive; unknown IDs and malformed lists fail validation. Built-in Empty2D and Empty3D templates start without physics.
+Mixed worlds can enable both dimensions and either, both or neither physics module. IDs are case-sensitive; unknown IDs and malformed lists fail validation. Built-in Empty2D and Empty3D templates start without physics, entities or starter scripts. The **2D** (`Funke.2D`) and **3D** (`Funke.3D`) project templates enable the corresponding world and physics modules and include a camera, ground, a falling box, and `Assets/Help.md`; 3D also includes a directional light. All shipped templates are script-free.
 
 Loading an older project expands each selected dimension to include its physics. A missing legacy `modules` field becomes all four modules; an explicit empty list stays empty. Read-only loading performs the same interpretation in memory without rewriting files. The existing project migration backs up the original before saving version 2. Once migrated, removing physics is permanent until explicitly enabled again; subsequent loads do not add it back.
 

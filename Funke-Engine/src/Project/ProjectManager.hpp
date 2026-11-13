@@ -13,6 +13,8 @@ namespace Funke {
 		// Pushes the current project's engine-wide knobs (font baking) into their subsystems; also
 		// for when the current project object is reloaded in place.
 		static void ApplyCurrentProjectSettings();
+		// Reset existing worlds to the project defaults on Play and after editing gravity.
+		static void ApplyPhysicsDefaults();
 		static FunkeProject* GetCurrentProject();
 		static bool HasProject();
 

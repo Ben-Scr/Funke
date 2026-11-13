@@ -40,6 +40,8 @@ public static class Gizmo
     /// budget, the overflow is dropped (with a one-time log warning). Default: 100,000.
     /// Cost: a line = 1, a (wire or filled) square = 4, a (wire or filled) circle = its
     /// segment count (default 32), text = its length.
+    /// 3D views have a separate line budget: line = 1, box = 12, sphere = 3 * segments.
+    /// Visible 3D lines are kept in submission order up to that budget.
     /// </summary>
     public static int MaxVertices
     {
@@ -57,6 +59,26 @@ public static class Gizmo
 
     public static void DrawLine(Vector2 start, Vector2 end)
         => InternalCalls.Gizmo_DrawLine(start.X, start.Y, end.X, end.Y);
+
+    /// <summary>World-space 3D line, depth-tested against scene meshes.</summary>
+    public static void DrawLine(Vector3 start, Vector3 end)
+        => InternalCalls.Gizmo_DrawLine3D(start.X, start.Y, start.Z, end.X, end.Y, end.Z);
+
+    /// <summary>Draws a 3D line of the given distance along direction (need not be normalized). A zero direction draws nothing.</summary>
+    public static void DrawLine(Vector3 start, Vector3 direction, float distance)
+    {
+        float length = direction.Length();
+        if (length <= 0f || !float.IsFinite(length) || !float.IsFinite(distance)) return;
+        DrawLine(start, start + direction * (distance / length));
+    }
+
+    /// <summary>Wireframe box in world space. Size is the full extent; Euler rotation is in degrees, as in Transform3D.</summary>
+    public static void DrawBox(Vector3 center, Vector3 size, Vector3 rotation = default)
+        => InternalCalls.Gizmo_DrawBox(center.X, center.Y, center.Z, size.X, size.Y, size.Z, rotation.X, rotation.Y, rotation.Z);
+
+    /// <summary>Wireframe sphere made of three perpendicular great circles. Segments per circle are clamped to at least 3; nonpositive radii draw nothing.</summary>
+    public static void DrawSphere(Vector3 center, float radius, int segments = 32)
+        => InternalCalls.Gizmo_DrawSphere(center.X, center.Y, center.Z, radius, segments);
 
     /// <summary>Draws <paramref name="distance"/> units from <paramref name="start"/> along <paramref name="direction"/> (need not be normalized). A zero direction draws nothing.</summary>
     public static void DrawLine(Vector2 start, Vector2 direction, float distance)

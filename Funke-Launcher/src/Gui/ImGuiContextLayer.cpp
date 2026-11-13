@@ -132,6 +132,16 @@ namespace Funke {
 		style.SeparatorTextBorderSize  = 2.0f;
 
 		// ── Colors ──────────────────────────────────────────────────
+		ConfigureFunkeThemeColors(style, dark);
+		ApplyNativeTitlebarFromStyle();
+		style.ScaleAllSizes(s_DpiScale);
+	}
+
+	void ImGuiContextLayer::RefreshNativeTitlebar() {
+		ApplyNativeTitlebarFromStyle();
+	}
+
+	void ImGuiContextLayer::ConfigureFunkeThemeColors(ImGuiStyle& style, bool dark) {
 		ImVec4* c = style.Colors;
 
 		const ImVec4 bg        = dark ? ImVec4(0.110f, 0.114f, 0.125f, 1.00f) : ImVec4(0.949f, 0.953f, 0.961f, 1.00f);
@@ -213,8 +223,6 @@ namespace Funke {
 
 		c[ImGuiCol_ModalWindowDimBg]     = dark ? ImVec4(0, 0, 0, 0.55f) : ImVec4(0.18f, 0.22f, 0.28f, 0.35f);
 
-		ApplyNativeTitlebarFromStyle();
-		style.ScaleAllSizes(s_DpiScale);
 	}
 
 }

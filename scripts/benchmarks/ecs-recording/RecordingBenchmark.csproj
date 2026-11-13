@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>Funke-ScriptCore-Tests</AssemblyName>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>enable</Nullable>
+    <Optimize>true</Optimize>
+    <CorePath Condition="'$(CorePath)' == ''">../../../bin/Release-windows-x86_64/Funke-ScriptCore/Funke-ScriptCore.dll</CorePath>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="Funke-ScriptCore"><HintPath>$(CorePath)</HintPath></Reference>
+  </ItemGroup>
+</Project>

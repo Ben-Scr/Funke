@@ -20,6 +20,11 @@ public sealed partial class EntityCommandBuffer
         public EntityRef Create()
         {
             WorkerSlot slot = m_Parent.GetOrCreateSlotForCurrentThread();
+            return CreateLocal(slot);
+        }
+
+        private static EntityRef CreateLocal(WorkerSlot slot)
+        {
             uint localIndex = slot.EntityCount;
             slot.EntityCount = localIndex + 1;
             return new EntityRef(localIndex);
@@ -70,7 +75,7 @@ public sealed partial class EntityCommandBuffer
         public unsafe void AddComponent<T>(EntityRef e, in T data) where T : unmanaged, IComponent
         {
             int payloadSize = sizeof(T);
-            if (payloadSize > ushort.MaxValue - (e.IsSceneEntity ? sizeof(ulong) : 0))
+            if (payloadSize > ushort.MaxValue || (payloadSize > ushort.MaxValue - sizeof(ulong) && e.IsSceneEntity))
             {
                 throw new ArgumentException(
                     $"Component '{typeof(T).Name}' plus its entity reference exceeds the ECB's u16 payload limit.",
@@ -113,14 +118,18 @@ public sealed partial class EntityCommandBuffer
         public void RemoveComponent<T>(Entity entity) where T : unmanaged, IComponent
             => RemoveComponent<T>(ToLiveRef(entity));
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static void ValidateComponentEntity(WorkerSlot slot, EntityRef entity)
         {
             if (entity.IsCommandBufferEntity && entity.Index >= slot.EntityCount)
-                throw new ArgumentException(
-                    $"EntityRef index {entity.Index} is out of range for worker {slot.ManagedThreadId} " +
-                    $"(entityCount = {slot.EntityCount}); local refs cannot be passed between workers.",
-                    nameof(entity));
+                ThrowInvalidComponentEntity(slot, entity);
         }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private static void ThrowInvalidComponentEntity(WorkerSlot slot, EntityRef entity)
+            => throw new ArgumentException(
+                $"EntityRef index {entity.Index} is out of range for worker {slot.ManagedThreadId} " +
+                $"(entityCount = {slot.EntityCount}); local refs cannot be passed between workers.", nameof(entity));
 
         /// <summary>Records a prefab instantiation into this thread's sub-buffer and returns the root EntityRef (children created at playback). Same per-thread locality contract as <see cref="Create"/>.</summary>
         public unsafe EntityRef Instantiate(ulong prefabGuid)
@@ -164,7 +173,11 @@ public sealed partial class EntityCommandBuffer
         {
             WorkerSlot slot = m_Parent.GetOrCreateSlotForCurrentThread();
             ValidateComponentEntity(slot, e);
+            RecordDefaultConstruct<T>(slot, e);
+        }
 
+        private static void RecordDefaultConstruct<T>(WorkerSlot slot, EntityRef e) where T : unmanaged, IComponent
+        {
             EcbWire.WriteDefaultConstructRecord(
                 ref slot.Commands,
                 ref slot.CommandsLen,
@@ -176,8 +189,9 @@ public sealed partial class EntityCommandBuffer
         public EntityRef CreateWith<T1>()
             where T1 : unmanaged, IComponent
         {
-            EntityRef e = Create();
-            RecordDefaultConstruct<T1>(e);
+            WorkerSlot slot = m_Parent.GetOrCreateSlotForCurrentThread();
+            EntityRef e = CreateLocal(slot);
+            RecordDefaultConstruct<T1>(slot, e);
             return e;
         }
 
@@ -185,9 +199,10 @@ public sealed partial class EntityCommandBuffer
             where T1 : unmanaged, IComponent
             where T2 : unmanaged, IComponent
         {
-            EntityRef e = Create();
-            RecordDefaultConstruct<T1>(e);
-            RecordDefaultConstruct<T2>(e);
+            WorkerSlot slot = m_Parent.GetOrCreateSlotForCurrentThread();
+            EntityRef e = CreateLocal(slot);
+            RecordDefaultConstruct<T1>(slot, e);
+            RecordDefaultConstruct<T2>(slot, e);
             return e;
         }
 
@@ -196,10 +211,11 @@ public sealed partial class EntityCommandBuffer
             where T2 : unmanaged, IComponent
             where T3 : unmanaged, IComponent
         {
-            EntityRef e = Create();
-            RecordDefaultConstruct<T1>(e);
-            RecordDefaultConstruct<T2>(e);
-            RecordDefaultConstruct<T3>(e);
+            WorkerSlot slot = m_Parent.GetOrCreateSlotForCurrentThread();
+            EntityRef e = CreateLocal(slot);
+            RecordDefaultConstruct<T1>(slot, e);
+            RecordDefaultConstruct<T2>(slot, e);
+            RecordDefaultConstruct<T3>(slot, e);
             return e;
         }
 
@@ -209,11 +225,12 @@ public sealed partial class EntityCommandBuffer
             where T3 : unmanaged, IComponent
             where T4 : unmanaged, IComponent
         {
-            EntityRef e = Create();
-            RecordDefaultConstruct<T1>(e);
-            RecordDefaultConstruct<T2>(e);
-            RecordDefaultConstruct<T3>(e);
-            RecordDefaultConstruct<T4>(e);
+            WorkerSlot slot = m_Parent.GetOrCreateSlotForCurrentThread();
+            EntityRef e = CreateLocal(slot);
+            RecordDefaultConstruct<T1>(slot, e);
+            RecordDefaultConstruct<T2>(slot, e);
+            RecordDefaultConstruct<T3>(slot, e);
+            RecordDefaultConstruct<T4>(slot, e);
             return e;
         }
 
@@ -224,12 +241,13 @@ public sealed partial class EntityCommandBuffer
             where T4 : unmanaged, IComponent
             where T5 : unmanaged, IComponent
         {
-            EntityRef e = Create();
-            RecordDefaultConstruct<T1>(e);
-            RecordDefaultConstruct<T2>(e);
-            RecordDefaultConstruct<T3>(e);
-            RecordDefaultConstruct<T4>(e);
-            RecordDefaultConstruct<T5>(e);
+            WorkerSlot slot = m_Parent.GetOrCreateSlotForCurrentThread();
+            EntityRef e = CreateLocal(slot);
+            RecordDefaultConstruct<T1>(slot, e);
+            RecordDefaultConstruct<T2>(slot, e);
+            RecordDefaultConstruct<T3>(slot, e);
+            RecordDefaultConstruct<T4>(slot, e);
+            RecordDefaultConstruct<T5>(slot, e);
             return e;
         }
 
@@ -241,13 +259,14 @@ public sealed partial class EntityCommandBuffer
             where T5 : unmanaged, IComponent
             where T6 : unmanaged, IComponent
         {
-            EntityRef e = Create();
-            RecordDefaultConstruct<T1>(e);
-            RecordDefaultConstruct<T2>(e);
-            RecordDefaultConstruct<T3>(e);
-            RecordDefaultConstruct<T4>(e);
-            RecordDefaultConstruct<T5>(e);
-            RecordDefaultConstruct<T6>(e);
+            WorkerSlot slot = m_Parent.GetOrCreateSlotForCurrentThread();
+            EntityRef e = CreateLocal(slot);
+            RecordDefaultConstruct<T1>(slot, e);
+            RecordDefaultConstruct<T2>(slot, e);
+            RecordDefaultConstruct<T3>(slot, e);
+            RecordDefaultConstruct<T4>(slot, e);
+            RecordDefaultConstruct<T5>(slot, e);
+            RecordDefaultConstruct<T6>(slot, e);
             return e;
         }
 
@@ -260,14 +279,15 @@ public sealed partial class EntityCommandBuffer
             where T6 : unmanaged, IComponent
             where T7 : unmanaged, IComponent
         {
-            EntityRef e = Create();
-            RecordDefaultConstruct<T1>(e);
-            RecordDefaultConstruct<T2>(e);
-            RecordDefaultConstruct<T3>(e);
-            RecordDefaultConstruct<T4>(e);
-            RecordDefaultConstruct<T5>(e);
-            RecordDefaultConstruct<T6>(e);
-            RecordDefaultConstruct<T7>(e);
+            WorkerSlot slot = m_Parent.GetOrCreateSlotForCurrentThread();
+            EntityRef e = CreateLocal(slot);
+            RecordDefaultConstruct<T1>(slot, e);
+            RecordDefaultConstruct<T2>(slot, e);
+            RecordDefaultConstruct<T3>(slot, e);
+            RecordDefaultConstruct<T4>(slot, e);
+            RecordDefaultConstruct<T5>(slot, e);
+            RecordDefaultConstruct<T6>(slot, e);
+            RecordDefaultConstruct<T7>(slot, e);
             return e;
         }
 
@@ -281,15 +301,16 @@ public sealed partial class EntityCommandBuffer
             where T7 : unmanaged, IComponent
             where T8 : unmanaged, IComponent
         {
-            EntityRef e = Create();
-            RecordDefaultConstruct<T1>(e);
-            RecordDefaultConstruct<T2>(e);
-            RecordDefaultConstruct<T3>(e);
-            RecordDefaultConstruct<T4>(e);
-            RecordDefaultConstruct<T5>(e);
-            RecordDefaultConstruct<T6>(e);
-            RecordDefaultConstruct<T7>(e);
-            RecordDefaultConstruct<T8>(e);
+            WorkerSlot slot = m_Parent.GetOrCreateSlotForCurrentThread();
+            EntityRef e = CreateLocal(slot);
+            RecordDefaultConstruct<T1>(slot, e);
+            RecordDefaultConstruct<T2>(slot, e);
+            RecordDefaultConstruct<T3>(slot, e);
+            RecordDefaultConstruct<T4>(slot, e);
+            RecordDefaultConstruct<T5>(slot, e);
+            RecordDefaultConstruct<T6>(slot, e);
+            RecordDefaultConstruct<T7>(slot, e);
+            RecordDefaultConstruct<T8>(slot, e);
             return e;
         }
 
@@ -298,12 +319,11 @@ public sealed partial class EntityCommandBuffer
             where T1 : unmanaged, IComponent
         {
             ValidateCreateEntitiesArgs(length, output.Length);
-            for (int i = 0; i < length; i++)
-            {
-                EntityRef e = Create();
-                RecordDefaultConstruct<T1>(e);
-                output[i] = e;
-            }
+            if (length == 0) return;
+            WorkerSlot slot = m_Parent.GetOrCreateSlotForCurrentThread();
+            ReadOnlySpan<uint> types = stackalloc uint[] { ComponentTypes<T1>.NativeId };
+            EcbWire.WriteCreateEntitiesWith(ref slot.Commands, ref slot.CommandsLen, ref slot.CommandCount, ref slot.EntityCount,
+                length, output, types);
         }
 
         public void CreateEntitiesWith<T1, T2>(int length, Span<EntityRef> output)
@@ -311,13 +331,11 @@ public sealed partial class EntityCommandBuffer
             where T2 : unmanaged, IComponent
         {
             ValidateCreateEntitiesArgs(length, output.Length);
-            for (int i = 0; i < length; i++)
-            {
-                EntityRef e = Create();
-                RecordDefaultConstruct<T1>(e);
-                RecordDefaultConstruct<T2>(e);
-                output[i] = e;
-            }
+            if (length == 0) return;
+            WorkerSlot slot = m_Parent.GetOrCreateSlotForCurrentThread();
+            ReadOnlySpan<uint> types = stackalloc uint[] { ComponentTypes<T1>.NativeId, ComponentTypes<T2>.NativeId };
+            EcbWire.WriteCreateEntitiesWith(ref slot.Commands, ref slot.CommandsLen, ref slot.CommandCount, ref slot.EntityCount,
+                length, output, types);
         }
 
         public void CreateEntitiesWith<T1, T2, T3>(int length, Span<EntityRef> output)
@@ -326,14 +344,11 @@ public sealed partial class EntityCommandBuffer
             where T3 : unmanaged, IComponent
         {
             ValidateCreateEntitiesArgs(length, output.Length);
-            for (int i = 0; i < length; i++)
-            {
-                EntityRef e = Create();
-                RecordDefaultConstruct<T1>(e);
-                RecordDefaultConstruct<T2>(e);
-                RecordDefaultConstruct<T3>(e);
-                output[i] = e;
-            }
+            if (length == 0) return;
+            WorkerSlot slot = m_Parent.GetOrCreateSlotForCurrentThread();
+            ReadOnlySpan<uint> types = stackalloc uint[] { ComponentTypes<T1>.NativeId, ComponentTypes<T2>.NativeId, ComponentTypes<T3>.NativeId };
+            EcbWire.WriteCreateEntitiesWith(ref slot.Commands, ref slot.CommandsLen, ref slot.CommandCount, ref slot.EntityCount,
+                length, output, types);
         }
 
         public void CreateEntitiesWith<T1, T2, T3, T4>(int length, Span<EntityRef> output)
@@ -343,15 +358,11 @@ public sealed partial class EntityCommandBuffer
             where T4 : unmanaged, IComponent
         {
             ValidateCreateEntitiesArgs(length, output.Length);
-            for (int i = 0; i < length; i++)
-            {
-                EntityRef e = Create();
-                RecordDefaultConstruct<T1>(e);
-                RecordDefaultConstruct<T2>(e);
-                RecordDefaultConstruct<T3>(e);
-                RecordDefaultConstruct<T4>(e);
-                output[i] = e;
-            }
+            if (length == 0) return;
+            WorkerSlot slot = m_Parent.GetOrCreateSlotForCurrentThread();
+            ReadOnlySpan<uint> types = stackalloc uint[] { ComponentTypes<T1>.NativeId, ComponentTypes<T2>.NativeId, ComponentTypes<T3>.NativeId, ComponentTypes<T4>.NativeId };
+            EcbWire.WriteCreateEntitiesWith(ref slot.Commands, ref slot.CommandsLen, ref slot.CommandCount, ref slot.EntityCount,
+                length, output, types);
         }
 
         public void CreateEntitiesWith<T1, T2, T3, T4, T5>(int length, Span<EntityRef> output)
@@ -362,16 +373,11 @@ public sealed partial class EntityCommandBuffer
             where T5 : unmanaged, IComponent
         {
             ValidateCreateEntitiesArgs(length, output.Length);
-            for (int i = 0; i < length; i++)
-            {
-                EntityRef e = Create();
-                RecordDefaultConstruct<T1>(e);
-                RecordDefaultConstruct<T2>(e);
-                RecordDefaultConstruct<T3>(e);
-                RecordDefaultConstruct<T4>(e);
-                RecordDefaultConstruct<T5>(e);
-                output[i] = e;
-            }
+            if (length == 0) return;
+            WorkerSlot slot = m_Parent.GetOrCreateSlotForCurrentThread();
+            ReadOnlySpan<uint> types = stackalloc uint[] { ComponentTypes<T1>.NativeId, ComponentTypes<T2>.NativeId, ComponentTypes<T3>.NativeId, ComponentTypes<T4>.NativeId, ComponentTypes<T5>.NativeId };
+            EcbWire.WriteCreateEntitiesWith(ref slot.Commands, ref slot.CommandsLen, ref slot.CommandCount, ref slot.EntityCount,
+                length, output, types);
         }
 
         public void CreateEntitiesWith<T1, T2, T3, T4, T5, T6>(int length, Span<EntityRef> output)
@@ -383,17 +389,11 @@ public sealed partial class EntityCommandBuffer
             where T6 : unmanaged, IComponent
         {
             ValidateCreateEntitiesArgs(length, output.Length);
-            for (int i = 0; i < length; i++)
-            {
-                EntityRef e = Create();
-                RecordDefaultConstruct<T1>(e);
-                RecordDefaultConstruct<T2>(e);
-                RecordDefaultConstruct<T3>(e);
-                RecordDefaultConstruct<T4>(e);
-                RecordDefaultConstruct<T5>(e);
-                RecordDefaultConstruct<T6>(e);
-                output[i] = e;
-            }
+            if (length == 0) return;
+            WorkerSlot slot = m_Parent.GetOrCreateSlotForCurrentThread();
+            ReadOnlySpan<uint> types = stackalloc uint[] { ComponentTypes<T1>.NativeId, ComponentTypes<T2>.NativeId, ComponentTypes<T3>.NativeId, ComponentTypes<T4>.NativeId, ComponentTypes<T5>.NativeId, ComponentTypes<T6>.NativeId };
+            EcbWire.WriteCreateEntitiesWith(ref slot.Commands, ref slot.CommandsLen, ref slot.CommandCount, ref slot.EntityCount,
+                length, output, types);
         }
 
         public void CreateEntitiesWith<T1, T2, T3, T4, T5, T6, T7>(int length, Span<EntityRef> output)
@@ -406,18 +406,11 @@ public sealed partial class EntityCommandBuffer
             where T7 : unmanaged, IComponent
         {
             ValidateCreateEntitiesArgs(length, output.Length);
-            for (int i = 0; i < length; i++)
-            {
-                EntityRef e = Create();
-                RecordDefaultConstruct<T1>(e);
-                RecordDefaultConstruct<T2>(e);
-                RecordDefaultConstruct<T3>(e);
-                RecordDefaultConstruct<T4>(e);
-                RecordDefaultConstruct<T5>(e);
-                RecordDefaultConstruct<T6>(e);
-                RecordDefaultConstruct<T7>(e);
-                output[i] = e;
-            }
+            if (length == 0) return;
+            WorkerSlot slot = m_Parent.GetOrCreateSlotForCurrentThread();
+            ReadOnlySpan<uint> types = stackalloc uint[] { ComponentTypes<T1>.NativeId, ComponentTypes<T2>.NativeId, ComponentTypes<T3>.NativeId, ComponentTypes<T4>.NativeId, ComponentTypes<T5>.NativeId, ComponentTypes<T6>.NativeId, ComponentTypes<T7>.NativeId };
+            EcbWire.WriteCreateEntitiesWith(ref slot.Commands, ref slot.CommandsLen, ref slot.CommandCount, ref slot.EntityCount,
+                length, output, types);
         }
 
         public void CreateEntitiesWith<T1, T2, T3, T4, T5, T6, T7, T8>(int length, Span<EntityRef> output)
@@ -431,19 +424,11 @@ public sealed partial class EntityCommandBuffer
             where T8 : unmanaged, IComponent
         {
             ValidateCreateEntitiesArgs(length, output.Length);
-            for (int i = 0; i < length; i++)
-            {
-                EntityRef e = Create();
-                RecordDefaultConstruct<T1>(e);
-                RecordDefaultConstruct<T2>(e);
-                RecordDefaultConstruct<T3>(e);
-                RecordDefaultConstruct<T4>(e);
-                RecordDefaultConstruct<T5>(e);
-                RecordDefaultConstruct<T6>(e);
-                RecordDefaultConstruct<T7>(e);
-                RecordDefaultConstruct<T8>(e);
-                output[i] = e;
-            }
+            if (length == 0) return;
+            WorkerSlot slot = m_Parent.GetOrCreateSlotForCurrentThread();
+            ReadOnlySpan<uint> types = stackalloc uint[] { ComponentTypes<T1>.NativeId, ComponentTypes<T2>.NativeId, ComponentTypes<T3>.NativeId, ComponentTypes<T4>.NativeId, ComponentTypes<T5>.NativeId, ComponentTypes<T6>.NativeId, ComponentTypes<T7>.NativeId, ComponentTypes<T8>.NativeId };
+            EcbWire.WriteCreateEntitiesWith(ref slot.Commands, ref slot.CommandsLen, ref slot.CommandCount, ref slot.EntityCount,
+                length, output, types);
         }
     }
 }

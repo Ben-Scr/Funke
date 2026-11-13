@@ -1,7 +1,9 @@
 #pragma once
 
 #include "Editor/ScriptWindowTypes.hpp"
+#include "Gui/EditorDockLayout.hpp"
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -28,6 +30,9 @@ namespace Funke {
 		void Open(const std::string& type);
 		void Close(const std::string& type);
 
+		void CaptureLayoutWindows(EditorDockLayout::WindowVisibility& state) const;
+		void ApplyLayoutWindows(const EditorDockLayout::WindowVisibility& state);
+
 		// Menu items for every window class, nested by their menu path; nothing when there are none.
 		void DrawMenuItems();
 		void Render();
@@ -38,6 +43,7 @@ namespace Funke {
 
 		std::vector<WindowType> m_Types;
 		std::vector<std::string> m_Open;
+		std::optional<std::vector<std::string>> m_PendingLayoutOpen;
 		std::string m_ProjectRoot;
 		double m_LastRefresh = -1.0;
 		bool m_Initialized = false;

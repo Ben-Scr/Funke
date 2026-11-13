@@ -10,12 +10,14 @@
 #include "Core/PlatformShortcuts.hpp"
 #include "Core/Platform/SDLInputMapping.hpp"
 #include "Core/Platform/TitlebarRegions.hpp"
+#include "Core/Window.hpp"
 #include "Serialization/Path.hpp"
 #include "Utils/Hash.hpp"
 
 #include <SDL3/SDL_gamepad.h>
 #include <SDL3/SDL_mouse.h>
 #include <SDL3/SDL_scancode.h>
+#include <SDL3/SDL_video.h>
 
 #include <filesystem>
 #include <fstream>
@@ -29,6 +31,54 @@
 #endif
 
 using namespace Funke;
+
+#if FNK_PLATFORM_DESKTOP
+// Opt in on a desktop: this test switches the real display's fullscreen state.
+TEST_CASE("Fullscreen startup restores resizable windowed bounds" * doctest::skip()) {
+	struct VideoScope {
+		VideoScope() { Window::Initialize(); }
+		~VideoScope() { Window::Shutdown(); }
+	} video;
+	REQUIRE(Window::IsInitialized());
+
+	WindowSpecification spec(640, 480, "Fullscreen restore test", true, true, true);
+	SUBCASE("exclusive") { spec.FullscreenMode = FullscreenMode::Exclusive; }
+	SUBCASE("borderless") { spec.FullscreenMode = FullscreenMode::BorderlessWindowed; }
+	SUBCASE("maximized") { spec.FullscreenMode = FullscreenMode::Maximized; }
+	SUBCASE("legacy maximized") { spec.Windowed = true; }
+	SUBCASE("fixed-size borderless") {
+		spec.FullscreenMode = FullscreenMode::BorderlessWindowed;
+		spec.Resizeable = false;
+	}
+
+	Window window(spec);
+	struct WindowScope {
+		Window& Value;
+		~WindowScope() { Value.Destroy(); }
+	} cleanup{ window };
+	CHECK(window.IsFullScreen());
+	for (int cycle = 0; cycle < 2; ++cycle) {
+		// Same state transition used by the application's F11 handler.
+		window.SetFullScreen(!window.IsFullScreen());
+		REQUIRE_FALSE(window.IsFullScreen());
+		CHECK_FALSE(window.IsMaximized());
+		CHECK(window.IsDecorated());
+		CHECK(window.IsResizeable() == spec.Resizeable);
+		int width = 0, height = 0;
+		REQUIRE(SDL_GetWindowSize(window.GetNativeWindow(), &width, &height));
+		CHECK(width == (cycle == 0 ? 640 : 720));
+		CHECK(height == (cycle == 0 ? 480 : 540));
+
+		window.SetSize({ 720, 540 });
+		SDL_SyncWindow(window.GetNativeWindow());
+		window.SetFullScreen(!window.IsFullScreen());
+		REQUIRE(window.IsFullScreen());
+		if (spec.FullscreenMode == FullscreenMode::BorderlessWindowed) {
+			CHECK(SDL_GetWindowFullscreenMode(window.GetNativeWindow()) == nullptr);
+		}
+	}
+}
+#endif
 
 #if FNK_PLATFORM_DESKTOP
 namespace {
@@ -105,7 +155,7 @@ TEST_CASE("Invalid user data overrides never fall back to real user directories"
 
 TEST_CASE("Platform shortcuts require their exact modifiers and stay distinct") {
 	using namespace PlatformShortcuts;
-	const Binding bindings[] = { k_Minimize, k_Fullscreen, k_Stats, k_Logs, k_PhysicsDebug, k_Profiler };
+	const Binding bindings[] = { k_Minimize, k_Fullscreen, k_Stats, k_Logs, k_PhysicsDebug, k_DevConsole, k_Profiler };
 	for (size_t i = 0; i < std::size(bindings); ++i) {
 		for (int mask = 0; mask < 16; ++mask) {
 			const auto modifiers = static_cast<Modifiers>(mask);
@@ -128,6 +178,7 @@ TEST_CASE("Platform shortcuts select native desktop defaults at compile time") {
 	CHECK(Matches(k_Stats, KeyCode::Alpha6, Modifiers::Super | Modifiers::Shift));
 	CHECK(Matches(k_Logs, KeyCode::Alpha7, Modifiers::Super | Modifiers::Shift));
 	CHECK(Matches(k_PhysicsDebug, KeyCode::Alpha8, Modifiers::Super | Modifiers::Shift));
+	CHECK(Matches(k_DevConsole, KeyCode::Alpha9, Modifiers::Super | Modifiers::Shift));
 	CHECK(Matches(k_Profiler, KeyCode::P, Modifiers::Super | Modifiers::Shift));
 #else
 	CHECK(k_PrimaryLeft == KeyCode::LeftControl);
@@ -137,6 +188,7 @@ TEST_CASE("Platform shortcuts select native desktop defaults at compile time") {
 	CHECK(Matches(k_Stats, KeyCode::F6, Modifiers::None));
 	CHECK(Matches(k_Logs, KeyCode::F7, Modifiers::None));
 	CHECK(Matches(k_PhysicsDebug, KeyCode::F8, Modifiers::None));
+	CHECK(Matches(k_DevConsole, KeyCode::F9, Modifiers::None));
 	CHECK(Matches(k_Profiler, KeyCode::F6, Modifiers::Control));
 #endif
 }

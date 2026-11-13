@@ -4,6 +4,7 @@
 #include "Core/EngineModules.hpp"
 #include "Core/WindowSpecification.hpp"
 #include "Core/GraphicsSettings.hpp"
+#include "Project/PhysicsLayerSettings.hpp"
 #include "Graphics/Text/FontHandle.hpp"
 #include <cstdint>
 #include <string>
@@ -160,6 +161,9 @@ namespace Funke {
 		static constexpr int k_MinPhysicsHz = 1;
 		static constexpr int k_MaxPhysicsHz = 240;
 		int PhysicsTickRate = 50;
+		PhysicsLayerSettings PhysicsLayers;
+		Vec2 PhysicsGravity2D{0.0f, -9.8f};
+		Vec3 PhysicsGravity3D{0.0f, -9.81f, 0.0f};
 
 		// Single source of truth for the Hz -> fixed-timestep-seconds conversion shared by
 		// every apply site (startup, play-entry, the settings slider).
@@ -325,7 +329,7 @@ namespace Funke {
 		// editorScriptTarget is false, which gives the editor's own platform as before.
 		static std::string BuildManagedDefineConstants(std::string_view primarySymbol, bool editorScriptTarget = true);
 
-		// Scene JSON written as the startup scene of a new project without a template: an empty scene with a camera.
+		// Scene JSON written as the startup scene of a new project without a template: no entities or systems.
 		static Json::Value BuildStarterScene(const std::string& sceneName);
 		static FunkeProject Create(const std::string& name, const std::string& parentDir,
 			const CreateProgressCallback& progressCallback = {});

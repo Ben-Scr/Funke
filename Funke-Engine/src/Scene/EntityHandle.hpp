@@ -20,11 +20,9 @@ namespace Funke {
 	inline constexpr EntityHandle kNullEntity = entt::null;
 
 	// Bit width of the entity-index portion of EntityHandle baked into the
-	// engine at compile time. Equal to the project's `entityBits` setting at
-	// the time the engine was last built. The editor compares this against
-	// the in-memory FunkeProject::EntityBits to detect drift after the user
-	// changes the dropdown without rebuilding, and surfaces a "Rebuild
-	// Engine" button when they disagree.
+	// engine at compile time. Source builds can configure it through the
+	// project's `entityBits` setting; prebuilt engine packages use their
+	// compiled value. This is not exposed in the Project Settings UI.
 	constexpr int GetCompiledEntityBits() noexcept {
 		return std::popcount(entt::entt_traits<EntityHandle>::entity_mask);
 	}

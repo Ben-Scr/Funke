@@ -50,6 +50,12 @@ namespace Funke {
 			return reloaded;
 		}
 
+		size_t GetLoadedCount() const {
+            size_t count = 0;
+            for (const auto& [guid, entry] : m_Entries) if (entry.Value) ++count;
+            return count;
+        }
+
 		void Clear() { m_Entries.clear(); }
 
 	private:

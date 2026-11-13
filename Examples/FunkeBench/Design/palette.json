@@ -1,0 +1,16 @@
+{
+  "canvas": "#1C1D20",
+  "panel": "#1E1F22",
+  "chrome": "#161719",
+  "control": "#2A2C30",
+  "hover": "#36383E",
+  "pressed": "#41444B",
+  "text": "#EBECEF",
+  "muted": "#9A9DA6",
+  "accent": "#5B8DEF",
+  "highlight": "#9DBCF7",
+  "success": "#7BC96F",
+  "warning": "#F8BF55",
+  "border": "#34363C",
+  "selection": "#28364E"
+}

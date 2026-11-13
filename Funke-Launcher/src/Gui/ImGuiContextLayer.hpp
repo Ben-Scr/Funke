@@ -4,6 +4,8 @@
 
 #include <cstdint>
 
+struct ImGuiStyle;
+
 namespace Funke {
 
 	// Owns the ImGui context for a Funke application. Push this Layer first (before
@@ -25,6 +27,8 @@ namespace Funke {
 
 		static Theme GetSystemTheme();
 		static void ApplyFunkeTheme(Theme theme);
+		static void ConfigureFunkeThemeColors(ImGuiStyle& style, bool dark);
+		static void RefreshNativeTitlebar();
 
 	private:
 		bool m_IsInitialized = false;

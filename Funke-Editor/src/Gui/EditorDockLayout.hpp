@@ -1,10 +1,37 @@
 #pragma once
 
 #include <imgui.h>
+#include <functional>
+#include <map>
+#include <string>
 #include <string_view>
 #include <vector>
 
 namespace Funke::EditorDockLayout {
+
+	using WindowVisibility = std::map<std::string, bool>;
+
+	// ImGui persists tab groups/order/selection, but the editor owns whether each tool is open.
+	// Install before loading the ini; attach the editor callbacks once its panels are initialized.
+	class WindowSettings {
+	public:
+		void Install();
+		static WindowSettings* Get();
+		void SetCallbacks(std::function<WindowVisibility()> capture, std::function<void(const WindowVisibility&)> apply);
+		void ClearCallbacks();
+
+	private:
+		struct TabGroup {
+			ImGuiID Selected = 0;
+			std::map<ImGuiID, short> Order;
+		};
+		void RestoreTabs();
+		std::map<ImGuiID, TabGroup> m_PendingTabs;
+		WindowVisibility m_Saved;
+		bool m_HasSaved = false;
+		std::function<WindowVisibility()> m_Capture;
+		std::function<void(const WindowVisibility&)> m_Apply;
+	};
 
 	struct PreviewPane {
 		ImVec2 Position;

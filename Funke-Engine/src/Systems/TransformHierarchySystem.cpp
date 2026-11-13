@@ -1,5 +1,6 @@
 #include "pch.hpp"
 #include "Systems/TransformHierarchySystem.hpp"
+#include "Core/Base.hpp"
 #include "Scene/Scene.hpp"
 #include "Components/General/Transform2DComponent.hpp"
 #include "Components/General/HierarchyComponent.hpp"
@@ -14,6 +15,7 @@ namespace Funke {
 
 		struct PropagationState {
 			std::vector<EntityHandle> Roots;
+			std::vector<EntityHandle> DirtyTransforms;
 			Transform2DPropagationStats Stats;
 		};
 
@@ -65,11 +67,10 @@ namespace Funke {
 			}
 		}
 
-		void ProcessRootTransform(entt::registry& registry, EntityHandle entity, Transform2DPropagationStats& stats,
+		FNK_FORCE_INLINE void ProcessRootTransform(entt::registry& registry, EntityHandle entity, Transform2DComponent& transform,
+			Transform2DPropagationStats& stats,
 			const Transform2DExternalAdapter& adapter) {
-			if (!registry.valid(entity)) return;
-			auto* tr = registry.try_get<Transform2DComponent>(entity);
-			if (!tr) return;
+			auto* tr = &transform;
 			++stats.TransformsVisited;
 
 			const auto external = adapter.GetState ? adapter.GetState(registry, entity) : Transform2DExternalState{};
@@ -81,6 +82,14 @@ namespace Funke {
 
 			if (!external.OwnsWorldTransform && !external.RetainsDirtyFlag) {
 				tr->ClearDirty();
+			}
+		}
+
+		void ProcessRootTransform(entt::registry& registry, EntityHandle entity, Transform2DPropagationStats& stats,
+			const Transform2DExternalAdapter& adapter) {
+			if (!registry.valid(entity)) return;
+			if (auto* transform = registry.try_get<Transform2DComponent>(entity)) {
+				ProcessRootTransform(registry, entity, *transform, stats, adapter);
 			}
 		}
 
@@ -138,14 +147,15 @@ namespace Funke {
 
 			FUNKE_PROFILE_SCOPE("TransformHierarchy");
 
-			std::vector<EntityHandle> dirtyTransforms = scene.ConsumeDirtyTransformEntities();
+			scene.ConsumeDirtyTransformEntities(state->DirtyTransforms);
+			const auto& dirtyTransforms = state->DirtyTransforms;
 			state->Stats.FullTraversal = dirtyAll;
 
 			if (!hasHierarchy) {
 				if (dirtyAll) {
 					auto all = registry.view<Transform2DComponent>();
-					for (auto entity : all) {
-						ProcessRootTransform(registry, entity, state->Stats, adapter);
+					for (auto [entity, transform] : all.each()) {
+						ProcessRootTransform(registry, entity, transform, state->Stats, adapter);
 					}
 				}
 				else {

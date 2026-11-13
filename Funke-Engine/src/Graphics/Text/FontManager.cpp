@@ -485,3 +485,11 @@ namespace Funke {
 	}
 
 } // namespace Funke
+
+namespace Funke {
+    size_t FontManager::GetLoadedCount() {
+        size_t count = 0;
+        for (const auto& slot : s_Slots) if (slot.InUse && slot.Font && slot.Font->IsLoaded()) ++count;
+        return count;
+    }
+}

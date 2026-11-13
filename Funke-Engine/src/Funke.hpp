@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Funke/Core.hpp"
+#include "Diagnostics/DebugStats.hpp"
 
 #include "Events/Events.hpp"
 #include "Math/Common.hpp"

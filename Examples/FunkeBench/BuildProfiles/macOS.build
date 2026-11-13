@@ -1,0 +1,5 @@
+{
+  "name": "macOS",
+  "platform": "MacOS",
+  "renderBackend": "Metal"
+}

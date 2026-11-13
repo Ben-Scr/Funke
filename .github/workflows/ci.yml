@@ -992,7 +992,7 @@ jobs:
         run: |
           python3 scripts/BuildManaged.py --configuration Debug --output-dir bin/Debug-linux-x86_64-sanitized --projects ScriptCore
           make config=debug verbose=1 LDFLAGS="-fsanitize=address,undefined -fno-sanitize-recover=all" -j"$(nproc)" Funke-Engine-Tests 2>&1 | tee ci-logs/sanitize-build.log
-          ./bin/Debug-linux-x86_64-sanitized/Funke-Engine-Tests/Funke-Engine-Tests 2>&1 | tee ci-logs/sanitize-tests.log
+          ./bin/Debug-linux-x86_64-sanitized/Funke-Engine-Tests/Funke-Engine-Tests --reporters=xml --out=ci-logs/sanitize-tests.xml 2>&1 | tee ci-logs/sanitize-tests.log
 
       - name: Coverage build and tests
         id: coverage_tests
@@ -1031,7 +1031,7 @@ jobs:
         env:
           STEPS_JSON: ${{ toJSON(steps) }}
           CORE_ONLY: ${{ inputs.linux_core_only || false }}
-        run: python scripts/ci/check_ci_evidence.py --capture-lane "linux-instrumentation/${{ matrix.check }}" --output ci-evidence/lane.json
+        run: python scripts/ci/check_ci_evidence.py --capture-lane "linux-instrumentation/${{ matrix.check }}" --results ci-logs/sanitize-tests.xml --output ci-evidence/lane.json
 
       - name: Upload per-lane CI evidence
         if: always()

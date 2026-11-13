@@ -1,0 +1,13 @@
+{
+  "id": "Funke.2D",
+  "displayName": "2D",
+  "description": "A ready-to-run 2D scene with physics, a camera, ground and a falling box. Includes Assets/Help.md.",
+  "category": "2D",
+  "sortOrder": 0,
+  "modules": [
+    "Funke.2D",
+    "Funke.Physics2D"
+  ],
+  "startupScene": "SampleScene",
+  "moduleRequirementsVersion": 2
+}

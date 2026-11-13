@@ -61,6 +61,7 @@ namespace Funke {
 
 		// For PropertyType::Enum / FlagEnum.
 		std::shared_ptr<EnumDescriptor> Enum;
+		bool IsPhysicsLayerMask = false;
 
 		// For PropertyType::ComponentRef — the displayName of the required
 		// ComponentInfo (matches the engine's ComponentInfo::displayName).

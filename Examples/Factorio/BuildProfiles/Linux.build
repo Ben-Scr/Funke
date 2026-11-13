@@ -1,0 +1,9 @@
+{
+  "name": "Linux",
+  "platform": "Linux",
+  "renderBackend": "Vulkan",
+  "bundleDotNetRuntime": true,
+  "bundleAssets": false,
+  "compressAssetBundles": false,
+  "assetBundleCompression": "LZ4"
+}

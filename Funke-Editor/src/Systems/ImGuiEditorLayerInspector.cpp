@@ -384,8 +384,8 @@ namespace Funke {
 			const char* headerIconName = EntityTypeIconName(scene, entity.GetHandle());
 			if (const uint64_t icon = EditorIcons::Get(headerIconName, static_cast<int>(glyph))) {
 				const ImVec2 g0(boxMin.x + (iconBox - glyph) * 0.5f, boxMin.y + (iconBox - glyph) * 0.5f);
-				// Component icons are coloured; a tint would multiply them off-hue. Only the plain entity glyph follows the text colour.
-				const ImU32 tint = std::string_view(headerIconName) == "entity"
+				// Monochrome entity and text glyphs follow the theme text colour.
+				const ImU32 tint = (std::string_view(headerIconName) == "entity" || std::string_view(headerIconName) == "text")
 					? ImGui::GetColorU32(ImGuiCol_Text) : IM_COL32_WHITE;
 				headerDraw->AddImage(static_cast<ImTextureID>(static_cast<intptr_t>(icon)), g0, ImVec2(g0.x + glyph, g0.y + glyph),
 					ImVec2(0, 1), ImVec2(1, 0), tint);
@@ -712,7 +712,7 @@ namespace Funke {
 				if (ImGui::MenuItem("Paste Component", nullptr, false, canPasteComponent)) {
 					pasteRequested = true;
 				}
-				if (ImGui::MenuItem("Reset Component", nullptr, false, canSerializeComponent)) {
+				if (EditorUI::IconMenuItem("##ResetComponent", "reset", "Restore this component's defaults.", canSerializeComponent, "Reset")) {
 					resetRequested = true;
 				}
 				// Prefab override actions — only meaningful when this entity is a
@@ -861,7 +861,7 @@ namespace Funke {
 		const std::string refPrefix = std::to_string(refEntityId) + ":";
 		for (std::size_t i = 0; i < sections.Items.size() && !selectionInvalidatedByRevert; ++i) {
 			const InspectorSection& section = sections.Items[i];
-			if (!section.WholeScriptBlock) {
+			if (!section.WholeScriptBlock && !IsInspectorTransform(*section.Info)) {
 				ImGuiUtils::SetNextComponentSectionDrag({
 					refPrefix + section.RefName,
 					"Ref: " + entity.GetName() + "." + section.RefName,
@@ -896,7 +896,8 @@ namespace Funke {
 			const std::ptrdiff_t anchor = move->Dragged.empty() ? target + move->Delta : target;
 			const bool after = move->Dragged.empty() ? move->Delta > 0 : move->After;
 			const std::ptrdiff_t count = static_cast<std::ptrdiff_t>(sections.Items.size());
-			if (target >= 0 && moved >= 0 && anchor >= 0 && anchor < count && moved != anchor) {
+			const auto pinned = static_cast<std::ptrdiff_t>(sections.Pinned);
+			if (target >= pinned && moved >= pinned && anchor >= pinned && anchor < count && moved != anchor) {
 				const std::string& movedKey = sections.Items[moved].Key;
 				const std::string& anchorKey = sections.Items[anchor].Key;
 				StructureEditRecorder recorder(scene, undoHandles, "Reorder Components");

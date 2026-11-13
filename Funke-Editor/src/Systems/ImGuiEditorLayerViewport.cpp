@@ -51,6 +51,11 @@
 #include "Graphics/RenderApi.hpp"
 #include "Graphics/RenderStatistics.hpp"
 #include "Graphics/Renderer2D.hpp"
+#include "Graphics/Renderer3D.hpp"
+#include "Graphics/Material.hpp"
+#include "Graphics/CustomShaderLibrary.hpp"
+#include "Components/Graphics/MeshRendererComponent.hpp"
+#include "Components/Graphics/SkinnedMeshRendererComponent.hpp"
 #include "Graphics/SpriteUVResolver.hpp"
 #include "Graphics/Texture2D.hpp"
 #include "Graphics/TextureManager.hpp"
@@ -121,6 +126,7 @@ namespace Funke {
 				|| IsToolbarItemVisible(EditorViewToolbarItem::DrawMode)
 				|| IsToolbarItemVisible(EditorViewToolbarItem::Gizmos)
 				|| IsToolbarItemVisible(EditorViewToolbarItem::PostProcessing)
+				|| IsToolbarItemVisible(EditorViewToolbarItem::Rendering)
 				|| IsToolbarItemVisible(EditorViewToolbarItem::GridSnap);
 		}
 
@@ -146,11 +152,13 @@ namespace Funke {
 			itemSwitch("Draw Mode", EditorViewToolbarItem::DrawMode, rightVisible);
 			itemSwitch("Gizmos", EditorViewToolbarItem::Gizmos, rightVisible);
 			itemSwitch("Post Processing", EditorViewToolbarItem::PostProcessing, rightVisible);
+			itemSwitch("Rendering", EditorViewToolbarItem::Rendering, rightVisible);
 			itemSwitch("Grid Snap", EditorViewToolbarItem::GridSnap, rightVisible);
 			ImGui::Unindent();
 			ImGui::PopItemFlag();
 			ImGui::Separator();
-			if (ImGui::MenuItem("Reset to Default", nullptr, false, !EditorPreferences::IsEditorViewToolbarDefault())) {
+			if (EditorUI::IconMenuItem("##ResetEditorViewToolbar", "reset", "Restore the default Editor View toolbar.",
+				!EditorPreferences::IsEditorViewToolbarDefault(), "Reset")) {
 				EditorPreferences::ResetEditorViewToolbar();
 			}
 			ImGui::TextDisabled("Hidden tools stay in the command palette (%s).", EditorShortcuts::k_CommandPaletteLabel);
@@ -194,7 +202,8 @@ namespace Funke {
 			itemSwitch("Logs", GameViewToolbarItem::Logs, barVisible);
 			ImGui::Unindent();
 			ImGui::PopItemFlag();
-			if (ImGui::MenuItem("Reset Game View Toolbar", nullptr, false, !EditorPreferences::IsGameViewToolbarDefault())) {
+			if (EditorUI::IconMenuItem("##ResetGameViewToolbar", "reset", "Restore the default Game View toolbar.",
+				!EditorPreferences::IsGameViewToolbarDefault(), "Reset")) {
 				EditorPreferences::ResetGameViewToolbar();
 			}
 		}
@@ -746,7 +755,7 @@ namespace Funke {
 		bool onlyPassedScene, bool uiInWorldSpace,
 		EditorViewDrawMode drawMode,
 		GizmoLayerMask gizmoLayerMask,
-		const Camera3DView* view3D)
+		const Camera3DView* view3D, const EditorViewSettings* editorSettings)
 	{
 		auto* app = Application::GetInstance();
 		if (!app) return;
@@ -757,18 +766,48 @@ namespace Funke {
 		struct RenderStateGuard {
 			PolygonMode PreviousPolygonMode = PolygonMode::Filled;
 			Renderer2D* Renderer = nullptr;
+			Renderer3D* RendererThreeD = nullptr;
+			RenderViewOptions Previous2D;
+			RenderViewOptions Previous3D;
+			bool PreviousPost2D = true;
+			bool PreviousPost3D = true;
+			bool PreviousCompose = false;
 
 			~RenderStateGuard() {
 				RenderApi::SetPolygonMode(PreviousPolygonMode);
 				RenderApi::SetColorMask(true, true, true, true);
-				if (Renderer) Renderer->SetComposeOverTarget(false);
+				if (Renderer) {
+					Renderer->SetComposeOverTarget(PreviousCompose);
+					Renderer->SetViewOptions(Previous2D);
+					Renderer->SetPostProcessingEnabled(PreviousPost2D);
+				}
+				if (RendererThreeD) {
+					RendererThreeD->SetViewOptions(Previous3D);
+					RendererThreeD->SetPostProcessingEnabled(PreviousPost3D);
+				}
 			}
 		};
 
 		RenderStateGuard stateGuard{
 			RenderApi::GetPolygonMode(),
-			renderer
+			renderer, renderer3D,
+			renderer ? renderer->GetViewOptions() : RenderViewOptions{},
+			renderer3D ? renderer3D->GetViewOptions() : RenderViewOptions{},
+			renderer ? renderer->IsPostProcessingEnabled() : true,
+			renderer3D ? renderer3D->IsPostProcessingEnabled() : true,
+			renderer && renderer->IsComposingOverTarget()
 		};
+		if (editorSettings) {
+			if (renderer) {
+				renderer->SetViewOptions(editorSettings->Rendering);
+				renderer->SetPostProcessingEnabled(m_ShowPostProcessing);
+			}
+			if (renderer3D) {
+				renderer3D->SetViewOptions(editorSettings->Rendering);
+				renderer3D->SetPostProcessingEnabled(m_ShowPostProcessing);
+			}
+		}
+		const bool showUI = !editorSettings || editorSettings->ShowUI;
 		RenderApi::SetPolygonMode(PolygonMode::Filled);
 		RenderApi::SetColorMask(true, true, true, true);
 
@@ -811,9 +850,13 @@ namespace Funke {
 				RenderApi::SetPolygonMode(PolygonMode::Filled);
 			}
 			// Editor grid and selection outlines are depth-tested against the meshes, so they join the intermediate.
+			if (withGizmos) renderer3D->QueueGizmos(*view3D,
+				sharedGizmosOnly ? GizmoLayerMask::Shared : gizmoLayerMask);
 			renderer3D->FlushLines(*view3D, true);
-			if (onlyPassedScene) renderer3D->RenderWorldUI(scene, *view3D);
-			else SceneManager::ForeachLoadedScene([&](Scene& s) { renderer3D->RenderWorldUI(s, *view3D); });
+			if (showUI) {
+				if (onlyPassedScene) renderer3D->RenderWorldUI(scene, *view3D);
+				else SceneManager::ForeachLoadedScene([&](Scene& s) { renderer3D->RenderWorldUI(s, *view3D); });
+			}
 			if (postProcess) renderer3D->EndPostProcess();
 			if (renderer) renderer->SetComposeOverTarget(true);
 		}
@@ -833,7 +876,7 @@ namespace Funke {
 
 		auto runOverlayRender = [&]() {
 			// UI submits BEFORE gizmos so selection outlines and manipulators paint on top even when UI fills the viewport.
-			if (auto* gui = app->GetGuiRenderer()) {
+			if (auto* gui = app->GetGuiRenderer(); gui && showUI) {
 				const float pixelToWorldScale = uiInWorldSpace
 					? GuiRenderer::ComputeWorldUIPixelScale()
 					: 0.0f;
@@ -1532,7 +1575,7 @@ namespace Funke {
 		if (!scene.TryGetComponent<Transform2DComponent>(entity, transform) || !transform) return;
 		if (!scene.TryGetComponent<Camera2DComponent>(entity, camera) || !camera) return;
 
-		Gizmo::SetColor(Color::White());
+		Gizmo::SetColor(EditorPreferences::GetGizmoColor(EditorGizmoColor::CameraFrame));
 		Gizmo::SetLineWidth(1.5f);
 		// Frame at the configured Game View aspect, not the live window aspect â€” WorldViewPort() tracks m_Viewport (the OS window) here, so it overstates the camera's horizontal view. Free Aspect (0) has no fixed ratio â†’ keep the window aspect.
 		Vec2 camFrame = camera->WorldViewPort();
@@ -1599,8 +1642,8 @@ namespace Funke {
 						Gizmo::DrawThickLine(c3, c0, width);
 					}
 				};
-				drawSpriteOutline(Color(0.02f, 0.02f, 0.02f, 0.85f), haloWidth); // halo (under)
-				drawSpriteOutline(Color(1.0f, 0.65f, 0.10f, 1.0f), coreWidth);   // bright core (on top)
+				drawSpriteOutline(EditorPreferences::GetGizmoColor(EditorGizmoColor::SpriteOutlineHalo), haloWidth); // halo (under)
+				drawSpriteOutline(EditorPreferences::GetGizmoColor(EditorGizmoColor::SpriteOutline), coreWidth);   // bright core (on top)
 			}
 
 			// Camera frame is drawn for ALL cameras in DrawAlwaysVisibleComponentGizmos,
@@ -1615,7 +1658,7 @@ namespace Funke {
 					: Vec2{ transform.Scale.x * localScale.x, transform.Scale.y * localScale.y };
 				if (worldSize.x != 0.0f && worldSize.y != 0.0f) {
 					const Vec2 center = transform.Position + Vector::Rotated(collider.GetCenter(), transform.Rotation);
-					Gizmo::SetColor(Color(0.20f, 1.0f, 0.35f, 1.0f));
+					Gizmo::SetColor(EditorPreferences::GetGizmoColor(EditorGizmoColor::PhysicsCollider));
 					Gizmo::SetLineWidth(2.0f);
 					Gizmo::DrawWireSquare(center, worldSize, rotationDegrees);
 				}
@@ -1631,7 +1674,7 @@ namespace Funke {
 					: collider.GetLocalRadius(scene) * std::max(std::abs(transform.Scale.x), std::abs(transform.Scale.y));
 				if (worldRadius > 0.0f) {
 					const Vec2 center = transform.Position + Vector::Rotated(collider.GetCenter(), transform.Rotation);
-					Gizmo::SetColor(Color(0.20f, 1.0f, 0.35f, 1.0f));
+					Gizmo::SetColor(EditorPreferences::GetGizmoColor(EditorGizmoColor::PhysicsCollider));
 					Gizmo::SetLineWidth(2.0f);
 					Gizmo::DrawWireCircle(center, worldRadius);
 				}
@@ -1643,7 +1686,7 @@ namespace Funke {
 				// prefab-edit scene has none, so decompose the authored paths the same way.
 				std::vector<std::vector<Vec2>> pieces = collider.GetShapePolygons();
 				if (pieces.empty()) pieces = collider.ComputeLocalPieces(transform.Scale);
-				Gizmo::SetColor(Color(0.20f, 1.0f, 0.35f, 1.0f));
+				Gizmo::SetColor(EditorPreferences::GetGizmoColor(EditorGizmoColor::PhysicsCollider));
 				Gizmo::SetLineWidth(2.0f);
 				const float rot = transform.Rotation;
 				for (const std::vector<Vec2>& worldPoints : pieces) {
@@ -1658,7 +1701,7 @@ namespace Funke {
 	
 			if (scene.HasComponent<ParticleSystem2DComponent>(m_SelectedEntity)) {
 				auto& particleSystem = scene.GetComponent<ParticleSystem2DComponent>(m_SelectedEntity);
-				Gizmo::SetColor(Color(1.0f, 0.20f, 0.75f, 1.0f));
+				Gizmo::SetColor(EditorPreferences::GetGizmoColor(EditorGizmoColor::ParticleSystem));
 				Gizmo::SetLineWidth(2.0f);
 	
 				std::visit([&](auto&& shape) {
@@ -1740,7 +1783,7 @@ namespace Funke {
 				}
 			}
 
-			Gizmo::SetColor(Color(0.30f, 0.80f, 1.0f, 1.0f));
+			Gizmo::SetColor(EditorPreferences::GetGizmoColor(EditorGizmoColor::RectTransform));
 			Gizmo::SetLineWidth(2.0f);
 			Gizmo::DrawLine(corners[0], corners[1]);
 			Gizmo::DrawLine(corners[1], corners[2]);
@@ -1774,7 +1817,7 @@ namespace Funke {
 					}
 				}
 
-				Gizmo::SetColor(Color(0.95f, 0.95f, 0.95f, 0.85f));
+				Gizmo::SetColor(EditorPreferences::GetGizmoColor(EditorGizmoColor::TextMargin));
 				Gizmo::SetLineWidth(1.0f);
 				Gizmo::DrawLine(inner[0], inner[1]);
 				Gizmo::DrawLine(inner[1], inner[2]);
@@ -1951,11 +1994,103 @@ namespace Funke {
 	}
 
 	void ImGuiEditorLayer::RenderEditorViewSettingsMenu() {
+		if (ImGui::BeginMenu("Rendering")) {
+			RenderEditorViewRenderingMenu();
+			ImGui::EndMenu();
+		}
+		ImGui::Separator();
 		DrawEditorViewSettingsMenu();
 	}
 
 	void ImGuiEditorLayer::RenderGameViewSettingsMenu() {
 		DrawGameViewSettingsMenu();
+	}
+
+	void ImGuiEditorLayer::RenderEditorViewRenderingMenu() {
+		s_EditorViewOverlayHovered = true; // Camera input must not pass through an open rendering popup.
+		auto settings = EditorPreferences::GetViewSettings(m_EditorView3D);
+		bool changed = false;
+		ImGui::TextDisabled("%s rendering preview", m_EditorView3D ? "3D" : "2D");
+		auto toggle = [&](const char* label, const char* icon, bool& value, const char* tooltip, bool enabled = true) {
+			ImGui::BeginDisabled(!enabled);
+			const float size = ImGui::GetFrameHeight();
+			const auto texture = EditorIcons::Get(icon, static_cast<int>(size * ImGui::GetIO().DisplayFramebufferScale.x));
+			if (texture) {
+				ImGui::ImageWithBg(static_cast<ImTextureID>(texture), ImVec2(size, size), ImVec2(0, 0), ImVec2(1, 1),
+					ImVec4(0, 0, 0, 0), ImGui::GetStyleColorVec4(ImGuiCol_Text));
+				ImGui::SameLine();
+			}
+			changed |= ImGuiUtils::Switch(label, &value);
+			EditorUI::Tooltip(tooltip);
+			ImGui::EndDisabled();
+		};
+		if (m_EditorView3D) {
+			toggle("Lighting", "view_shaded", settings.Rendering.Lighting,
+				"Off: unlit base colors and textures. Custom mesh shaders are temporarily bypassed so they cannot apply their own lighting.");
+			toggle("Shadows", "view_shadows", settings.Rendering.Shadows,
+				"Preview directional shadows when enabled by the project and light. Requires Lighting.", settings.Rendering.Lighting);
+			toggle("Fog", "view_fog", settings.Rendering.Fog, "Preview the main camera's distance fog. Does not enable fog on the camera.");
+			toggle("Skybox", "view_skybox", settings.Rendering.Skybox, "Show the camera's sky background. Hiding it preserves sky ambient lighting.");
+			ImGui::Separator();
+		}
+		if (EngineModules::IsActive(EngineModule::TwoD)) {
+			toggle("2D Scene Effects", "light_point", settings.Rendering.SceneEffects,
+				"Preview package effects on 2D content, including Funke.Lighting2D lighting and shadows. Separate from camera post-processing.");
+		}
+		toggle("Custom Material Shaders", "view_shaders", settings.Rendering.CustomShaders,
+			"Off: use standard materials for meshes and sprites, and the procedural sky. Camera post-processing has its own toggle.");
+		ImGui::PushItemFlag(ImGuiItemFlags_AutoClosePopups, false);
+		if (ImGui::BeginMenu("Individual Shaders", settings.Rendering.CustomShaders)) {
+			std::map<uint64_t, std::string> shaders;
+			auto addMaterial = [&](uint64_t guid) {
+				const Material* material = MaterialLibrary::Get(guid);
+				if (!material || material->Shader == 0 || shaders.contains(material->Shader)) return;
+				const auto path = Path::FromUtf8(CustomShaderLibrary::GetPath(material->Shader));
+				shaders.emplace(material->Shader, path.empty() ? std::to_string(material->Shader) : Path::ToUtf8(path.filename()));
+			};
+			auto collect = [&](Scene& scene) {
+				const auto& registry = scene.GetRegistry();
+				if (EngineModules::IsActive(EngineModule::TwoD))
+					for (auto [entity, sprite] : registry.view<const SpriteRendererComponent>().each()) addMaterial(sprite.Material);
+				if (m_EditorView3D) {
+					for (auto [entity, mesh] : registry.view<const MeshRendererComponent>().each()) addMaterial(mesh.Material);
+					for (auto [entity, mesh] : registry.view<const SkinnedMeshRendererComponent>().each()) addMaterial(mesh.Material);
+					const auto camera = Camera3DComponent::FindMain(scene);
+					if (camera != entt::null) addMaterial(registry.get<Camera3DComponent>(camera).SkyboxMaterial);
+				}
+			};
+			if (IsInPrefabEditMode() && m_PrefabEditScene) collect(*m_PrefabEditScene);
+			else SceneManager::ForeachLoadedScene(collect);
+			if (shaders.empty()) ImGui::TextDisabled("No custom material shaders in the current scenes.");
+			for (const auto& [guid, name] : shaders) {
+				const std::string label = name + "##" + std::to_string(guid);
+				const bool enabled = settings.Rendering.AllowsShader(guid);
+				if (ImGui::MenuItem(label.c_str(), nullptr, enabled)) {
+					if (enabled) settings.Rendering.DisabledShaders.push_back(guid);
+					else std::erase(settings.Rendering.DisabledShaders, guid);
+					changed = true;
+				}
+				EditorUI::Tooltip(CustomShaderLibrary::GetPath(guid));
+			}
+			ImGui::TextDisabled("Shader exclusions last for this editor session.");
+			ImGui::EndMenu();
+		}
+		ImGui::PopItemFlag();
+		toggle("Particles", "particles", settings.Rendering.Particles, "Hide particle rendering; simulation and preview playback continue.");
+		toggle("User Interface", "monitor", settings.ShowUI, "Show screen-space and world-space UI. Selection handles remain available.");
+		toggle("Grid and Axes", "grid", settings.ShowGrid, "Show the editing grid and axes. Grid snapping remains independent.");
+		bool postProcessing = m_ShowPostProcessing;
+		toggle("Post Processing", "post_processing", postProcessing, "Preview camera effects and anti-aliasing; shared with the toolbar toggle.");
+		m_ShowPostProcessing = postProcessing;
+		ImGui::Separator();
+		if (EditorUI::IconMenuItem("##ResetViewRendering", "reset", "Restore rendering defaults for this view mode.",
+			settings != EditorViewSettings{} || !m_ShowPostProcessing, "Reset")) {
+			settings = EditorViewSettings{};
+			m_ShowPostProcessing = true;
+			changed = true;
+		}
+		ImGui::TextDisabled("Editor View only. Game View and scene assets stay unchanged.");
+		if (changed) EditorPreferences::SetViewSettings(m_EditorView3D, settings);
 	}
 
 	// Editor View options in the viewport's top-right pill; returns false when nothing was drawn.
@@ -1985,6 +2120,14 @@ namespace Funke {
 
 		if (beginElement(EditorViewToolbarItem::DrawMode)) {
 			const int currentIndex = static_cast<int>(m_EditorViewDrawMode);
+			const float iconSize = ImGui::GetFrameHeight();
+			const auto icon = EditorIcons::Get(currentIndex == 0 ? "view_shaded" : "view_wireframe",
+				static_cast<int>(iconSize * ImGui::GetIO().DisplayFramebufferScale.x));
+			if (icon) {
+				ImGui::ImageWithBg(static_cast<ImTextureID>(icon), ImVec2(iconSize, iconSize), ImVec2(0, 0), ImVec2(1, 1),
+					ImVec4(0, 0, 0, 0), ImGui::GetStyleColorVec4(ImGuiCol_Text));
+				ImGui::SameLine();
+			}
 			// Fits the longest label ("Triangle") plus the arrow.
 			ImGui::SetNextItemWidth(ImGui::CalcTextSize("Triangle").x + ImGui::GetStyle().FramePadding.x * 2.0f + ImGui::GetFrameHeight());
 			if (EditorUI::BeginCombo("##EditorViewDrawMode", k_EditorViewDrawModeLabels[currentIndex])) {
@@ -2000,6 +2143,18 @@ namespace Funke {
 				EditorUI::EndCombo();
 			}
 			EditorUI::Tooltip("Editor View draw mode (Default / Triangle wireframe / Mixed overlay)");
+		}
+
+		if (beginElement(EditorViewToolbarItem::Rendering)) {
+			const auto& settings = EditorPreferences::GetViewSettings(m_EditorView3D);
+			if (EditorUI::IconButton("##EditorRendering", "view_shaded", "Editor View rendering settings", settings != EditorViewSettings{}, false, 0.0f, "Rendering"))
+				ImGui::OpenPopup("##EditorRenderingPopup");
+			ImGui::PopStyleVar();
+			if (ImGui::BeginPopup("##EditorRenderingPopup")) {
+				RenderEditorViewRenderingMenu();
+				ImGui::EndPopup();
+			}
+			ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, pillSpacing);
 		}
 
 		if (beginElement(EditorViewToolbarItem::Gizmos)) {
@@ -2282,11 +2437,12 @@ namespace Funke {
 				// Faint grid overlay aligned to the snap spacing, shown while snapping is on.
 				// Grid overlay also appears while Left Ctrl is held over the view, so the
 				// temporary Ctrl-snap has a visible grid to snap to.
-				if (EditorPreferences::GetGridSnapEnabled()
-					|| (ImGui::IsKeyDown(ImGuiKey_LeftCtrl) && m_IsEditorViewHovered)) {
+				const auto& viewSettings = EditorPreferences::GetViewSettings(false);
+				if (viewSettings.ShowGrid && (EditorPreferences::GetGridSnapEnabled()
+					|| (ImGui::IsKeyDown(ImGuiKey_LeftCtrl) && m_IsEditorViewHovered))) {
 					DrawSnapGrid(viewAABB);
 				}
-				DrawWorldAxes(viewAABB);
+				if (viewSettings.ShowGrid) DrawWorldAxes(viewAABB);
 				DrawEditorComponentGizmos(*renderScene, m_ShowGizmos);
 
 				static const Color k_EditorClearColor(0.18f, 0.18f, 0.20f, 1.0f);
@@ -2295,16 +2451,10 @@ namespace Funke {
 				// uiInWorldSpace=true: UI joins sprites and gizmos in
 				// the editor camera's world space so the user can pan
 				// and zoom around the UI like any scene object.
-				// The Editor View honours the "Post Processing Effects" toolbar toggle:
-				// flip the renderer's master PP gate off for this pass so scene editing
-				// isn't tinted by bloom/vignette/etc, then restore it immediately so
-				// Game View (the real game preview) and the runtime keep their effects.
-				auto* ppRenderer = Application::GetInstance() ? Application::GetInstance()->GetRenderer2D() : nullptr;
-				if (ppRenderer) ppRenderer->SetPostProcessingEnabled(m_ShowPostProcessing);
+				// RenderSceneIntoFBO scopes the preview overrides and restores the previous renderer state.
 				RenderSceneIntoFBO(m_EditorViewFBO, *renderScene, vp, viewAABB,
 					true, false, clearColor, IsInPrefabEditMode(), true, m_EditorViewDrawMode,
-					m_ShowGizmos ? GizmoLayerMask::All : GizmoLayerMask::EditorOnly);
-				if (ppRenderer) ppRenderer->SetPostProcessingEnabled(true);
+					m_ShowGizmos ? GizmoLayerMask::All : GizmoLayerMask::EditorOnly, nullptr, &viewSettings);
 				Gizmo::ClearViewportAABBOverride();
 
 				ImGui::Image(

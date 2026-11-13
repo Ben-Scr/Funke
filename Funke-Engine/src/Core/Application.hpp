@@ -192,7 +192,7 @@ namespace Funke {
 		static bool IsQuitRequested();
 		static void CancelQuit();
 		static void ConfirmQuit();
-		void RenderOnceForRefresh();
+		void RenderOnceForRefresh(bool refreshWindowSize = false);
 
 		template<typename TLayer, typename... Args>
 		TLayer& PushLayer(Args&&... args) {

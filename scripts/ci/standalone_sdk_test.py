@@ -253,6 +253,13 @@ class Harness:
             raise RuntimeError(f"{label} failed ({phase['exitCode']}); see {log}")
         if any(marker in text for text in (output, diagnostic) for marker in ERROR_MARKERS):
             raise RuntimeError(f"{label} emitted an error marker; see {log} and {error_log}")
+        if "--json" in command:
+            try:
+                json.loads(output)
+            except ValueError as error:
+                raise RuntimeError(f"{label} did not emit pure JSON; see {log}") from error
+            phase["jsonStdout"] = "passed"
+            self.save()
         return output
 
     def assert_no_tools(self):
@@ -395,12 +402,18 @@ def editor_roundtrip(harness: Harness, install: Path, project: Path, tween: bool
             while True:
                 if editor.poll() is not None:
                     raise RuntimeError(f"Editor exited before its bridge became ready; see {log}")
-                output = bridge("status", allowed=(0, 3, 4), timeout=5)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise RuntimeError(f"Editor bridge unavailable; see {log} and status logs")
+                budget = min(5.0, remaining)
+                output = harness.run("editor-status", [str(install / "funke.exe"), "editor", "status",
+                    "--pid", str(editor.pid), "--project", str(project), "--json", "--timeout", str(budget)],
+                    env=environment, allowed=(0, 3, 4), timeout=budget)
                 if harness.evidence["phases"][-1]["exitCode"] == 0:
                     break
                 if time.monotonic() >= deadline:
                     raise RuntimeError(f"Editor bridge unavailable; see {log} and status logs")
-                time.sleep(1)
+                time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
             def query_status(budget):
                 output = harness.run("editor-readiness-status", [str(install / "funke.exe"), "editor", "status",
                     "--pid", str(editor.pid), "--project", str(project), "--json", "--timeout", str(budget)],

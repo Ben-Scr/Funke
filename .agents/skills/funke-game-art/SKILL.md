@@ -39,12 +39,14 @@ Details, frame counts, tile edge rules, the AI brief template and import setting
 
 ## 3. Rules that make UI look like a game, not a debug panel
 
-1. **Every interactive element is a sprite with depth:** an outline, a highlight on top, a lip or shadow at the bottom, with baked **normal** and **pressed** textures (the pressed one without lip, moved down). Flat rounded rectangles with a colour swap look like a prototype.
-2. **9-slice everything that stretches.** Panels, buttons and bars use `Image` sliced mode, so the corners stay crisp at any size. Bake all detail into the borders and keep the centre flat or a simple vertical gradient.
+First follow `funke-game-ui` → **Make the UI belong to the game** for visual integration, meaningful icons and HUD feedback. These production rules support the chosen design; they do not prescribe one appearance for every game.
+
+1. **Match the game's visual treatment.** Use depth, outlines, highlights, lips or shadows when the artwork calls for them; deliberate flat or minimal UI is also valid. Make interactive states recognizable within that treatment. For a raised button, normal/pressed sprites can remove the lip on press; do not impose this recipe on every control.
+2. **9-slice stretchable frames and tracks.** Prepare borders for textured panels, buttons, slider tracks and suitable fills, and enable `Image` sliced mode on the actual scene/prefab graphics. A sprite-sheet crop or border metadata alone does not enable slicing. Keep corners and end caps intact; use tiled regions for repeating detail and separate proportional icons/handles. Follow `funke-game-ui` → **Preserve texture shape when resizing**, including checks at different sizes, states and fill amounts.
 3. **One frame family:** panel, well (recessed list or slot), card, button, pill, tooltip, all built by the same generator from the same tokens.
 4. **Text:** at most two fonts (title + body). A pixel font only at whole multiples of its design size. Contrast at least 4.5:1 against its fill. Body text on the 1080p reference no smaller than ~26 units on phones. Text needs a higher `sortOrder` than its panel.
 5. **Layout:** a spacing grid (8 or 12 units), consistent outer margins, one primary action per screen, touch targets ≥ 96 reference units on phones.
-6. **Motion:** panels pop in (scale 0.9 → 1 with a little overshoot, 0.15–0.25 s), buttons press down, numbers count up. A static UI feels dead.
+6. **Motion follows the game's feel and the information.** Use brief transitions and feedback to communicate interaction or state change. Pop-in, press-down and count-up are optional techniques, not a mandatory style; critical state must remain readable without waiting for animation.
 
 Engine keys (Image `Type`/borders/`BorderScale`, sprite states on buttons), pixel-perfect UI scaling, fonts and HUD recipes: `references/ui-art.md`.
 

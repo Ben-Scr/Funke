@@ -17,7 +17,7 @@ public static class Physics2D
 {
     public static int MaxPolygonVertices = 8;
 
-    /// <summary>World gravity in m/s² (default 0, -9.8). Applies to every 2D body; it is not reset between scenes.</summary>
+    /// <summary>World gravity in world units/s². Starts from Project Settings > Physics on each Play. Applies to every 2D body; scripts can override it for the current run.</summary>
     public static Vector2 Gravity
     {
         get
@@ -82,6 +82,45 @@ public static class Physics2D
 
     public static Entity? ContainsPoint(Vector2 origin, ulong layerMask)
         => WithLayerMask(layerMask, () => ContainsPoint(origin));
+
+    /// <summary>Finds an entity containing the point on any of the selected layers.</summary>
+    public static Entity? ContainsPoint(Vector2 origin, PhysicsLayer layerMask)
+        => ContainsPoint(origin, layerMask.Mask);
+
+    public static Entity[] ContainsPointAll(Vector2 origin, PhysicsLayer layerMask)
+        => WithLayerMask(layerMask.Mask, () => ContainsPointAll(origin));
+
+    public static bool ContainsPointCheck(Vector2 origin, PhysicsLayer layerMask)
+        => ContainsPoint(origin, layerMask) != null;
+
+    public static Entity[] ContainsPointAll(Vector2 origin, ulong layerMask)
+        => WithLayerMask(layerMask, () => ContainsPointAll(origin));
+
+    public static bool ContainsPointCheck(Vector2 origin, ulong layerMask)
+        => ContainsPoint(origin, layerMask) != null;
+
+    public static RaycastHit2D Raycast(Vector2 origin, Vector2 direction, PhysicsLayer layerMask, float maxDistance = Mathf.Infinity)
+        => Raycast(origin, direction, maxDistance, layerMask.Mask);
+    public static bool RaycastCheck(Vector2 origin, Vector2 direction, PhysicsLayer layerMask, float maxDistance = Mathf.Infinity)
+        => Raycast(origin, direction, maxDistance, layerMask.Mask).Hit;
+    public static Entity? OverlapCircle(Vector2 origin, float radius, PhysicsLayer layerMask)
+        => OverlapCircle(origin, radius, layerMask.Mask);
+    public static Entity[] OverlapCircleAll(Vector2 origin, float radius, PhysicsLayer layerMask)
+        => OverlapCircleAll(origin, radius, layerMask.Mask);
+    public static bool OverlapCircleCheck(Vector2 origin, float radius, PhysicsLayer layerMask)
+        => OverlapCircle(origin, radius, layerMask.Mask) != null;
+    public static Entity? OverlapBox(Vector2 origin, Vector2 size, PhysicsLayer layerMask, float rotation = 0)
+        => OverlapBox(origin, size, rotation, layerMask.Mask);
+    public static Entity[] OverlapBoxAll(Vector2 origin, Vector2 size, PhysicsLayer layerMask, float rotation = 0)
+        => OverlapBoxAll(origin, size, rotation, layerMask.Mask);
+    public static bool OverlapBoxCheck(Vector2 origin, Vector2 size, PhysicsLayer layerMask, float rotation = 0)
+        => OverlapBox(origin, size, rotation, layerMask.Mask) != null;
+    public static Entity? OverlapPolygon(Vector2 origin, PhysicsLayer layerMask, params float[] points)
+        => WithLayerMask(layerMask.Mask, () => OverlapPolygon(origin, points));
+    public static Entity[] OverlapPolygonAll(Vector2 origin, PhysicsLayer layerMask, params float[] points)
+        => WithLayerMask(layerMask.Mask, () => OverlapPolygonAll(origin, points));
+    public static bool OverlapPolygonCheck(Vector2 origin, PhysicsLayer layerMask, params float[] points)
+        => OverlapPolygon(origin, layerMask, points) != null;
 
     private static T WithLayerMask<T>(ulong layerMask, Func<T> query)
     {

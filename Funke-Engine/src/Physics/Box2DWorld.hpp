@@ -1,5 +1,6 @@
 #pragma once
 #include "Core/Export.hpp"
+#include "Project/PhysicsLayerSettings.hpp"
 #include "Physics/CollisionDispatcher.hpp"
 #include "Scene/EntityHandle.hpp"
 #include "Physics/PhysicsTypes.hpp"
@@ -51,6 +52,8 @@ namespace Funke {
 		FUNKE_API int GetWorkerCount() const;
         void Destroy();
     private:
+        PhysicsLayerSettings m_LayerSettings;
+
         struct BodyBinding {
             EntityHandle Entity = entt::null;
             Scene* OwningScene = nullptr;

@@ -743,3 +743,11 @@ namespace Funke {
 	}
 
 } // namespace Funke
+
+namespace Funke {
+    size_t TextureManager::GetLoadedCount() {
+        size_t count = 0;
+        for (const auto& entry : s_Textures) if (entry.IsValid) ++count;
+        return count;
+    }
+}

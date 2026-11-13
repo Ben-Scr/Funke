@@ -440,8 +440,8 @@ public class Camera2D : Component
 
     private void GetCameraBasis(float viewportWidth, float viewportHeight, out Vector2 position, out float cos, out float sin, out float halfWidth, out float halfHeight)
     {
-        // Entity.Transform returns null for tag entities; throw here to preserve the diagnostic at the one required call site.
-        Transform2D transform = Entity.Transform
+        // Entity.Transform2D returns null for tag entities; throw here to preserve the diagnostic at the one required call site.
+        Transform2D transform = Entity.Transform2D
             ?? throw new InvalidOperationException(
                 "Camera2DComponent.GetCameraBasis: host entity has no Transform2D component.");
         position = transform.Position;

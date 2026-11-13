@@ -48,7 +48,7 @@ Optional third round only when it matters for the game: audio mood, reference ga
 
 ### Option 3: the agent decides (100 %)
 
-Make every decision above yourself and be bold rather than generic. Pick a specific palette with a mood name, one art style and a specific UI language that suits the pitch. "Blue buttons on a grey panel" is not a design language. Write the documents exactly as below and show the summary and the style sample (step 3) in your next progress message. Then keep working, without waiting for approval. The user can still interrupt.
+Make the unresolved decisions above yourself within the user's brief. Pick a coherent palette, one art style and a UI language that suits the game. A request for a normal, appealing game style should lead to polished, coherent choices, not an unsolicited special theme. "Blue buttons on a grey panel" alone is not a design language: define how the UI belongs to the game and makes its state readable, following `funke-game-ui` → **Make the UI belong to the game**. Write the documents exactly as below and show the summary and the style sample (step 3) in your next progress message. Then keep working, without waiting for approval. The user can still interrupt.
 
 ## 2. Write the documents
 
@@ -123,8 +123,11 @@ everywhere: model, particles, UI icon.
 Pixel density, art px → UI px, PPU, target display scale and filter (see funke-game-art), camera size; minimum touch target.
 
 ## Shapes and UI
-Corner radius or cut corners, outline width, bevel/lip, shadow, panel vs well vs button, 9-slice borders,
-states (hover ×1.1, pressed ×0.8 + lip removed, disabled ×0.5).
+Shared shapes, edge treatment, icon family and material/detail level derived from the game art;
+panel vs indicator vs button, 9-slice borders where needed, readable interaction and gameplay states.
+For important HUD information: player decision → visual representation → state-change feedback;
+note where exact numbers or labels are needed. Define placement around the playfield and visual priority.
+Choose depth, outlines and motion to fit this game rather than applying a fixed UI recipe.
 
 ## Light and shading
 Light direction (e.g. top-left), highlight/shadow hue shift (warm highlights, cool shadows), outline colour rules.
@@ -159,6 +162,8 @@ When runtime code needs the colours too (tinting UI states, damage flashes, team
 ## 3. Show a style sample, then build
 
 Before you produce whole asset families, render **one** sample image to `Design/style-sample.png`. It should hold the palette swatches with token names, one panel with a title and a button in its normal and pressed states, one character or tile at the real pixel density, and a line of body text in the chosen font. `funke-game-art` → `scripts/pixelkit.py sample` builds it from `palette.json`. Show it with `view_image` and your summary of both documents.
+
+When the game has a HUD, also compose a representative gameplay view with its main indicators and icons over the actual or representative game art, at the intended display size. The kit sample alone cannot establish whether the interface belongs to the scene. Follow `funke-game-ui` for this review; label an early composition as a mockup and verify the implemented UI in play later. Use the project's chosen rendering style, not pixel styling by default.
 
 - **Modes 1 and 2:** ask "Does the look fit?" and wait. A change here costs one regenerate; after rollout it costs the whole asset family.
 - **Mode 3:** show the sample and continue.

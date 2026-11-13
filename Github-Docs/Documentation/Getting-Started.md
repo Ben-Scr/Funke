@@ -4,7 +4,7 @@ This walkthrough takes a new project from the Launcher to a finished desktop bui
 
 Funke supports **C++ and C#** game development. This walkthrough uses C#; for C++ in the editor, follow [Native C++ scripts](Scripting/Scripting.md#native-c-scripts). For a native application using the SDK directly, see the [C++ application guide](../../Funke-Engine/README.md). A project can combine both languages.
 
-Prefer to explore an existing game? Open the Launcher's **Asset Library** for reference projects such as **NeonStack** and **Voxtau**, plus the **FunkeBench** benchmark sample. These are distributed through the separate [Funke Asset Library](https://github.com/Ben-Scr/Funke-AssetLibrary). The **Empty 2D** and **Empty 3D** templates are blank starting points, not the complete example catalog.
+Prefer to explore an existing game? Open the Launcher's **Asset Library** for reference projects such as **NeonStack** and **Voxtau**, plus the **FunkeBench** benchmark sample. These are distributed through the separate [Funke Asset Library](https://github.com/Ben-Scr/Funke-AssetLibrary). The **2D** and **3D** templates include a camera, physics ground and a falling box (plus a directional light in 3D). Each includes `Assets/Help.md`. **Empty 2D** and **Empty 3D** contain a blank scene with no entities or physics module. None of these templates generates starter scripts.
 
 This tutorial uses built-in APIs to keep setup small. For tilemaps, install **Funke.Tilemap2D**; for input actions and saved rebinding, install **Funke.Input** through the editor's **Package Manager**. See the [package overview](README.md#packages) for links and installation guidance.
 
@@ -26,7 +26,9 @@ The Launcher checks for these on start and shows a **Download** button next to a
 2. Click **New Project**, choose **Empty 2D**, enter a name, pick a folder, and confirm.
 3. The Launcher creates the project, compiles its scripts once, and lists it under **Projects**. Double-click it to open the editor.
 
-New projects start empty: `Assets/Scenes/SampleScene.scene` holds only a **Camera**, and `Assets/Scripts/GameScript.cs` is an empty script. The next steps build a small game in it: a player you move into a coin.
+Empty 2D creates `Assets/Scenes/SampleScene.scene` with no entities and leaves `Assets/Scripts` empty. Before continuing, enable **Funke.Physics2D** under **Package Manager > Engine Modules** and add a **Camera 2D** through the Hierarchy Create menu. Leave it at the origin. The next steps build a small game: a player you move into a coin.
+
+For a ready-to-run physics scene instead, choose **2D** or **3D** when creating a project and follow `Assets/Help.md`. These starters use built-in components and need no game script to simulate the falling box.
 
 ## 3. Build the scene
 

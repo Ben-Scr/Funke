@@ -13,6 +13,8 @@ namespace Funke {
 
     class FUNKE_API FontManager {
     public:
+        // Successfully loaded entries only; never initiates a load.
+        static size_t GetLoadedCount();
         static bool Initialize();
         static void Shutdown();
         static bool IsInitialized() { return s_IsInitialized; }

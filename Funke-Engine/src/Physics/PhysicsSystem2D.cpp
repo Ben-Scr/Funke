@@ -10,6 +10,7 @@
 
 #include "Physics/PhysicsSystem2D.hpp"
 #include "Physics/Box2DWorld.hpp"
+#include "Physics/PhysicsLayers.hpp"
 #include "Physics/Collision2D.hpp"
 #include "Physics/Joints2D.hpp"
 
@@ -157,6 +158,10 @@ namespace Funke {
 		SceneManager::ForeachLoadedScene([](Scene& scene) {
 			auto& registry = scene.GetRegistry();
 			const bool anyExtension = !Extensions().empty();
+			const auto syncLayer = [&registry](EntityHandle entity, Collider2D& collider) {
+				const uint64_t layer = GetEntityPhysicsLayer(registry, entity, collider.m_Layer);
+				if (collider.GetLayer() != layer) collider.SetLayer(collider.m_Layer);
+			};
 
 			for (auto [ent, tf] : registry.view<Transform2DComponent>(entt::exclude<DisabledTag>).each()) {
 				if (!tf.IsDirty()) continue;
@@ -165,18 +170,21 @@ namespace Funke {
 			}
 
 			for (auto [ent, box, tf] : registry.view<BoxCollider2DComponent, Transform2DComponent>(entt::exclude<DisabledTag>).each()) {
+				syncLayer(ent, box);
 				if (tf.IsDirty() && box.IsValid()) {
 					box.SyncWithTransform(scene);
 				}
 			}
 
 			for (auto [ent, circle, tf] : registry.view<CircleCollider2DComponent, Transform2DComponent>(entt::exclude<DisabledTag>).each()) {
+				syncLayer(ent, circle);
 				if (tf.IsDirty() && circle.IsValid()) {
 					circle.SyncWithTransform(scene);
 				}
 			}
 
 			for (auto [ent, poly, tf] : registry.view<PolygonCollider2DComponent, Transform2DComponent>(entt::exclude<DisabledTag>).each()) {
+				syncLayer(ent, poly);
 				if (tf.IsDirty() && poly.IsValid()) {
 					poly.SyncWithTransform(scene);
 				}

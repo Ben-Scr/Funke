@@ -262,6 +262,47 @@ TEST_CASE("GameBuilder::Prepare folds the profile's configuration, defines and t
 	CHECK(overridden.BundleCompression == AssetBundleCompression::Zstd);
 }
 
+TEST_CASE("GameBuilder::Prepare keeps build rendering APIs separate from the live editor") {
+	TempProject temp;
+	temp.Project.AssetsDirectory = Path::ToUtf8(temp.Root / "Assets");
+	std::filesystem::create_directories(temp.Root / "Assets/Scenes");
+	REQUIRE(File::WriteAllText(Path::ToUtf8(temp.Root / "Assets/Scenes/Main.scene"),
+		R"({ "version": 1, "name": "Main", "entities": [] })"));
+
+	const auto host = BuildPlatformSupport::HostDesktopPlatform();
+	REQUIRE(host.has_value());
+	const auto backends = FunkeBuildProfile::AllowedBackends(*host);
+	REQUIRE_FALSE(backends.empty());
+	FunkeBuildProfile profile;
+	profile.Name = "Rendering";
+	profile.Platform = *host;
+	temp.Project.ActiveBuildProfileName = profile.Name;
+
+	// Covers Auto, explicit APIs, equal APIs and switching repeatedly between profiles' APIs.
+	for (const auto editorBackend : { FunkeProject::RenderBackend::Auto, backends.front() }) {
+		for (const auto buildBackend : backends) {
+			CAPTURE(FunkeProject::RenderBackendToString(editorBackend));
+			CAPTURE(FunkeProject::RenderBackendToString(buildBackend));
+			temp.Project.ActiveRenderBackend = editorBackend;
+			profile.RenderBackend = buildBackend;
+			REQUIRE(profile.Save(Path::ToUtf8(temp.Root / "BuildProfiles/Rendering.build")));
+
+			std::string error;
+			GameBuilder::Request request;
+			temp.Project.BuildSceneList = { { "Main", true } };
+			REQUIRE_MESSAGE(GameBuilder::Prepare(temp.Project, request, error), error);
+			CHECK(request.Project.ActiveRenderBackend == buildBackend);
+			CHECK(temp.Project.ActiveRenderBackend == editorBackend);
+
+			// Failed build validation must not leave a pending renderer change either.
+			temp.Project.BuildSceneList = { { "Missing", true } };
+			CHECK_FALSE(GameBuilder::Prepare(temp.Project, request, error));
+			CHECK(error.find("missing or unreadable") != std::string::npos);
+			CHECK(temp.Project.ActiveRenderBackend == editorBackend);
+		}
+	}
+}
+
 TEST_CASE("GameBuilder asset bundling preserves StreamingAssets and reads staged content") {
 	for (auto compression : { AssetBundleCompression::None, AssetBundleCompression::LZ4, AssetBundleCompression::Zstd }) {
 		CAPTURE(AssetBundle::CompressionName(compression));

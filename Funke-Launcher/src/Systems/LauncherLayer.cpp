@@ -11,6 +11,7 @@
 #include "Gui/BuildProgressOverlay.hpp"
 #include "Gui/CustomTitlebar.hpp"
 #include "Gui/Icons.hpp"
+#include "Gui/ThemePicker.hpp"
 #include "Gui/ImGuiContextLayer.hpp"
 #include "Gui/ImGuiFonts.hpp"
 #include "Gui/ImGuiImplWebGPU.hpp"
@@ -33,6 +34,7 @@
 #include <cstring>
 #include <ctime>
 #include <sstream>
+#include <stdexcept>
 #include <iomanip>
 #include <chrono>
 #include <algorithm>
@@ -453,6 +455,8 @@ artifacts/
 			defaultLocation.c_str());
 		std::snprintf(m_SettingsLocationBuffer, sizeof(m_SettingsLocationBuffer), "%s",
 			defaultLocation.c_str());
+		std::snprintf(m_SettingsCompanyBuffer, sizeof(m_SettingsCompanyBuffer), "%s",
+			m_Settings.DefaultCompany.c_str());
 
 		if (const char* page = std::getenv("FUNKE_LAUNCHER_PAGE"); page && std::string_view(page) == "templates") {
 			m_ActivePage = LauncherPage::Templates;
@@ -583,6 +587,12 @@ artifacts/
 		switch (m_Settings.Theme) {
 			case ThemeSetting::Auto:
 				return ImGuiContextLayer::GetSystemTheme() == ImGuiContextLayer::Theme::Dark;
+			case ThemeSetting::Custom: {
+				const auto color = m_Settings.CustomColors.find("WindowBg");
+				if (color == m_Settings.CustomColors.end()) return true;
+				const auto& c = color->second;
+				return 0.2126f * c[0] + 0.7152f * c[1] + 0.0722f * c[2] < 0.5f;
+			}
 			case ThemeSetting::Dark:
 				return true;
 			case ThemeSetting::Light:
@@ -600,13 +610,24 @@ artifacts/
 		ImGuiContextLayer::ApplyFunkeTheme(dark
 			? ImGuiContextLayer::Theme::Dark
 			: ImGuiContextLayer::Theme::Light);
+		if (m_Settings.Theme == ThemeSetting::Custom) {
+			// Missing roles have deterministic defaults, including after ImGui adds colors.
+			ImGuiContextLayer::ConfigureFunkeThemeColors(ImGui::GetStyle(), true);
+			for (int i = 0; i < ImGuiCol_COUNT; ++i) {
+				const auto it = m_Settings.CustomColors.find(ImGui::GetStyleColorName(i));
+				if (it == m_Settings.CustomColors.end()) continue;
+				const auto& c = it->second;
+				ImGui::GetStyle().Colors[i] = ImVec4(c[0], c[1], c[2], c[3]);
+			}
+			ImGuiContextLayer::RefreshNativeTitlebar();
+		}
 		m_LastAppliedDarkTheme = dark;
 	}
 
 	void LauncherLayer::OnDetach(Application& app) {
 		m_LibraryThumbnails.Shutdown();
 		(void)app;
-		SaveSettingsLocation();
+		SaveProjectDefaults();
 		ResetCreateProjectTask();
 		ResetDuplicateProjectTask();
 		ResetTemplateTask(m_SaveTemplateTask);
@@ -652,7 +673,8 @@ artifacts/
 	}
 
 	void LauncherLayer::StartCreateProjectAsync(const std::string& name, const std::string& location,
-		const std::string& directoryName, bool initializeGit, std::optional<ProjectTemplate> projectTemplate) {
+		const std::string& directoryName, const std::string& company, bool initializeGit,
+		std::optional<ProjectTemplate> projectTemplate) {
 		ResetCreateProjectTask();
 
 		m_CreateError.clear();
@@ -666,7 +688,7 @@ artifacts/
 			m_CreateTask.Running = true;
 		}
 
-		m_CreateTask.Worker = std::thread([this, name, location, directoryName, initializeGit, projectTemplate = std::move(projectTemplate)]() {
+		m_CreateTask.Worker = std::thread([this, name, location, directoryName, company, initializeGit, projectTemplate = std::move(projectTemplate)]() {
 			auto updateProgress = [this](float progress, std::string_view stage) {
 				std::scoped_lock lock(m_CreateTask.Mutex);
 				m_CreateTask.Progress = progress;
@@ -688,6 +710,11 @@ artifacts/
 				updateProgress(0.05f, "Creating project...");
 				FunkeProject project = FunkeProject::Create(name, location, directoryName,
 					projectTemplate ? &*projectTemplate : nullptr, updateProgress);
+				// The dialog owns the company, including an intentionally empty value, even for custom templates.
+				project.BuildCompany = company;
+				if (!project.Save()) {
+					throw std::runtime_error("Could not save the project company: " + project.ProjectFilePath);
+				}
 
 				// Keep the isolated package workspace ready for source packages.
 				updateProgress(0.55f, "Preparing package workspace...");
@@ -1113,14 +1140,35 @@ artifacts/
 			return clicked;
 		}
 
-		// Right-aligned equal-width footer buttons; `primary` gets the accent fill. Returns the clicked index or -1.
-		int DialogFooter(std::initializer_list<std::string> labels, int primary, bool primaryEnabled = true) {
+		float DialogButtonWidth(std::initializer_list<std::string> labels) {
 			float buttonW = ImGui::GetFontSize() * 6.5f;
 			for (const std::string& label : labels) {
 				buttonW = std::max(buttonW, IconButtonWidth(label));
 			}
+			return buttonW;
+		}
+
+		float DialogButtonHeight() {
+			return std::round(ImGui::GetFrameHeight() + ImGui::GetFontSize() * 0.3f);
+		}
+
+		void BeginFormBody(const char* id, std::initializer_list<std::string> footerLabels) {
+			const ImVec2 spacing = ImGui::GetStyle().ItemSpacing;
+			const float available = std::max(1.0f, ImGui::GetContentRegionAvail().x);
+			const float width = std::min(DialogButtonWidth(footerLabels), available);
+			const int columns = std::max(1, static_cast<int>((available + spacing.x) / (width + spacing.x)));
+			const int rows = (static_cast<int>(footerLabels.size()) + columns - 1) / columns;
+			// Two spacer items around the separator, then one or more button rows.
+			const float footerHeight = ImGui::GetFontSize() * 0.8f + spacing.y * 2.0f
+				+ rows * DialogButtonHeight() + std::max(0, rows - 1) * spacing.y;
+			ImGuiDialog::BeginBody(id, footerHeight);
+		}
+
+		// Right-aligned equal-width footer buttons; `primary` gets the accent fill. Returns the clicked index or -1.
+		int DialogFooter(std::initializer_list<std::string> labels, int primary, bool primaryEnabled = true) {
+			const float buttonW = DialogButtonWidth(labels);
 			const int count = static_cast<int>(labels.size());
-			const float buttonH = std::round(ImGui::GetFrameHeight() + ImGui::GetFontSize() * 0.3f);
+			const float buttonH = DialogButtonHeight();
 
 			ImGui::Dummy(ImVec2(0.0f, ImGui::GetFontSize() * 0.4f));
 			const ImVec2 p = ImGui::GetCursorScreenPos();
@@ -1220,7 +1268,7 @@ artifacts/
 		const LauncherPage previousPage = m_ActivePage;
 		RenderSidebar();
 		if (previousPage == LauncherPage::Settings && m_ActivePage != previousPage) {
-			SaveSettingsLocation();
+			SaveProjectDefaults();
 		}
 		ImGui::SameLine(0.0f, 0.0f);
 
@@ -1360,12 +1408,15 @@ artifacts/
 	}
 
 	void LauncherLayer::BeginCreateProject() {
+		SaveProjectDefaults();
 		m_OpenCreatePopup = true;
 		m_CreateError.clear();
 		m_IsCreating = false;
 		// Pre-fill the name so a one-click "Create" works — matches Unity Hub / Godot defaults.
 		std::snprintf(m_NewProjectName, sizeof(m_NewProjectName), "%s",
 			FNK_TR("launcher.create.default_project_name").c_str());
+		std::snprintf(m_NewProjectCompany, sizeof(m_NewProjectCompany), "%s",
+			m_Settings.DefaultCompany.c_str());
 		// Re-snap the location: the user may have changed the default in settings since OnAttach.
 		const std::string defaultLocation = m_Settings.DefaultProjectsLocation.empty()
 			? FunkeProject::GetDefaultProjectsDir()
@@ -2639,12 +2690,12 @@ artifacts/
 		}
 
 		ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-		ImGui::SetNextWindowSize(ImVec2(ImGui::GetFontSize() * 30.0f, 0), ImGuiCond_Appearing);
+		ImGui::SetNextWindowSize(ImVec2(ImGui::GetFontSize() * 30.0f, ImGui::GetFontSize() * 28.0f), ImGuiCond_Appearing);
 		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
 		const std::string title = FNK_TR("launcher.template_save.title") + k_SaveTemplateId;
 		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ImGui::GetFontSize() * 1.3f, ImGui::GetFontSize() * 1.1f));
 		const bool open = ImGuiDialog::BeginModal(title.c_str(), nullptr,
-			ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysAutoResize);
+			ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoTitleBar);
 		ImGui::PopStyleVar();
 		if (!open) return;
 		if (!m_PendingTemplateProject.has_value()) {
@@ -2657,11 +2708,13 @@ artifacts/
 		const float contentW = std::min(em * 27.0f, ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ScrollbarSize);
 
 		if (m_SavedTemplate.has_value()) {
+			BeginFormBody("##SavedTemplateBody", { FNK_TR("launcher.template_save.close"), FNK_TR("launcher.template_save.use_now") });
 			DialogTitle(FNK_TR("launcher.template_save.title"),
 				Localization::Format("launcher.template_save.saved", m_SavedTemplate->DisplayName));
 			ImGui::PushStyleColor(ImGuiCol_Text, GetLauncherPalette().TextDim);
 			ImGuiDialog::Message("##PathDetails", m_SavedTemplate->RootDirectory.c_str());
 			ImGui::PopStyleColor();
+			ImGuiDialog::EndBody();
 			const int clicked = DialogFooter({ FNK_TR("launcher.template_save.close"),
 				FNK_TR("launcher.template_save.use_now") }, 1);
 			if (clicked >= 0) {
@@ -2679,7 +2732,7 @@ artifacts/
 			return;
 		}
 
-		ImGuiDialog::BeginBody("##SaveTemplateBody");
+		BeginFormBody("##SaveTemplateBody", { FNK_TR("launcher.template_save.cancel"), FNK_TR("launcher.template_save.save_button") });
 		DialogTitle(FNK_TR("launcher.template_save.title"),
 			Localization::Format("launcher.template_save.subtitle", m_PendingTemplateProject->Name));
 
@@ -3161,12 +3214,12 @@ artifacts/
 		}
 
 		ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-		ImGui::SetNextWindowSize(ImVec2(ImGui::GetFontSize() * 30.0f, 0), ImGuiCond_Appearing);
+		ImGui::SetNextWindowSize(ImVec2(ImGui::GetFontSize() * 30.0f, ImGui::GetFontSize() * 28.0f), ImGuiCond_Appearing);
 		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
 		const std::string title = FNK_TR("launcher.template_edit.title") + k_EditTemplateId;
 		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ImGui::GetFontSize() * 1.3f, ImGui::GetFontSize() * 1.1f));
 		const bool open = ImGuiDialog::BeginModal(title.c_str(), nullptr,
-			ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysAutoResize);
+			ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoTitleBar);
 		ImGui::PopStyleVar();
 		if (!open) return;
 		if (!m_PendingEditTemplate.has_value()) {
@@ -3177,7 +3230,7 @@ artifacts/
 
 		const float em = ImGui::GetFontSize();
 		const float contentW = std::min(em * 27.0f, ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ScrollbarSize);
-		ImGuiDialog::BeginBody("##EditTemplateBody");
+		BeginFormBody("##EditTemplateBody", { FNK_TR("launcher.template_edit.cancel"), FNK_TR("launcher.template_edit.save") });
 		DialogTitle(FNK_TR("launcher.template_edit.title"), FNK_TR("launcher.template_edit.subtitle"));
 
 		BeginFormRow(FNK_TR("launcher.template_save.name"));
@@ -3326,14 +3379,15 @@ artifacts/
 
 		ImVec2 center = ImGui::GetMainViewport()->GetCenter();
 		ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-		ImGui::SetNextWindowSize(ImVec2(ImGui::GetFontSize() * 34.0f, 0), ImGuiCond_Appearing);
+		// Apply a default only when opening; subsequent sizes belong to the user.
+		ImGui::SetNextWindowSize(ImVec2(ImGui::GetFontSize() * 34.0f, ImGui::GetFontSize() * 42.0f), ImGuiCond_Appearing);
 
 		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
 
 		const std::string createTitle = FNK_TR("launcher.create.title") + k_CreateId;
 		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ImGui::GetFontSize() * 1.3f, ImGui::GetFontSize() * 1.1f));
 		const bool open = ImGuiDialog::BeginModal(createTitle.c_str(), nullptr,
-			ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysAutoResize);
+			ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoTitleBar);
 		ImGui::PopStyleVar();
 		if (!open) return;
 
@@ -3351,11 +3405,12 @@ artifacts/
 
 		const LauncherPalette pal = GetLauncherPalette();
 		const float em = ImGui::GetFontSize();
-		const float contentW = std::min(em * 31.0f, ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ScrollbarSize);
 		const std::string directoryName = LauncherSettings::ApplyDirectoryNameConvention(m_NewProjectName, m_Settings.DirectoryConvention);
 		const std::string preview = Path::Combine(m_NewProjectLocation, directoryName);
+		const std::string cancelLabel = m_IsCreating ? FNK_TR("launcher.create.working") : FNK_TR("launcher.create.cancel");
 
-		ImGuiDialog::BeginBody("##CreateProjectBody");
+		BeginFormBody("##CreateProjectBody", { cancelLabel, FNK_TR("launcher.create.create_button") });
+		const float contentW = std::max(1.0f, ImGui::GetContentRegionAvail().x);
 		DialogTitle(FNK_TR("launcher.create.title"));
 
 		// Live preview card: the project tile, name and resulting folder update as you type.
@@ -3394,6 +3449,10 @@ artifacts/
 		ImGui::InputText("##ProjName", m_NewProjectName, sizeof(m_NewProjectName));
 		EndFormRow();
 
+		BeginFormRow(FNK_TR("launcher.create.company"), FNK_TR("launcher.create.company.tooltip"));
+		ImGui::InputText("##ProjCompany", m_NewProjectCompany, sizeof(m_NewProjectCompany));
+		EndFormRow();
+
 		BeginFormRow(FNK_TR("launcher.create.location"));
 		{
 			const float folderW = ImGui::GetFrameHeight();
@@ -3425,7 +3484,6 @@ artifacts/
 		const bool canCreate = FunkeProject::IsValidProjectName(m_NewProjectName)
 			&& FunkeProject::IsValidProjectName(directoryName)
 			&& !m_IsCreating;
-		const std::string cancelLabel = m_IsCreating ? FNK_TR("launcher.create.working") : FNK_TR("launcher.create.cancel");
 		ImGuiDialog::EndBody();
 		if (m_IsCreating) ImGui::BeginDisabled();
 
@@ -3439,13 +3497,14 @@ artifacts/
 			StartCreateProjectAsync(std::string(m_NewProjectName),
 				std::string(m_NewProjectLocation),
 				directoryName,
+				std::string(m_NewProjectCompany),
 				m_NewProjectInitializeGit,
 				selectedTemplate ? std::optional<ProjectTemplate>(*selectedTemplate) : std::nullopt);
 			FNK_INFO_TAG("Project", "Queued async project creation in {}", StringHelper::ToString(timer));
 		}
 		if (ImGui::IsKeyPressed(ImGuiKey_Enter) && canCreate && !ImGui::IsAnyItemActive()) {
 			StartCreateProjectAsync(std::string(m_NewProjectName), std::string(m_NewProjectLocation),
-				directoryName, m_NewProjectInitializeGit,
+				directoryName, std::string(m_NewProjectCompany), m_NewProjectInitializeGit,
 				selectedTemplate ? std::optional<ProjectTemplate>(*selectedTemplate) : std::nullopt);
 		}
 
@@ -4083,15 +4142,21 @@ artifacts/
 		ImGui::EndPopup();
 	}
 
-	void LauncherLayer::SaveSettingsLocation() {
-		if (!m_SettingsLocationDirty) {
+	void LauncherLayer::SaveProjectDefaults() {
+		if (!m_SettingsLocationDirty && !m_SettingsCompanyDirty) {
 			return;
 		}
-		const std::string typed(m_SettingsLocationBuffer);
 		const std::string engineDefault = FunkeProject::GetDefaultProjectsDir();
-		m_Settings.DefaultProjectsLocation = typed == engineDefault ? std::string{} : typed;
+		if (m_SettingsLocationDirty) {
+			const std::string typed(m_SettingsLocationBuffer);
+			m_Settings.DefaultProjectsLocation = typed == engineDefault ? std::string{} : typed;
+		}
+		if (m_SettingsCompanyDirty) {
+			m_Settings.DefaultCompany = m_SettingsCompanyBuffer;
+		}
 		m_Settings.Save();
 		m_SettingsLocationDirty = false;
+		m_SettingsCompanyDirty = false;
 		std::snprintf(m_SettingsLocationBuffer, sizeof(m_SettingsLocationBuffer), "%s",
 			m_Settings.DefaultProjectsLocation.empty() ? engineDefault.c_str() : m_Settings.DefaultProjectsLocation.c_str());
 	}
@@ -4117,13 +4182,23 @@ artifacts/
 			const bool submitted = ImGui::InputText("##DefaultLocation", m_SettingsLocationBuffer,
 				sizeof(m_SettingsLocationBuffer), ImGuiInputTextFlags_EnterReturnsTrue);
 			if (ImGui::IsItemEdited()) m_SettingsLocationDirty = true;
-			if (submitted || ImGui::IsItemDeactivatedAfterEdit()) SaveSettingsLocation();
+			if (submitted || ImGui::IsItemDeactivatedAfterEdit()) SaveProjectDefaults();
 			if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", currentLine.c_str());
 			ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
 			if (Icons::IconButton("##BrowseDefaultLocation", Icons::Type::OpenFolder, ImVec2(folderW, folderW))) {
 				BrowseForDefaultProjectsLocation();
 			}
 			if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", FNK_TR("launcher.settings.browse").c_str());
+		}
+		EndFormRow();
+
+		BeginFormRow(FNK_TR("launcher.settings.default_company"),
+			FNK_TR("launcher.settings.default_company_subtitle"), true);
+		{
+			const bool submitted = ImGui::InputText("##DefaultCompany", m_SettingsCompanyBuffer,
+				sizeof(m_SettingsCompanyBuffer), ImGuiInputTextFlags_EnterReturnsTrue);
+			if (ImGui::IsItemEdited()) m_SettingsCompanyDirty = true;
+			if (submitted || ImGui::IsItemDeactivatedAfterEdit()) SaveProjectDefaults();
 		}
 		EndFormRow();
 
@@ -4159,53 +4234,65 @@ artifacts/
 		ImGui::Dummy(ImVec2(0.0f, ImGui::GetFontSize() * 0.6f));
 		BeginSettingsSection("##SettingsAppearance", FNK_TR("launcher.settings.section.appearance"));
 
-		BeginFormRow(FNK_TR("launcher.settings.theme"), {}, true);
-		{
-			struct ThemeEntry {
-				ThemeSetting Value;
-				const char* LabelKey;
-			};
-			static constexpr ThemeEntry k_Entries[] = {
-				{ ThemeSetting::Auto,  nullptr },
-				{ ThemeSetting::Dark,  "launcher.settings.theme.dark" },
-				{ ThemeSetting::Light, "launcher.settings.theme.light" },
-			};
-
-			const std::string effectiveThemeName = IsEffectiveThemeDark()
-				? FNK_TR("launcher.settings.theme.dark")
-				: FNK_TR("launcher.settings.theme.light");
-
-			auto labelFor = [&](const ThemeEntry& e) -> std::string {
-				if (e.Value == ThemeSetting::Auto) {
-					return Localization::Format("launcher.settings.theme.auto_format", effectiveThemeName);
-				}
-				return FNK_TR(e.LabelKey);
-			};
-
-			std::string preview;
-			for (const auto& e : k_Entries) {
-				if (e.Value == m_Settings.Theme) {
-					preview = labelFor(e);
-					break;
-				}
-			}
-
-			ImGui::SetNextItemWidth(-1.0f);
-			if (ImGui::BeginCombo("##LauncherThemeCombo", preview.c_str())) {
-				for (const auto& e : k_Entries) {
-					const bool selected = (e.Value == m_Settings.Theme);
-					const std::string label = labelFor(e);
-					if (ImGui::Selectable(label.c_str(), selected)) {
-						m_Settings.Theme = e.Value;
-						m_LastAppliedDarkTheme.reset();
-						m_Settings.Save();
-					}
-					if (selected) ImGui::SetItemDefaultFocus();
-				}
-				ImGui::EndCombo();
-			}
+		ImGui::TextUnformatted(FNK_TR("launcher.settings.theme").c_str());
+		static const ImGuiStyle light = [] { ImGuiStyle style; ImGuiContextLayer::ConfigureFunkeThemeColors(style, false); return style; }();
+		static const ImGuiStyle dark = [] { ImGuiStyle style; ImGuiContextLayer::ConfigureFunkeThemeColors(style, true); return style; }();
+		ImGuiStyle custom = dark;
+		for (int i = 0; i < ImGuiCol_COUNT; ++i) {
+			const auto it = m_Settings.CustomColors.find(ImGui::GetStyleColorName(i));
+			if (it == m_Settings.CustomColors.end()) continue;
+			const auto& c = it->second;
+			custom.Colors[i] = ImVec4(c[0], c[1], c[2], c[3]);
 		}
-		EndFormRow();
+		constexpr ThemeSetting modes[] = { ThemeSetting::Light, ThemeSetting::Dark, ThemeSetting::Auto, ThemeSetting::Custom };
+		const std::string labelStrings[] = { FNK_TR("launcher.settings.theme.light"), FNK_TR("launcher.settings.theme.dark"),
+			FNK_TR("launcher.settings.theme.system"), FNK_TR("launcher.settings.theme.custom") };
+		const std::string systemHelp = FNK_TR("launcher.settings.theme.system_help");
+		const std::string customHelp = FNK_TR("launcher.settings.theme.custom_help");
+		const char* labels[] = { labelStrings[0].c_str(), labelStrings[1].c_str(), labelStrings[2].c_str(), labelStrings[3].c_str() };
+		const char* tooltips[] = { labels[0], labels[1], systemHelp.c_str(), customHelp.c_str() };
+		int current = 0;
+		for (int i = 0; i < 4; ++i) if (modes[i] == m_Settings.Theme) current = i;
+		const auto chosen = ThemePicker::Draw(static_cast<ThemePicker::Mode>(current), light, dark, custom,
+			ImGui::ColorConvertU32ToFloat4(GetLauncherPalette().Accent), [](const char* name, int size) {
+				const Icons::Type icon = std::strcmp(name, "theme_light") == 0 ? Icons::Type::ThemeLight
+					: std::strcmp(name, "theme_dark") == 0 ? Icons::Type::ThemeDark
+					: std::strcmp(name, "monitor") == 0 ? Icons::Type::Monitor : Icons::Type::Pen;
+				return Icons::Get(icon, size);
+			}, labels, tooltips);
+		bool openCustomColors = false;
+		if (modes[static_cast<int>(chosen)] != m_Settings.Theme) {
+			m_Settings.Theme = modes[static_cast<int>(chosen)];
+			m_LastAppliedDarkTheme.reset();
+			m_Settings.Save();
+			openCustomColors = m_Settings.Theme == ThemeSetting::Custom;
+		}
+		ImGui::TextWrapped("%s", m_Settings.Theme == ThemeSetting::Auto ? systemHelp.c_str()
+			: m_Settings.Theme == ThemeSetting::Custom ? customHelp.c_str() : FNK_TR("launcher.settings.theme.immediate").c_str());
+		ImGui::Spacing();
+		const bool customActive = m_Settings.Theme == ThemeSetting::Custom;
+		if (openCustomColors) ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+		if (ImGui::CollapsingHeader(FNK_TR("launcher.settings.theme.custom_colors").c_str())) {
+			ImGui::BeginDisabled(!customActive);
+			ImGui::BeginChild("##CustomColorsScroll", ImVec2(0, ImGui::GetFontSize() * 18.0f), ImGuiChildFlags_Borders);
+			for (int i = 0; i < ImGuiCol_COUNT; ++i) {
+				const char* name = ImGui::GetStyleColorName(i);
+				ImVec4 color = custom.Colors[i];
+				ImGui::PushID(i);
+				BeginFormRow(name, {}, true);
+				if (ImGui::ColorEdit4("##Color", &color.x,
+					ImGuiColorEditFlags_AlphaBar | ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel)) {
+					m_Settings.CustomColors[name] = { color.x, color.y, color.z, color.w };
+					m_LastAppliedDarkTheme.reset();
+					m_Settings.Save();
+				}
+				EndFormRow();
+				ImGui::PopID();
+			}
+			ImGui::EndChild();
+			ImGui::EndDisabled();
+		}
+		ImGui::Spacing();
 
 		BeginFormRow(FNK_TR("launcher.settings.font_scale"), {}, true);
 		{
@@ -4469,7 +4556,7 @@ artifacts/
 		if (std::string path = PickFolder("Default projects location"); !path.empty()) {
 			std::snprintf(m_SettingsLocationBuffer, sizeof(m_SettingsLocationBuffer), "%s", path.c_str());
 			m_SettingsLocationDirty = true;
-			SaveSettingsLocation();
+			SaveProjectDefaults();
 		}
 	}
 

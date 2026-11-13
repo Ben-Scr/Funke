@@ -157,7 +157,7 @@ namespace Funke::MaterialShaderInspector {
 			const PropertyDescriptor field = MakeField(materialGuid, property);
 			PropertyDrawer::Draw(entitySpan, field, keyPrefix + "prop." + field.Name);
 		}
-		if (ImGui::SmallButton("Reset to Shader Defaults")) {
+		if (EditorUI::IconButton("##ResetShaderDefaults", "reset", "Restore shader property defaults.", false, false, 0.0f, "Reset")) {
 			Edit(materialGuid, [description](Material& m) {
 				for (const ShaderProperty& property : description->Properties) m.Properties.erase(property.Name);
 			});

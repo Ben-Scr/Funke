@@ -1,0 +1,4238 @@
+{
+  "version": 1,
+  "name": "Bench",
+  "systems": [],
+  "entities": [
+    {
+      "uuid": "3432350999753800486",
+      "name": "Bench UI",
+      "RectTransform2D": {
+        "anchorMinX": 0.5,
+        "anchorMinY": 0.5,
+        "anchorMaxX": 0.5,
+        "anchorMaxY": 0.5,
+        "pivotX": 0.5,
+        "pivotY": 0.5,
+        "posX": 0,
+        "posY": 0,
+        "sizeX": 1440,
+        "sizeY": 900
+      }
+    },
+    {
+      "uuid": "1145738108862061061",
+      "name": "Benchmark Controller",
+      "Scripts": [
+        {
+          "className": "BenchController",
+          "type": "Managed"
+        },
+        {
+          "className": "BenchMetrics",
+          "type": "Managed"
+        }
+      ],
+      "ScriptFields": {
+        "BenchController": [
+          {
+            "name": "CountInput",
+            "type": "component:InputField",
+            "value": "3510826292470188455:InputField"
+          },
+          {
+            "name": "IterationsInput",
+            "type": "component:InputField",
+            "value": "7805077734292366665:InputField"
+          },
+          {
+            "name": "DurationInput",
+            "type": "component:InputField",
+            "value": "1623045730362697698:InputField"
+          },
+          {
+            "name": "JobsToggle",
+            "type": "component:Toggle",
+            "value": "2959868986326071428:Toggle"
+          },
+          {
+            "name": "AnimateToggle",
+            "type": "component:Toggle",
+            "value": "7135678820756205696:Toggle"
+          },
+          {
+            "name": "VsyncToggle",
+            "type": "component:Toggle",
+            "value": "332999994991442359:Toggle"
+          },
+          {
+            "name": "Camera2DEntity",
+            "type": "entity",
+            "value": "2768182958391401392"
+          },
+          {
+            "name": "Camera3DEntity",
+            "type": "entity",
+            "value": "8266055926625358587"
+          },
+          {
+            "name": "EmptyState",
+            "type": "entity",
+            "value": "8651155744258759015"
+          },
+          {
+            "name": "ScenarioMarkers",
+            "type": "list",
+            "value": "\n5195702200511288875\n1863888336150461680\n812031672743463076\n9193850635077616209\n6474589218702403131",
+            "itemType": "entity"
+          },
+          {
+            "name": "ScenarioTitle",
+            "type": "component:TextRenderer",
+            "value": "7080322236074441776:TextRenderer"
+          },
+          {
+            "name": "PreviewNote",
+            "type": "component:TextRenderer",
+            "value": "5016795500000571459:TextRenderer"
+          },
+          {
+            "name": "StatusLabel",
+            "type": "component:TextRenderer",
+            "value": "7374194645857337845:TextRenderer"
+          }
+        ],
+        "BenchMetrics": [
+          {
+            "name": "LiveLabel",
+            "type": "component:TextRenderer",
+            "value": "6501944499744364770:TextRenderer"
+          },
+          {
+            "name": "FrameLabel",
+            "type": "component:TextRenderer",
+            "value": "3692270261473007884:TextRenderer"
+          },
+          {
+            "name": "FpsLabel",
+            "type": "component:TextRenderer",
+            "value": "4644513630295351212:TextRenderer"
+          },
+          {
+            "name": "MeanLabel",
+            "type": "component:TextRenderer",
+            "value": "892138247677581681:TextRenderer"
+          },
+          {
+            "name": "MedianLabel",
+            "type": "component:TextRenderer",
+            "value": "7253250077330314459:TextRenderer"
+          },
+          {
+            "name": "P95Label",
+            "type": "component:TextRenderer",
+            "value": "10173391175758428:TextRenderer"
+          },
+          {
+            "name": "SetupLabel",
+            "type": "component:TextRenderer",
+            "value": "7781439653687185251:TextRenderer"
+          },
+          {
+            "name": "ScopeLabel",
+            "type": "component:TextRenderer",
+            "value": "2386680170044013087:TextRenderer"
+          },
+          {
+            "name": "ProgressLabel",
+            "type": "component:TextRenderer",
+            "value": "1950709952857427649:TextRenderer"
+          },
+          {
+            "name": "HistoryNames",
+            "type": "list",
+            "value": "\n1154189561410588404:TextRenderer\n1630040832928660828:TextRenderer\n6775521052254217871:TextRenderer\n4369771427642150962:TextRenderer",
+            "itemType": "component:TextRenderer"
+          },
+          {
+            "name": "HistoryCounts",
+            "type": "list",
+            "value": "\n1754942868957776761:TextRenderer\n1294645608609701653:TextRenderer\n2087259538784529158:TextRenderer\n3024927604748944746:TextRenderer",
+            "itemType": "component:TextRenderer"
+          },
+          {
+            "name": "HistoryModes",
+            "type": "list",
+            "value": "\n3887001658725636881:TextRenderer\n1178619993002293774:TextRenderer\n3778457226427106797:TextRenderer\n1327951843168840000:TextRenderer",
+            "itemType": "component:TextRenderer"
+          },
+          {
+            "name": "HistorySamples",
+            "type": "list",
+            "value": "\n3251098651071134635:TextRenderer\n4354385211548777608:TextRenderer\n1499275260402955404:TextRenderer\n2589906604084390337:TextRenderer",
+            "itemType": "component:TextRenderer"
+          },
+          {
+            "name": "HistoryMeans",
+            "type": "list",
+            "value": "\n7609300369720992700:TextRenderer\n4404728364674826502:TextRenderer\n6719670223544306602:TextRenderer\n6984497101922943557:TextRenderer",
+            "itemType": "component:TextRenderer"
+          },
+          {
+            "name": "HistoryP95s",
+            "type": "list",
+            "value": "\n8767416519914935391:TextRenderer\n6347776527825536290:TextRenderer\n334656071808921903:TextRenderer\n4399996336450465164:TextRenderer",
+            "itemType": "component:TextRenderer"
+          }
+        ]
+      }
+    },
+    {
+      "uuid": "5495064672154817155",
+      "name": "Top bar",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 0,
+        "posY": 0,
+        "sizeX": 1440,
+        "sizeY": 64
+      },
+      "Image": {
+        "r": 0.0863,
+        "g": 0.0902,
+        "b": 0.098,
+        "a": 1.0,
+        "sortOrder": 0
+      }
+    },
+    {
+      "uuid": "4296351343938611343",
+      "name": "App title",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 24,
+        "posY": -14,
+        "sizeX": 240,
+        "sizeY": 36
+      },
+      "TextRenderer": {
+        "text": "FunkeBench",
+        "fontSize": 24,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.9216,
+        "g": 0.9255,
+        "b": 0.9373,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "1743757768430010044",
+      "name": "App subtitle",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 254,
+        "posY": -20,
+        "sizeX": 480,
+        "sizeY": 26
+      },
+      "TextRenderer": {
+        "text": "Runtime performance workbench",
+        "fontSize": 16,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.6039,
+        "g": 0.6157,
+        "b": 0.651,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "3757158040372018675",
+      "name": "Clear workload",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 1080,
+        "posY": -14,
+        "sizeX": 154,
+        "sizeY": 36
+      },
+      "Image": {
+        "r": 0.1647,
+        "g": 0.1725,
+        "b": 0.1882,
+        "a": 1.0,
+        "sortOrder": 2
+      },
+      "Interactable": {
+        "interactable": true,
+        "focusable": true
+      },
+      "Button": {
+        "transitionMode": 0,
+        "normal": {
+          "r": 0.1647,
+          "g": 0.1725,
+          "b": 0.1882,
+          "a": 1.0
+        },
+        "hovered": {
+          "r": 0.2118,
+          "g": 0.2196,
+          "b": 0.2431,
+          "a": 1.0
+        },
+        "pressed": {
+          "r": 0.2549,
+          "g": 0.2667,
+          "b": 0.2941,
+          "a": 1.0
+        },
+        "targetGraphic": "0",
+        "onClick": [
+          {
+            "entity": "1145738108862061061",
+            "class": "BenchController",
+            "method": "Clear",
+            "enabled": true,
+            "argKind": 0,
+            "argValue": ""
+          }
+        ],
+        "focused": {
+          "r": 0.1569,
+          "g": 0.2118,
+          "b": 0.3059,
+          "a": 1.0
+        }
+      }
+    },
+    {
+      "uuid": "2034755741955560407",
+      "name": "Clear workload Label",
+      "parentUuid": "3757158040372018675",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 0,
+        "posY": 0,
+        "sizeX": 154,
+        "sizeY": 36
+      },
+      "TextRenderer": {
+        "text": "Clear workload",
+        "fontSize": 16,
+        "alignment": 1,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.9216,
+        "g": 0.9255,
+        "b": 0.9373,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "6126262595758739157",
+      "name": "Export results",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 1250,
+        "posY": -14,
+        "sizeX": 166,
+        "sizeY": 36
+      },
+      "Image": {
+        "r": 0.1647,
+        "g": 0.1725,
+        "b": 0.1882,
+        "a": 1.0,
+        "sortOrder": 2
+      },
+      "Interactable": {
+        "interactable": true,
+        "focusable": true
+      },
+      "Button": {
+        "transitionMode": 0,
+        "normal": {
+          "r": 0.1647,
+          "g": 0.1725,
+          "b": 0.1882,
+          "a": 1.0
+        },
+        "hovered": {
+          "r": 0.2118,
+          "g": 0.2196,
+          "b": 0.2431,
+          "a": 1.0
+        },
+        "pressed": {
+          "r": 0.2549,
+          "g": 0.2667,
+          "b": 0.2941,
+          "a": 1.0
+        },
+        "targetGraphic": "0",
+        "onClick": [
+          {
+            "entity": "1145738108862061061",
+            "class": "BenchController",
+            "method": "Export",
+            "enabled": true,
+            "argKind": 0,
+            "argValue": ""
+          }
+        ],
+        "focused": {
+          "r": 0.1569,
+          "g": 0.2118,
+          "b": 0.3059,
+          "a": 1.0
+        }
+      }
+    },
+    {
+      "uuid": "5946083607180751567",
+      "name": "Export results Label",
+      "parentUuid": "6126262595758739157",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 0,
+        "posY": 0,
+        "sizeX": 166,
+        "sizeY": 36
+      },
+      "TextRenderer": {
+        "text": "Export CSV",
+        "fontSize": 16,
+        "alignment": 1,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.9216,
+        "g": 0.9255,
+        "b": 0.9373,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "6821918385486034270",
+      "name": "Left panel",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 0,
+        "posY": -65,
+        "sizeX": 320,
+        "sizeY": 803
+      },
+      "Image": {
+        "r": 0.1176,
+        "g": 0.1216,
+        "b": 0.1333,
+        "a": 1.0,
+        "sortOrder": 0
+      }
+    },
+    {
+      "uuid": "8538436992618043544",
+      "name": "Left separator",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 319,
+        "posY": -65,
+        "sizeX": 1,
+        "sizeY": 803
+      },
+      "Image": {
+        "r": 0.2039,
+        "g": 0.2118,
+        "b": 0.2353,
+        "a": 1.0,
+        "sortOrder": 0
+      }
+    },
+    {
+      "uuid": "7638417558519644314",
+      "name": "Right panel",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 1120,
+        "posY": -65,
+        "sizeX": 320,
+        "sizeY": 565
+      },
+      "Image": {
+        "r": 0.1176,
+        "g": 0.1216,
+        "b": 0.1333,
+        "a": 1.0,
+        "sortOrder": 0
+      }
+    },
+    {
+      "uuid": "2672251508087080680",
+      "name": "Right separator",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 1120,
+        "posY": -65,
+        "sizeX": 1,
+        "sizeY": 565
+      },
+      "Image": {
+        "r": 0.2039,
+        "g": 0.2118,
+        "b": 0.2353,
+        "a": 1.0,
+        "sortOrder": 0
+      }
+    },
+    {
+      "uuid": "3948881152907476882",
+      "name": "Preview toolbar",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 320,
+        "posY": -65,
+        "sizeX": 800,
+        "sizeY": 53
+      },
+      "Image": {
+        "r": 0.0863,
+        "g": 0.0902,
+        "b": 0.098,
+        "a": 1.0,
+        "sortOrder": 0
+      }
+    },
+    {
+      "uuid": "4842532371280890551",
+      "name": "Preview bottom",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 320,
+        "posY": -584,
+        "sizeX": 800,
+        "sizeY": 46
+      },
+      "Image": {
+        "r": 0.0863,
+        "g": 0.0902,
+        "b": 0.098,
+        "a": 1.0,
+        "sortOrder": 0
+      }
+    },
+    {
+      "uuid": "7839704417816906582",
+      "name": "Results panel",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 320,
+        "posY": -630,
+        "sizeX": 1120,
+        "sizeY": 238
+      },
+      "Image": {
+        "r": 0.1176,
+        "g": 0.1216,
+        "b": 0.1333,
+        "a": 1.0,
+        "sortOrder": 0
+      }
+    },
+    {
+      "uuid": "8661454672480300911",
+      "name": "Results separator",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 320,
+        "posY": -630,
+        "sizeX": 1120,
+        "sizeY": 1
+      },
+      "Image": {
+        "r": 0.2039,
+        "g": 0.2118,
+        "b": 0.2353,
+        "a": 1.0,
+        "sortOrder": 0
+      }
+    },
+    {
+      "uuid": "1240559081601062157",
+      "name": "Footer",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 0,
+        "posY": -869,
+        "sizeX": 1440,
+        "sizeY": 31
+      },
+      "Image": {
+        "r": 0.0863,
+        "g": 0.0902,
+        "b": 0.098,
+        "a": 1.0,
+        "sortOrder": 0
+      }
+    },
+    {
+      "uuid": "5020824275366963442",
+      "name": "Scenario header",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 24,
+        "posY": -85,
+        "sizeX": 272,
+        "sizeY": 32
+      },
+      "TextRenderer": {
+        "text": "Benchmark",
+        "fontSize": 20,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.9216,
+        "g": 0.9255,
+        "b": 0.9373,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "4360929614304024664",
+      "name": "Scenario 0",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 24,
+        "posY": -130,
+        "sizeX": 272,
+        "sizeY": 36
+      },
+      "Image": {
+        "r": 0.1647,
+        "g": 0.1725,
+        "b": 0.1882,
+        "a": 1.0,
+        "sortOrder": 2
+      },
+      "Interactable": {
+        "interactable": true,
+        "focusable": true
+      },
+      "Button": {
+        "transitionMode": 0,
+        "normal": {
+          "r": 0.1647,
+          "g": 0.1725,
+          "b": 0.1882,
+          "a": 1.0
+        },
+        "hovered": {
+          "r": 0.2118,
+          "g": 0.2196,
+          "b": 0.2431,
+          "a": 1.0
+        },
+        "pressed": {
+          "r": 0.2549,
+          "g": 0.2667,
+          "b": 0.2941,
+          "a": 1.0
+        },
+        "targetGraphic": "0",
+        "onClick": [
+          {
+            "entity": "1145738108862061061",
+            "class": "BenchController",
+            "method": "SelectScenario",
+            "enabled": true,
+            "argKind": 2,
+            "argValue": "0"
+          }
+        ],
+        "focused": {
+          "r": 0.1569,
+          "g": 0.2118,
+          "b": 0.3059,
+          "a": 1.0
+        }
+      }
+    },
+    {
+      "uuid": "5414424294966454360",
+      "name": "Scenario 0 Label",
+      "parentUuid": "4360929614304024664",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 0,
+        "posY": 0,
+        "sizeX": 272,
+        "sizeY": 36
+      },
+      "TextRenderer": {
+        "text": "Create entities",
+        "fontSize": 16,
+        "alignment": 1,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.9216,
+        "g": 0.9255,
+        "b": 0.9373,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "5195702200511288875",
+      "name": "Scenario marker 0",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 24,
+        "posY": -130,
+        "sizeX": 3,
+        "sizeY": 36
+      },
+      "Image": {
+        "r": 0.3569,
+        "g": 0.5529,
+        "b": 0.9373,
+        "a": 1.0,
+        "sortOrder": 7
+      },
+      "disabled": false
+    },
+    {
+      "uuid": "4669994545296918014",
+      "name": "Scenario 1",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 24,
+        "posY": -173,
+        "sizeX": 272,
+        "sizeY": 36
+      },
+      "Image": {
+        "r": 0.1647,
+        "g": 0.1725,
+        "b": 0.1882,
+        "a": 1.0,
+        "sortOrder": 2
+      },
+      "Interactable": {
+        "interactable": true,
+        "focusable": true
+      },
+      "Button": {
+        "transitionMode": 0,
+        "normal": {
+          "r": 0.1647,
+          "g": 0.1725,
+          "b": 0.1882,
+          "a": 1.0
+        },
+        "hovered": {
+          "r": 0.2118,
+          "g": 0.2196,
+          "b": 0.2431,
+          "a": 1.0
+        },
+        "pressed": {
+          "r": 0.2549,
+          "g": 0.2667,
+          "b": 0.2941,
+          "a": 1.0
+        },
+        "targetGraphic": "0",
+        "onClick": [
+          {
+            "entity": "1145738108862061061",
+            "class": "BenchController",
+            "method": "SelectScenario",
+            "enabled": true,
+            "argKind": 2,
+            "argValue": "1"
+          }
+        ],
+        "focused": {
+          "r": 0.1569,
+          "g": 0.2118,
+          "b": 0.3059,
+          "a": 1.0
+        }
+      }
+    },
+    {
+      "uuid": "7187065833860222776",
+      "name": "Scenario 1 Label",
+      "parentUuid": "4669994545296918014",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 0,
+        "posY": 0,
+        "sizeX": 272,
+        "sizeY": 36
+      },
+      "TextRenderer": {
+        "text": "Destroy entities",
+        "fontSize": 16,
+        "alignment": 1,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.9216,
+        "g": 0.9255,
+        "b": 0.9373,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "1863888336150461680",
+      "name": "Scenario marker 1",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 24,
+        "posY": -173,
+        "sizeX": 3,
+        "sizeY": 36
+      },
+      "Image": {
+        "r": 0.3569,
+        "g": 0.5529,
+        "b": 0.9373,
+        "a": 1.0,
+        "sortOrder": 7
+      },
+      "disabled": true
+    },
+    {
+      "uuid": "1547958411187014678",
+      "name": "Scenario 2",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 24,
+        "posY": -216,
+        "sizeX": 272,
+        "sizeY": 36
+      },
+      "Image": {
+        "r": 0.1647,
+        "g": 0.1725,
+        "b": 0.1882,
+        "a": 1.0,
+        "sortOrder": 2
+      },
+      "Interactable": {
+        "interactable": true,
+        "focusable": true
+      },
+      "Button": {
+        "transitionMode": 0,
+        "normal": {
+          "r": 0.1647,
+          "g": 0.1725,
+          "b": 0.1882,
+          "a": 1.0
+        },
+        "hovered": {
+          "r": 0.2118,
+          "g": 0.2196,
+          "b": 0.2431,
+          "a": 1.0
+        },
+        "pressed": {
+          "r": 0.2549,
+          "g": 0.2667,
+          "b": 0.2941,
+          "a": 1.0
+        },
+        "targetGraphic": "0",
+        "onClick": [
+          {
+            "entity": "1145738108862061061",
+            "class": "BenchController",
+            "method": "SelectScenario",
+            "enabled": true,
+            "argKind": 2,
+            "argValue": "2"
+          }
+        ],
+        "focused": {
+          "r": 0.1569,
+          "g": 0.2118,
+          "b": 0.3059,
+          "a": 1.0
+        }
+      }
+    },
+    {
+      "uuid": "837992985844562618",
+      "name": "Scenario 2 Label",
+      "parentUuid": "1547958411187014678",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 0,
+        "posY": 0,
+        "sizeX": 272,
+        "sizeY": 36
+      },
+      "TextRenderer": {
+        "text": "Move entities",
+        "fontSize": 16,
+        "alignment": 1,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.9216,
+        "g": 0.9255,
+        "b": 0.9373,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "812031672743463076",
+      "name": "Scenario marker 2",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 24,
+        "posY": -216,
+        "sizeX": 3,
+        "sizeY": 36
+      },
+      "Image": {
+        "r": 0.3569,
+        "g": 0.5529,
+        "b": 0.9373,
+        "a": 1.0,
+        "sortOrder": 7
+      },
+      "disabled": true
+    },
+    {
+      "uuid": "240540936917411337",
+      "name": "Scenario 3",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 24,
+        "posY": -259,
+        "sizeX": 272,
+        "sizeY": 36
+      },
+      "Image": {
+        "r": 0.1647,
+        "g": 0.1725,
+        "b": 0.1882,
+        "a": 1.0,
+        "sortOrder": 2
+      },
+      "Interactable": {
+        "interactable": true,
+        "focusable": true
+      },
+      "Button": {
+        "transitionMode": 0,
+        "normal": {
+          "r": 0.1647,
+          "g": 0.1725,
+          "b": 0.1882,
+          "a": 1.0
+        },
+        "hovered": {
+          "r": 0.2118,
+          "g": 0.2196,
+          "b": 0.2431,
+          "a": 1.0
+        },
+        "pressed": {
+          "r": 0.2549,
+          "g": 0.2667,
+          "b": 0.2941,
+          "a": 1.0
+        },
+        "targetGraphic": "0",
+        "onClick": [
+          {
+            "entity": "1145738108862061061",
+            "class": "BenchController",
+            "method": "SelectScenario",
+            "enabled": true,
+            "argKind": 2,
+            "argValue": "3"
+          }
+        ],
+        "focused": {
+          "r": 0.1569,
+          "g": 0.2118,
+          "b": 0.3059,
+          "a": 1.0
+        }
+      }
+    },
+    {
+      "uuid": "493804480361288422",
+      "name": "Scenario 3 Label",
+      "parentUuid": "240540936917411337",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 0,
+        "posY": 0,
+        "sizeX": 272,
+        "sizeY": 36
+      },
+      "TextRenderer": {
+        "text": "Render 2D sprites",
+        "fontSize": 16,
+        "alignment": 1,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.9216,
+        "g": 0.9255,
+        "b": 0.9373,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "9193850635077616209",
+      "name": "Scenario marker 3",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 24,
+        "posY": -259,
+        "sizeX": 3,
+        "sizeY": 36
+      },
+      "Image": {
+        "r": 0.3569,
+        "g": 0.5529,
+        "b": 0.9373,
+        "a": 1.0,
+        "sortOrder": 7
+      },
+      "disabled": true
+    },
+    {
+      "uuid": "7596000322217585659",
+      "name": "Scenario 4",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 24,
+        "posY": -302,
+        "sizeX": 272,
+        "sizeY": 36
+      },
+      "Image": {
+        "r": 0.1647,
+        "g": 0.1725,
+        "b": 0.1882,
+        "a": 1.0,
+        "sortOrder": 2
+      },
+      "Interactable": {
+        "interactable": true,
+        "focusable": true
+      },
+      "Button": {
+        "transitionMode": 0,
+        "normal": {
+          "r": 0.1647,
+          "g": 0.1725,
+          "b": 0.1882,
+          "a": 1.0
+        },
+        "hovered": {
+          "r": 0.2118,
+          "g": 0.2196,
+          "b": 0.2431,
+          "a": 1.0
+        },
+        "pressed": {
+          "r": 0.2549,
+          "g": 0.2667,
+          "b": 0.2941,
+          "a": 1.0
+        },
+        "targetGraphic": "0",
+        "onClick": [
+          {
+            "entity": "1145738108862061061",
+            "class": "BenchController",
+            "method": "SelectScenario",
+            "enabled": true,
+            "argKind": 2,
+            "argValue": "4"
+          }
+        ],
+        "focused": {
+          "r": 0.1569,
+          "g": 0.2118,
+          "b": 0.3059,
+          "a": 1.0
+        }
+      }
+    },
+    {
+      "uuid": "6097181957562658137",
+      "name": "Scenario 4 Label",
+      "parentUuid": "7596000322217585659",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 0,
+        "posY": 0,
+        "sizeX": 272,
+        "sizeY": 36
+      },
+      "TextRenderer": {
+        "text": "Render 3D cubes",
+        "fontSize": 16,
+        "alignment": 1,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.9216,
+        "g": 0.9255,
+        "b": 0.9373,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "6474589218702403131",
+      "name": "Scenario marker 4",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 24,
+        "posY": -302,
+        "sizeX": 3,
+        "sizeY": 36
+      },
+      "Image": {
+        "r": 0.3569,
+        "g": 0.5529,
+        "b": 0.9373,
+        "a": 1.0,
+        "sortOrder": 7
+      },
+      "disabled": true
+    },
+    {
+      "uuid": "8672487508259448797",
+      "name": "Count heading",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 24,
+        "posY": -362,
+        "sizeX": 272,
+        "sizeY": 26
+      },
+      "TextRenderer": {
+        "text": "Entity count",
+        "fontSize": 16,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.6039,
+        "g": 0.6157,
+        "b": 0.651,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "3510826292470188455",
+      "name": "Entity count",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 24,
+        "posY": -394,
+        "sizeX": 272,
+        "sizeY": 44
+      },
+      "Image": {
+        "r": 0.1647,
+        "g": 0.1725,
+        "b": 0.1882,
+        "a": 1.0,
+        "sortOrder": 2
+      },
+      "Interactable": {
+        "interactable": true,
+        "focusable": true
+      },
+      "InputField": {
+        "text": "10000",
+        "textEntity": "6432388414542333307",
+        "characterLimit": 7,
+        "contentType": 3,
+        "normal": {
+          "r": 0.1647,
+          "g": 0.1725,
+          "b": 0.1882,
+          "a": 1.0
+        },
+        "hovered": {
+          "r": 0.2118,
+          "g": 0.2196,
+          "b": 0.2431,
+          "a": 1.0
+        },
+        "focused": {
+          "r": 0.1569,
+          "g": 0.2118,
+          "b": 0.3059,
+          "a": 1.0
+        },
+        "textColor": {
+          "r": 0.9216,
+          "g": 0.9255,
+          "b": 0.9373,
+          "a": 1.0
+        },
+        "caretColor": {
+          "r": 0.6157,
+          "g": 0.7373,
+          "b": 0.9686,
+          "a": 1.0
+        }
+      }
+    },
+    {
+      "uuid": "6432388414542333307",
+      "name": "Entity count Text",
+      "parentUuid": "3510826292470188455",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 12,
+        "posY": 0,
+        "sizeX": 248,
+        "sizeY": 44
+      },
+      "TextRenderer": {
+        "text": "10000",
+        "fontSize": 18,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.9216,
+        "g": 0.9255,
+        "b": 0.9373,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "3493880143652057237",
+      "name": "Preset 1k",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 24,
+        "posY": -449,
+        "sizeX": 82,
+        "sizeY": 32
+      },
+      "Image": {
+        "r": 0.1647,
+        "g": 0.1725,
+        "b": 0.1882,
+        "a": 1.0,
+        "sortOrder": 2
+      },
+      "Interactable": {
+        "interactable": true,
+        "focusable": true
+      },
+      "Button": {
+        "transitionMode": 0,
+        "normal": {
+          "r": 0.1647,
+          "g": 0.1725,
+          "b": 0.1882,
+          "a": 1.0
+        },
+        "hovered": {
+          "r": 0.2118,
+          "g": 0.2196,
+          "b": 0.2431,
+          "a": 1.0
+        },
+        "pressed": {
+          "r": 0.2549,
+          "g": 0.2667,
+          "b": 0.2941,
+          "a": 1.0
+        },
+        "targetGraphic": "0",
+        "onClick": [
+          {
+            "entity": "1145738108862061061",
+            "class": "BenchController",
+            "method": "SetCount",
+            "enabled": true,
+            "argKind": 2,
+            "argValue": "1000"
+          }
+        ],
+        "focused": {
+          "r": 0.1569,
+          "g": 0.2118,
+          "b": 0.3059,
+          "a": 1.0
+        }
+      }
+    },
+    {
+      "uuid": "7713380567157103362",
+      "name": "Preset 1k Label",
+      "parentUuid": "3493880143652057237",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 0,
+        "posY": 0,
+        "sizeX": 82,
+        "sizeY": 32
+      },
+      "TextRenderer": {
+        "text": "1k",
+        "fontSize": 16,
+        "alignment": 1,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.9216,
+        "g": 0.9255,
+        "b": 0.9373,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "1020219731323141664",
+      "name": "Preset 10k",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 116,
+        "posY": -449,
+        "sizeX": 82,
+        "sizeY": 32
+      },
+      "Image": {
+        "r": 0.1647,
+        "g": 0.1725,
+        "b": 0.1882,
+        "a": 1.0,
+        "sortOrder": 2
+      },
+      "Interactable": {
+        "interactable": true,
+        "focusable": true
+      },
+      "Button": {
+        "transitionMode": 0,
+        "normal": {
+          "r": 0.1647,
+          "g": 0.1725,
+          "b": 0.1882,
+          "a": 1.0
+        },
+        "hovered": {
+          "r": 0.2118,
+          "g": 0.2196,
+          "b": 0.2431,
+          "a": 1.0
+        },
+        "pressed": {
+          "r": 0.2549,
+          "g": 0.2667,
+          "b": 0.2941,
+          "a": 1.0
+        },
+        "targetGraphic": "0",
+        "onClick": [
+          {
+            "entity": "1145738108862061061",
+            "class": "BenchController",
+            "method": "SetCount",
+            "enabled": true,
+            "argKind": 2,
+            "argValue": "10000"
+          }
+        ],
+        "focused": {
+          "r": 0.1569,
+          "g": 0.2118,
+          "b": 0.3059,
+          "a": 1.0
+        }
+      }
+    },
+    {
+      "uuid": "7449510402690123321",
+      "name": "Preset 10k Label",
+      "parentUuid": "1020219731323141664",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 0,
+        "posY": 0,
+        "sizeX": 82,
+        "sizeY": 32
+      },
+      "TextRenderer": {
+        "text": "10k",
+        "fontSize": 16,
+        "alignment": 1,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.9216,
+        "g": 0.9255,
+        "b": 0.9373,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "2617146670309953084",
+      "name": "Preset 100k",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 208,
+        "posY": -449,
+        "sizeX": 88,
+        "sizeY": 32
+      },
+      "Image": {
+        "r": 0.1647,
+        "g": 0.1725,
+        "b": 0.1882,
+        "a": 1.0,
+        "sortOrder": 2
+      },
+      "Interactable": {
+        "interactable": true,
+        "focusable": true
+      },
+      "Button": {
+        "transitionMode": 0,
+        "normal": {
+          "r": 0.1647,
+          "g": 0.1725,
+          "b": 0.1882,
+          "a": 1.0
+        },
+        "hovered": {
+          "r": 0.2118,
+          "g": 0.2196,
+          "b": 0.2431,
+          "a": 1.0
+        },
+        "pressed": {
+          "r": 0.2549,
+          "g": 0.2667,
+          "b": 0.2941,
+          "a": 1.0
+        },
+        "targetGraphic": "0",
+        "onClick": [
+          {
+            "entity": "1145738108862061061",
+            "class": "BenchController",
+            "method": "SetCount",
+            "enabled": true,
+            "argKind": 2,
+            "argValue": "100000"
+          }
+        ],
+        "focused": {
+          "r": 0.1569,
+          "g": 0.2118,
+          "b": 0.3059,
+          "a": 1.0
+        }
+      }
+    },
+    {
+      "uuid": "7131275057678802748",
+      "name": "Preset 100k Label",
+      "parentUuid": "2617146670309953084",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 0,
+        "posY": 0,
+        "sizeX": 88,
+        "sizeY": 32
+      },
+      "TextRenderer": {
+        "text": "100k",
+        "fontSize": 16,
+        "alignment": 1,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.9216,
+        "g": 0.9255,
+        "b": 0.9373,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "315153376078929055",
+      "name": "Count limit",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 24,
+        "posY": -489,
+        "sizeX": 272,
+        "sizeY": 22
+      },
+      "TextRenderer": {
+        "text": "1 - 100,000 entities per workload",
+        "fontSize": 13,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.6039,
+        "g": 0.6157,
+        "b": 0.651,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "5267762737307064500",
+      "name": "Samples heading",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 24,
+        "posY": -528,
+        "sizeX": 170,
+        "sizeY": 26
+      },
+      "TextRenderer": {
+        "text": "Operation samples",
+        "fontSize": 16,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.6039,
+        "g": 0.6157,
+        "b": 0.651,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "7805077734292366665",
+      "name": "Operation samples",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 208,
+        "posY": -522,
+        "sizeX": 88,
+        "sizeY": 38
+      },
+      "Image": {
+        "r": 0.1647,
+        "g": 0.1725,
+        "b": 0.1882,
+        "a": 1.0,
+        "sortOrder": 2
+      },
+      "Interactable": {
+        "interactable": true,
+        "focusable": true
+      },
+      "InputField": {
+        "text": "10",
+        "textEntity": "4930568452879593986",
+        "characterLimit": 7,
+        "contentType": 3,
+        "normal": {
+          "r": 0.1647,
+          "g": 0.1725,
+          "b": 0.1882,
+          "a": 1.0
+        },
+        "hovered": {
+          "r": 0.2118,
+          "g": 0.2196,
+          "b": 0.2431,
+          "a": 1.0
+        },
+        "focused": {
+          "r": 0.1569,
+          "g": 0.2118,
+          "b": 0.3059,
+          "a": 1.0
+        },
+        "textColor": {
+          "r": 0.9216,
+          "g": 0.9255,
+          "b": 0.9373,
+          "a": 1.0
+        },
+        "caretColor": {
+          "r": 0.6157,
+          "g": 0.7373,
+          "b": 0.9686,
+          "a": 1.0
+        }
+      }
+    },
+    {
+      "uuid": "4930568452879593986",
+      "name": "Operation samples Text",
+      "parentUuid": "7805077734292366665",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 12,
+        "posY": 0,
+        "sizeX": 64,
+        "sizeY": 38
+      },
+      "TextRenderer": {
+        "text": "10",
+        "fontSize": 18,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.9216,
+        "g": 0.9255,
+        "b": 0.9373,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "6634273693702906501",
+      "name": "Duration heading",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 24,
+        "posY": -574,
+        "sizeX": 170,
+        "sizeY": 26
+      },
+      "TextRenderer": {
+        "text": "Render seconds",
+        "fontSize": 16,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.6039,
+        "g": 0.6157,
+        "b": 0.651,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "1623045730362697698",
+      "name": "Render seconds",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 208,
+        "posY": -568,
+        "sizeX": 88,
+        "sizeY": 38
+      },
+      "Image": {
+        "r": 0.1647,
+        "g": 0.1725,
+        "b": 0.1882,
+        "a": 1.0,
+        "sortOrder": 2
+      },
+      "Interactable": {
+        "interactable": true,
+        "focusable": true
+      },
+      "InputField": {
+        "text": "5",
+        "textEntity": "7228223359163223318",
+        "characterLimit": 7,
+        "contentType": 3,
+        "normal": {
+          "r": 0.1647,
+          "g": 0.1725,
+          "b": 0.1882,
+          "a": 1.0
+        },
+        "hovered": {
+          "r": 0.2118,
+          "g": 0.2196,
+          "b": 0.2431,
+          "a": 1.0
+        },
+        "focused": {
+          "r": 0.1569,
+          "g": 0.2118,
+          "b": 0.3059,
+          "a": 1.0
+        },
+        "textColor": {
+          "r": 0.9216,
+          "g": 0.9255,
+          "b": 0.9373,
+          "a": 1.0
+        },
+        "caretColor": {
+          "r": 0.6157,
+          "g": 0.7373,
+          "b": 0.9686,
+          "a": 1.0
+        }
+      }
+    },
+    {
+      "uuid": "7228223359163223318",
+      "name": "Render seconds Text",
+      "parentUuid": "1623045730362697698",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 12,
+        "posY": 0,
+        "sizeX": 64,
+        "sizeY": 38
+      },
+      "TextRenderer": {
+        "text": "5",
+        "fontSize": 18,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.9216,
+        "g": 0.9255,
+        "b": 0.9373,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "7240574911040403851",
+      "name": "Options separator",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 24,
+        "posY": -629,
+        "sizeX": 272,
+        "sizeY": 1
+      },
+      "Image": {
+        "r": 0.2039,
+        "g": 0.2118,
+        "b": 0.2353,
+        "a": 1.0,
+        "sortOrder": 0
+      }
+    },
+    {
+      "uuid": "2959868986326071428",
+      "name": "Jobs",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 24,
+        "posY": -648,
+        "sizeX": 24,
+        "sizeY": 24
+      },
+      "Image": {
+        "r": 0.1647,
+        "g": 0.1725,
+        "b": 0.1882,
+        "a": 1.0,
+        "sortOrder": 2
+      },
+      "Interactable": {
+        "interactable": true,
+        "focusable": true
+      },
+      "Toggle": {
+        "isOn": true,
+        "checkmarkEntity": "3407914301691424583",
+        "normal": {
+          "r": 0.1647,
+          "g": 0.1725,
+          "b": 0.1882,
+          "a": 1.0
+        },
+        "hovered": {
+          "r": 0.2118,
+          "g": 0.2196,
+          "b": 0.2431,
+          "a": 1.0
+        },
+        "focused": {
+          "r": 0.1569,
+          "g": 0.2118,
+          "b": 0.3059,
+          "a": 1.0
+        }
+      }
+    },
+    {
+      "uuid": "3407914301691424583",
+      "name": "Jobs Mark",
+      "parentUuid": "2959868986326071428",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 5,
+        "posY": -5,
+        "sizeX": 14,
+        "sizeY": 14
+      },
+      "Image": {
+        "r": 0.3569,
+        "g": 0.5529,
+        "b": 0.9373,
+        "a": 1.0,
+        "sortOrder": 3
+      },
+      "disabled": false
+    },
+    {
+      "uuid": "456301008343647983",
+      "name": "Jobs Label",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 60,
+        "posY": -647,
+        "sizeX": 236,
+        "sizeY": 26
+      },
+      "TextRenderer": {
+        "text": "Workload Jobs / threads",
+        "fontSize": 16,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.9216,
+        "g": 0.9255,
+        "b": 0.9373,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "7135678820756205696",
+      "name": "Animate",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 24,
+        "posY": -690,
+        "sizeX": 24,
+        "sizeY": 24
+      },
+      "Image": {
+        "r": 0.1647,
+        "g": 0.1725,
+        "b": 0.1882,
+        "a": 1.0,
+        "sortOrder": 2
+      },
+      "Interactable": {
+        "interactable": true,
+        "focusable": true
+      },
+      "Toggle": {
+        "isOn": false,
+        "checkmarkEntity": "5469393385377426558",
+        "normal": {
+          "r": 0.1647,
+          "g": 0.1725,
+          "b": 0.1882,
+          "a": 1.0
+        },
+        "hovered": {
+          "r": 0.2118,
+          "g": 0.2196,
+          "b": 0.2431,
+          "a": 1.0
+        },
+        "focused": {
+          "r": 0.1569,
+          "g": 0.2118,
+          "b": 0.3059,
+          "a": 1.0
+        }
+      }
+    },
+    {
+      "uuid": "5469393385377426558",
+      "name": "Animate Mark",
+      "parentUuid": "7135678820756205696",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 5,
+        "posY": -5,
+        "sizeX": 14,
+        "sizeY": 14
+      },
+      "Image": {
+        "r": 0.3569,
+        "g": 0.5529,
+        "b": 0.9373,
+        "a": 1.0,
+        "sortOrder": 3
+      },
+      "disabled": true
+    },
+    {
+      "uuid": "4749208937637797230",
+      "name": "Animate Label",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 60,
+        "posY": -689,
+        "sizeX": 236,
+        "sizeY": 26
+      },
+      "TextRenderer": {
+        "text": "Animate render workload",
+        "fontSize": 16,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.9216,
+        "g": 0.9255,
+        "b": 0.9373,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "332999994991442359",
+      "name": "VSync",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 24,
+        "posY": -732,
+        "sizeX": 24,
+        "sizeY": 24
+      },
+      "Image": {
+        "r": 0.1647,
+        "g": 0.1725,
+        "b": 0.1882,
+        "a": 1.0,
+        "sortOrder": 2
+      },
+      "Interactable": {
+        "interactable": true,
+        "focusable": true
+      },
+      "Toggle": {
+        "isOn": false,
+        "checkmarkEntity": "1738710726673424010",
+        "normal": {
+          "r": 0.1647,
+          "g": 0.1725,
+          "b": 0.1882,
+          "a": 1.0
+        },
+        "hovered": {
+          "r": 0.2118,
+          "g": 0.2196,
+          "b": 0.2431,
+          "a": 1.0
+        },
+        "focused": {
+          "r": 0.1569,
+          "g": 0.2118,
+          "b": 0.3059,
+          "a": 1.0
+        }
+      }
+    },
+    {
+      "uuid": "1738710726673424010",
+      "name": "VSync Mark",
+      "parentUuid": "332999994991442359",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 5,
+        "posY": -5,
+        "sizeX": 14,
+        "sizeY": 14
+      },
+      "Image": {
+        "r": 0.3569,
+        "g": 0.5529,
+        "b": 0.9373,
+        "a": 1.0,
+        "sortOrder": 3
+      },
+      "disabled": true
+    },
+    {
+      "uuid": "8523346504898148177",
+      "name": "VSync Label",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 60,
+        "posY": -731,
+        "sizeX": 236,
+        "sizeY": 26
+      },
+      "TextRenderer": {
+        "text": "VSync",
+        "fontSize": 16,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.9216,
+        "g": 0.9255,
+        "b": 0.9373,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "7186133627858741824",
+      "name": "Jobs scope",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 24,
+        "posY": -764,
+        "sizeX": 274,
+        "sizeY": 40
+      },
+      "TextRenderer": {
+        "text": "Jobs affect workload compute/recording.\nEngine worker pools remain enabled.",
+        "fontSize": 13,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.6039,
+        "g": 0.6157,
+        "b": 0.651,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "6645520161206948902",
+      "name": "Run benchmark",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 24,
+        "posY": -819,
+        "sizeX": 174,
+        "sizeY": 36
+      },
+      "Image": {
+        "r": 0.3569,
+        "g": 0.5529,
+        "b": 0.9373,
+        "a": 1.0,
+        "sortOrder": 2
+      },
+      "Interactable": {
+        "interactable": true,
+        "focusable": true
+      },
+      "Button": {
+        "transitionMode": 0,
+        "normal": {
+          "r": 0.3569,
+          "g": 0.5529,
+          "b": 0.9373,
+          "a": 1.0
+        },
+        "hovered": {
+          "r": 0.4118,
+          "g": 0.6,
+          "b": 0.9686,
+          "a": 1.0
+        },
+        "pressed": {
+          "r": 0.2549,
+          "g": 0.2667,
+          "b": 0.2941,
+          "a": 1.0
+        },
+        "targetGraphic": "0",
+        "onClick": [
+          {
+            "entity": "1145738108862061061",
+            "class": "BenchController",
+            "method": "Run",
+            "enabled": true,
+            "argKind": 0,
+            "argValue": ""
+          }
+        ],
+        "focused": {
+          "r": 0.1569,
+          "g": 0.2118,
+          "b": 0.3059,
+          "a": 1.0
+        }
+      }
+    },
+    {
+      "uuid": "3165794121557443766",
+      "name": "Run benchmark Label",
+      "parentUuid": "6645520161206948902",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 0,
+        "posY": 0,
+        "sizeX": 174,
+        "sizeY": 36
+      },
+      "TextRenderer": {
+        "text": "Run benchmark",
+        "fontSize": 16,
+        "alignment": 1,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.9216,
+        "g": 0.9255,
+        "b": 0.9373,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "1198545715256521873",
+      "name": "Run once",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 208,
+        "posY": -819,
+        "sizeX": 88,
+        "sizeY": 36
+      },
+      "Image": {
+        "r": 0.1647,
+        "g": 0.1725,
+        "b": 0.1882,
+        "a": 1.0,
+        "sortOrder": 2
+      },
+      "Interactable": {
+        "interactable": true,
+        "focusable": true
+      },
+      "Button": {
+        "transitionMode": 0,
+        "normal": {
+          "r": 0.1647,
+          "g": 0.1725,
+          "b": 0.1882,
+          "a": 1.0
+        },
+        "hovered": {
+          "r": 0.2118,
+          "g": 0.2196,
+          "b": 0.2431,
+          "a": 1.0
+        },
+        "pressed": {
+          "r": 0.2549,
+          "g": 0.2667,
+          "b": 0.2941,
+          "a": 1.0
+        },
+        "targetGraphic": "0",
+        "onClick": [
+          {
+            "entity": "1145738108862061061",
+            "class": "BenchController",
+            "method": "RunOnce",
+            "enabled": true,
+            "argKind": 0,
+            "argValue": ""
+          }
+        ],
+        "focused": {
+          "r": 0.1569,
+          "g": 0.2118,
+          "b": 0.3059,
+          "a": 1.0
+        }
+      }
+    },
+    {
+      "uuid": "3692485739586953367",
+      "name": "Run once Label",
+      "parentUuid": "1198545715256521873",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 0,
+        "posY": 0,
+        "sizeX": 88,
+        "sizeY": 36
+      },
+      "TextRenderer": {
+        "text": "Once",
+        "fontSize": 16,
+        "alignment": 1,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.9216,
+        "g": 0.9255,
+        "b": 0.9373,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "7080322236074441776",
+      "name": "Preview title",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 344,
+        "posY": -78,
+        "sizeX": 560,
+        "sizeY": 28
+      },
+      "TextRenderer": {
+        "text": "Create entities",
+        "fontSize": 18,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.9216,
+        "g": 0.9255,
+        "b": 0.9373,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "3338231125824494676",
+      "name": "Stop benchmark",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 1012,
+        "posY": -76,
+        "sizeX": 88,
+        "sizeY": 31
+      },
+      "Image": {
+        "r": 0.1647,
+        "g": 0.1725,
+        "b": 0.1882,
+        "a": 1.0,
+        "sortOrder": 2
+      },
+      "Interactable": {
+        "interactable": true,
+        "focusable": true
+      },
+      "Button": {
+        "transitionMode": 0,
+        "normal": {
+          "r": 0.1647,
+          "g": 0.1725,
+          "b": 0.1882,
+          "a": 1.0
+        },
+        "hovered": {
+          "r": 0.2118,
+          "g": 0.2196,
+          "b": 0.2431,
+          "a": 1.0
+        },
+        "pressed": {
+          "r": 0.2549,
+          "g": 0.2667,
+          "b": 0.2941,
+          "a": 1.0
+        },
+        "targetGraphic": "0",
+        "onClick": [
+          {
+            "entity": "1145738108862061061",
+            "class": "BenchController",
+            "method": "Stop",
+            "enabled": true,
+            "argKind": 0,
+            "argValue": ""
+          }
+        ],
+        "focused": {
+          "r": 0.1569,
+          "g": 0.2118,
+          "b": 0.3059,
+          "a": 1.0
+        }
+      }
+    },
+    {
+      "uuid": "1138820921351803634",
+      "name": "Stop benchmark Label",
+      "parentUuid": "3338231125824494676",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 0,
+        "posY": 0,
+        "sizeX": 88,
+        "sizeY": 31
+      },
+      "TextRenderer": {
+        "text": "Stop",
+        "fontSize": 16,
+        "alignment": 1,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.9216,
+        "g": 0.9255,
+        "b": 0.9373,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "5016795500000571459",
+      "name": "Preview note",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 344,
+        "posY": -594,
+        "sizeX": 746,
+        "sizeY": 23
+      },
+      "TextRenderer": {
+        "text": "Entity operations have no visual geometry",
+        "fontSize": 14,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.6039,
+        "g": 0.6157,
+        "b": 0.651,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "8651155744258759015",
+      "name": "Preview empty state",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0.5,
+        "anchorMinY": 0.5,
+        "anchorMaxX": 0.5,
+        "anchorMaxY": 0.5,
+        "pivotX": 0.5,
+        "pivotY": 0.5,
+        "posX": 0,
+        "posY": 0,
+        "sizeX": 1440,
+        "sizeY": 900
+      }
+    },
+    {
+      "uuid": "1419430383058423073",
+      "name": "Empty title",
+      "parentUuid": "8651155744258759015",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 380,
+        "posY": -291,
+        "sizeX": 680,
+        "sizeY": 42
+      },
+      "TextRenderer": {
+        "text": "Ready to benchmark",
+        "fontSize": 27,
+        "alignment": 1,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.9216,
+        "g": 0.9255,
+        "b": 0.9373,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "6824683413076138715",
+      "name": "Empty description",
+      "parentUuid": "8651155744258759015",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 380,
+        "posY": -342,
+        "sizeX": 680,
+        "sizeY": 64
+      },
+      "TextRenderer": {
+        "text": "Choose an operation, set the entity count, and run.\nRendering workloads appear here while the app measures frames.",
+        "fontSize": 16,
+        "alignment": 1,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.6039,
+        "g": 0.6157,
+        "b": 0.651,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "6097356655360581808",
+      "name": "Empty detail",
+      "parentUuid": "8651155744258759015",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 380,
+        "posY": -427,
+        "sizeX": 680,
+        "sizeY": 28
+      },
+      "TextRenderer": {
+        "text": "Repeated runs include warmup. Once measures a single operation.",
+        "fontSize": 14,
+        "alignment": 1,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.6039,
+        "g": 0.6157,
+        "b": 0.651,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "7746669944860497870",
+      "name": "Metrics heading",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 1144,
+        "posY": -85,
+        "sizeX": 272,
+        "sizeY": 30
+      },
+      "TextRenderer": {
+        "text": "Measurement",
+        "fontSize": 20,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.9216,
+        "g": 0.9255,
+        "b": 0.9373,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "8056197901374548675",
+      "name": "Live entities label",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 1144,
+        "posY": -132,
+        "sizeX": 272,
+        "sizeY": 24
+      },
+      "TextRenderer": {
+        "text": "Live workload entities",
+        "fontSize": 14,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.6039,
+        "g": 0.6157,
+        "b": 0.651,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "6501944499744364770",
+      "name": "Live entities value",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 1144,
+        "posY": -160,
+        "sizeX": 272,
+        "sizeY": 40
+      },
+      "TextRenderer": {
+        "text": "0",
+        "fontSize": 29,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.9216,
+        "g": 0.9255,
+        "b": 0.9373,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "2640357156751929238",
+      "name": "Frame time label",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 1144,
+        "posY": -215,
+        "sizeX": 272,
+        "sizeY": 24
+      },
+      "TextRenderer": {
+        "text": "Application frame time",
+        "fontSize": 14,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.6039,
+        "g": 0.6157,
+        "b": 0.651,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "3692270261473007884",
+      "name": "Frame time value",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 1144,
+        "posY": -243,
+        "sizeX": 272,
+        "sizeY": 40
+      },
+      "TextRenderer": {
+        "text": "-- ms",
+        "fontSize": 29,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.6157,
+        "g": 0.7373,
+        "b": 0.9686,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "4644513630295351212",
+      "name": "FPS value",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 1144,
+        "posY": -284,
+        "sizeX": 272,
+        "sizeY": 24
+      },
+      "TextRenderer": {
+        "text": "-- FPS",
+        "fontSize": 15,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.6039,
+        "g": 0.6157,
+        "b": 0.651,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "2490554930373603856",
+      "name": "Metrics separator",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 1144,
+        "posY": -325,
+        "sizeX": 272,
+        "sizeY": 1
+      },
+      "Image": {
+        "r": 0.2039,
+        "g": 0.2118,
+        "b": 0.2353,
+        "a": 1.0,
+        "sortOrder": 0
+      }
+    },
+    {
+      "uuid": "1836894346716305913",
+      "name": "Average label",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 1144,
+        "posY": -345,
+        "sizeX": 135,
+        "sizeY": 24
+      },
+      "TextRenderer": {
+        "text": "Last mean",
+        "fontSize": 15,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.6039,
+        "g": 0.6157,
+        "b": 0.651,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "892138247677581681",
+      "name": "Average value",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 1266,
+        "posY": -345,
+        "sizeX": 150,
+        "sizeY": 24
+      },
+      "TextRenderer": {
+        "text": "--",
+        "fontSize": 17,
+        "alignment": 2,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.9216,
+        "g": 0.9255,
+        "b": 0.9373,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "3233312808714364266",
+      "name": "Median label",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 1144,
+        "posY": -383,
+        "sizeX": 135,
+        "sizeY": 24
+      },
+      "TextRenderer": {
+        "text": "Median",
+        "fontSize": 15,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.6039,
+        "g": 0.6157,
+        "b": 0.651,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "7253250077330314459",
+      "name": "Median value",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 1266,
+        "posY": -383,
+        "sizeX": 150,
+        "sizeY": 24
+      },
+      "TextRenderer": {
+        "text": "--",
+        "fontSize": 17,
+        "alignment": 2,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.9216,
+        "g": 0.9255,
+        "b": 0.9373,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "2258607002606335647",
+      "name": "P95 label",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 1144,
+        "posY": -421,
+        "sizeX": 135,
+        "sizeY": 24
+      },
+      "TextRenderer": {
+        "text": "P95",
+        "fontSize": 15,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.6039,
+        "g": 0.6157,
+        "b": 0.651,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "10173391175758428",
+      "name": "P95 value",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 1266,
+        "posY": -421,
+        "sizeX": 150,
+        "sizeY": 24
+      },
+      "TextRenderer": {
+        "text": "--",
+        "fontSize": 17,
+        "alignment": 2,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.9216,
+        "g": 0.9255,
+        "b": 0.9373,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "3506526819674758472",
+      "name": "Setup label",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 1144,
+        "posY": -459,
+        "sizeX": 135,
+        "sizeY": 24
+      },
+      "TextRenderer": {
+        "text": "Setup",
+        "fontSize": 15,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.6039,
+        "g": 0.6157,
+        "b": 0.651,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "7781439653687185251",
+      "name": "Setup value",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 1266,
+        "posY": -459,
+        "sizeX": 150,
+        "sizeY": 24
+      },
+      "TextRenderer": {
+        "text": "--",
+        "fontSize": 17,
+        "alignment": 2,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.9216,
+        "g": 0.9255,
+        "b": 0.9373,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "2386680170044013087",
+      "name": "Timing scope",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 1144,
+        "posY": -510,
+        "sizeX": 272,
+        "sizeY": 60
+      },
+      "TextRenderer": {
+        "text": "Create / destroy / move: operation time\nRender: full app frames, UI included",
+        "fontSize": 13,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.6039,
+        "g": 0.6157,
+        "b": 0.651,
+        "a": 1.0,
+        "wrapMode": 1
+      }
+    },
+    {
+      "uuid": "1950709952857427649",
+      "name": "Progress",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 1144,
+        "posY": -585,
+        "sizeX": 272,
+        "sizeY": 26
+      },
+      "TextRenderer": {
+        "text": "Ready",
+        "fontSize": 14,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.6157,
+        "g": 0.7373,
+        "b": 0.9686,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "4565403349058671886",
+      "name": "Results heading",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 344,
+        "posY": -646,
+        "sizeX": 400,
+        "sizeY": 28
+      },
+      "TextRenderer": {
+        "text": "Recent results",
+        "fontSize": 18,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.9216,
+        "g": 0.9255,
+        "b": 0.9373,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "1813306703757727587",
+      "name": "Results note",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 750,
+        "posY": -648,
+        "sizeX": 666,
+        "sizeY": 26
+      },
+      "TextRenderer": {
+        "text": "Newest first  /  latest 64 results in CSV",
+        "fontSize": 14,
+        "alignment": 2,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.6039,
+        "g": 0.6157,
+        "b": 0.651,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "7453238118068856964",
+      "name": "History Names heading",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 344,
+        "posY": -688,
+        "sizeX": 250,
+        "sizeY": 24
+      },
+      "TextRenderer": {
+        "text": "Benchmark",
+        "fontSize": 14,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.6039,
+        "g": 0.6157,
+        "b": 0.651,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "1154189561410588404",
+      "name": "History Names row 0",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 344,
+        "posY": -724,
+        "sizeX": 250,
+        "sizeY": 27
+      },
+      "TextRenderer": {
+        "text": "--",
+        "fontSize": 15,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.9216,
+        "g": 0.9255,
+        "b": 0.9373,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "1630040832928660828",
+      "name": "History Names row 1",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 344,
+        "posY": -755,
+        "sizeX": 250,
+        "sizeY": 27
+      },
+      "TextRenderer": {
+        "text": "--",
+        "fontSize": 15,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.9216,
+        "g": 0.9255,
+        "b": 0.9373,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "6775521052254217871",
+      "name": "History Names row 2",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 344,
+        "posY": -786,
+        "sizeX": 250,
+        "sizeY": 27
+      },
+      "TextRenderer": {
+        "text": "--",
+        "fontSize": 15,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.9216,
+        "g": 0.9255,
+        "b": 0.9373,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "4369771427642150962",
+      "name": "History Names row 3",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 344,
+        "posY": -817,
+        "sizeX": 250,
+        "sizeY": 27
+      },
+      "TextRenderer": {
+        "text": "--",
+        "fontSize": 15,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.9216,
+        "g": 0.9255,
+        "b": 0.9373,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "6428440623257700543",
+      "name": "History Counts heading",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 600,
+        "posY": -688,
+        "sizeX": 150,
+        "sizeY": 24
+      },
+      "TextRenderer": {
+        "text": "Entities",
+        "fontSize": 14,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.6039,
+        "g": 0.6157,
+        "b": 0.651,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "1754942868957776761",
+      "name": "History Counts row 0",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 600,
+        "posY": -724,
+        "sizeX": 150,
+        "sizeY": 27
+      },
+      "TextRenderer": {
+        "text": "--",
+        "fontSize": 15,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.9216,
+        "g": 0.9255,
+        "b": 0.9373,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "1294645608609701653",
+      "name": "History Counts row 1",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 600,
+        "posY": -755,
+        "sizeX": 150,
+        "sizeY": 27
+      },
+      "TextRenderer": {
+        "text": "--",
+        "fontSize": 15,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.9216,
+        "g": 0.9255,
+        "b": 0.9373,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "2087259538784529158",
+      "name": "History Counts row 2",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 600,
+        "posY": -786,
+        "sizeX": 150,
+        "sizeY": 27
+      },
+      "TextRenderer": {
+        "text": "--",
+        "fontSize": 15,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.9216,
+        "g": 0.9255,
+        "b": 0.9373,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "3024927604748944746",
+      "name": "History Counts row 3",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 600,
+        "posY": -817,
+        "sizeX": 150,
+        "sizeY": 27
+      },
+      "TextRenderer": {
+        "text": "--",
+        "fontSize": 15,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.9216,
+        "g": 0.9255,
+        "b": 0.9373,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "330127171173888590",
+      "name": "History Modes heading",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 756,
+        "posY": -688,
+        "sizeX": 164,
+        "sizeY": 24
+      },
+      "TextRenderer": {
+        "text": "Mode",
+        "fontSize": 14,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.6039,
+        "g": 0.6157,
+        "b": 0.651,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "3887001658725636881",
+      "name": "History Modes row 0",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 756,
+        "posY": -724,
+        "sizeX": 164,
+        "sizeY": 27
+      },
+      "TextRenderer": {
+        "text": "--",
+        "fontSize": 15,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.9216,
+        "g": 0.9255,
+        "b": 0.9373,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "1178619993002293774",
+      "name": "History Modes row 1",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 756,
+        "posY": -755,
+        "sizeX": 164,
+        "sizeY": 27
+      },
+      "TextRenderer": {
+        "text": "--",
+        "fontSize": 15,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.9216,
+        "g": 0.9255,
+        "b": 0.9373,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "3778457226427106797",
+      "name": "History Modes row 2",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 756,
+        "posY": -786,
+        "sizeX": 164,
+        "sizeY": 27
+      },
+      "TextRenderer": {
+        "text": "--",
+        "fontSize": 15,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.9216,
+        "g": 0.9255,
+        "b": 0.9373,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "1327951843168840000",
+      "name": "History Modes row 3",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 756,
+        "posY": -817,
+        "sizeX": 164,
+        "sizeY": 27
+      },
+      "TextRenderer": {
+        "text": "--",
+        "fontSize": 15,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.9216,
+        "g": 0.9255,
+        "b": 0.9373,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "428789964171903112",
+      "name": "History Samples heading",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 926,
+        "posY": -688,
+        "sizeX": 100,
+        "sizeY": 24
+      },
+      "TextRenderer": {
+        "text": "Samples",
+        "fontSize": 14,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.6039,
+        "g": 0.6157,
+        "b": 0.651,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "3251098651071134635",
+      "name": "History Samples row 0",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 926,
+        "posY": -724,
+        "sizeX": 100,
+        "sizeY": 27
+      },
+      "TextRenderer": {
+        "text": "--",
+        "fontSize": 15,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.9216,
+        "g": 0.9255,
+        "b": 0.9373,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "4354385211548777608",
+      "name": "History Samples row 1",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 926,
+        "posY": -755,
+        "sizeX": 100,
+        "sizeY": 27
+      },
+      "TextRenderer": {
+        "text": "--",
+        "fontSize": 15,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.9216,
+        "g": 0.9255,
+        "b": 0.9373,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "1499275260402955404",
+      "name": "History Samples row 2",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 926,
+        "posY": -786,
+        "sizeX": 100,
+        "sizeY": 27
+      },
+      "TextRenderer": {
+        "text": "--",
+        "fontSize": 15,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.9216,
+        "g": 0.9255,
+        "b": 0.9373,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "2589906604084390337",
+      "name": "History Samples row 3",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 926,
+        "posY": -817,
+        "sizeX": 100,
+        "sizeY": 27
+      },
+      "TextRenderer": {
+        "text": "--",
+        "fontSize": 15,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.9216,
+        "g": 0.9255,
+        "b": 0.9373,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "2076603301630964590",
+      "name": "History Means heading",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 1032,
+        "posY": -688,
+        "sizeX": 160,
+        "sizeY": 24
+      },
+      "TextRenderer": {
+        "text": "Mean (ms)",
+        "fontSize": 14,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.6039,
+        "g": 0.6157,
+        "b": 0.651,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "7609300369720992700",
+      "name": "History Means row 0",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 1032,
+        "posY": -724,
+        "sizeX": 160,
+        "sizeY": 27
+      },
+      "TextRenderer": {
+        "text": "--",
+        "fontSize": 15,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.9216,
+        "g": 0.9255,
+        "b": 0.9373,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "4404728364674826502",
+      "name": "History Means row 1",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 1032,
+        "posY": -755,
+        "sizeX": 160,
+        "sizeY": 27
+      },
+      "TextRenderer": {
+        "text": "--",
+        "fontSize": 15,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.9216,
+        "g": 0.9255,
+        "b": 0.9373,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "6719670223544306602",
+      "name": "History Means row 2",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 1032,
+        "posY": -786,
+        "sizeX": 160,
+        "sizeY": 27
+      },
+      "TextRenderer": {
+        "text": "--",
+        "fontSize": 15,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.9216,
+        "g": 0.9255,
+        "b": 0.9373,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "6984497101922943557",
+      "name": "History Means row 3",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 1032,
+        "posY": -817,
+        "sizeX": 160,
+        "sizeY": 27
+      },
+      "TextRenderer": {
+        "text": "--",
+        "fontSize": 15,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.9216,
+        "g": 0.9255,
+        "b": 0.9373,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "3068320297007794087",
+      "name": "History P95s heading",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 1200,
+        "posY": -688,
+        "sizeX": 216,
+        "sizeY": 24
+      },
+      "TextRenderer": {
+        "text": "P95 (ms)",
+        "fontSize": 14,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.6039,
+        "g": 0.6157,
+        "b": 0.651,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "8767416519914935391",
+      "name": "History P95s row 0",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 1200,
+        "posY": -724,
+        "sizeX": 216,
+        "sizeY": 27
+      },
+      "TextRenderer": {
+        "text": "--",
+        "fontSize": 15,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.9216,
+        "g": 0.9255,
+        "b": 0.9373,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "6347776527825536290",
+      "name": "History P95s row 1",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 1200,
+        "posY": -755,
+        "sizeX": 216,
+        "sizeY": 27
+      },
+      "TextRenderer": {
+        "text": "--",
+        "fontSize": 15,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.9216,
+        "g": 0.9255,
+        "b": 0.9373,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "334656071808921903",
+      "name": "History P95s row 2",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 1200,
+        "posY": -786,
+        "sizeX": 216,
+        "sizeY": 27
+      },
+      "TextRenderer": {
+        "text": "--",
+        "fontSize": 15,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.9216,
+        "g": 0.9255,
+        "b": 0.9373,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "4399996336450465164",
+      "name": "History P95s row 3",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 1200,
+        "posY": -817,
+        "sizeX": 216,
+        "sizeY": 27
+      },
+      "TextRenderer": {
+        "text": "--",
+        "fontSize": 15,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.9216,
+        "g": 0.9255,
+        "b": 0.9373,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "7374194645857337845",
+      "name": "Status",
+      "parentUuid": "3432350999753800486",
+      "RectTransform2D": {
+        "anchorMinX": 0,
+        "anchorMinY": 1,
+        "anchorMaxX": 0,
+        "anchorMaxY": 1,
+        "pivotX": 0,
+        "pivotY": 1,
+        "posX": 24,
+        "posY": -871,
+        "sizeX": 1392,
+        "sizeY": 27
+      },
+      "TextRenderer": {
+        "text": "Ready. Select a benchmark to begin.",
+        "fontSize": 13,
+        "alignment": 0,
+        "valign": 1,
+        "sortOrder": 6,
+        "r": 0.6039,
+        "g": 0.6157,
+        "b": 0.651,
+        "a": 1.0
+      }
+    },
+    {
+      "uuid": "2768182958391401392",
+      "name": "Benchmark Camera 2D",
+      "Transform2D": {
+        "posX": 0.0,
+        "posY": 0.0,
+        "rotation": 0.0,
+        "scaleX": 1.0,
+        "scaleY": 1.0
+      },
+      "Camera2D": {
+        "orthoSize": 10,
+        "zoom": 1,
+        "clearR": 0.11,
+        "clearG": 0.114,
+        "clearB": 0.125,
+        "clearA": 1,
+        "postProcessing": false
+      }
+    },
+    {
+      "uuid": "8266055926625358587",
+      "name": "Benchmark Camera 3D",
+      "disabled": true,
+      "Transform3D": {
+        "posX": 0.0,
+        "posY": 0.0,
+        "posZ": 20,
+        "rotX": 0.0,
+        "rotY": 0.0,
+        "rotZ": 0.0,
+        "scaleX": 1.0,
+        "scaleY": 1.0,
+        "scaleZ": 1.0
+      },
+      "Camera3D": {
+        "projection": 1,
+        "orthoSize": 10,
+        "near": 0.1,
+        "far": 100,
+        "background": 1,
+        "clearColor": {
+          "r": 0.1098,
+          "g": 0.1137,
+          "b": 0.1255,
+          "a": 1.0
+        }
+      }
+    },
+    {
+      "uuid": "1582985738260023646",
+      "name": "Benchmark Light",
+      "Transform3D": {
+        "posX": 0.0,
+        "posY": 0.0,
+        "posZ": 0.0,
+        "rotX": -35,
+        "rotY": -35,
+        "rotZ": 0.0,
+        "scaleX": 1.0,
+        "scaleY": 1.0,
+        "scaleZ": 1.0
+      },
+      "DirectionalLight": {
+        "intensity": 1.1,
+        "ambient": {
+          "r": 0.502,
+          "g": 0.5333,
+          "b": 0.5804,
+          "a": 1.0
+        },
+        "castShadows": false
+      }
+    }
+  ]
+}

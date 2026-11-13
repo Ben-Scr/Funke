@@ -1,3 +1,6 @@
+#include "Scripting/ScriptBindings.hpp"
+#include "Project/ProjectManager.hpp"
+#include "Components/General/PhysicsLayerComponent.hpp"
 #include <doctest/doctest.h>
 
 #include "Components/General/Transform2DComponent.hpp"
@@ -793,4 +796,125 @@ TEST_CASE("Memory: fresh suspended colliders initialize while retained sleeping 
 		CHECK_FALSE(entity.GetComponent<BoxCollider2DComponent>().IsEnabled());
 	});
 	CHECK(app.Run() == 0);
+}
+
+
+TEST_CASE("Physics layers: entity membership persists and filters point queries") {
+    PhysicsAuditApplication app([](Scene& scene) {
+        const uint64_t mask = (uint64_t{1} << 2) | (uint64_t{1} << 63);
+        auto entity = scene.CreateEntity("Named layer target");
+        entity.SetLayer(mask);
+        auto& box = entity.AddComponent<BoxCollider2DComponent>();
+        CHECK(box.GetLayer() == mask);
+        CHECK(entity.GetLayer() == mask);
+        box.SetSensor(true, scene);
+        CHECK(box.GetLayer() == mask);
+        entity.SetLayer(uint64_t{1} << 15);
+        CHECK(box.GetLayer() == (uint64_t{1} << 15));
+        struct QueryReset { ~QueryReset() { Physics2D::SetQueryLayerMask(UINT64_MAX); } } reset;
+        Physics2D::SetQueryLayerMask(uint64_t{1} << 2);
+        CHECK(Physics2D::ContainsPointAllRefs({0, 0}).empty());
+        Physics2D::SetQueryLayerMask(uint64_t{1} << 15);
+        CHECK(Physics2D::ContainsPointAllRefs({0, 0}).size() == 1);
+        Physics2D::SetQueryLayerMask(0);
+        CHECK(Physics2D::ContainsPointAllRefs({0, 0}).empty());
+
+        entity.SetLayer(mask);
+        const auto data = SceneSerializer::SerializeEntityForClipboard(scene, entity.GetHandle());
+        auto detached = Scene::CreateDetachedScene("Layer round trip");
+        const auto handle = SceneSerializer::DeserializeEntityFromValue(*detached, data);
+        REQUIRE(detached->IsValid(handle));
+        CHECK(detached->GetEntity(handle).GetLayer() == mask);
+
+        constexpr uint64_t prefab = 901163;
+        auto& cache = PrefabTemplateCache::Get();
+        cache.CaptureFromLive(prefab, *detached, handle, 0);
+        REQUIRE(cache.Find(prefab));
+        REQUIRE(cache.Find(prefab)->bakeable);
+        const auto copy = cache.Hydrate(prefab, scene);
+        REQUIRE(scene.IsValid(copy));
+        CHECK(scene.GetEntity(copy).GetLayer() == mask);
+        PhysicsSystem2D physics;
+        physics.FixedUpdate(1.0f / 60.0f);
+        CHECK(scene.GetComponent<BoxCollider2DComponent>(copy).GetLayer() == mask);
+        cache.InvalidateAll();
+    });
+    CHECK(app.Run() == 0);
+}
+
+TEST_CASE("Physics layers: live matrix filters 2D triggers independently of queries") {
+    PhysicsAuditApplication app([](Scene& scene) {
+        const bool temporaryProject = !ProjectManager::HasProject();
+        if (temporaryProject) ProjectManager::SetCurrentProject(std::make_unique<FunkeProject>());
+        auto& settings = ProjectManager::GetCurrentProject()->PhysicsLayers;
+        struct Restore {
+            PhysicsLayerSettings Saved;
+            bool Temporary;
+            ~Restore() { if (Temporary) ProjectManager::SetCurrentProject(nullptr); else ProjectManager::GetCurrentProject()->PhysicsLayers = Saved; }
+        } restore{settings, temporaryProject};
+        settings.SetCollision(1, 2, false);
+        auto sensor = scene.CreateEntity("Sensor");
+        sensor.SetLayer(2);
+        sensor.AddComponent<Rigidbody2DComponent>().SetBodyType(BodyType::Dynamic);
+        sensor.GetComponent<Rigidbody2DComponent>().SetGravityScale(0);
+        auto& collider = sensor.AddComponent<BoxCollider2DComponent>();
+        collider.SetSensor(true, scene);
+        collider.SetRegisterContacts(true);
+        auto other = scene.CreateEntity("Visitor");
+        other.SetLayer(4);
+        other.AddComponent<BoxCollider2DComponent>();
+        int enters = 0, exits = 0;
+        collider.OnCollisionEnter([&](const Collision2D&) { ++enters; });
+        collider.OnCollisionExit([&](const Collision2D&) { ++exits; });
+        PhysicsSystem2D physics;
+        const auto step = [&] { for (int i = 0; i < 3; ++i) physics.FixedUpdate(1.0f / 60.0f); };
+        step();
+        CHECK(enters == 0);
+        CHECK(Physics2D::ContainsPointAllRefs({0, 0}).size() == 2);
+        settings.SetCollision(1, 2, true);
+        step();
+        CHECK(enters == 1);
+        settings.SetCollision(1, 2, false);
+        step();
+        CHECK(exits == 1);
+        sensor.SetLayer(8);
+        step();
+        CHECK(enters == 2);
+    });
+    CHECK(app.Run() == 0);
+}
+
+TEST_CASE("Physics defaults: project gravity initializes and resets the 2D world") {
+    PhysicsAuditApplication app([](Scene&) {
+        const bool temporaryProject = !ProjectManager::HasProject();
+        if (temporaryProject) ProjectManager::SetCurrentProject(std::make_unique<FunkeProject>());
+        auto& project = *ProjectManager::GetCurrentProject();
+        struct Restore {
+            Vec2 Saved;
+            bool Temporary;
+            ~Restore() {
+                if (Temporary) ProjectManager::SetCurrentProject(nullptr);
+                else { ProjectManager::GetCurrentProject()->PhysicsGravity2D = Saved; ProjectManager::ApplyPhysicsDefaults(); }
+            }
+        } restore{project.PhysicsGravity2D, temporaryProject};
+        project.PhysicsGravity2D = {3, -12};
+        PhysicsSystem2D physics;
+        physics.Shutdown();
+        physics.Initialize();
+        NativeBindings bindings{};
+        ScriptBindings::PopulateNativeBindings(bindings);
+        const auto gravity = [&] {
+            Vec2 result;
+            bindings.Physics2D_GetGravity(&result.x, &result.y);
+            return result;
+        };
+        CHECK((gravity() == project.PhysicsGravity2D));
+        ProjectManager::ApplyPhysicsDefaults();
+        CHECK((gravity() == project.PhysicsGravity2D));
+        bindings.Physics2D_SetGravity(0, 0);
+        CHECK((gravity() == Vec2(0)));
+        ProjectManager::ApplyPhysicsDefaults();
+        CHECK((gravity() == project.PhysicsGravity2D));
+    });
+    CHECK(app.Run() == 0);
 }

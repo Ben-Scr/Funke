@@ -48,6 +48,13 @@ public static class Application
     internal static void RaiseApplicationQuit() => Quitting?.Invoke();
     internal static void RaisePlayModeExited() => PlayModeExited?.Invoke();
 
+    /// <summary>
+    /// Current frames per second, calculated from the last unscaled frame duration.
+    /// Independent of Time.TimeScale; returns 0 before a positive frame duration is available.
+    /// In the editor this measures the editor's frame loop, not a separate Game View loop.
+    /// </summary>
+    public static float Fps => InternalCalls.Application_GetFps();
+
     public static float TargetFrameRate
     {
         get => InternalCalls.Application_GetTargetFrameRate();

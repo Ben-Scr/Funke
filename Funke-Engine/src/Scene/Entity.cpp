@@ -1,4 +1,10 @@
 #include "pch.hpp"
+#include "Physics/PhysicsLayers.hpp"
+#if FUNKE_WITH_PHYSICS2D
+#include "Components/Physics/BoxCollider2DComponent.hpp"
+#include "Components/Physics/CircleCollider2DComponent.hpp"
+#include "Components/Physics/PolygonCollider2DComponent.hpp"
+#endif
 #include "Scene/Entity.hpp"
 #include "Scene/SceneExecutionContext.hpp"
 #include "Scene/Scene.hpp"
@@ -14,6 +20,39 @@
 
 
 namespace Funke {
+	uint64_t Entity::GetLayer() const {
+		if (!IsValid()) return 0;
+		if (const auto* layer = m_Registry->try_get<PhysicsLayerComponent>(m_EntityHandle)) return layer->Mask;
+#if FUNKE_WITH_PHYSICS2D
+		uint64_t mask = 0;
+		bool hasCollider = false;
+		const auto collect = [&]<typename T>() {
+			if (const auto* collider = m_Registry->try_get<T>(m_EntityHandle)) {
+				mask |= collider->GetLayer();
+				hasCollider = true;
+			}
+		};
+		collect.template operator()<BoxCollider2DComponent>();
+		collect.template operator()<CircleCollider2DComponent>();
+		collect.template operator()<PolygonCollider2DComponent>();
+		if (hasCollider) return mask;
+#endif
+		return 1;
+	}
+
+	void Entity::SetLayer(uint64_t mask) {
+		EnsureValid("Cannot set the physics layer of an invalid entity");
+		m_Registry->get_or_emplace<PhysicsLayerComponent>(m_EntityHandle).Mask = mask;
+#if FUNKE_WITH_PHYSICS2D
+		const auto apply = [&]<typename T>() {
+			if (auto* collider = m_Registry->try_get<T>(m_EntityHandle)) collider->SetLayer(mask);
+		};
+		apply.template operator()<BoxCollider2DComponent>();
+		apply.template operator()<CircleCollider2DComponent>();
+		apply.template operator()<PolygonCollider2DComponent>();
+#endif
+	}
+
 	const Entity Entity::Null{ entt::null, static_cast<Scene*>(nullptr) };
 
 	EntityHandle Entity::GetHandle() const {

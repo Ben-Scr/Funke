@@ -236,6 +236,8 @@ namespace Funke {
 		EcbComponentBatch Transforms, Sprites;
 		ComponentPlan TransformPlan, SpritePlan;
 		std::vector<EntityHandle> Destroyed;
+		std::vector<EntityHandle> Created;
+		std::vector<uint64_t> Identities;
 		std::vector<uint32_t> Seen;
 		uint32_t Stamp = 0;
 		bool InUse = false;
@@ -409,7 +411,7 @@ namespace Funke {
 			return fallback("batch_component_conflict");
 #endif
 		EcbExecutor execute(mode == 2 || std::max(header.entityCount, header.commandCount) >= 8192);
-		std::vector<EntityHandle> handles;
+		auto& handles = scratch.Created;
 		struct CreatedRollback {
 			Scene& Owner;
 			std::vector<EntityHandle>& Handles;
@@ -417,7 +419,8 @@ namespace Funke {
 			~CreatedRollback() { if (Active) Owner.RollbackParallelEcbCreatedEntities(Handles); }
 		} rollback{ scene, handles };
 		if (create) {
-			std::vector<uint64_t> identities(header.entityCount);
+			auto& identities = scratch.Identities;
+			identities.resize(header.entityCount);
 			std::exception_ptr generationError;
 			std::mutex errorMutex;
 			execute(identities.size(), [&](size_t index) noexcept {

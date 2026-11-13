@@ -5,6 +5,33 @@ using System.Text;
 namespace Funke.Interop;
 internal static unsafe class InternalCalls
 {
+    internal static string PhysicsLayer_GetName(uint index)
+        => ReadNativeString(NativeCallbacks.Bindings.PhysicsLayer_GetName, (ulong)index);
+    internal static int PhysicsLayer_GetIndex(string name)
+    {
+        byte[] buffer = EncodeUtf8Z(name);
+        fixed (byte* ptr = buffer) return NativeCallbacks.Bindings.PhysicsLayer_GetIndex(ptr);
+    }
+    internal static ulong Entity_GetLayer(ulong id) => NativeCallbacks.Bindings.Entity_GetLayer(id);
+    internal static void Entity_SetLayer(ulong id, ulong mask) => NativeCallbacks.Bindings.Entity_SetLayer(id, mask);
+
+    internal static bool DebugStats_IsAvailable()
+    {
+        var callback = NativeCallbacks.Bindings.DebugStats_GetSnapshot;
+        return callback != null && callback(null, 0) != 0;
+    }
+
+    internal static bool DebugStats_TryGetSnapshot(out DebugSnapshot snapshot)
+    {
+        snapshot = default;
+        var callback = NativeCallbacks.Bindings.DebugStats_GetSnapshot;
+        if (callback == null) return false;
+        DebugSnapshot value = default;
+        if (callback(&value, sizeof(DebugSnapshot)) == 0) return false;
+        snapshot = value;
+        return true;
+    }
+
     // ── Application ─────────────────────────────────────────────────
 
     internal static float Application_GetDeltaTime() => NativeCallbacks.Bindings.Application_GetDeltaTime();
@@ -19,6 +46,7 @@ internal static unsafe class InternalCalls
         return new SafeAreaInsets(left, top, right, bottom);
     }
     internal static float Application_GetTargetFrameRate() => NativeCallbacks.Bindings.Application_GetTargetFrameRate();
+    internal static float Application_GetFps() => NativeCallbacks.Bindings.Application_GetFps();
     internal static void Application_SetTargetFrameRate(float fps) => NativeCallbacks.Bindings.Application_SetTargetFrameRate(fps);
     internal static void Application_Quit() => NativeCallbacks.Bindings.Application_Quit();
     internal static void Application_Reload() => NativeCallbacks.Bindings.Application_Reload();
@@ -264,6 +292,16 @@ internal static unsafe class InternalCalls
     }
 
     internal static void Window_Minimize() => NativeCallbacks.Bindings.Window_Minimize();
+    internal static Color Window_GetTitlebarColor()
+    {
+        float r, g, b, a;
+        NativeCallbacks.Bindings.Window_GetTitlebarColor(&r, &g, &b, &a);
+        return new Color(r, g, b, a);
+    }
+
+    internal static void Window_SetTitlebarColor(Color value)
+        => NativeCallbacks.Bindings.Window_SetTitlebarColor(value.R, value.G, value.B, value.A);
+
     internal static void Window_Maximize() => NativeCallbacks.Bindings.Window_Maximize();
     internal static void Window_Restore() => NativeCallbacks.Bindings.Window_Restore();
     internal static bool Window_IsMaximized() => NativeCallbacks.Bindings.Window_IsMaximized() != 0;
@@ -1417,6 +1455,12 @@ internal static unsafe class InternalCalls
     // ── Gizmos ──────────────────────────────────────────────────────
 
     internal static void Gizmo_DrawLine(float x1, float y1, float x2, float y2) => NativeCallbacks.Bindings.Gizmo_DrawLine(x1, y1, x2, y2);
+    internal static void Gizmo_DrawLine3D(float x1, float y1, float z1, float x2, float y2, float z2)
+        => NativeCallbacks.Bindings.Gizmo_DrawLine3D(x1, y1, z1, x2, y2, z2);
+    internal static void Gizmo_DrawBox(float x, float y, float z, float sx, float sy, float sz, float rx, float ry, float rz)
+        => NativeCallbacks.Bindings.Gizmo_DrawBox(x, y, z, sx, sy, sz, rx, ry, rz);
+    internal static void Gizmo_DrawSphere(float x, float y, float z, float radius, int segments)
+        => NativeCallbacks.Bindings.Gizmo_DrawSphere(x, y, z, radius, segments);
     internal static void Gizmo_DrawWireSquare(float cx, float cy, float sx, float sy, float deg) => NativeCallbacks.Bindings.Gizmo_DrawWireSquare(cx, cy, sx, sy, deg);
     internal static void Gizmo_DrawWireCircle(float cx, float cy, float r, int seg) => NativeCallbacks.Bindings.Gizmo_DrawWireCircle(cx, cy, r, seg);
     internal static void Gizmo_DrawSquare(float cx, float cy, float sx, float sy, float deg) => NativeCallbacks.Bindings.Gizmo_DrawSquare(cx, cy, sx, sy, deg);

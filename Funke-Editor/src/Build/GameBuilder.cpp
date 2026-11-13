@@ -1069,9 +1069,6 @@ namespace Funke::GameBuilder {
 			outError = "Target platform is unavailable: " + BuildPlatformSupport::UnavailableReason(activeProfile.Platform);
 			return false;
 		}
-		// Other platforms get their backend in the staged project.json only.
-		if (BuildPlatformSupport::IsHostDesktop(activeProfile.Platform)) project.ActiveRenderBackend = activeProfile.RenderBackend;
-
 		const std::vector<std::string> buildScenes = project.GetEnabledBuildScenes();
 		if (buildScenes.empty()) {
 			outError = "No scenes are selected for the build.";
@@ -1103,6 +1100,7 @@ namespace Funke::GameBuilder {
 		project.StartupScene = buildScenes.front();
 
 		outRequest.Project = project;
+		// The profile's backend belongs to the exported game, not the live editor project.
 		outRequest.Project.ActiveRenderBackend = activeProfile.RenderBackend;
 		activeProfile.ApplyTo(outRequest.Project);
 		if (outRequest.ConfigurationOverride) outRequest.Project.ActiveBuildProfile = *outRequest.ConfigurationOverride;

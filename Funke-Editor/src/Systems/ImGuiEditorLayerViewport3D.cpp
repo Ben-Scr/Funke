@@ -313,7 +313,8 @@ namespace Funke {
 	void ImGuiEditorLayer::QueueEditorView3DOverlays(Scene& scene, Renderer3D& renderer) {
 		const glm::vec3 focus = m_EditorCamera3D.GetFocus();
 		const int extent = static_cast<int>(std::ceil(std::max(100.0f, m_EditorCamera3D.GetDistance() * 8.0f)));
-		renderer.DrawGrid({ focus.x, 0.0f, focus.z }, extent, 1.0f, k_GridColor);
+		if (EditorPreferences::GetViewSettings(true).ShowGrid)
+			renderer.DrawGrid({ focus.x, 0.0f, focus.z }, extent, 1.0f, k_GridColor);
 
 		const auto& registry = scene.GetRegistry();
 		if (m_ShowGizmos) {
@@ -438,14 +439,9 @@ namespace Funke {
 		static const Color k_EditorClearColor(0.18f, 0.18f, 0.20f, 1.0f);
 		const Color prefabClearColor(k_PrefabEditClearR, k_PrefabEditClearG, k_PrefabEditClearB, 1.0f);
 		const AABB everything{ Vec2{ -1.0e9f, -1.0e9f }, Vec2{ 1.0e9f, 1.0e9f } };
-		auto* ppRenderer = app->GetRenderer2D();
-		if (ppRenderer) ppRenderer->SetPostProcessingEnabled(m_ShowPostProcessing);
-		renderer3D->SetPostProcessingEnabled(m_ShowPostProcessing);
 		RenderSceneIntoFBO(m_EditorViewFBO, scene, view.Projection * view.View, everything,
 			false, false, IsInPrefabEditMode() ? prefabClearColor : k_EditorClearColor, IsInPrefabEditMode(), true,
-			m_EditorViewDrawMode, GizmoLayerMask::EditorOnly, &view);
-		if (ppRenderer) ppRenderer->SetPostProcessingEnabled(true);
-		renderer3D->SetPostProcessingEnabled(true);
+			m_EditorViewDrawMode, GizmoLayerMask::EditorOnly, &view, &EditorPreferences::GetViewSettings(true));
 
 		ImGui::Image(static_cast<ImTextureID>(static_cast<intptr_t>(m_EditorViewFBO.GetColorTextureBackendId())),
 			ImVec2(viewportSize.x, viewportSize.y));

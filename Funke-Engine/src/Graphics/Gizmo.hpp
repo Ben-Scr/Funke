@@ -48,7 +48,7 @@ namespace Funke {
 
 	struct FUNKE_API Box { Vec3 Center, HalfExtents; float Radiant; Funke::Color Color; };
 	struct FUNKE_API Sphere { Vec3 Center; float Radius; int Segments; Funke::Color Color; };
-	struct FUNKE_API Line3D { Vec3 Start; Vec3 End; Funke::Color Color; };
+	struct FUNKE_API Line3D { Vec3 Start; Vec3 End; Funke::Color Color; GizmoLayer Layer = GizmoLayer::Shared; };
 
 	class FUNKE_API Gizmo {
 	public:
@@ -69,12 +69,11 @@ namespace Funke {
 		// World-space text. size is in pixels (matches TextRendererComponent::FontSize).
 		static void DrawText(const std::string& text, const Vec2& position, float rotationDegrees = 0.0f, float size = 28.0f);
 
-		// 3D
-		/*
-		static void DrawBox(const Vec3& center, const Vec3& scale, const Vec3& rotation);
-		static void DrawSphere(const Vec3& center, const float radius);
-		static void DrawLine3D(const Vec3& start, const Vec3& end);
-		*/
+		// 3D wireframes in world space. Box size is the full extent; Euler rotation
+		// is in degrees (same convention as Transform3D). Sphere uses three great circles.
+		static void DrawBox(const Vec3& center, const Vec3& size, const Vec3& rotation = Vec3(0.0f));
+		static void DrawSphere(const Vec3& center, float radius, int segments = 32);
+		static void DrawLine(const Vec3& start, const Vec3& end);
 
 		static void SetLineWidth(float width) { s_LineWidth = Max(0.001f, width); }
 		static float GetLineWidth() { return s_LineWidth; }
@@ -129,6 +128,7 @@ namespace Funke {
 		static std::vector<Square> s_Squares;
 		static std::vector<Circle> s_Circles;
 		static std::vector<Line> s_Lines;
+		static std::vector<Line3D> s_Lines3D;
 		static std::vector<ThickLine> s_ThickLines;
 		static std::vector<Square> s_FilledSquares;
 		static std::vector<Circle> s_FilledCircles;

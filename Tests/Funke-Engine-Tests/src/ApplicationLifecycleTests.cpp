@@ -1,6 +1,9 @@
 #include <doctest/doctest.h>
 
 #include "Core/Application.hpp"
+#include "Core/Window.hpp"
+#include "Events/WindowResizeEvent.hpp"
+#include <SDL3/SDL.h>
 #include "Scripting/ScriptProcessTask.hpp"
 #include <future>
 #include <memory>
@@ -15,6 +18,53 @@
 using namespace Funke;
 
 namespace {
+	class LiveResizeTestApplication final : public Application {
+	public:
+		ApplicationConfig GetConfiguration() const override {
+			auto config = ApplicationConfig::Minimal();
+			config.EnableTextureManager = false;
+			config.SetWindowIcon = false;
+			config.WindowSpecification.Width = 320;
+			config.WindowSpecification.Height = 240;
+			config.WindowSpecification.Fullscreen = false;
+			return config;
+		}
+
+		void Start() override {
+			auto* window = GetWindow();
+			auto* native = window->GetNativeWindow();
+			Window::PollEvents();
+			int notifications = 0;
+			window->SetEventCallback([&](FunkeEvent& event) {
+				if (event.GetEventType() != EventType::WindowResize) return;
+				++notifications;
+				auto& resize = static_cast<WindowResizeEvent&>(event);
+				int width = 0, height = 0;
+				SDL_GetWindowSizeInPixels(native, &width, &height);
+				CHECK(resize.GetWidth() == width);
+				CHECK(resize.GetHeight() == height);
+				// A subscriber must not re-enter the refresh render.
+				RenderOnceForRefresh(true);
+			});
+			SDL_Event expose{};
+			expose.type = SDL_EVENT_WINDOW_EXPOSED;
+			expose.window.windowID = SDL_GetWindowID(native);
+			expose.window.data1 = 1;
+			for (int step = 1; step <= 3; ++step) {
+				CHECK(SDL_SetWindowSize(native, 320 + step * 20, 240 + step * 10));
+				// Do not poll: reproduce the modal loop's synchronous expose watcher.
+				CHECK(SDL_PushEvent(&expose));
+				CHECK(notifications == step);
+				CHECK(SDL_PushEvent(&expose));
+				CHECK(notifications == step);
+			}
+			Window::PollEvents();
+			CHECK(notifications == 3);
+			window->SetEventCallback({});
+			Application::Quit();
+		}
+	};
+
 	enum class LifecycleRequest {
 		Reload,
 		Restart,
@@ -141,6 +191,12 @@ namespace {
 				&& !FrameArenas::IsInitialized();
 		}
 	};
+}
+
+// Requires a desktop display and graphics backend; run explicitly with --no-skip.
+TEST_CASE("Application live resize notifies before polling without duplicates" * doctest::skip()) {
+	LiveResizeTestApplication application;
+	CHECK(application.Run() == 0);
 }
 
 TEST_CASE("Application minimal lifecycle skips scenes workers and frame arenas") {

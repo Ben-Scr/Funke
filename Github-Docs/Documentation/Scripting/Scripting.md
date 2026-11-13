@@ -1,5 +1,7 @@
 # Scripting
 
+For Development-only frame timings, geometry, memory, scene counters and loaded assets, see [Debug statistics](../Engine-Core/Debug-Statistics.md).
+
 Funke supports game scripting in **C# and native C++**, and a project can use both. Write scripts to move the player, spawn enemies, handle UI and manage game state in the language that fits your project. The native engine's C++20 implementation does not restrict game development to C++.
 
 The first sections cover C# with `EntityScript`, `SceneSystem` and `GlobalSystem` (.NET 10 on desktop). For C++ gameplay in the editor, jump to [Native C++ scripts](#native-c-scripts), which covers `NativeScript`, Inspector fields and native compilation/reload. C++ is a supported gameplay workflow, not limited to performance optimizations. For a C++ application using the SDK directly, see the [native application guide](../../../Funke-Engine/README.md). Platform runtime differences are documented in [Known Limitations](../Known-Limitations.md).
@@ -249,15 +251,22 @@ Time.TimeScale = 0.5f; // slow motion (or 0 to pause game time); clamped to [0, 
 
 **Window & frame rate**:
 
+`Window.Resized` fires as the native window changes size, including while dragging its border on Windows. Handlers run on the main thread with `Window.Size` already refreshed. Repeated refreshes at the same size do not fire another event; minimized zero-size notifications are skipped. Live resize uses refresh renders rather than advancing the normal simulation loop.
+
 ```csharp
 Window.IsFullScreen = true;            // also Window.Position, Window.Title, Minimize/Maximize/Restore()
+Window.TitlebarColor = new Color(0.12f, 0.18f, 0.28f, 1f);
+Color titlebar = Window.TitlebarColor; // configured native title-bar base color
 Application.VsyncEnabled = false;      // present without waiting for the monitor refresh
 Application.TargetFrameRate = 240;     // frame cap while VSync is off (0 = uncapped)
+float fps = Application.Fps;           // read-only current FPS, independent of Time.TimeScale
 ```
 
 Window changes only apply in the built game: in the editor the game view lives inside the editor's own window, so these calls are ignored there (the Console says so once per call type). With VSync off on Direct3D 12 the game may tear; that is what lets it run above the monitor's refresh rate.
 
-**Physics 2D** — raycasts and overlap checks:
+`Window.TitlebarColor` currently affects the native Windows title bar. Alpha `0` restores the OS default; focus-specific native title-bar colors can override the base color. With no window, the getter returns transparent black and the setter does nothing. `Application.Fps` is the reciprocal of the last unscaled frame duration, returns `0` until a positive duration exists, and measures the editor loop when running inside the editor.
+
+**Physics 2D** - raycasts and overlap checks:
 
 ```csharp
 RaycastHit2D hit = Physics2D.Raycast(origin, direction, maxDistance);
@@ -555,6 +564,8 @@ public class SpinSystem : SceneSystem
 ---
 
 ## Native C++ scripts
+
+On Windows, opening a C++ source or header in Visual Studio uses `NativeScripts/build/<target>-NativeScripts.sln`, separately from the C# solution. If the first native rebuild is still generating that solution, the editor waits in the background for up to 30 seconds before opening it. It never substitutes the C# solution for a missing native solution. If generation fails or takes longer, check the native compilation errors, rebuild scripts, and open the file again. Closing the editor cancels pending waits.
 
 Create a native script with **Asset Browser → Create → Scripting → C++ Script**. The `.cpp` file lives in the selected `Assets/` folder. Double-click it to edit that same file in your configured external editor. Save it, wait for the native compilation indicator to finish, then attach its class with **Add Component** or drag the file onto an entity's Inspector. Press Play to run it. Compiler errors appear in the Console.
 

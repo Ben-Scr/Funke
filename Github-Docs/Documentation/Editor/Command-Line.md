@@ -49,7 +49,7 @@ For structured authoring use `editor scenes`, `entities`, `inspect`, `schema`, `
 
 `create` does everything the Launcher does:
 
-1. Writes an empty 2D project (a scene with a camera and an empty `GameScript.cs`).
+1. Writes an empty 2D project (a scene with no entities and no starter scripts). Add a camera and enable physics in Package Manager when needed.
 2. Compiles its scripts once.
 3. Runs `git init`.
 4. Adds the project to the Launcher's project list.

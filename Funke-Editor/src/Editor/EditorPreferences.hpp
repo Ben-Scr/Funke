@@ -1,6 +1,8 @@
 #pragma once
 #include "Core/Export.hpp"
+#include "Collections/Color.hpp"
 #include "Editor/EditorCamera3DSettings.hpp"
+#include "Editor/EditorViewSettings.hpp"
 #include "Graphics/Text/FontHandle.hpp"
 
 #include <cstdint>
@@ -33,6 +35,7 @@ namespace Funke {
 		PostProcessing,
 		GridSnap,
 		OptionsPill,    // the whole right pill; its View Settings button stays
+		Rendering,
 		Count,
 	};
 
@@ -46,6 +49,18 @@ namespace Funke {
 		Count,
 	};
 
+	// Built-in editor overlays only; script/package gizmos keep their own colors.
+	enum class EditorGizmoColor : uint8_t {
+		PhysicsCollider,
+		ParticleSystem,
+		CameraFrame,
+		SpriteOutline,
+		SpriteOutlineHalo,
+		RectTransform,
+		TextMargin,
+		Count,
+	};
+
 	class EditorPreferences {
 	public:
 		// Call once during editor OnAttach BEFORE ApplyTheme(). Idempotent.
@@ -55,6 +70,15 @@ namespace Funke {
 		// Persist current state to disk. Cheap synchronous write; called
 		// after every mutation by the Set*-helpers below.
 		static void Save();
+		static const EditorViewSettings& GetViewSettings(bool threeD);
+		static void SetViewSettings(bool threeD, const EditorViewSettings& settings);
+		// Restore only the preferences shown in the corresponding tab.
+		static void ResetAppearance();
+		static void ResetScripting();
+		static void ResetBehavior();
+		static Color GetGizmoColor(EditorGizmoColor gizmo);
+		static void SetGizmoColor(EditorGizmoColor gizmo, const Color& color);
+		static void ResetGizmoColors();
 
 		// Push the active theme into the ImGui style. Re-resolves
 		// SystemDefault each call so a Windows theme change is honored.

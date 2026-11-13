@@ -70,7 +70,8 @@ def artifact_identity(args: argparse.Namespace) -> dict:
     root = source.parent if args.platform == "web" else source
     if args.output.resolve().is_relative_to(root):
         raise ValueError("Evidence output must be outside the exported artifact.")
-    paths = sorted(root.rglob("*")) if root.is_dir() else [root]
+    # Sort portable path strings: Windows Path ordering otherwise ignores case.
+    paths = sorted(root.rglob("*"), key=lambda p: p.relative_to(root).as_posix()) if root.is_dir() else [root]
     files = []
     for path in paths:
         if path.is_symlink():
@@ -104,6 +105,27 @@ def evidence_result(args: argparse.Namespace) -> dict:
                 "real_build": {"status": "unverified", "reason": "This harness does not run or attest the compiler."},
                 "real_runtime": {"status": "unverified", "reason": "Runtime checks have not completed."},
                 "physical_device": {"status": "unverified", "reason": "Physical hardware is not attested by this harness."}}}
+
+
+def build_provenance(args: argparse.Namespace, artifact: dict) -> dict | None:
+    """Bind a trusted build-job receipt to this exact export; never infer a build from pixels."""
+    if args.build_evidence is None:
+        return None
+    raw = args.build_evidence.read_bytes()
+    receipt = json.loads(raw)
+    if (not isinstance(receipt, dict) or receipt.get("formatVersion") != 1
+            or receipt.get("platform") != args.platform
+            or receipt.get("sourceCommit") != args.expected_commit
+            or receipt.get("artifactSha256") != artifact["sha256"]
+            or receipt.get("evidenceLevel") != "real_build" or receipt.get("passed") is not True):
+        raise ValueError("Build evidence does not attest this commit, platform and exported artifact.")
+    toolchain = receipt.get("buildToolchain")
+    if (not isinstance(toolchain, dict) or not toolchain
+            or any(not isinstance(k, str) or not k.strip() or not isinstance(v, str) or not v.strip()
+                   for k, v in toolchain.items())):
+        raise ValueError("Build evidence requires compiler/toolchain names and versions.")
+    return {"sourceCommit": args.expected_commit, "buildToolchain": toolchain,
+            "receiptSha256": hashlib.sha256(raw).hexdigest()}
 
 
 def check_log(log: str, markers: list[str]) -> bool:
@@ -276,6 +298,8 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--tolerance", type=int, default=12)
     parser.add_argument("--timeout", type=float, default=90)
     parser.add_argument("--settle", type=float, default=2, help="Keep checking for failures after the markers appear.")
+    parser.add_argument("--build-evidence", type=Path, help="Trusted real-build job receipt for this export.")
+    parser.add_argument("--expected-commit", help="Full source commit from the calling build job, not the receipt.")
     commands = parser.add_subparsers(dest="platform", required=True)
     browser = commands.add_parser("web")
     browser.add_argument("--entry", type=Path, required=True)
@@ -298,6 +322,10 @@ def parse_args(argv=None) -> argparse.Namespace:
     simulator.add_argument("--bundle-id", type=identifier, required=True)
     simulator.add_argument("--replace", action="store_true")
     args = parser.parse_args(argv)
+    if bool(args.build_evidence) != bool(args.expected_commit):
+        parser.error("--build-evidence and --expected-commit must be provided together.")
+    if args.expected_commit and not re.fullmatch(r"[0-9a-f]{40}", args.expected_commit):
+        parser.error("--expected-commit must be a full lowercase Git commit hash.")
     if args.timeout <= 0 or args.settle < 0 or not 0 <= args.tolerance <= 255:
         parser.error("timeout must be positive, settle nonnegative, and tolerance between 0 and 255.")
     if any(not marker.strip() for marker in args.expect_log):
@@ -322,6 +350,12 @@ def main(argv=None) -> int:
         except ImportError as error:
             raise UnavailableToolError("Pixel validation requires Pillow: python -m pip install Pillow") from error
         result["artifact"] = artifact_identity(args)
+        provenance = build_provenance(args, result["artifact"])
+        if provenance is not None:
+            result.update(provenance)
+            result["evidenceLevels"]["real_build"] = {
+                "status": "passed", "reason": "Bound trusted build-job receipt; compiler not rerun by this harness.",
+                "receiptSha256": provenance["receiptSha256"]}
         {"web": web, "android": android, "ios": ios}[args.platform](args, output)
         check_pixels(output / "game.png", args.expect_pixel, args.tolerance)
         if artifact_identity(args) != result["artifact"]:
@@ -330,7 +364,11 @@ def main(argv=None) -> int:
         if runtime.is_file():
             result["runtime"] = json.loads(runtime.read_text(encoding="utf-8"))
         result["passed"] = True
-        result["evidenceLevels"]["real_runtime"] = {"status": "passed", "artifactSha256": result["artifact"]["sha256"]}
+        result["evidenceLevels"]["real_runtime"] = {
+            "status": "passed" if provenance is not None else "unverified",
+            "reason": "Runtime checks and build provenance verified." if provenance is not None else
+                      "Runtime smoke passed, but no trusted build provenance was supplied.",
+            "artifactSha256": result["artifact"]["sha256"]}
         print(f"Runtime smoke passed; platform qualification remains unverified. Evidence: {output}")
         return 0
     except Exception as error:

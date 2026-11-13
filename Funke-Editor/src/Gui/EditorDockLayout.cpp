@@ -4,10 +4,128 @@
 
 #include <algorithm>
 #include <charconv>
+#include <climits>
+#include <cstring>
 #include <sstream>
 #include <unordered_map>
+#include <utility>
 
 namespace Funke::EditorDockLayout {
+
+	void WindowSettings::Install() {
+		ImGuiSettingsHandler handler;
+		handler.TypeName = "FunkeLayout";
+		handler.TypeHash = ImHashStr(handler.TypeName);
+		handler.UserData = this;
+		handler.ClearAllFn = handler.ReadInitFn = [](ImGuiContext*, ImGuiSettingsHandler* handler) {
+			auto& state = *static_cast<WindowSettings*>(handler->UserData);
+			state.m_Saved.clear();
+			state.m_HasSaved = false;
+			state.m_PendingTabs.clear();
+		};
+		handler.ReadOpenFn = [](ImGuiContext*, ImGuiSettingsHandler* handler, const char* name) -> void* {
+			if (std::strcmp(name, "Windows") != 0) return nullptr;
+			auto& state = *static_cast<WindowSettings*>(handler->UserData);
+			state.m_HasSaved = true;
+			return &state;
+		};
+		handler.ReadLineFn = [](ImGuiContext*, ImGuiSettingsHandler*, void* entry, const char* line) {
+			const std::string_view text(line);
+			const size_t separator = text.rfind('=');
+			if (separator == std::string_view::npos || separator == 0) return;
+			const auto value = text.substr(separator + 1);
+			if (value != "0" && value != "1") return;
+			static_cast<WindowSettings*>(entry)->m_Saved[std::string(text.substr(0, separator))] = value == "1";
+		};
+		handler.ApplyAllFn = [](ImGuiContext* ctx, ImGuiSettingsHandler* handler) {
+			auto& state = *static_cast<WindowSettings*>(handler->UserData);
+			for (auto* window = ctx->SettingsWindows.begin(); window; window = ctx->SettingsWindows.next_chunk(window)) {
+				if (auto* node = ImGui::DockBuilderGetNode(window->DockId)) {
+					auto& group = state.m_PendingTabs[node->ID];
+					group.Selected = node->SelectedTabId;
+					group.Order[window->ID] = window->DockOrder;
+				}
+			}
+			if (state.m_HasSaved && state.m_Apply) state.m_Apply(state.m_Saved);
+		};
+		handler.WriteAllFn = [](ImGuiContext*, ImGuiSettingsHandler* handler, ImGuiTextBuffer* output) {
+			auto& state = *static_cast<WindowSettings*>(handler->UserData);
+			if (state.m_Capture) {
+				state.m_Saved = state.m_Capture();
+				state.m_HasSaved = true;
+			}
+			if (!state.m_HasSaved) return;
+			output->append("[FunkeLayout][Windows]\n");
+			for (const auto& [name, open] : state.m_Saved) {
+				if (name.empty() || name.find_first_of("\r\n") != std::string::npos) continue;
+				output->appendf("%s=%d\n", name.c_str(), open ? 1 : 0);
+			}
+			output->append("\n");
+		};
+		ImGui::AddSettingsHandler(&handler);
+		ImGuiContextHook hook;
+		hook.Type = ImGuiContextHookType_EndFramePost;
+		hook.UserData = this;
+		hook.Callback = [](ImGuiContext*, ImGuiContextHook* hook) {
+			static_cast<WindowSettings*>(hook->UserData)->RestoreTabs();
+		};
+		ImGui::AddContextHook(ImGui::GetCurrentContext(), &hook);
+	}
+
+	void WindowSettings::RestoreTabs() {
+		// Reopened tools may join a node one frame later than its already-live windows. ImGui only
+		// sorts newly arriving tabs together, so restore the complete group once its tabs are present.
+		for (auto it = m_PendingTabs.begin(); it != m_PendingTabs.end();) {
+			ImGuiDockNode* node = ImGui::DockBuilderGetNode(it->first);
+			if (!node || node->Windows.empty() || node->IsHiddenTabBar() || node->IsNoTabBar()) {
+				it = m_PendingTabs.erase(it);
+				continue;
+			}
+			ImGuiTabBar* bar = node->TabBar;
+			if (!bar || std::any_of(node->Windows.begin(), node->Windows.end(), [bar](ImGuiWindow* window) {
+				return window->Active && !ImGui::TabBarFindTabByID(bar, window->TabId);
+			})) { ++it; continue; }
+			const TabGroup& saved = it->second;
+			const auto order = [&saved](const ImGuiTabItem& tab) {
+				const auto found = saved.Order.find(tab.Window ? tab.Window->ID : 0);
+				return found != saved.Order.end() && found->second >= 0 ? static_cast<int>(found->second) : INT_MAX;
+			};
+			if (bar->Tabs.Size > 1) {
+				std::stable_sort(bar->Tabs.begin(), bar->Tabs.end(), [&](const auto& a, const auto& b) { return order(a) < order(b); });
+			}
+			for (int i = 0; i < bar->Tabs.Size; ++i) {
+				if (auto* window = bar->Tabs[i].Window) window->DockOrder = static_cast<short>(i);
+			}
+			if (const auto* selected = ImGui::TabBarFindTabByID(bar, saved.Selected)) {
+				node->SelectedTabId = bar->SelectedTabId = bar->NextSelectedTabId = saved.Selected;
+				const ImGuiWindow* focused = ImGui::GetCurrentContext()->NavWindow;
+				if (focused && focused->RootWindow->DockNode == node) ImGui::FocusWindow(selected->Window);
+			}
+			bar->WantLayout = true;
+			it = m_PendingTabs.erase(it);
+		}
+	}
+
+	WindowSettings* WindowSettings::Get() {
+		const ImGuiSettingsHandler* handler = ImGui::FindSettingsHandler("FunkeLayout");
+		return handler ? static_cast<WindowSettings*>(handler->UserData) : nullptr;
+	}
+
+	void WindowSettings::SetCallbacks(std::function<WindowVisibility()> capture, std::function<void(const WindowVisibility&)> apply) {
+		m_Capture = std::move(capture);
+		m_Apply = std::move(apply);
+		if (m_HasSaved && m_Apply) m_Apply(m_Saved);
+	}
+
+	void WindowSettings::ClearCallbacks() {
+		// Keep a final snapshot for the context layer's shutdown save, after the editor has detached.
+		if (m_Capture) {
+			m_Saved = m_Capture();
+			m_HasSaved = true;
+		}
+		m_Capture = {};
+		m_Apply = {};
+	}
 
 	namespace {
 		constexpr const char* k_MainPanels[] = { "Entities", "Inspector", "Editor View", "Game View", "Project", "Log" };

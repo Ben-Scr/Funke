@@ -6,6 +6,7 @@
 #include "Components/General/AnimatorComponent.hpp"
 #include "Components/General/ComponentOrderComponent.hpp"
 #include "Components/General/General.hpp"
+#include "Components/General/PhysicsLayerComponent.hpp"
 #include "Components/Graphics/ImageComponent.hpp"
 #include "Components/Graphics/TextRendererComponent.hpp"
 #include "Components/Tags.hpp"
@@ -87,9 +88,9 @@ namespace Funke {
 			SetIcon<AnimatorComponent>(registry, "animator");
 			SetIcon<RectTransform2DComponent>(registry, "bounding_box");
 			SetIcon<ImageComponent>(registry, "eye_open");
-			SetIcon<TextRendererComponent>(registry, "caret");
+			SetIcon<TextRendererComponent>(registry, "text");
 			SetIcon<InputFieldComponent>(registry, "caret");
-			SetIcon<LocalizedTextComponent>(registry, "caret");
+			SetIcon<LocalizedTextComponent>(registry, "text");
 			SetIcon<HorizontalLayoutGroupComponent>(registry, "grid");
 			SetIcon<VerticalLayoutGroupComponent>(registry, "grid");
 			SetIcon<GridLayoutGroupComponent>(registry, "grid");
@@ -269,6 +270,33 @@ namespace Funke {
 
 		// ── Localization ────────────────────────────────────────────
 		// Core (no module); last for the same typeIdU32 reason.
+		{
+			PropertyDescriptor layer;
+			layer.Name = "Mask";
+			layer.DisplayName = "Layer";
+			layer.Type = PropertyType::FlagEnum;
+			layer.Metadata.IsPhysicsLayerMask = true;
+			layer.Metadata.Tooltip = "Membership for this entity's physics body. Overrides individual 2D collider layers.";
+			layer.Get = [](const Entity& e) {
+				PropertyValue value;
+				value.Type = PropertyType::FlagEnum;
+				value.IntValue = static_cast<int64_t>(e.GetLayer());
+				return value;
+			};
+			layer.Set = [](Entity& e, const PropertyValue& value) { e.SetLayer(static_cast<uint64_t>(value.IntValue)); };
+			ComponentInfo info{ "Physics Layer", "Physics", ComponentCategory::Component };
+			info.serializedName = "PhysicsLayer";
+			info.properties.push_back(std::move(layer));
+			info.serialize = [](Entity e) {
+				Json::Value value = Json::Value::MakeObject();
+				value.AddMember("mask", e.GetComponent<PhysicsLayerComponent>().Mask);
+				return value;
+			};
+			info.deserialize = [](Entity e, const Json::Value& value) {
+				if (const auto* mask = value.FindMember("mask")) e.SetLayer(mask->AsUInt64Or(1));
+			};
+			registry.Register<PhysicsLayerComponent>(std::move(info));
+		}
 		Internal::RegisterLocalization(registry);
 		DeclareDependency<LocalizedTextComponent, TextRendererComponent>(registry);
 

@@ -1,4 +1,6 @@
 #include "pch.hpp"
+#include "Physics/PhysicsLayers.hpp"
+#include "Scene/Scene.hpp"
 #include <Components/Physics/Collider2D.hpp>
 #include <Components/General/Transform2DComponent.hpp>
 
@@ -62,7 +64,9 @@ namespace Funke {
 		FNK_COLLIDER_SHAPE_GUARD();
 		// Writes the mask too: shape recreation (SetSensor) restores only via SetLayer.
 		b2Filter filter = b2Shape_GetFilter(m_ShapeId);
-		filter.categoryBits = layer;
+		const auto ref = PhysicsSystem2D::GetMainPhysicsWorld().ResolveShape(m_ShapeId);
+		filter.categoryBits = ref.OwningScene
+			? GetEntityPhysicsLayer(ref.OwningScene->GetRegistry(), ref.Entity, layer) : layer;
 		filter.maskBits = m_CollisionMask;
 		filter.groupIndex = m_GroupIndex;
 		b2Shape_SetFilter(m_ShapeId, filter);

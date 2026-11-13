@@ -284,6 +284,11 @@ namespace Funke {
 		return it->second.Valid ? &it->second.Value : nullptr;
 	}
 
+    const MeshAsset* MeshLibrary::PeekLoaded(uint64_t guid) {
+        const auto it = Entries().find(guid);
+        return it != Entries().end() && it->second.Valid ? &it->second.Value : nullptr;
+    }
+
 	const MeshAsset* MeshLibrary::FindLoaded(uint64_t guid) {
 		const auto it = Entries().find(guid);
 		if (it == Entries().end() || !it->second.Valid) return nullptr;
@@ -400,6 +405,12 @@ namespace Funke {
 		return before - entries.size();
 	}
 
+
+	size_t MeshLibrary::GetLoadedCount() {
+		size_t count = 0;
+		for (const auto& [guid, entry] : Entries()) if (entry.Valid) ++count;
+		return count;
+	}
 	void MeshLibrary::Clear() {
 		AssetLoader::Invalidate(AssetKind::Mesh);
 		std::erase_if(Entries(), [](const auto& pair) { return !pair.second.Runtime; });

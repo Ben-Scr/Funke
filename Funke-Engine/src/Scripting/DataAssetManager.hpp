@@ -14,6 +14,8 @@ namespace Funke {
 	// Scripting-side, not core: a scripting-stripped build never references it.
 	class FUNKE_API DataAssetManager {
 	public:
+        // Successfully loaded entries only; never initiates a load.
+        static size_t GetLoadedCount();
 		DataAssetManager() = delete;
 
 		// Ensure the data asset for `guid` has a live managed instance. Idempotent —

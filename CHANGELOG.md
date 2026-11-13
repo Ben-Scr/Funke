@@ -6,6 +6,8 @@ Release notes describe user-visible compatibility, reliability, and workflow cha
 
 ### Fixed
 
+- Build and Build and Play apply the build profile's rendering API only to the exported game, preserving the editor's API and avoiding an unrelated reload prompt, including when build validation fails.
+- Opening a newly created C++ script in Visual Studio waits for the native solution to be generated instead of routing it into an already-open C# solution. Pending opens are cancelled on editor shutdown; missing solutions report an actionable error.
 - Asset undo accepts verified macOS system-directory aliases while rejecting links inside asset paths; tests use canonical registry identities.
 - Dawn setup validates pinned source/dependency revisions, resumes interrupted Git initialization, reports fetch errors before CMake, and protects local edits. CI checks artifact-only caches including both Windows configurations.
 - Asset bundle lookups and file-watcher tests use consistent path identities across symlink and Windows short-path aliases, including virtual and deleted files.

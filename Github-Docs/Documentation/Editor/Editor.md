@@ -4,6 +4,8 @@ The **Funke Editor** is the visual tool where you build your game: arrange entit
 
 If you just want the short version: the editor is a separate app that opens your project. You build scenes in the **Hierarchy** and **Viewport**, edit selected objects in the **Inspector**, manage files in the **Asset Browser**, and press **Play** to test.
 
+Progress windows display **Elapsed: MM:SS** (or **HH:MM:SS** after an hour) beneath the progress bar and stage. This applies to builds, script compilation, package operations, asset conversion, imports, deletions, and asynchronous scene opening. The timer continues through stage changes and resets when a new operation's window opens. Windows uses a native progress window; Linux and macOS show the same timing information in the editor overlay.
+
 ---
 
 ## Editor, engine, and runtime
@@ -23,6 +25,8 @@ So the flow is: **Launcher → create/open a project → Editor → build your g
 You create and open projects from the **Launcher**:
 
 - **New Project** — pick a template, a name and a location; the launcher copies the template's scene and scripts, sets up the C# script project and compiles the scripts once.
+
+Set **Launcher > Settings > Projects > Default company** once to prefill **Company** whenever you create a project. The default is saved per user and survives launcher restarts. You can change or clear Company in **New Project** without changing the default. The dialog's value is saved as the project's `buildCompany`, including when using a custom template, and can later be changed in the editor's **Project Settings**. Changing the default does not modify existing or duplicated projects.
 
 ### Project templates
 
@@ -119,13 +123,28 @@ Normal C# `Log` string/object overloads and script `Print`, native logging macro
 
 The **Layout** dropdown at the top right switches between saved layout presets. **Default** restores the standard arrangement: Hierarchy on the left, Inspector on the right, Editor View and Game View in the middle, Asset Browser and Console below. **Manage layouts...** opens Editor Preferences › Layouts, where you save the current arrangement as a preset or delete presets. The editor keeps your layout in its user data folder (`%LOCALAPPDATA%\Funke\Editor\imgui.ini` on Windows) and falls back to the default when that file docks none of the main panels.
 
-Layout presets appear as responsive cards with miniatures of their saved docking arrangement. **Load** restores a preset; **Active** marks the last preset saved or loaded in this editor session and can be clicked to restore it again. The trash button opens a deletion confirmation. **Storage location** expands the preset folder path, and **Reset to default** keeps saved presets intact. Miniatures show docked panels, not scene contents or floating windows; presets without readable docking data remain loadable and show **Preview unavailable**.
+Layout presets appear as responsive cards with miniatures of their saved docking arrangement. **Load** restores a preset; **Active** marks the last preset saved or loaded in this editor session and can be clicked to restore it again. The trash button opens a deletion confirmation. **Open in Explorer** (Windows), **Open in Finder** (macOS), or **Open in File Manager** (Linux) opens the preset folder, creating it if needed. Hover over the button to see the folder path. Right-click the **Layouts** tab and choose the circular-arrow icon to restore the default arrangement while keeping saved presets intact. Miniatures show docked panels, not scene contents or floating windows; presets without readable docking data remain loadable and show **Preview unavailable**.
 
 **Save current layout** is the primary action. Presets use `.ini` files in the editor's `Layouts` user-data folder. Names must contain 1–64 bytes, exclude filename separators and reserved characters, and cannot end in a space or dot. Saving checks the atomic write result; a failed overwrite preserves the existing preset and keeps the entered name and dialog available for retry. Failed loading or deletion also shows an error. Loading applies the saved docking state at the start of the next frame. Long names wrap within the list, keeping their actions reachable in narrow windows.
 
-**Editor Preferences › Behavior › UI Editing** controls UI alignment guides and the snap distance shown while guides are enabled. Search for `UI Editing`, `alignment`, or `snap` to find it. The **Editor Camera** category configures the **3D editor camera**, including orbit/fly navigation, movement, zoom, and FOV; **Reset Editor Camera** restores its defaults. Search accepts `editor camera`, `camera`, `orbit`, `fly`, and `fov`. Both groups persist across editor restarts; their existing `AlignmentGuidesEnabled`, `AlignmentSnapThreshold`, and `Camera3D` settings remain compatible.
+Presets restore **tab groups**, their tab order and selected tab, and which tool windows are open. For example, open Project Settings and drag its title/tab onto the **centre docking target** of Inspector to make them clickable tabs sharing the same area. Animation can share a tab group with Project Assets in the same way. Dropping on an edge creates a split instead. Save the layout after arranging the tabs; loading it reopens the saved tools and closes tools saved as closed. This also applies to custom C# editor windows and to the layout restored at editor startup. Asset selections and tool contents are not part of a layout. Older presets without open-window state retain the current tool visibility; open the desired tools and save the preset again to include it.
+
+**Editor Preferences › Behavior › UI Editing** controls UI alignment guides and the snap distance shown while guides are enabled. Search for `UI Editing`, `alignment`, or `snap` to find it. The **Editor Camera** category configures the **3D editor camera**, including orbit/fly navigation, movement, zoom, and FOV; its tab context menu restores its defaults. Search accepts `editor camera`, `camera`, `orbit`, `fly`, and `fov`. Both groups persist across editor restarts; their existing `AlignmentGuidesEnabled`, `AlignmentSnapThreshold`, and `Camera3D` settings remain compatible.
+
+**Editor Preferences > Gizmos > Gizmo Colors** customizes the color and opacity of built-in 2D physics colliders (box, circle, polygon), particle emitters and their direction indicators, camera frames, sprite outlines and halos, UI rect outlines, and text margins. Changes apply immediately and persist across projects and editor restarts in `EditorPreferences.json` under `GizmoColors`, independently of the editor theme. Existing preferences retain the previous default colors. Script and package gizmos retain their authored colors. Search for `gizmo`, `collider`, `particle`, or the corresponding overlay name to find these settings.
 
 Preferences search covers all categories. Clearing it restores category navigation and its separate scroll areas. The tab bar omits the redundant tab-list popup; overflow arrows still expose every category when the window is narrow or text is enlarged.
+
+Right-click any preferences tab, then click the circular-arrow icon in its context menu to restore only that tab's defaults. The menu names the affected tab, and the icon's tooltip explains the action. Individual settings have no reset buttons. Clear an active search to access the tabs.
+
+| Tab | Restored defaults |
+|---|---|
+| Gizmos | Default colors and opacity for all built-in component gizmos listed above. |
+| Appearance | System theme, default custom palette, bundled font, 100% text scale, and default hierarchy row size. A font change requests an editor restart. |
+| Scripting | First detected external editor and script compilation / Play behavior defaults. |
+| Layouts | Default docking arrangement; saved presets are retained. |
+| Behavior | File extensions, deletion confirmations, auto-save, external scene reloading, and UI alignment guides / snap distance. |
+| Editor Camera | All 3D editor camera navigation, movement, look, and zoom preferences. |
 
 **Editor Preferences › Appearance › Theme** offers **System Default** (follows the Windows light/dark setting), **Dark**, **Light**, and **Custom**. **Custom** starts from the active palette and lets you change every color. Older saved `Glass` and `GlassLight` settings load as **Dark** and **Light**, respectively.
 
@@ -186,6 +205,8 @@ The engine and editor select their shortcuts for the platform they are built for
 
 Selection shortcuts apply to the focused panel. While editing a name or other text, Return confirms the text instead of starting another rename. For shortcuts in a built game, see [Test Builds and Debug Tools](Testing.md#runtime-keyboard-shortcuts).
 
+During Play mode (including Pause), the command palette and Profiler shortcut are disabled. Menu commands that open editor tool windows, change layouts or reload the editor are also disabled until Stop. An open command palette closes when play begins. Already-open panels remain available for inspection; Play/Pause/Stop controls and runtime debug controls remain available.
+
 ### Selecting and editing an entity
 
 1. Click an entity in the **Hierarchy** (or click it directly in the **Viewport**).
@@ -194,7 +215,7 @@ Selection shortcuts apply to the focused panel. While editing a name or other te
 
 The Inspector's header (icon, name, enabled switch and options) stays at the top while the components below scroll. The name field renames as you type; the whole edit is one undo step, and **Esc** restores the old name.
 
-Components are listed with the transform first, then the built-in components in a fixed order, then scripts. To rearrange them, drag a component's header onto another one (the line shows where it lands), or use **Move Up** / **Move Down** in its **...** menu. Scripts and C# components move like any other component; the transform always stays on top. The order is saved with the entity (in scenes and prefabs, also as a prefab override), applies to every selected entity, and is one undo step. Components added later appear at the bottom. Dragging a header still drops a reference to that component into reference fields.
+Components are listed with the transform first, then the built-in components in a fixed order, then scripts. To rearrange them, drag a component's **four-dot handle** or header onto the upper/lower half of another header to insert before/after its section, or use **Move Up** / **Move Down** in its **...** menu. A thick accent bar with round endpoints marks the insertion position. Scripts and C# components move like any other component. **Transform 2D, Rect Transform 2D and Transform 3D** stay on top and have no drag handle or drag operation. The order is saved with the entity (in scenes and prefabs, also as a prefab override), applies to every selected entity, and is one undo step. Components added later appear at the bottom. Dragging another component's header or handle can also drop a reference into reference fields.
 
 The scene is marked **unsaved** (a dot/asterisk) as soon as you change something.
 
@@ -232,11 +253,13 @@ The spark-shaped **Post Processing** button toggles effects in the 2D or 3D **Ed
 
 #### View Settings
 
+The shaded-sphere **Rendering** popup provides separate 2D/3D preview settings for lighting, shadows, fog, skybox, custom material shaders (including individual shader exclusions), particles, UI, and grid visibility. See [Editor View Rendering](View-Rendering.md) for applicability and persistence. These switches affect the Editor View only.
+
 The gizmo modes float over the top-left corner of the Editor View. The view options — 3D toggle, draw mode, Gizmos, Post Processing and Grid Snap (with its settings arrow) — float over its top-right corner. If you never use some of them, hide them:
 
 - Open **Edit › View**, or **right-click** either floating toolbar.
 - Untick any element to hide it. **Gizmo Modes** hides the left toolbar; **Show View Options** hides the whole right one.
-- **Reset to Default** shows everything again.
+- The circular-arrow icon restores the default toolbar and shows everything again.
 
 The choice is saved per user (in the editor preferences, not in the project), so it survives restarts and applies to every project. Hidden actions are still in the command palette (**Ctrl+K**, or **Cmd+K** on macOS): *Gizmo Mode: None / Move / Rotate / Scale / Rect*, *Toggle 3D Editor View*, *Draw Mode: …*, *Toggle Gizmos*, *Toggle Post Processing in Editor View*, *Toggle Grid Snap*, *Reset Editor View Toolbar*.
 
@@ -294,7 +317,7 @@ Saving changes to a prefab updates every instance (except the parts an instance 
 When you're ready to ship, open the **Build** panel:
 
 1. Choose a **build profile** (target platform and render backend).
-2. Check the **scene list**. Every scene in your project is listed automatically and included by default; untick a scene to leave it out of the build. The first ticked scene is the **startup** scene. Drag rows to reorder them, or right-click a row to use **Set as startup scene** / **Move up** / **Move down**. **Add Open Scene** adds the scene you have open, or ticks it again.
+2. Check the **scene list**. Every scene in your project is listed automatically and included by default; untick a scene to leave it out of the build. The first ticked scene is the **startup** scene. Drag a row's **four-dot handle** or scene name to reorder it. The upper/lower half of a row inserts before/after that row; the thick accent bar marks the exact position. Dropping in the empty area below the list moves a scene to the end. You can also right-click a row to use **Set as startup scene** / **Move up** / **Move down**. **Add Open Scene** adds the scene you have open, or ticks it again.
 3. Pick an **output folder** and click **Build** (or **Build & Run**).
 
 The editor compiles your scripts, stages the **runtime executable**, prunes and converts the referenced **assets**, and writes the configuration the game needs to start. The result is a folder you can run or distribute. Assets are loose by default; **Build Profiles › Asset Packaging** can pack them into `.fbundle` files with optional LZ4 or Zstandard compression. See [Asset bundles](Building-and-Shipping.md#asset-bundles).

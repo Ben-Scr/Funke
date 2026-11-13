@@ -152,7 +152,7 @@ function(funke_add_engine)
     file(GLOB_RECURSE _engine_sources CONFIGURE_DEPENDS
         "${FUNKE_ROOT}/Funke-Engine/src/*.c" "${FUNKE_ROOT}/Funke-Engine/src/*.cpp")
     # Diagnostics overlays belong to the runtime app (premake adds them there too); the profiler is a desktop dev tool.
-    list(FILTER _engine_sources EXCLUDE REGEX "/src/Diagnostics/")
+    list(FILTER _engine_sources EXCLUDE REGEX "/src/Diagnostics/[^/]*Overlay[.]cpp$")
     list(FILTER _engine_sources EXCLUDE REGEX "/src/Profiling/")
     list(FILTER _engine_sources EXCLUDE REGEX "/src/pch\\.cpp$")
     foreach(_regex IN LISTS _module_excludes)
@@ -202,7 +202,7 @@ endfunction()
 # package defines main() and calls FunkeRuntimeMain / FunkeRuntimeBegin (see EntryPoint.hpp).
 function(funke_add_runtime target)
     file(GLOB _runtime_sources CONFIGURE_DEPENDS "${FUNKE_ROOT}/Funke-Runtime/src/*.cpp")
-    file(GLOB _diagnostics_sources CONFIGURE_DEPENDS "${FUNKE_ROOT}/Funke-Engine/src/Diagnostics/*.cpp")
+    file(GLOB _diagnostics_sources CONFIGURE_DEPENDS "${FUNKE_ROOT}/Funke-Engine/src/Diagnostics/*Overlay.cpp")
     target_sources(${target} PRIVATE ${_runtime_sources} ${_diagnostics_sources})
     target_include_directories(${target} PRIVATE "${FUNKE_ROOT}/Funke-Runtime/src")
     target_compile_definitions(${target} PRIVATE FUNKE_CUSTOM_MAIN)

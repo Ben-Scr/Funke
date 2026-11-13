@@ -2,6 +2,7 @@
 #include "RuntimeImGuiHost.hpp"
 
 #include "Core/Application.hpp"
+#include "Core/EngineModules.hpp"
 #include "Core/Input.hpp"
 #include "Core/KeyCode.hpp"
 #include "Core/PlatformShortcuts.hpp"
@@ -50,24 +51,43 @@ namespace Funke {
 	}
 
 	void RuntimeConsoleLayer::OnUpdate(Application&, float) {
+		if (!DevConsole::IsEnabled()) return;
+		// Diagnostic shortcuts must not depend on the console window or its keyboard focus.
+		if (PlatformShortcuts::IsPressed(PlatformShortcuts::k_PhysicsDebug)) TogglePhysicsDebug();
 		if (!m_ImGuiAcquired || !RuntimeImGuiHost::IsInitialized()) return;
-		// Scancode based, so it is the key left of 1 on every layout (^ on German keyboards).
-		if (Input::GetKeyDown(KeyCode::GraveAccent) || DetectThreeFingerTap()) {
+		if (PlatformShortcuts::IsPressed(PlatformShortcuts::k_DevConsole) || DetectThreeFingerTap()) {
 			if (DevConsole::IsOpen()) m_CloseRequested = true;
 			else Toggle();
 		}
 		if (DevConsole::IsOpen() && Input::GetKeyDown(KeyCode::Esc)) m_CloseRequested = true;
-		if (!DevConsole::IsOpen() && PlatformShortcuts::IsPressed(PlatformShortcuts::k_PhysicsDebug)) {
-			PhysicsDebugOverlay::SetEnabled(!PhysicsDebugOverlay::IsEnabled());
+	}
+
+	void RuntimeConsoleLayer::TogglePhysicsDebug() {
+		// Share the command's feedback with the console history and runtime log.
+		DevConsole::Execute("physics.debug toggle");
+	}
+
+	void RuntimeConsoleLayer::DrawControls() {
+		const std::string consoleLabel = std::string("Console (") + PlatformShortcuts::k_DevConsoleLabel + ")";
+		if (ImGui::Button(consoleLabel.c_str())) {
+			if (DevConsole::IsOpen()) m_CloseRequested = true;
+			else Toggle();
+		}
+		ImGui::SameLine();
+		const std::string physicsLabel = std::string("Physics: ") + (PhysicsDebugOverlay::IsEnabled() ? "On (" : "Off (")
+			+ PlatformShortcuts::k_PhysicsDebugLabel + ")";
+		if (ImGui::Button(physicsLabel.c_str())) TogglePhysicsDebug();
+		if (!EngineModules::IsActive(EngineModule::Physics2D) && !EngineModules::IsActive(EngineModule::Physics3D)) {
+			ImGui::TextDisabled("No physics module enabled in this build.");
+		}
+		else if (ImGui::IsItemHovered()) {
+			ImGui::SetTooltip("Shows collider outlines and contacts. The scene needs colliders to draw.");
 		}
 	}
 
 	int RuntimeConsoleLayer::InputCallback(ImGuiInputTextCallbackData* data) {
 		auto* self = static_cast<RuntimeConsoleLayer*>(data->UserData);
 		switch (data->EventFlag) {
-		case ImGuiInputTextFlags_CallbackCharFilter:
-			// The toggle key's character would otherwise land in the line it just opened.
-			return (data->EventChar == '`' || data->EventChar == '^' || data->EventChar == 0xB0) ? 1 : 0;
 		case ImGuiInputTextFlags_CallbackHistory: {
 			if (self->m_InputHistory.empty()) return 0;
 			const int count = static_cast<int>(self->m_InputHistory.size());
@@ -123,9 +143,20 @@ namespace Funke {
 	void RuntimeConsoleLayer::OnPreRender(Application&) {
 		if (!m_ImGuiAcquired || !RuntimeImGuiHost::IsInitialized()) return;
 		RuntimeImGuiHost::BeginFrame();
-		if (!DevConsole::IsOpen()) return;
+		if (!DevConsole::IsEnabled()) return;
 
 		const ImGuiViewport* viewport = ImGui::GetMainViewport();
+		if (!DevConsole::IsOpen()) {
+			const float margin = ImGui::GetStyle().WindowPadding.x;
+			ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + viewport->WorkSize.x - margin,
+				viewport->WorkPos.y + viewport->WorkSize.y - margin), ImGuiCond_Always, ImVec2(1.0f, 1.0f));
+			ImGui::SetNextWindowBgAlpha(0.80f);
+			constexpr ImGuiWindowFlags k_ControlFlags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize
+				| ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav;
+			if (ImGui::Begin("##FunkeDevControls", nullptr, k_ControlFlags)) DrawControls();
+			ImGui::End();
+			return;
+		}
 		const float height = std::max(ImGui::GetFrameHeight() * 8.0f, viewport->WorkSize.y * 0.4f);
 		ImGui::SetNextWindowPos(viewport->WorkPos);
 		ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x, height));
@@ -133,6 +164,8 @@ namespace Funke {
 		constexpr ImGuiWindowFlags k_Flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove
 			| ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings;
 		if (ImGui::Begin("##FunkeDevConsole", nullptr, k_Flags)) {
+			DrawControls();
+			ImGui::Separator();
 			const float footer = ImGui::GetStyle().ItemSpacing.y + ImGui::GetFrameHeightWithSpacing();
 			if (ImGui::BeginChild("##History", ImVec2(0.0f, -footer), ImGuiChildFlags_None, ImGuiWindowFlags_HorizontalScrollbar)) {
 				const ImVec4 inputColor = ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled);
@@ -156,7 +189,7 @@ namespace Funke {
 				m_FocusInput = false;
 			}
 			constexpr ImGuiInputTextFlags k_InputFlags = ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CallbackHistory
-				| ImGuiInputTextFlags_CallbackCompletion | ImGuiInputTextFlags_CallbackCharFilter;
+				| ImGuiInputTextFlags_CallbackCompletion;
 			if (ImGui::InputTextWithHint("##Command", "Command (help lists them, Tab completes, Esc closes)",
 					m_Buffer, sizeof(m_Buffer), k_InputFlags, &RuntimeConsoleLayer::InputCallback, this)) {
 				Submit();

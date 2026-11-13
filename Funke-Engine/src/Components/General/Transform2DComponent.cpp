@@ -53,27 +53,12 @@ namespace Funke {
 		const float s = glm::sin(Rotation);
 		const float c = glm::cos(Rotation);
 
-		glm::mat3 rotMatrix{
-			{ c,  s, 0.0f },
-			{ -s, c, 0.0f },
-			{ 0.0f, 0.0f, 1.0f }
-		};
-
-
-		glm::mat3 scaleMat{
-			{ Scale.x, 0.0f,   0.0f },
-			{ 0.0f,   Scale.y, 0.0f },
-			{ 0.0f,   0.0f,    1.0f }
-		};
-
-
-		glm::mat3 transMat{
-			{ 1.0f, 0.0f, 0.0f },
-			{ 0.0f, 1.0f, 0.0f },
+		// T * R * S directly: translation only occupies the last column.
+		return glm::mat3{
+			{ c * Scale.x, s * Scale.x, 0.0f },
+			{ -s * Scale.y, c * Scale.y, 0.0f },
 			{ Position.x, Position.y, 1.0f }
 		};
-
-		return transMat * rotMatrix * scaleMat;
 	}
 
 #if FUNKE_WITH_PHYSICS2D

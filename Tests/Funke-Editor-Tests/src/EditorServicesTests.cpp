@@ -4,6 +4,9 @@
 
 #include "Editor/EditorRestart.hpp"
 #include "Editor/ExternalEditor.hpp"
+#include "Editor/ExternalEditorProjectContext.hpp"
+#include "Project/FunkeProject.hpp"
+#include "Serialization/Path.hpp"
 #include "Scripting/StructFieldBytes.hpp"
 #include "Inspector/ListSelectionCache.hpp"
 
@@ -12,9 +15,84 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <string>
 
 using namespace Funke;
+
+namespace {
+	struct ScriptSolutionFixture {
+		std::filesystem::path Root = std::filesystem::temp_directory_path()
+			/ ("FunkeScriptSolutions_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()))
+			/ Path::FromUtf8("Spiel mit Leerzeichen \xc3\xa4");
+		FunkeProject Project;
+		std::filesystem::path NativeSolution = Root / "NativeScripts/build/Context_Game-NativeScripts.sln";
+
+		ScriptSolutionFixture() {
+			std::filesystem::create_directories(Root);
+			Project.Name = "Context Game";
+			Project.SlnPath = Path::ToUtf8(Root / "Context Game.sln");
+			Project.NativeScriptsDir = Path::ToUtf8(Root / "NativeScripts");
+			std::ofstream(Path::FromUtf8(Project.SlnPath)) << "managed solution";
+		}
+
+		void GenerateNativeSolution() const {
+			std::filesystem::create_directories(NativeSolution.parent_path());
+			std::ofstream(NativeSolution) << "native solution";
+		}
+
+		~ScriptSolutionFixture() {
+			std::error_code error;
+			std::filesystem::remove_all(Root.parent_path(), error);
+		}
+	};
+}
+
+TEST_CASE("External editor keeps native scripts out of the managed solution during generation") {
+	ScriptSolutionFixture fixture;
+	const auto expectedNative = Path::ToUtf8(std::filesystem::weakly_canonical(fixture.NativeSolution));
+	const auto expectedManaged = Path::ToUtf8(std::filesystem::canonical(Path::FromUtf8(fixture.Project.SlnPath)));
+	for (bool generated : { false, true }) {
+		if (generated) fixture.GenerateNativeSolution();
+		for (const char* extension : { ".cpp", ".cc", ".cxx", ".c", ".h", ".hh", ".hpp", ".hxx", ".inl", ".ipp", ".CPP", ".HPP" }) {
+			CAPTURE(generated);
+			CAPTURE(extension);
+			CHECK(ExternalEditorDetail::ResolveProjectContext(&fixture.Project, "Assets/Scripts/Player" + std::string(extension)) == expectedNative);
+		}
+		CHECK(ExternalEditorDetail::ResolveProjectContext(&fixture.Project, "Assets/Scripts/Player.cs") == expectedManaged);
+	}
+	CHECK(ExternalEditorDetail::ResolveProjectContext(nullptr, "Player.cpp").empty());
+	fixture.Project.NativeScriptsDir.clear();
+	CHECK(ExternalEditorDetail::ResolveProjectContext(&fixture.Project, "Player.cpp").empty());
+}
+
+TEST_CASE("External editor waits for the native solution while the managed solution already exists") {
+	using namespace ExternalEditorDetail;
+	using namespace std::chrono_literals;
+	ScriptSolutionFixture fixture;
+	const auto solution = ResolveProjectContext(&fixture.Project, "Player.cpp");
+	CHECK(WaitForProjectContext(solution, {}, 0ms) == ProjectContextStatus::TimedOut);
+	auto pending = std::async(std::launch::async, [&] { return WaitForProjectContext(solution, {}, 5s); });
+	CHECK(pending.wait_for(30ms) == std::future_status::timeout);
+	fixture.GenerateNativeSolution();
+	CHECK(pending.get() == ProjectContextStatus::Ready);
+	CHECK(WaitForProjectContext(solution, {}, 0ms) == ProjectContextStatus::Ready);
+}
+
+TEST_CASE("External editor cancels pending solution launches on shutdown") {
+	using namespace ExternalEditorDetail;
+	using namespace std::chrono_literals;
+	ScriptSolutionFixture fixture;
+	const auto solution = ResolveProjectContext(&fixture.Project, "Player.cpp");
+	std::stop_source stop;
+	auto pending = std::async(std::launch::async, [&] { return WaitForProjectContext(solution, stop.get_token(), 5s); });
+	CHECK(pending.wait_for(30ms) == std::future_status::timeout);
+	stop.request_stop();
+	CHECK(pending.get() == ProjectContextStatus::Cancelled);
+	fixture.GenerateNativeSolution();
+	CHECK(WaitForProjectContext(solution, stop.get_token(), 0ms) == ProjectContextStatus::Cancelled);
+	CHECK(WaitForProjectContext("", {}, 0ms) == ProjectContextStatus::Ready);
+}
 
 TEST_CASE("EditorRestart keeps one line per key and prompts only on real changes") {
 	EditorRestart::Clear();

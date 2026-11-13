@@ -4,6 +4,8 @@
 #include "Serialization/Json.hpp"
 #include "Serialization/Path.hpp"
 #include <cctype>
+#include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <vector>
 
@@ -139,6 +141,9 @@ namespace Funke {
 		if (const Json::Value* v = root.FindMember("defaultProjectsLocation")) {
 			DefaultProjectsLocation = v->AsStringOr();
 		}
+		if (const Json::Value* v = root.FindMember("defaultCompany")) {
+			DefaultCompany = v->AsStringOr();
+		}
 		if (const Json::Value* v = root.FindMember("sortMode")) {
 			int mode = v->AsIntOr(static_cast<int>(SortMode::LastOpened));
 			if (mode >= 0 && mode <= static_cast<int>(SortMode::CreatedAt)) {
@@ -159,8 +164,23 @@ namespace Funke {
 		}
 		if (const Json::Value* v = root.FindMember("themeSetting")) {
 			int setting = v->AsIntOr(static_cast<int>(ThemeSetting::Auto));
-			if (setting >= 0 && setting <= static_cast<int>(ThemeSetting::Light)) {
+			if (setting >= 0 && setting <= static_cast<int>(ThemeSetting::Custom)) {
 				Theme = static_cast<ThemeSetting>(setting);
+			}
+		}
+		CustomColors.clear();
+		if (const Json::Value* palette = root.FindMember("customColors"); palette && palette->IsObject()) {
+			for (const auto& [name, value] : palette->GetObject()) {
+				if (!value.IsArray() || value.GetArray().size() != 4) continue;
+				std::array<float, 4> color{};
+				bool valid = true;
+				for (size_t i = 0; i < color.size(); ++i) {
+					const auto& channel = value.GetArray()[i];
+					const double number = channel.AsDoubleOr(0.0);
+					if (!channel.IsNumber() || !std::isfinite(number)) { valid = false; break; }
+					color[i] = static_cast<float>(std::clamp(number, 0.0, 1.0));
+				}
+				if (valid) CustomColors[name] = color;
 			}
 		}
 		if (const Json::Value* v = root.FindMember("directoryNameConvention")) {
@@ -187,11 +207,19 @@ namespace Funke {
 
 		Json::Value root = Json::Value::MakeObject();
 		root.AddMember("defaultProjectsLocation", DefaultProjectsLocation);
+		root.AddMember("defaultCompany", DefaultCompany);
 		root.AddMember("sortMode", Json::Value(static_cast<int>(Sort)));
 		root.AddMember("sortReverse", Json::Value(SortReverse));
 		root.AddMember("projectView", Json::Value(static_cast<int>(ProjectView)));
 		root.AddMember("fontScale", Json::Value(static_cast<int>(Scale)));
 		root.AddMember("themeSetting", Json::Value(static_cast<int>(Theme)));
+		Json::Value palette = Json::Value::MakeObject();
+		for (const auto& [name, color] : CustomColors) {
+			Json::Value channels = Json::Value::MakeArray();
+			for (float channel : color) channels.Append(Json::Value(channel));
+			palette.AddMember(name, std::move(channels));
+		}
+		root.AddMember("customColors", std::move(palette));
 		root.AddMember("directoryNameConvention", Json::Value(static_cast<int>(DirectoryConvention)));
 		root.AddMember("languageAuto", Json::Value(LanguageAuto));
 		{

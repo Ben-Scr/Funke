@@ -1,0 +1,9 @@
+bin/
+obj/
+.vs/
+*.user
+NativeScripts/build/
+Packages/
+Tests/Output/
+Tools/__pycache__/
+.funke/

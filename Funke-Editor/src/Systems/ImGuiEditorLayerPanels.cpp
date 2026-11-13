@@ -11,6 +11,7 @@
 #include "Build/GameBuilder.hpp"
 #include "Collections/AspectRatio.hpp"
 #include "Core/Application.hpp"
+#include "Core/Platform.hpp"
 #include "Core/Time.hpp"
 #include "Core/Window.hpp"
 #include "Editor/BuildAssetPruning.hpp"
@@ -29,6 +30,7 @@
 #include "Graphics/SpriteUVResolver.hpp"
 #include "Gui/ImGuiImplWebGPU.hpp"
 #include "Gui/ImGuiUtils.hpp"
+#include "Gui/ReorderUI.hpp"
 #include "Inspector/MaterialShaderInspector.hpp"
 #include "Inspector/PropertyDrawer.hpp"
 #include "Inspector/PropertyRegistration.hpp"
@@ -82,17 +84,6 @@
 
 namespace Funke {
 	namespace {
-#if !defined(FNK_PLATFORM_WINDOWS)
-		std::string ShellQuote(std::string_view value) {
-			std::string quoted = "'";
-			for (char c : value) {
-				if (c == '\'') quoted += "'\\''";
-				else quoted += c;
-			}
-			return quoted + "'";
-		}
-#endif
-
 		std::vector<FunkeProject::BuildSceneEntry>::iterator FindBuildScene(
 			std::vector<FunkeProject::BuildSceneEntry>& sceneList, const std::string& sceneName)
 		{
@@ -420,7 +411,6 @@ namespace Funke {
 			{ ImGuiEditorLayer::SettingsCategory::Build,    "Engine Modules",  "modules module 2d 3d sprites physics box2d jolt meshes lights funke.2d funke.3d strip size" },
 			{ ImGuiEditorLayer::SettingsCategory::Build,    "Executable",      "executable exe name output binary" },
 			{ ImGuiEditorLayer::SettingsCategory::Build,    "Diagnostics",     "diagnostics runtime stats logs overlay fps f6 f7 debug" },
-			{ ImGuiEditorLayer::SettingsCategory::Build,    "ECS Entity Bits", "ecs entity bits entt entities versions rebuild engine 16 20 22 24 28" },
 
 			// Editor (RenderSettings_Editor)
 			{ ImGuiEditorLayer::SettingsCategory::Editor,   "Asset Browser",   "asset browser duplicate suffix asset naming" },
@@ -432,6 +422,9 @@ namespace Funke {
 			{ ImGuiEditorLayer::SettingsCategory::Systems,  "Global Systems",  "global systems globalsystem scene system registration project scope" },
 
 			// Physics (RenderSettings_Physics)
+			{ ImGuiEditorLayer::SettingsCategory::Physics, "Default Gravity", "gravity default acceleration vector 2d 3d x y z" },
+			{ ImGuiEditorLayer::SettingsCategory::Physics, "Layers", "layers names membership collision mask category" },
+			{ ImGuiEditorLayer::SettingsCategory::Physics, "Layer Collision Matrix", "layers matrix collision filtering pairs box2d jolt" },
 			{ ImGuiEditorLayer::SettingsCategory::Physics,  "Physics World",   "physics world hz hertz tick rate fixed timestep fixed delta time simulation step frequency box2d fixedupdate gravity solver" },
 		};
 
@@ -1352,6 +1345,7 @@ namespace Funke {
 				EditorUI::EmptyState("No scenes", "Create a scene, or drag a .scene asset here.");
 			}
 			else {
+				const float gripW = ImGui::GetFontSize();
 				const float indexW = ImGui::CalcTextSize("00").x + style.ItemSpacing.x;
 				const float startupBadgeW = ImGui::CalcTextSize("Startup").x + 12.0f; // Badge pads 6px per side
 				const int sceneCount = static_cast<int>(sceneList.size());
@@ -1361,11 +1355,40 @@ namespace Funke {
 				}
 				// Shown index is the runtime build index, so excluded rows don't consume one.
 				int buildIndex = 0;
+				float lastRowBottom = ImGui::GetCursorScreenPos().y;
+				const float listLeft = ImGui::GetCursorScreenPos().x;
+				const float listRight = listLeft + ImGui::GetContentRegionAvail().x;
+				const auto acceptReorder = [&](const ImRect& bounds, ImGuiID targetId, int slot, float markerY) {
+					if (!ImGui::BeginDragDropTargetCustom(bounds, targetId)) return;
+					if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("SCENE_LIST_ITEM",
+						ImGuiDragDropFlags_AcceptBeforeDelivery | ImGuiDragDropFlags_AcceptNoDrawDefaultRect)) {
+						if (payload->DataSize == sizeof(int)) {
+							const int source = *static_cast<const int*>(payload->Data);
+							const int destination = ReorderUI::DestinationIndex(source, slot, sceneCount);
+							if (destination >= 0 && destination != source) {
+								ReorderUI::DrawInsertionMarker(listLeft, listRight, markerY);
+								if (payload->IsDelivery()) { moveFrom = source; moveTo = destination; }
+							}
+						}
+					}
+					ImGui::EndDragDropTarget();
+				};
 				for (int i = 0; i < sceneCount; i++) {
 					FunkeProject::BuildSceneEntry& entry = sceneList[i];
 					ImGui::PushID(i);
 					const bool isStartup = (i == startupIndex);
 
+					const ImVec2 rowMin = ImGui::GetCursorScreenPos();
+					const auto dragSource = [&] {
+						if (ImGui::BeginDragDropSource()) {
+							ImGui::SetDragDropPayload("SCENE_LIST_ITEM", &i, sizeof(int));
+							ImGui::Text("Move: %s", entry.Name.c_str());
+							ImGui::EndDragDropSource();
+						}
+					};
+					ReorderUI::DragHandle("##SceneDrag", ImVec2(gripW, frameH));
+					dragSource();
+					ImGui::SameLine();
 					const float rowX = ImGui::GetCursorPosX();
 					ImGui::AlignTextToFramePadding();
 					if (entry.Enabled) ImGui::TextDisabled("%d", buildIndex++);
@@ -1413,18 +1436,7 @@ namespace Funke {
 						ImGui::EndPopup();
 					}
 
-					if (ImGui::BeginDragDropSource()) {
-						ImGui::SetDragDropPayload("SCENE_LIST_ITEM", &i, sizeof(int));
-						ImGui::Text("Move: %s", entry.Name.c_str());
-						ImGui::EndDragDropSource();
-					}
-					if (ImGui::BeginDragDropTarget()) {
-						if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("SCENE_LIST_ITEM")) {
-							moveFrom = *static_cast<const int*>(payload->Data);
-							moveTo = i;
-						}
-						ImGui::EndDragDropTarget();
-					}
+					dragSource();
 
 					if (isStartup) {
 						ImGui::SameLine();
@@ -1432,7 +1444,19 @@ namespace Funke {
 						EditorUI::Tooltip("Loaded first when the built game starts.");
 					}
 
+					lastRowBottom = rowMin.y + frameH;
+					const bool after = ImGui::GetMousePos().y >= (rowMin.y + lastRowBottom) * 0.5f;
+					const float gap = style.ItemSpacing.y * 0.5f;
+					acceptReorder(ImRect(ImVec2(listLeft, rowMin.y - gap), ImVec2(listRight, lastRowBottom + gap)),
+						ImGui::GetID("##SceneDrop"), i + (after ? 1 : 0), after ? lastRowBottom + gap : rowMin.y - gap);
 					ImGui::PopID();
+				}
+				// The empty area below the last row is also an explicit append target.
+				const float tailTop = lastRowBottom + style.ItemSpacing.y * 0.5f;
+				const float tailBottom = ImGui::GetWindowPos().y + ImGui::GetWindowContentRegionMax().y;
+				if (tailBottom > tailTop) {
+					acceptReorder(ImRect(ImVec2(listLeft, tailTop), ImVec2(listRight, tailBottom)),
+						ImGui::GetID("##SceneAppend"), sceneCount, tailTop);
 				}
 			}
 			ImGui::EndChild();
@@ -1794,20 +1818,12 @@ namespace Funke {
 		if (!canBuild) ImGui::BeginDisabled();
 
 		if (EditorUI::Button("Build and Play", EditorUI::ButtonVariant::Default, ImVec2(buttonW, 0.0f))) {
-			if (activeProfileResolved && project && BuildPlatformSupport::IsHostDesktop(activeProfile.Platform)) {
-				project->ActiveRenderBackend = activeProfile.RenderBackend;
-				project->Save();
-			}
 			m_BuildState = 1;
 			m_BuildAndPlay = true;
 			m_BuildStartTime = std::chrono::steady_clock::now();
 		}
 		ImGui::SameLine();
 		if (EditorUI::Button("Build", EditorUI::ButtonVariant::Primary, ImVec2(buttonW, 0.0f))) {
-			if (activeProfileResolved && project && BuildPlatformSupport::IsHostDesktop(activeProfile.Platform)) {
-				project->ActiveRenderBackend = activeProfile.RenderBackend;
-				project->Save();
-			}
 			m_BuildState = 1;
 			m_BuildAndPlay = false;
 			m_BuildStartTime = std::chrono::steady_clock::now();
@@ -2422,7 +2438,7 @@ namespace Funke {
 			if (!fontSecondary.empty()) EditorUI::Tooltip(fontSecondary.c_str());
 			ImGui::PopID();
 			ImGui::SameLine();
-			if (ImGui::Button("Reset##ProjectDefaultFont")) {
+			if (EditorUI::IconButton("##ProjectDefaultFontReset", "reset", "Restore the default project font.", false, false, 0.0f, "Reset")) {
 				project.DefaultFontAssetId = k_DefaultFontAssetId;
 				changed = true;
 			}
@@ -2490,6 +2506,91 @@ namespace Funke {
 
 		}
 		}  // end SectionVisible("Physics World")
+		if (SectionVisible(SettingsCategory::Physics, "Default Gravity", filterLower)) {
+		if (SettingsSection section{"Default Gravity", filterLower}; section) {
+			float gravity2D[] = {project.PhysicsGravity2D.x, project.PhysicsGravity2D.y};
+			float gravity3D[] = {project.PhysicsGravity3D.x, project.PhysicsGravity3D.y, project.PhysicsGravity3D.z};
+			if (ImGui::DragFloat2("2D gravity (X, Y)", gravity2D, 0.1f, 0, 0, "%.2f")) {
+				if (std::isfinite(gravity2D[0]) && std::isfinite(gravity2D[1])) {
+					project.PhysicsGravity2D = {gravity2D[0], gravity2D[1]};
+					ProjectManager::ApplyPhysicsDefaults();
+					changed = true;
+				}
+			}
+			if (ImGui::DragFloat3("3D gravity (X, Y, Z)", gravity3D, 0.1f, 0, 0, "%.2f")) {
+				if (std::isfinite(gravity3D[0]) && std::isfinite(gravity3D[1]) && std::isfinite(gravity3D[2])) {
+					project.PhysicsGravity3D = {gravity3D[0], gravity3D[1], gravity3D[2]};
+					ProjectManager::ApplyPhysicsDefaults();
+					changed = true;
+				}
+			}
+			ImGui::TextWrapped("Acceleration in world units/s^2. Zero disables gravity. Applied when a game starts, on each Play, and immediately when edited here. Scripts can override gravity for the current run.");
+		}
+		}
+
+		auto& layers = project.PhysicsLayers;
+		if (SectionVisible(SettingsCategory::Physics, "Layers", filterLower)) {
+		if (SettingsSection section{"Layers", filterLower}; section) {
+			ImGui::TextWrapped("Name your layers here, then select them on entities and colliders. Indices stay stable when renamed.");
+			static std::string nameError;
+			for (uint32_t i = 0; i < layers.VisibleCount; ++i) {
+				ImGui::PushID(static_cast<int>(i));
+				char buffer[256];
+				std::snprintf(buffer, sizeof(buffer), "%s", layers.Names[i].c_str());
+				ImGui::AlignTextToFramePadding();
+				ImGui::Text("%02u", i);
+				ImGui::SameLine();
+				ImGui::SetNextItemWidth(-1);
+				const bool enter = ImGui::InputText("##LayerName", buffer, sizeof(buffer), ImGuiInputTextFlags_EnterReturnsTrue);
+				if (enter || ImGui::IsItemDeactivatedAfterEdit()) {
+					if (layers.SetName(i, buffer)) { changed = true; nameError.clear(); }
+					else nameError = "Use a unique, non-empty name (up to 63 UTF-8 bytes; no line breaks, tabs or ##).";
+				}
+				ImGui::PopID();
+			}
+			if (!nameError.empty()) ImGui::TextWrapped("%s", nameError.c_str());
+			ImGui::BeginDisabled(layers.VisibleCount >= PhysicsLayerSettings::Count);
+			if (ImGui::Button("Add Layer")) { ++layers.VisibleCount; changed = true; }
+			ImGui::EndDisabled();
+			ImGui::SameLine();
+			ImGui::TextDisabled("%u / %u layers", layers.VisibleCount, PhysicsLayerSettings::Count);
+		}
+		}
+		if (SectionVisible(SettingsCategory::Physics, "Layer Collision Matrix", filterLower)) {
+		if (SettingsSection section{"Layer Collision Matrix", filterLower}; section) {
+			ImGui::TextWrapped("Checked pairs can collide in 2D and 3D. Each pair is shown once; changes apply in both directions. Query masks are independent.");
+			const float cell = ImGui::GetFrameHeight() + ImGui::GetStyle().ItemSpacing.x;
+			const float labelWidth = ImGui::GetFontSize() * 14.0f;
+			const float gridWidth = labelWidth + cell * layers.VisibleCount;
+			ImGui::SetNextWindowContentSize(ImVec2(gridWidth, 0));
+			ImGui::BeginChild("PhysicsLayerMatrix", ImVec2(0, ImGui::GetFrameHeightWithSpacing() * 18), ImGuiChildFlags_Borders, ImGuiWindowFlags_HorizontalScrollbar);
+			ImGui::TextUnformatted("Layer / index");
+			for (uint32_t col = 0; col < layers.VisibleCount; ++col) {
+				ImGui::SameLine(labelWidth + col * cell);
+				ImGui::Text("%u", col);
+				EditorUI::Tooltip(layers.Names[col].c_str());
+			}
+			for (uint32_t row = 0; row < layers.VisibleCount; ++row) {
+				ImGui::PushID(static_cast<int>(row));
+				ImGui::AlignTextToFramePadding();
+				const std::string label = std::to_string(row) + "  " + layers.Names[row];
+				ImGui::PushClipRect(ImGui::GetCursorScreenPos(), ImVec2(ImGui::GetCursorScreenPos().x + labelWidth - cell * 0.25f, ImGui::GetCursorScreenPos().y + cell), true);
+				ImGui::TextUnformatted(label.c_str());
+				ImGui::PopClipRect();
+				for (uint32_t col = 0; col <= row; ++col) {
+					ImGui::SameLine(labelWidth + col * cell);
+					ImGui::PushID(static_cast<int>(col));
+					bool enabled = layers.CanCollide(row, col);
+					if (ImGui::Checkbox("##Pair", &enabled)) { layers.SetCollision(row, col, enabled); changed = true; }
+					EditorUI::Tooltip((layers.Names[row] + " / " + layers.Names[col]).c_str());
+					ImGui::PopID();
+				}
+				ImGui::PopID();
+			}
+			ImGui::EndChild();
+			ImGui::TextDisabled("2D collider masks can restrict pairs further; matching nonzero groups override the matrix.");
+		}
+		}
 	}
 
 	void ImGuiEditorLayer::RenderSettings_Branding(FunkeProject& project, bool& changed,
@@ -2984,312 +3085,15 @@ namespace Funke {
 				changed = true;
 			}
 			bool devConsole = project.ResolveDevConsole();
-			if (EditorUI::SettingsSwitch((std::string("Dev console (` key, physics debug on ") + PlatformShortcuts::k_PhysicsDebugLabel + ")").c_str(), &devConsole)) {
+			if (EditorUI::SettingsSwitch((std::string("Dev console (") + PlatformShortcuts::k_DevConsoleLabel + ", physics debug on "
+				+ PlatformShortcuts::k_PhysicsDebugLabel + ")").c_str(), &devConsole)) {
 				project.DevConsole = devConsole;
 				changed = true;
 			}
+			ImGui::TextDisabled("Runtime: use the Console button or shortcut. Physics shows collider outlines and contacts.");
 			ImGui::TextDisabled("Default: on for Debug and Development builds, off for Release builds.");
 		}
 		}  // end SectionVisible("Diagnostics")
-
-		if (SectionVisible(SettingsCategory::Build, "ECS Entity Bits", filterLower)) {
-		if (SettingsSection section{"ECS Entity Bits", filterLower}; section) {
-			ImGui::TextUnformatted("Entity ID bits:");
-			const char* entityBitsLabels[] = {
-				"16 bits  (65,535 entities / 65,536 versions)",
-				"20 bits  (1,048,575 entities / 4,096 versions)  [default]",
-				"22 bits  (4,194,303 entities / 1,024 versions)",
-				"24 bits  (16,777,215 entities / 256 versions)",
-				"28 bits  (268,435,455 entities / 16 versions)"
-			};
-			constexpr int entityBitsValues[] = { 16, 20, 22, 24, 28 };
-			int entityBitsIdx = 1; // matches the 20-bit default
-			for (int i = 0; i < IM_ARRAYSIZE(entityBitsValues); ++i) {
-				if (entityBitsValues[i] == project.EntityBits) {
-					entityBitsIdx = i;
-					break;
-				}
-			}
-			ImGui::SetNextItemWidth(-1);
-			if (ImGui::Combo("##EntityBits", &entityBitsIdx, entityBitsLabels, IM_ARRAYSIZE(entityBitsLabels))) {
-				const int newBits = entityBitsValues[entityBitsIdx];
-				if (newBits != project.EntityBits) {
-					project.EntityBits = newBits;
-					changed = true;
-				}
-			}
-			EditorUI::Tooltip(
-				"Maximum number of live entities the scene can hold.\n"
-				"Trades against the per-slot version count EnTT uses\n"
-				"to detect stale handles to recycled IDs.\n"
-				"\n"
-				"Compile-time setting — the engine must be rebuilt for\n"
-				"the change to take effect. Click \"Rebuild Engine\" below\n"
-				"to do that automatically.");
-
-			const int compiledBits = Funke::GetCompiledEntityBits();
-			ImGui::Spacing();
-			if (compiledBits != project.EntityBits) {
-				char bitsStatus[64];
-				std::snprintf(bitsStatus, sizeof(bitsStatus), "Compiled: %d bits   Pending: %d bits",
-					compiledBits, project.EntityBits);
-				EditorUI::StatusText(EditorUI::Tone::Warning, bitsStatus);
-				ImGui::Spacing();
-				if (ImGui::Button("Rebuild Engine")) {
-					ImGui::OpenPopup("Rebuild Engine?");
-				}
-				EditorUI::Tooltip(
-					"Closes the editor and reopens it after the engine has\n"
-					"been rebuilt with the new entityBits setting.\n"
-					"\n"
-					"A separate \"Rebuilding Engine\" window will appear\n"
-					"with progress. Don't close it.");
-			}
-			else {
-				ImGui::TextDisabled("Engine matches the selected width. Choose a different size to enable rebuild.");
-			}
-
-			// Build runs in a detached terminal (not in-process) because the editor/launcher both hold Funke-Engine.dll locked — MSBuild would fail with LNK1104.
-			// Editor writes FunkeEntityBitsConfig.h directly so MSBuild incremental only recompiles TUs that include entt (no premake regen needed).
-			ImGuiUtils::CenterNextModal();
-			ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
-			if (ImGuiDialog::BeginModal("Rebuild Engine?", nullptr,
-				ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
-				ImGui::TextWrapped(
-					"Rebuild the engine with entityBits = %d?\n\n"
-					"The editor will close and a terminal window will open showing the build "
-					"progress. The editor reopens automatically when the build finishes. "
-					"Don't close the terminal window.",
-					project.EntityBits);
-				const int clicked = EditorUI::DialogFooter({ "Rebuild", "Cancel" }, 0);
-				if (clicked == 0) {
-					if (!project.Save()) {
-						FNK_ERROR_TAG("Editor", "Failed to save project settings; engine rebuild aborted.");
-					}
-					else {
-
-					const std::filesystem::path editorExeDir = Path::ExecutableDir();
-					const std::filesystem::path engineRoot =
-						editorExeDir.parent_path().parent_path().parent_path();
-					const std::string msbuildPath = FunkeProject::GetMSBuildPath();
-					const std::filesystem::path slnPath = engineRoot / "Funke.sln";
-				#ifdef FNK_PLATFORM_WINDOWS
-					const std::filesystem::path editorExe = editorExeDir / "Funke-Editor.exe";
-				#else
-					const std::filesystem::path editorExe = editorExeDir / "Funke-Editor";
-				#endif
-					const std::string config = FunkeProject::GetActiveBuildConfiguration();
-					const std::string projectRootDir = project.RootDirectory;
-					const std::string userCsprojPath = project.CsprojPath;
-					const std::filesystem::path packageBuildScript = engineRoot
-						/ "scripts" / "BuildProjectPackages.ps1";
-					const int newEntityBits = project.EntityBits;
-
-				#ifdef FNK_PLATFORM_WINDOWS
-					const unsigned long editorPid = ::GetCurrentProcessId();
-				#else
-					const unsigned long editorPid = static_cast<unsigned long>(::getpid());
-				#endif
-
-					const std::filesystem::path generatedDir = engineRoot
-						/ "Funke-Engine" / "src" / "Generated";
-					const std::filesystem::path headerPath = generatedDir
-						/ "FunkeEntityBitsConfig.h";
-					bool headerWritten = false;
-					{
-						std::error_code dirEc;
-						std::filesystem::create_directories(generatedDir, dirEc);
-						if (!dirEc) {
-							std::ofstream headerOut(headerPath,
-								std::ios::binary | std::ios::trunc);
-							if (headerOut) {
-								headerOut <<
-									"// Auto-generated by the editor's Rebuild Engine flow.\n"
-									"// Matches premake's WriteFunkeEntityBitsConfigHeader().\n"
-									"// Do not edit by hand.\n"
-									"#pragma once\n"
-									"#undef  FUNKE_ENTITY_BITS\n"
-									"#define FUNKE_ENTITY_BITS " << newEntityBits << "\n";
-								headerWritten = static_cast<bool>(headerOut);
-							}
-						}
-						if (!headerWritten) {
-							FNK_ERROR_TAG("Editor",
-								"Failed to write {}; engine rebuild aborted.",
-								headerPath.string());
-						}
-					}
-
-					if (headerWritten) {
-					#ifdef FNK_PLATFORM_WINDOWS
-						std::ostringstream bat;
-						bat <<
-							"@echo off\r\n"
-							"setlocal\r\n"
-							"title Rebuilding Funke Engine (entityBits=" << newEntityBits << ")\r\n"
-							"echo.\r\n"
-							"echo ====================================================\r\n"
-							"echo   Rebuilding Funke Engine  (entityBits=" << newEntityBits << ")\r\n"
-							"echo ====================================================\r\n"
-							"echo.\r\n"
-							"echo Waiting for editor (PID " << editorPid << ") to exit...\r\n"
-							"set /a WAIT_ELAPSED=0\r\n"
-							":wait_loop\r\n"
-							"tasklist /fi \"PID eq " << editorPid << "\" 2>nul | findstr /i \"" << editorPid << "\" >nul\r\n"
-							"if errorlevel 1 goto wait_done\r\n"
-							"set /a WAIT_ELAPSED+=1\r\n"
-							"if %WAIT_ELAPSED% geq 30 (\r\n"
-							"  echo Warning: editor still alive after 30 seconds, proceeding anyway.\r\n"
-							"  goto wait_done\r\n"
-							")\r\n"
-							"timeout /t 1 /nobreak >nul\r\n"
-							"goto wait_loop\r\n"
-							":wait_done\r\n"
-							"echo.\r\n"
-							"echo [1/3] Building user scripts (dotnet build)...\r\n"
-							"echo.\r\n"
-							"dotnet build \"" << userCsprojPath << "\""
-							" -c " << config <<
-							" --nologo -v q -nodeReuse:false -p:UseSharedCompilation=false\r\n"
-							"if errorlevel 1 (\r\n"
-							"  echo.\r\n"
-							"  echo *** User script build FAILED. C# errors above. ***\r\n"
-							"  echo.\r\n"
-							"  pause\r\n"
-							"  exit /b 1\r\n"
-							")\r\n"
-							"echo.\r\n"
-							"echo [2/3] Building solution (this is the long step)...\r\n"
-							"echo.\r\n"
-							"pushd \"" << engineRoot.string() << "\"\r\n"
-							"\"" << msbuildPath << "\" \"" << slnPath.string() << "\""
-							" /p:Configuration=" << config <<
-							" /p:Platform=x64 /m /v:minimal /nologo\r\n"
-							"if errorlevel 1 (\r\n"
-							"  echo.\r\n"
-							"  echo *** MSBuild FAILED. Scroll up for compile errors. ***\r\n"
-							"  echo.\r\n"
-							"  pause\r\n"
-							"  exit /b 1\r\n"
-							")\r\n"
-							"popd\r\n"
-							"echo.\r\n"
-							"echo [3/3] Rebuilding enabled project packages...\r\n"
-							"echo.\r\n"
-							"powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"" << packageBuildScript.string() << "\""
-							" -EngineRoot \"" << engineRoot.string() << "\""
-							" -ProjectRoot \"" << projectRootDir << "\""
-							" -Configuration \"" << config << "\""
-							" -Platform \"x64\""
-							" -MSBuildPath \"" << msbuildPath << "\"\r\n"
-							"if errorlevel 1 (\r\n"
-							"  echo.\r\n"
-							"  echo *** Project package build FAILED. Scroll up for errors. ***\r\n"
-							"  echo.\r\n"
-							"  pause\r\n"
-							"  exit /b 1\r\n"
-							")\r\n"
-							"echo.\r\n"
-							"echo [Relaunching editor...]\r\n"
-							"echo.\r\n"
-							"start \"\" \"" << editorExe.string() << "\" --project=\"" << projectRootDir << "\"\r\n"
-							"endlocal\r\n"
-							"exit /b 0\r\n";
-						const std::string scriptText = bat.str();
-						const char* const scriptName = "engine-rebuild.bat";
-					#else
-						(void)msbuildPath;
-						(void)slnPath;
-						(void)packageBuildScript;
-						std::string makeConfig = config;
-						std::transform(makeConfig.begin(), makeConfig.end(), makeConfig.begin(),
-							[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-						const std::string root = ShellQuote(engineRoot.string());
-						const std::string projectRoot = ShellQuote(projectRootDir);
-						const std::string premake = ShellQuote(FunkeProject::GetPremakePath());
-						const std::string make = ShellQuote(FunkeProject::GetMakeProgram());
-						const std::string packageGenerator = ShellQuote((engineRoot / "premake" / "project-packages.lua").string());
-						const std::string packageWorkspace = ShellQuote(projectRootDir + "/.funke/build/packages");
-					#if defined(FNK_PLATFORM_MACOS)
-						const char* const premakeSystem = "macosx";
-					#else
-						const char* const premakeSystem = "linux";
-					#endif
-						std::ostringstream sh;
-						sh <<
-							"#!/bin/sh\n"
-							"fail() { echo; echo \"*** $1 Scroll up for errors. ***\"; echo 'Press Enter to close.'; read _; exit 1; }\n"
-							"echo '===================================================='\n"
-							"echo '  Rebuilding Funke Engine  (entityBits=" << newEntityBits << ")'\n"
-							"echo '===================================================='\n"
-							"echo 'Waiting for editor (PID " << editorPid << ") to exit...'\n"
-							"waited=0\n"
-							"while kill -0 " << editorPid << " 2>/dev/null && [ $waited -lt 30 ]; do sleep 1; waited=$((waited + 1)); done\n"
-							"echo; echo '[1/3] Building user scripts (dotnet build)...'\n"
-							"dotnet build " << ShellQuote(userCsprojPath) << " -c " << config <<
-							" --nologo -v q -nodeReuse:false -p:UseSharedCompilation=false || fail 'User script build FAILED.'\n"
-							"echo; echo '[2/3] Building the engine (this is the long step)...'\n"
-							"cd " << root << " || fail 'Engine folder missing.'\n"
-							<< make << " config=" << makeConfig << " -j\"$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)\" "
-							"Funke-Engine Funke-Runtime Funke-Editor || fail 'Engine build FAILED.'\n"
-							"echo; echo '[3/3] Rebuilding enabled project packages...'\n"
-							"if [ -d " << ShellQuote(projectRootDir + "/Packages") << " ]; then\n"
-							// Newline-only splitting keeps paths with spaces intact in the loops below.
-							"  IFS='\n'\n"
-							"  " << premake << " --file=" << packageGenerator << " --os=" << premakeSystem << " vs2022 --funke-project=" << projectRoot
-								<< " || fail 'Package workspace generation FAILED.'\n"
-							"  " << premake << " --file=" << packageGenerator << " gmake --funke-project=" << projectRoot
-								<< " || fail 'Package workspace generation FAILED.'\n"
-							"  for project in $(find " << packageWorkspace << "/generated -name '*.vcxproj'); do\n"
-							"    " << make << " -C " << packageWorkspace << " config=" << makeConfig << " \"$(basename \"$project\" .vcxproj)\" || fail 'Native package build FAILED.'\n"
-							"  done\n"
-							"  for project in $(find " << packageWorkspace << "/generated -name '*.csproj'); do\n"
-							"    dotnet build \"$project\" -c " << config << " -p:Platform=x64 --nologo -v q || fail 'Managed package build FAILED.'\n"
-							"  done\n"
-							"fi\n"
-							"echo; echo '[Relaunching editor...]'\n"
-							"nohup " << ShellQuote(editorExe.string()) << " --project=" << projectRoot << " >/dev/null 2>&1 &\n"
-							"exit 0\n";
-						const std::string scriptText = sh.str();
-						// .command: macOS Terminal runs it when opened; Linux terminals take any name.
-						const char* const scriptName = "engine-rebuild.command";
-					#endif
-
-						std::error_code mkdirEc;
-						const std::filesystem::path batDir = engineRoot / "bin-int";
-						std::filesystem::create_directories(batDir, mkdirEc);
-						const std::filesystem::path batPath = batDir / scriptName;
-						std::ofstream batFile(batPath, std::ios::binary | std::ios::trunc);
-						batFile << scriptText;
-						const bool scriptWritten = static_cast<bool>(batFile);
-						batFile.close();
-					#ifndef FNK_PLATFORM_WINDOWS
-						std::error_code permissionEc;
-						std::filesystem::permissions(batPath, std::filesystem::perms::owner_exec,
-							std::filesystem::perm_options::add, permissionEc);
-					#endif
-
-						if (scriptWritten) {
-							m_PendingEngineRebuildWorkingDirectory = engineRoot.string();
-							RequestEditorAction(PendingEditorAction::RebuildEngine, batPath.string());
-							ImGui::CloseCurrentPopup();
-						}
-						else {
-							FNK_ERROR_TAG("Editor",
-								"Failed to write engine rebuild script at {}",
-								batPath.string());
-						}
-					}
-					}
-				}
-				else if (clicked == 1) {
-					ImGui::CloseCurrentPopup();
-				}
-				ImGui::EndPopup();
-			}
-
-		}
-		}  // end SectionVisible("ECS Entity Bits")
 	}
 
 	void ImGuiEditorLayer::RenderSettings_Editor(FunkeProject& project, bool& changed,
@@ -3689,7 +3493,8 @@ namespace Funke {
 	}
 
 	void ImGuiEditorLayer::RenderAssetInspector() {
-		const std::string& selectedPath = m_AssetBrowser.GetSelectedPath();
+		// Opening a folder clears the browser selection; keep the action's path alive.
+		const std::string selectedPath = m_AssetBrowser.GetSelectedPath();
 		if (selectedPath.empty()) {
 			// Selection cleared. If the prefab inspector held a dirty prefab,
 			// the save/discard prompt is driven from the dispatch above; here
@@ -3711,6 +3516,29 @@ namespace Funke {
 		std::string name = path.filename().string();
 		std::string ext = path.extension().string();
 		std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+
+		// Shared actions precede every specialized inspector, including prefabs.
+		const char* fileManagerLabel = Platform::OpenInFileManagerLabel();
+		const ImGuiStyle& style = ImGui::GetStyle();
+		const float actionsWidth = ImGui::CalcTextSize("Open").x + ImGui::CalcTextSize(fileManagerLabel).x
+			+ style.FramePadding.x * 4.0f + style.ItemSpacing.x;
+		const bool actionsFit = actionsWidth <= ImGui::GetContentRegionAvail().x;
+		ImGui::PushID("AssetInspectorActions");
+		if (EditorUI::Button("Open", EditorUI::ButtonVariant::Primary)) {
+			m_AssetBrowser.OpenAssetPath(selectedPath);
+			ImGui::PopID();
+			return;
+		}
+		EditorUI::Tooltip("Open this asset using the Asset Browser's default action.");
+		if (actionsFit) ImGui::SameLine();
+		if (EditorUI::Button(fileManagerLabel)) {
+			if (!Platform::RevealInFileManager(Path::FromUtf8(selectedPath))) {
+				FNK_WARN_TAG("Inspector", "Could not show asset '{}' in the file manager.", selectedPath);
+			}
+		}
+		EditorUI::Tooltip("Show this asset in the system file manager.");
+		ImGui::PopID();
+		ImGui::Separator();
 
 		// `.prefab` selection routes through PrefabInspector. Selection change
 		// while a dirty prefab is open opens a save/discard modal — the new
@@ -3766,18 +3594,10 @@ namespace Funke {
 				if (const auto asset = AnimatorControllerLibrary::Get(guid)) {
 					ImGui::Text("%zu states, %zu transitions, %zu parameters", asset->States.size(), asset->Transitions.size(), asset->Parameters.size());
 				}
-				if (EditorUI::Button("Open in Animator", EditorUI::ButtonVariant::Primary)) {
-					m_AnimatorWindow.OpenController(guid);
-					m_ShowAnimatorWindow = true;
-				}
 			}
 			else {
 				if (const auto asset = AnimationClipLibrary::Get(guid)) {
 					ImGui::Text("%.2f s%s, %zu tracks, %zu events", asset->Length, asset->Loop ? ", looping" : "", asset->Tracks.size(), asset->Events.size());
-				}
-				if (EditorUI::Button("Open in Animation", EditorUI::ButtonVariant::Primary)) {
-					m_AnimationWindow.OpenClip(guid);
-					m_ShowAnimationWindow = true;
 				}
 			}
 			return;

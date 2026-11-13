@@ -4,7 +4,7 @@ namespace Funke;
 
 public static class Window
 {
-    /// <summary>Fired same-frame as the window resize event; skipped while minimised so subscribers never see a transient 0×0.</summary>
+    /// <summary>Fired for changed window sizes, including during interactive resizing. Size is refreshed before handlers run; skipped while minimised so subscribers never see a transient 0×0.</summary>
     public static event Action? Resized;
     public static event Action<bool>? FocusChanged;
     public static event Action? Maximized;
@@ -42,6 +42,18 @@ public static class Window
     {
         get => InternalCalls.Window_GetTitle();
         set => InternalCalls.Window_SetTitle(value);
+    }
+
+    /// <summary>
+    /// Base title-bar color of the native window. Alpha 0 restores the OS default;
+    /// focus-specific native colors can override it. The getter returns the configured color,
+    /// or transparent black when no window exists. Currently rendered on Windows only.
+    /// Setting this is ignored in the editor, like <see cref="Title"/>.
+    /// </summary>
+    public static Color TitlebarColor
+    {
+        get => InternalCalls.Window_GetTitlebarColor();
+        set => InternalCalls.Window_SetTitlebarColor(value);
     }
 
     public static void Minimize() => InternalCalls.Window_Minimize();

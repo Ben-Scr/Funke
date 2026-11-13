@@ -10,7 +10,7 @@ struct ImGuiInputTextCallbackData;
 
 namespace Funke {
 
-	// Dev console window of Debug/Development builds: ` (the key left of 1) or a three-finger tap opens it,
+	// Dev console window of Debug/Development builds: a visible button, shortcut or three-finger tap opens it.
 	// Commands come from DevConsole; keyboard defaults live in PlatformShortcuts.
 	class RuntimeConsoleLayer : public Layer {
 	public:
@@ -24,6 +24,8 @@ namespace Funke {
 
 	private:
 		void Toggle();
+		void TogglePhysicsDebug();
+		void DrawControls();
 		void Submit();
 		bool DetectThreeFingerTap() const;
 		static int InputCallback(ImGuiInputTextCallbackData* data);

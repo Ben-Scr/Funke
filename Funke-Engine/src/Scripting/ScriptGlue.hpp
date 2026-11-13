@@ -4,7 +4,7 @@
 namespace Funke {
 
 	// Bump together with InteropHandshake.LayoutVersion (ScriptHostBridge.cs) on any add/remove/reorder in NativeBindings or ManagedCallbacks.
-	inline constexpr int32_t k_ScriptInteropLayoutVersion = 52;
+	inline constexpr int32_t k_ScriptInteropLayoutVersion = 55;
 
 	/// Layout must match C# NativeBindingsStruct exactly (Sequential, blittable).
 	struct NativeBindings
@@ -1380,6 +1380,23 @@ namespace Funke {
 		void (*TextRenderer_SetBold)(uint64_t entityID, int enabled);
 		int (*TextRenderer_GetItalic)(uint64_t entityID);
 		void (*TextRenderer_SetItalic)(uint64_t entityID, int enabled);
+		// Window appearance and measured frame rate (append-only native table).
+		void (*Window_GetTitlebarColor)(float* r, float* g, float* b, float* a);
+		void (*Window_SetTitlebarColor)(float r, float g, float b, float a);
+		float (*Application_GetFps)();
+
+		// 3D gizmos (appended; order matches NativeBindingsStruct).
+		void (*Gizmo_DrawLine3D)(float x1, float y1, float z1, float x2, float y2, float z2);
+		void (*Gizmo_DrawBox)(float x, float y, float z, float sx, float sy, float sz, float rx, float ry, float rz);
+		void (*Gizmo_DrawSphere)(float x, float y, float z, float radius, int segments);
+		// Development-only snapshot; null/zero probes availability, exact byte size required for a copy.
+		int (*DebugStats_GetSnapshot)(void* snapshot, int size);
+		// Named physics layers (append-only; matches NativeBindingsStruct).
+		int (*PhysicsLayer_GetName)(uint64_t index, char* outBuffer, int capacity);
+		int (*PhysicsLayer_GetIndex)(const char* name);
+		uint64_t (*Entity_GetLayer)(uint64_t entityID);
+		void (*Entity_SetLayer)(uint64_t entityID, uint64_t mask);
+
 	};
 
 	/// Layout must match C# ManagedCallbacksStruct exactly.

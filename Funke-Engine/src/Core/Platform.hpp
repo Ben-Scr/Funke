@@ -32,6 +32,8 @@ namespace Funke::Platform {
 	FUNKE_API bool OpenUrl(const std::string& url);
 	// Opens a file with its default application, or a folder in the file manager.
 	FUNKE_API bool OpenPath(const std::filesystem::path& path);
+	// Folder-opening label: "Open in Explorer", "Open in Finder" or "Open in File Manager".
+	FUNKE_API const char* OpenInFileManagerLabel();
 	// Shows the file manager with the item selected where supported, else opens its parent folder.
 	FUNKE_API bool RevealInFileManager(const std::filesystem::path& path);
 	// Menu label for RevealInFileManager: "Show in Explorer", "Reveal in Finder" or "Show in File Manager".

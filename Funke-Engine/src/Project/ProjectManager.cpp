@@ -1,6 +1,13 @@
 #include "pch.hpp"
 #include "Project/ProjectManager.hpp"
 #include "Project/FunkeProject.hpp"
+#if FUNKE_WITH_PHYSICS2D
+#include "Physics/PhysicsSystem2D.hpp"
+#endif
+#if FUNKE_WITH_PHYSICS3D
+#include "Physics3D/PhysicsSystem3D.hpp"
+#include "Scene/SceneManager.hpp"
+#endif
 #include "Assets/AssetRegistry.hpp"
 #include "Assets/AssetBundle.hpp"
 #include "Localization/GameLocalization.hpp"
@@ -57,7 +64,24 @@ namespace Funke {
 #endif
 	}
 
+	void ProjectManager::ApplyPhysicsDefaults() {
+		const Vec2 gravity2D = s_CurrentProject ? s_CurrentProject->PhysicsGravity2D : Vec2(0, -9.8f);
+		const Vec3 gravity3D = s_CurrentProject ? s_CurrentProject->PhysicsGravity3D : Vec3(0, -9.81f, 0);
+#if FUNKE_WITH_PHYSICS2D
+		if (PhysicsSystem2D::IsInitialized()) {
+			PhysicsSystem2D::GetMainPhysicsWorld().SetGravity(gravity2D);
+			PhysicsSystem2D::WakeAllBodies();
+		}
+#endif
+#if FUNKE_WITH_PHYSICS3D
+		SceneManager::ForeachLoadedScene([&](Scene& scene) {
+			if (auto* world = PhysicsSystem3D::FindWorld(scene, false)) world->SetGravity(gravity3D);
+		});
+#endif
+	}
+
 	void ProjectManager::ApplyCurrentProjectSettings() {
+		ApplyPhysicsDefaults();
 #if FUNKE_WITH_APPLICATION
 		// Pure static setters, safe even before FontManager::Initialize.
 		if (s_CurrentProject) {

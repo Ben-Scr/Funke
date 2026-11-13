@@ -28,11 +28,31 @@
 
 namespace Funke {
 	namespace {
+		constexpr size_t k_GizmoColorCount = static_cast<size_t>(EditorGizmoColor::Count);
+		constexpr std::array<const char*, k_GizmoColorCount> k_GizmoColorKeys = {
+			"PhysicsCollider", "ParticleSystem", "CameraFrame", "SpriteOutline",
+			"SpriteOutlineHalo", "RectTransform", "TextMargin",
+		};
+		const std::array<Color, k_GizmoColorCount> k_DefaultGizmoColors = {
+			Color(0.20f, 1.0f, 0.35f, 1.0f), Color(1.0f, 0.20f, 0.75f, 1.0f),
+			Color::White(), Color(1.0f, 0.65f, 0.10f, 1.0f),
+			Color(0.02f, 0.02f, 0.02f, 0.85f), Color(0.30f, 0.80f, 1.0f, 1.0f),
+			Color(0.95f, 0.95f, 0.95f, 0.85f),
+		};
+
+		Color SanitizeGizmoColor(const Color& color, const Color& fallback) {
+			auto channel = [](float value, float defaultValue) {
+				return std::isfinite(value) ? std::clamp(value, 0.0f, 1.0f) : defaultValue;
+			};
+			return { channel(color.r, fallback.r), channel(color.g, fallback.g),
+				channel(color.b, fallback.b), channel(color.a, fallback.a) };
+		}
+
 		constexpr size_t k_EditorViewToolbarItemCount = static_cast<size_t>(EditorViewToolbarItem::Count);
 
 		// JSON keys, indexed by EditorViewToolbarItem.
 		constexpr const char* k_EditorViewToolbarKeys[k_EditorViewToolbarItemCount] = {
-			"GizmoModes", "ViewMode3D", "DrawMode", "Gizmos", "PostProcessing", "GridSnap", "OptionsPill",
+			"GizmoModes", "ViewMode3D", "DrawMode", "Gizmos", "PostProcessing", "GridSnap", "OptionsPill", "Rendering",
 		};
 
 		constexpr std::array<bool, k_EditorViewToolbarItemCount> AllToolbarItemsVisible() {
@@ -64,6 +84,7 @@ namespace Funke {
 			EditorThemeMode PersistedTheme = EditorThemeMode::SystemDefault;
 			ImVec4 CustomColors[ImGuiCol_COUNT]{};
 			bool CustomColorsSeeded = false;
+			std::array<Color, k_GizmoColorCount> GizmoColors = k_DefaultGizmoColors;
 
 			uint64_t EditorFontAssetId = k_DefaultFontAssetId;
 			int EditorFontZoomPercent = EditorPreferences::k_DefaultEditorFontZoomPercent;
@@ -84,6 +105,8 @@ namespace Funke {
 			bool ConfirmOnDeleteAsset = true;
 
 			EditorCamera3DSettings Camera3D;
+			EditorViewSettings View2D;
+			EditorViewSettings View3D;
 
 			bool GridSnapEnabled = false;
 			float GridSizeX = EditorPreferences::k_DefaultGridSize;
@@ -289,6 +312,18 @@ namespace Funke {
 			return;
 		}
 
+		if (const Json::Value* colors = root.FindMember("GizmoColors"); colors && colors->IsObject()) {
+			for (size_t i = 0; i < k_GizmoColorCount; ++i) {
+				const Json::Value* entry = colors->FindMember(k_GizmoColorKeys[i]);
+				if (!entry || !entry->IsArray() || entry->GetArray().size() != 4) continue;
+				const auto& channels = entry->GetArray();
+				if (!std::all_of(channels.begin(), channels.end(), [](const Json::Value& v) { return v.IsNumber(); })) continue;
+				ImVec4 parsed;
+				if (JsonToVec4(*entry, parsed)) {
+					s.GizmoColors[i] = SanitizeGizmoColor(Color(parsed.x, parsed.y, parsed.z, parsed.w), k_DefaultGizmoColors[i]);
+				}
+			}
+		}
 		if (const Json::Value* v = root.FindMember("Theme")) {
 			s.Theme = ThemeModeFromString(v->AsStringOr("SystemDefault"));
 		}
@@ -427,6 +462,8 @@ namespace Funke {
 			s.AlignmentSnapThreshold = static_cast<float>(v->AsDoubleOr(EditorPreferences::k_DefaultAlignmentSnapThreshold));
 			if (s.AlignmentSnapThreshold < EditorPreferences::k_MinAlignmentSnapThreshold) s.AlignmentSnapThreshold = EditorPreferences::k_MinAlignmentSnapThreshold;
 		}
+		if (const auto* view = root.FindMember("View2D")) s.View2D = EditorViewSettings::FromJson(*view);
+		if (const auto* view = root.FindMember("View3D")) s.View3D = EditorViewSettings::FromJson(*view);
 		if (const Json::Value* v = root.FindMember("EditorViewToolbar"); v && v->IsObject()) {
 			for (size_t i = 0; i < k_EditorViewToolbarItemCount; ++i) {
 				if (const Json::Value* item = v->FindMember(k_EditorViewToolbarKeys[i])) {
@@ -475,6 +512,12 @@ namespace Funke {
 		std::filesystem::create_directories(path.parent_path(), ec);
 
 		Json::Value root = Json::Value::MakeObject();
+		Json::Value gizmoColors = Json::Value::MakeObject();
+		for (size_t i = 0; i < k_GizmoColorCount; ++i) {
+			const Color& color = s.GizmoColors[i];
+			gizmoColors.AddMember(std::string(k_GizmoColorKeys[i]), Vec4ToJson(ImVec4(color.r, color.g, color.b, color.a)));
+		}
+		root.AddMember("GizmoColors", std::move(gizmoColors));
 		root.AddMember("Theme", Json::Value(std::string(ThemeModeToString(
 			s.ThemeFromEnvironment ? s.PersistedTheme : s.Theme))));
 		root.AddMember("EditorFontAssetId", Json::Value(std::to_string(s.EditorFontAssetId)));
@@ -492,6 +535,8 @@ namespace Funke {
 		root.AddMember("AutoReloadExternalSceneChanges", Json::Value(s.AutoReloadExternalSceneChanges));
 		root.AddMember("ConfirmOnDeleteEntity", Json::Value(s.ConfirmOnDeleteEntity));
 		root.AddMember("ConfirmOnDeleteAsset", Json::Value(s.ConfirmOnDeleteAsset));
+		root.AddMember("View2D", s.View2D.ToJson());
+		root.AddMember("View3D", s.View3D.ToJson());
 		{
 			const EditorCamera3DSettings& settings = s.Camera3D;
 			Json::Value camera = Json::Value::MakeObject();
@@ -604,6 +649,56 @@ namespace Funke {
 
 	EditorThemeMode EditorPreferences::GetThemeMode() {
 		return S().Theme;
+	}
+
+	Color EditorPreferences::GetGizmoColor(EditorGizmoColor gizmo) {
+		const size_t index = static_cast<size_t>(gizmo);
+		return index < k_GizmoColorCount ? S().GizmoColors[index] : Color::White();
+	}
+
+	void EditorPreferences::SetGizmoColor(EditorGizmoColor gizmo, const Color& color) {
+		const size_t index = static_cast<size_t>(gizmo);
+		if (index >= k_GizmoColorCount) return;
+		const Color sanitized = SanitizeGizmoColor(color, k_DefaultGizmoColors[index]);
+		if (S().GizmoColors[index].ToArray() == sanitized.ToArray()) return;
+		S().GizmoColors[index] = sanitized;
+		Save();
+	}
+
+	void EditorPreferences::ResetGizmoColors() {
+		S().GizmoColors = k_DefaultGizmoColors;
+		Save();
+	}
+
+	void EditorPreferences::ResetAppearance() {
+		const State defaults;
+		S().ThemeFromEnvironment = false;
+		ResetCustomColorsToDefault();
+		SetThemeMode(defaults.Theme);
+		SetEditorFontAssetId(defaults.EditorFontAssetId);
+		SetEditorFontZoomPercent(defaults.EditorFontZoomPercent);
+		SetHierarchyRowScale(defaults.HierarchyRowScale);
+	}
+
+	void EditorPreferences::ResetScripting() {
+		const State defaults;
+		SetAutoRecompileScripts(defaults.AutoRecompileScripts);
+		SetRecompileScriptsOnPlay(defaults.RecompileScriptsOnPlay);
+		SetResetRegisteredStateOnPlay(defaults.ResetRegisteredStateOnPlay);
+		SetExitPlayModeOnRecompilation(defaults.ExitPlayModeOnRecompilation);
+	}
+
+	void EditorPreferences::ResetBehavior() {
+		const State defaults;
+		SetShowFileExtensions(defaults.ShowFileExtensions);
+		SetAutoSaveScenes(defaults.AutoSaveScenes);
+		SetAutoSaveIntervalSeconds(defaults.AutoSaveIntervalSeconds);
+		SetAutoSavePrefabs(defaults.AutoSavePrefabs);
+		SetAutoReloadExternalSceneChanges(defaults.AutoReloadExternalSceneChanges);
+		SetConfirmOnDeleteEntity(defaults.ConfirmOnDeleteEntity);
+		SetConfirmOnDeleteAsset(defaults.ConfirmOnDeleteAsset);
+		SetAlignmentGuidesEnabled(defaults.AlignmentGuidesEnabled);
+		SetAlignmentSnapThreshold(defaults.AlignmentSnapThreshold);
 	}
 
 	void EditorPreferences::SetThemeMode(EditorThemeMode mode) {
@@ -805,6 +900,17 @@ namespace Funke {
 	void EditorPreferences::SetConfirmOnDeleteAsset(bool value) {
 		if (S().ConfirmOnDeleteAsset == value) return;
 		S().ConfirmOnDeleteAsset = value;
+		Save();
+	}
+
+	const EditorViewSettings& EditorPreferences::GetViewSettings(bool threeD) {
+		return threeD ? S().View3D : S().View2D;
+	}
+
+	void EditorPreferences::SetViewSettings(bool threeD, const EditorViewSettings& settings) {
+		auto& current = threeD ? S().View3D : S().View2D;
+		if (current == settings) return;
+		current = settings;
 		Save();
 	}
 

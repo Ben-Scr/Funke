@@ -1,0 +1,30 @@
+{
+  "steps": [
+    { "at": "0.5s", "mouse": [0.045, 0.518], "button": "left" },
+    { "at": "1s", "mouse": [0.025, 0.734], "button": "left" },
+    { "at": "1.5s", "mouse": [0.175, 0.93], "button": "left" },
+    { "at": "2.5s", "command": "bench.check 1 1000; bench.check-result Create false false 1" },
+    { "at": "3s", "mouse": [0.111, 0.212], "button": "left" },
+    { "at": "3.5s", "mouse": [0.175, 0.93], "button": "left" },
+    { "at": "4.5s", "command": "bench.check 2 0; bench.check-result Destroy false false 1" },
+    { "at": "5s", "mouse": [0.025, 0.734], "button": "left" },
+    { "at": "5.3s", "mouse": [0.025, 0.78], "button": "left" },
+    { "at": "5.6s", "mouse": [0.111, 0.307], "button": "left" },
+    { "at": "6s", "mouse": [0.175, 0.93], "button": "left" },
+    { "at": "8s", "command": "bench.check 3 1000; bench.check-result Render2D true true" },
+    { "at": "8.5s", "screenshot": "animated-2d" },
+    { "at": "9s", "mouse": [0.111, 0.355], "button": "left" },
+    { "at": "9.5s", "mouse": [0.175, 0.93], "button": "left" },
+    { "at": "12s", "command": "bench.check 4 1000; bench.check-result Render3D true true" },
+    { "at": "12.3s", "screenshot": "animated-3d" },
+    { "at": "12.5s", "mouse": [0.025, 0.734], "button": "left" },
+    { "at": "13s", "mouse": [0.175, 0.93], "button": "left" },
+    { "at": "16s", "command": "bench.check 5 1000; bench.check-result Render3D false true" },
+    { "at": "16.2s", "mouse": [0.025, 0.827], "button": "left" },
+    { "at": "17s", "command": "bench.once Create 100000 true" },
+    { "at": "20s", "command": "bench.check 6 100000; bench.check-result Create true false 1 true; bench.check-export" },
+    { "at": "21s", "mouse": [0.803, 0.036], "button": "left" },
+    { "at": "22s", "command": "bench.check 6 0" },
+    { "at": "23s", "quit": true }
+  ]
+}

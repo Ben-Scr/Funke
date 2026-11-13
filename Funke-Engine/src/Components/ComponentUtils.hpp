@@ -95,10 +95,8 @@ namespace Funke {
 
 		template<typename TComponent>
 		static TComponent* TryGetComponent(entt::registry& registry, EntityHandle entity) {
-			if (!registry.valid(entity) || !registry.all_of<TComponent>(entity))
-				return nullptr;
-
-			return &registry.get<TComponent>(entity);
+			if (!registry.valid(entity)) return nullptr;
+			return registry.try_get<TComponent>(entity);
 		}
 
 

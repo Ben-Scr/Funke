@@ -32,6 +32,8 @@ namespace Funke {
 		bool CanRedoAssets() const { return !IsImportingAssets() && !IsDeleting() && m_RenamePath.empty() && m_FileHistory.CanRedo(); }
 		std::string UndoRedoAssets(bool redo);
 		static void RequestRevealAsset(const std::string& path);
+		// Uses the same routing as double-clicking an asset (including folders).
+		void OpenAssetPath(const std::string& path);
 
 		// Drop every cached thumbnail. Called by the editor's hot-reload
 		// callback after image files on disk change so the asset-tile
@@ -175,7 +177,6 @@ namespace Funke {
 
 		bool TryCreatePrefabFromHierarchyDrop(const struct ImGuiPayload* payload, const std::string& targetDirectory);
 		void OpenAssetExternal(const DirectoryEntry& entry);
-		void OpenAssetPath(const std::string& path);
 		void RevealAssetInExplorer(const std::string& path);
 		bool RevealAssetInBrowser(const std::string& path);
 

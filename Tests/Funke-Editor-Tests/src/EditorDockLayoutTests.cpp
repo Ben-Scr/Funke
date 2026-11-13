@@ -25,6 +25,9 @@ namespace {
 			io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures;
 			io.DisplaySize = ImVec2(1920.0f, 1080.0f);
 			io.DeltaTime = 1.0f / 60.0f;
+			WindowSettings.Install();
+			WindowSettings.SetCallbacks([this]() { return OptionalWindows; },
+				[this](const EditorDockLayout::WindowVisibility& state) { OptionalWindows = state; });
 		}
 		~HeadlessImGui() { ImGui::DestroyContext(Context); }
 
@@ -42,11 +45,18 @@ namespace {
 				ImGui::Begin(name);
 				ImGui::End();
 			}
+			for (auto& [name, open] : OptionalWindows) {
+				if (!open) continue;
+				ImGui::Begin(name.c_str(), &open);
+				ImGui::End();
+			}
 			ImGui::EndFrame();
 			return dockspaceId;
 		}
 
 		ImGuiContext* Context = nullptr;
+		EditorDockLayout::WindowSettings WindowSettings;
+		EditorDockLayout::WindowVisibility OptionalWindows;
 	};
 
 	ImGuiDockNode* NodeOf(const char* windowName) {
@@ -81,6 +91,93 @@ TEST_CASE("EditorDockLayout builds the default arrangement into an empty dockspa
 	CHECK(NodeOf("Log")->Pos.x > NodeOf("Project")->Pos.x);
 	CHECK(NodeOf("Entities")->Size.x > 100.0f);
 	CHECK(NodeOf("Inspector")->Size.x > 100.0f);
+}
+
+TEST_CASE("EditorDockLayout restores optional tabs order and selection when switching layouts or restarting") {
+	std::string saved;
+	std::vector<ImGuiID> inspectorTabs;
+	ImGuiID selectedInspector = 0, selectedProject = 0;
+	const auto tabIds = [](const char* name) {
+		std::vector<ImGuiID> result;
+		for (const auto& tab : NodeOf(name)->TabBar->Tabs) result.push_back(tab.ID);
+		return result;
+	};
+	const auto verify = [&](HeadlessImGui& imgui) {
+		CHECK(imgui.OptionalWindows.at("Project Settings"));
+		CHECK(imgui.OptionalWindows.at("Animation"));
+		CHECK_FALSE(imgui.OptionalWindows.at("Profiler"));
+		for (int i = 0; i < 3; ++i) imgui.Frame("Dockspace", BuildDefaultWhenUndocked);
+		REQUIRE(NodeOf("Project Settings") != nullptr);
+		REQUIRE(NodeOf("Animation") != nullptr);
+		CHECK(NodeOf("Project Settings") == NodeOf("Inspector"));
+		CHECK(NodeOf("Animation") == NodeOf("Project"));
+		CHECK(NodeOf("Inspector")->IsLeafNode());
+		CHECK(NodeOf("Project")->IsLeafNode());
+		CHECK(tabIds("Inspector") == inspectorTabs);
+		CHECK(NodeOf("Inspector")->SelectedTabId == selectedInspector);
+		CHECK(NodeOf("Project")->SelectedTabId == selectedProject);
+	};
+	{
+		HeadlessImGui imgui;
+		imgui.OptionalWindows = { { "Project Settings", true }, { "Animation", true }, { "Profiler", false } };
+		imgui.Frame("Dockspace", [](ImGuiID id, ImVec2 size) {
+			EditorDockLayout::BuildDefault(id, size);
+			ImGui::DockBuilderDockWindow("Project Settings", ImGui::FindWindowSettingsByID(ImHashStr("Inspector"))->DockId);
+			ImGui::DockBuilderFinish(id);
+		});
+		imgui.Frame("Dockspace");
+		imgui.Frame("Dockspace");
+		ImGuiTabBar* tabs = NodeOf("Inspector")->TabBar;
+		REQUIRE(tabs != nullptr);
+		REQUIRE(tabs->Tabs.Size == 2);
+		// Reorder through the same queue as dragging a tab, then select the optional tools.
+		ImGui::TabBarQueueReorder(tabs, &tabs->Tabs[1], -1);
+		ImGui::SetWindowFocus("Project Settings");
+		ImGui::SetWindowFocus("Animation");
+		imgui.Frame("Dockspace");
+		imgui.Frame("Dockspace");
+		inspectorTabs = tabIds("Inspector");
+		selectedInspector = ImGui::FindWindowByName("Project Settings")->TabId;
+		selectedProject = ImGui::FindWindowByName("Animation")->TabId;
+		CHECK(inspectorTabs.front() == selectedInspector);
+		CHECK(NodeOf("Inspector")->SelectedTabId == selectedInspector);
+		CHECK(NodeOf("Project")->SelectedTabId == selectedProject);
+		saved = ImGui::SaveIniSettingsToMemory();
+
+		imgui.OptionalWindows = { { "Project Settings", false }, { "Animation", false }, { "Profiler", true } };
+		imgui.Frame("Dockspace", EditorDockLayout::BuildDefault);
+		imgui.Frame("Dockspace");
+		ImGui::SetWindowFocus("Inspector");
+		ImGui::ClearIniSettings();
+		ImGui::LoadIniSettingsFromMemory(saved.c_str(), saved.size());
+		verify(imgui);
+	}
+	// Startup loads settings before the editor has registered its window callbacks.
+	HeadlessImGui restarted;
+	restarted.WindowSettings.ClearCallbacks();
+	ImGui::LoadIniSettingsFromMemory(saved.c_str(), saved.size());
+	restarted.WindowSettings.SetCallbacks([&]() { return restarted.OptionalWindows; },
+		[&](const auto& state) { restarted.OptionalWindows = state; });
+	verify(restarted);
+}
+
+TEST_CASE("EditorDockLayout visibility remains compatible with old presets and survives editor detach") {
+	HeadlessImGui imgui;
+	imgui.OptionalWindows = { { "Animation", true }, { "Project Settings", false }, { "ScriptWindow_My.Tool", true } };
+	imgui.Frame("Dockspace", BuildDefaultWhenUndocked);
+	const std::string saved = ImGui::SaveIniSettingsToMemory();
+	CHECK(saved.find("Animation=1") != std::string::npos);
+	CHECK(saved.find("Project Settings=0") != std::string::npos);
+	CHECK(saved.find("ScriptWindow_My.Tool=1") != std::string::npos);
+	ImGui::ClearIniSettings();
+	ImGui::LoadIniSettingsFromMemory("[Window][Inspector]\nSize=200,300\n");
+	CHECK(imgui.OptionalWindows.at("Animation"));
+	CHECK_FALSE(imgui.OptionalWindows.at("Project Settings"));
+	imgui.WindowSettings.ClearCallbacks();
+	imgui.OptionalWindows.clear();
+	const std::string detached = ImGui::SaveIniSettingsToMemory();
+	CHECK(detached.find("Animation=1") != std::string::npos);
+	CHECK(detached.find("ScriptWindow_My.Tool=1") != std::string::npos);
 }
 
 TEST_CASE("EditorDockLayout preview reads a saved layout without changing the live context") {

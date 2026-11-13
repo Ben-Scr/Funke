@@ -1,5 +1,7 @@
 # Sprite material batching benchmark
 
+The [13 November sprite command-reuse measurement](../../../Github-Docs/Documentation/Engine-Core/Sprite-Submission-Measurements.md) adds `CompareSubmit.py`: same-binary reference/optimized captures with raw samples and byte-identical image checks. It compares command encoding with unchanged draw counts. Use `--lifecycle --pairs 1` for the edit/reload/view regression and the default three pairs for timing; the executable and runtime assets must already be staged in an isolated directory.
+
 The [3 November 2026 RX 7800 XT measurement](../../../Github-Docs/Documentation/Engine-Core/Material-Batching-Measurements.md) records the completed 48-run capture, variance and Dawn's observed 65.536 µs GPU timestamp granularity. Zero quantized GPU durations do not mean zero work; do not rank sub-step averages as precise GPU differences.
 
 This opt-in doctest uses the real Renderer2D, custom Sprite2D shader, draw counter, CPU submit scope and GPU pass timestamps. Batching is unchanged. GpuTimer exposes device support and pumps pending device events when polling, so the external harness needs no internal backend symbols. Build/run scheduling belongs to the coordinator when other GPU tasks share the machine.

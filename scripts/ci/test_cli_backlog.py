@@ -26,6 +26,10 @@ class CliBacklogTests(unittest.TestCase):
         self.invoke("create", "BacklogCheck", "--path", self.temp.name,
                     "--no-git", "--no-compile", "--no-register")
         self.scene = next((self.project / "Assets").rglob("*.scene"))
+        scene = json.loads(self.scene.read_text(encoding="utf-8"))
+        scene["entities"] = [{"name": "Camera", "Transform2D": {
+            "posX": 0, "posY": 0, "rotation": 0, "scaleX": 1, "scaleY": 1}, "Camera2D": {}}]
+        self.scene.write_text(json.dumps(scene), encoding="utf-8")
 
     def invoke(self, *args, expected=0):
         result = subprocess.run([str(CLI), *map(str, args)], capture_output=True,

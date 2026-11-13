@@ -1,4 +1,5 @@
 #include "pch.hpp"
+#include "Diagnostics/DebugStats.hpp"
 #include "Graphics/Renderer3D.hpp"
 
 #include "Components/General/Transform3DComponent.hpp"
@@ -20,6 +21,7 @@
 #include "Graphics/Framebuffer.hpp"
 #include "Graphics/FramebufferCache.hpp"
 #include "Graphics/Frustum.hpp"
+#include "Graphics/GizmoRenderer.hpp"
 #include "Graphics/Lighting3D.hpp"
 #include "Graphics/Material.hpp"
 #include "Graphics/MeshAsset.hpp"
@@ -2025,6 +2027,7 @@ namespace Funke {
 	}
 
 	void Renderer3D::EndPostProcess() {
+        Diagnostics::DebugStats::Scope debugTiming(Diagnostics::DebugStats::Timing::RenderCpu);
 		if (!m_PostProcess || !m_PostProcess->Active) return;
 		PostProcessState& state = *m_PostProcess;
 		state.Active = false;
@@ -2092,6 +2095,7 @@ namespace Funke {
 	}
 
 	void Renderer3D::RenderWorldUI(Scene& scene, const Camera3DView& view) {
+        Diagnostics::DebugStats::Scope debugTiming(Diagnostics::DebugStats::Timing::RenderCpu);
 		if (!m_IsInitialized || !m_Gpu) return;
 		auto* gui = Application::GetInstance()->GetGuiRenderer();
 		if (!gui) return;
@@ -2168,16 +2172,19 @@ namespace Funke {
 		m_SceneProvider([&](Scene& scene) {
 			RenderScene(scene, view);
 		});
+		if (!Application::IsEditor()) {
+			if (Gizmo::GetShowInRuntime()) QueueGizmos(view, GizmoLayerMask::Shared | GizmoLayerMask::Debug);
+			FlushLines(view, true);
+		}
 		m_SceneProvider([&](Scene& scene) { RenderWorldUI(scene, view); });
 		if (postProcess) EndPostProcess();
-		// Runtime debug lines (physics overlay); the editor flushes its queue into the Editor View itself.
-		if (!Application::IsEditor()) FlushLines(view, true);
 		m_RenderedThisFrame = true;
 		return true;
 	}
 
 	void Renderer3D::RenderSky(const Camera3DView& view, Scene* lightScene) {
-		if (!m_IsInitialized || !m_Gpu || view.Environment.Background != CameraBackground::Skybox) return;
+        Diagnostics::DebugStats::Scope debugTiming(Diagnostics::DebugStats::Timing::RenderCpu);
+		if (!m_IsInitialized || !m_Gpu || !m_ViewOptions.Skybox || view.Environment.Background != CameraBackground::Skybox) return;
 		FUNKE_PROFILE_SCOPE("Renderer3D.Sky");
 		GpuState& gpu = *m_Gpu;
 		if (gpu.SkySubmitSerial == WebGPUBackend::GetFrameSubmitSerial()) WebGPUBackend::FlushCommands();
@@ -2195,7 +2202,7 @@ namespace Funke {
 		wgpu::BindGroup customGroup;
 		if (environment.SkyboxMaterial != 0) {
 			const Material* material = MaterialLibrary::Get(environment.SkyboxMaterial);
-			const CustomShaderProgram* program = material && material->Shader != 0
+			const CustomShaderProgram* program = material && material->Shader != 0 && m_ViewOptions.AllowsShader(material->Shader)
 				? CustomShaderGpu::GetProgram(material->Shader, ShaderTarget::Skybox) : nullptr;
 			for (int attempt = 0; attempt < 2 && program && gpu.CustomBindings.IsInitialized(); ++attempt) {
 				pipeline = gpu.GetCustomSkyPipeline(target.ColorFormat, target.SampleCount, *program);
@@ -2264,6 +2271,7 @@ namespace Funke {
 	}
 
 	void Renderer3D::RenderScene(Scene& scene, const Camera3DView& view) {
+        Diagnostics::DebugStats::Scope debugTiming(Diagnostics::DebugStats::Timing::RenderCpu);
 		if (!m_IsInitialized || !m_Gpu) return;
 		if (m_PostProcess && m_PostProcess->Active) {
 			// Empty/sky-only scenes still need the real camera for depth reconstruction.
@@ -2276,7 +2284,7 @@ namespace Funke {
 		Transform3DHierarchySystem::Propagate(scene);
 		RenderMeshes(scene, view);
 		// Particle billboards would cover the edges.
-		if (RenderApi::GetPolygonMode() != PolygonMode::Wireframe) RenderParticles(scene, view);
+		if (m_ViewOptions.Particles && RenderApi::GetPolygonMode() != PolygonMode::Wireframe) RenderParticles(scene, view);
 	}
 
 	void Renderer3D::RenderMeshes(Scene& scene, const Camera3DView& view) {
@@ -2294,8 +2302,10 @@ namespace Funke {
         const glm::mat4 relativeView = view.RelativeView(origin);
         const glm::vec3 cameraPosition = view.RelativePosition(origin);
         const FrustumPlanes cameraFrustum = ExtractFrustum(view.Projection * relativeView);
-		const SceneLighting lighting = CollectLights(registry, cameraPosition, cameraFrustum, m_Settings.MaxLights, origin);
-		const uint32_t shadowResolution = std::min(GetShadowMapResolution(m_Settings.ShadowQuality), WebGPUBackend::GetMaxTextureDimension2D());
+		const SceneLighting lighting = m_ViewOptions.Lighting
+			? CollectLights(registry, cameraPosition, cameraFrustum, m_Settings.MaxLights, origin) : SceneLighting{};
+		const uint32_t shadowResolution = m_ViewOptions.Shadows && m_ViewOptions.Lighting
+			? std::min(GetShadowMapResolution(m_Settings.ShadowQuality), WebGPUBackend::GetMaxTextureDimension2D()) : 0;
 		const bool shadowsEnabled = !wireframe && shadowResolution > 0 && lighting.ShadowedLight >= 0;
 		float shadowTexelWorld = 0.0f, shadowDepthRange = 1.0f;
 		const glm::mat4 lightViewProjection = shadowsEnabled
@@ -2354,7 +2364,7 @@ namespace Funke {
 				prepared.Value = MaterialLibrary::Get(materialGuid);
 				const Material* material = prepared.Value ? prepared.Value : &k_FallbackMaterial;
 				// A user shader replaces the standard one; its color input is the renderer's Color alone.
-				prepared.Program = material->Shader != 0 && gpu.CustomBindings.IsInitialized()
+				prepared.Program = material->Shader != 0 && m_ViewOptions.Lighting && m_ViewOptions.AllowsShader(material->Shader) && gpu.CustomBindings.IsInitialized()
 					? CustomShaderGpu::GetProgram(material->Shader, ShaderTarget::Mesh3D) : nullptr;
 				prepared.Transparent = prepared.Program ? prepared.Program->Description.Blend != ShaderBlend::Opaque
 					: material->Surface == MaterialSurface::Transparent;
@@ -2404,6 +2414,7 @@ namespace Funke {
 			instance.Surface = prepared.Surface;
 			instance.UvTransform = prepared.UvTransform;
 			if (!prepared.Value) instance.Surface.z = lit ? 1.0f : 0.0f;
+			if (!m_ViewOptions.Lighting) instance.Surface.z = 0.0f;
 
 			const glm::vec3 toCamera = worldCenter - cameraPosition;
 			DrawItem item{ MakeDrawKey(*meshIndex, visibility.CastsShadow, prepared.TextureSlot), static_cast<uint32_t>(gpu.Instances.size()),
@@ -2519,7 +2530,7 @@ namespace Funke {
 				shadowView = map;
 			}
 		}
-		else if (shadowResolution == 0 && gpu.ShadowView) {
+		else if (m_Settings.ShadowQuality == ShadowQualityLevel::Off && gpu.ShadowView) {
 			gpu.ReleaseShadowMap();
 		}
 		{
@@ -2631,7 +2642,7 @@ namespace Funke {
 			}
 		}
 
-		if (environment.FogEnabled) {
+		if (environment.FogEnabled && m_ViewOptions.Fog) {
 			frame.FogColor = glm::vec4(Lighting3D::SrgbToLinear(environment.FogColor), 1.0f);
 			frame.FogParams = glm::vec4(environment.FogStart, std::max(environment.FogEnd, environment.FogStart + 0.01f), 0.0f, 0.0f);
 		}
@@ -2945,6 +2956,16 @@ namespace Funke {
 		if (target.IsSwapChain) {
 			WebGPUBackend::MarkSwapChainRendered();
 		}
+	}
+
+	void Renderer3D::QueueGizmos(const Camera3DView& view, GizmoLayerMask layerMask) {
+		const Vec3 origin = view.RenderOrigin();
+		const bool seeThrough = m_LinesSeeThrough;
+		m_LinesSeeThrough = false;
+		for (const Line3D& line : GizmoRenderer2D::BuildLines3D(
+			view.Projection * view.RelativeView(origin), layerMask, origin))
+			DrawLine(line.Start, line.End, line.Color);
+		m_LinesSeeThrough = seeThrough;
 	}
 
 	void Renderer3D::DrawLine(const glm::vec3& a, const glm::vec3& b, const Color& color) {

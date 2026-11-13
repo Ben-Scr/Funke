@@ -115,6 +115,8 @@ namespace Funke {
 	class FUNKE_API AnimatorControllerLibrary {
 	public:
 		AnimatorControllerLibrary() = delete;
+		// Successfully loaded cache entries; does not load or retain assets. Main thread.
+		static size_t GetLoadedCount();
 
 		static std::shared_ptr<const AnimatorController> Get(uint64_t guid);
 

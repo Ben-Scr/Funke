@@ -601,3 +601,48 @@ TEST_CASE("FunkeProject physics migration is versioned and read-only loading doe
 		CHECK_FALSE(loaded.HasModule("Funke.Physics3D"));
 	}
 }
+
+
+TEST_CASE("Physics layers: names and the symmetric 64-bit matrix round-trip") {
+    const auto root = std::filesystem::temp_directory_path() / ("FunkeLayers_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(root / "Assets");
+    struct Cleanup { std::filesystem::path Root; ~Cleanup() { std::error_code ec; std::filesystem::remove_all(Root, ec); } } cleanup{root};
+    FunkeProject project;
+    project.Name = "Layer Test";
+    project.RootDirectory = root.string();
+    project.ProjectFilePath = (root / "project.json").string();
+    auto& layers = project.PhysicsLayers;
+    CHECK(layers.SetName(2, "Player"));
+    CHECK(layers.SetName(63, "Far Layer"));
+    CHECK_FALSE(layers.SetName(3, "Player"));
+    CHECK_FALSE(layers.SetName(3, " \t"));
+    CHECK_FALSE(layers.SetName(3, "Bad##ID"));
+    CHECK_FALSE(layers.SetName(64, "Invalid"));
+    CHECK(layers.FindIndex("player") == -1);
+    project.PhysicsGravity2D = {1.5f, -3.25f};
+    project.PhysicsGravity3D = {2, -4.5f, 6};
+    layers.VisibleCount = 64;
+    layers.SetCollision(2, 63, false);
+    layers.SetCollision(63, 63, false);
+    REQUIRE(project.Save());
+    const FunkeProject loaded = FunkeProject::Load(root.string());
+    CHECK(loaded.PhysicsLayers.Names == layers.Names);
+    CHECK(loaded.PhysicsLayers.CollisionMasks == layers.CollisionMasks);
+    CHECK(loaded.PhysicsLayers.VisibleCount == 64);
+    CHECK((loaded.PhysicsGravity2D == project.PhysicsGravity2D));
+    CHECK((loaded.PhysicsGravity3D == project.PhysicsGravity3D));
+    CHECK_FALSE(loaded.PhysicsLayers.CanCollide(63, 2));
+    CHECK_FALSE(loaded.PhysicsLayers.CanCollide(63, 63));
+    CHECK(loaded.PhysicsLayers.CanCollide(0, 63));
+    CHECK(loaded.PhysicsLayers.GetCollisionMask(0) == 0);
+    CHECK((loaded.PhysicsLayers.GetCollisionMask(uint64_t{1} << 2) & (uint64_t{1} << 63)) == 0);
+    CHECK((loaded.PhysicsLayers.GetCollisionMask((uint64_t{1} << 2) | 1) & (uint64_t{1} << 63)) != 0);
+
+    REQUIRE(File::WriteAllText(project.ProjectFilePath, R"({"name":"Legacy","modules":["Funke.2D"]})"));
+    const auto legacy = FunkeProject::Load(root.string());
+    CHECK(legacy.PhysicsLayers.Names[0] == "Default");
+    CHECK((legacy.PhysicsGravity2D == Vec2(0, -9.8f)));
+    CHECK((legacy.PhysicsGravity3D == Vec3(0, -9.81f, 0)));
+    CHECK(legacy.PhysicsLayers.Names[15] == "Layer 15");
+    CHECK(legacy.PhysicsLayers.GetCollisionMask(uint64_t{1} << 63) == UINT64_MAX);
+}

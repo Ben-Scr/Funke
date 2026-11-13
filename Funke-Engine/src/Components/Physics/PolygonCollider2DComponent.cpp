@@ -475,6 +475,7 @@ namespace Funke {
 		if (extraCount > 0) {
 			// New pieces copy the first shape's material, filter and event flags.
 			b2ShapeDef def = b2DefaultShapeDef();
+			def.enableCustomFiltering = true;
 			def.density = b2Shape_GetDensity(m_ShapeId);
 			def.material.friction = b2Shape_GetFriction(m_ShapeId);
 			def.material.restitution = b2Shape_GetRestitution(m_ShapeId);

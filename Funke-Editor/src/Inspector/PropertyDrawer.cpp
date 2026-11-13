@@ -1,4 +1,5 @@
 #include "pch.hpp"
+#include "Physics/PhysicsLayers.hpp"
 #include "Inspector/PropertyDrawer.hpp"
 #include "Inspector/ListSelectionCache.hpp"
 
@@ -921,7 +922,15 @@ namespace Funke::PropertyDrawer {
 			return changed;
 		}
 
-		bool DrawFlagEnum(std::span<const Entity> entities, const PropertyDescriptor& d) {
+		bool DrawFlagEnum(std::span<const Entity> entities, const PropertyDescriptor& descriptor) {
+			PropertyDescriptor d = descriptor;
+			if (d.Metadata.IsPhysicsLayerMask) {
+				d.Metadata.Enum = std::make_shared<EnumDescriptor>();
+				d.Metadata.Enum->IsFlags = true;
+				const auto& settings = GetPhysicsLayerSettings();
+				for (uint32_t i = 0; i < PhysicsLayerSettings::Count; ++i)
+					d.Metadata.Enum->Options.push_back({ settings.Names[i], static_cast<int64_t>(uint64_t{1} << i) });
+			}
 			if (!d.Metadata.Enum || d.Metadata.Enum->Options.empty()) return false;
 
 			std::vector<bool> bitOn(d.Metadata.Enum->Options.size(), false);

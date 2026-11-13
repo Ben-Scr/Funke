@@ -1,0 +1,4 @@
+{
+    "omnisharp.projectFilesExcludePattern": [],
+    "dotnet.defaultSolution": "Factorio.sln"
+}

@@ -18,6 +18,7 @@
 #include "Core/Platform/Win32BuildProgressWindow.hpp"
 #include "Gui/BuildProgressOverlay.hpp"
 #include "Graphics/Framebuffer.hpp"
+#include "Graphics/RenderApi.hpp"
 #include "Graphics/Renderer2D.hpp"
 #include "Graphics/GizmoRenderer.hpp"
 #include "Gui/EditorTheme.hpp"
@@ -41,6 +42,7 @@
 #include "Serialization/SceneSerializer.hpp"
 #include "Serialization/File.hpp"
 #include "Utils/Process.hpp"
+#include "Utils/ElapsedTime.hpp"
 #include "Packages/NuGetSource.hpp"
 #include "Packages/GitHubSource.hpp"
 #include "Editor/EditorPreferences.hpp"
@@ -58,6 +60,32 @@
 namespace Funke {
 	namespace {
 		constexpr const char* k_UnsavedWorkPopupName = "Unsaved Work";
+
+		bool IsRenderBackendRunning(FunkeProject::RenderBackend backend) {
+			const GraphicsApi running = RenderApi::GetGraphicsApi();
+			switch (backend) {
+				case FunkeProject::RenderBackend::Direct3D11: return running == GraphicsApi::Direct3D11;
+				case FunkeProject::RenderBackend::Direct3D12: return running == GraphicsApi::Direct3D12;
+				case FunkeProject::RenderBackend::Vulkan: return running == GraphicsApi::Vulkan;
+				case FunkeProject::RenderBackend::OpenGL: return running == GraphicsApi::OpenGL;
+				case FunkeProject::RenderBackend::Metal: return running == GraphicsApi::Metal;
+				case FunkeProject::RenderBackend::OpenGLES: return running == GraphicsApi::OpenGLES;
+				case FunkeProject::RenderBackend::Auto:
+					// Match the first automatic candidate in WebGPUApi.cpp::BackendCandidates.
+					// If it is already running, Auto will select it without needing a new device.
+					// Other running APIs may be explicit overrides, so keep prompting for those.
+#if defined(FNK_PLATFORM_WINDOWS)
+					return running == GraphicsApi::Direct3D12;
+#elif defined(FNK_PLATFORM_MACOS) || defined(FNK_PLATFORM_IOS)
+					return running == GraphicsApi::Metal;
+#elif defined(FNK_PLATFORM_WEB)
+					return running == GraphicsApi::WebGPU;
+#else
+					return running == GraphicsApi::Vulkan;
+#endif
+			}
+			return false;
+		}
 
 		// The rebuild script must outlive the editor and show its progress, so it gets its own console / terminal.
 		bool LaunchEngineRebuildScript(const std::string& script, const std::string& workingDirectory) {
@@ -121,9 +149,10 @@ namespace Funke {
 					EditorRestart::Request("module:" + id, (wanted ? "Engine module added: " : "Engine module removed: ") + id);
 				}
 			}
-			// The GPU device picks its backend once; Project Settings, build profiles and project.json edits all change it.
+			// The GPU device picks its backend once; only project settings affect the editor, not build profiles.
 			if (!m_LaunchRenderBackend) m_LaunchRenderBackend = project->ActiveRenderBackend;
-			if (project->ActiveRenderBackend == *m_LaunchRenderBackend) {
+			if (project->ActiveRenderBackend == *m_LaunchRenderBackend
+				|| IsRenderBackendRunning(project->ActiveRenderBackend)) {
 				EditorRestart::Withdraw("render-backend");
 			}
 			else {
@@ -240,6 +269,7 @@ namespace Funke {
 					scenes.push_back(&scene);
 					return ValidateUniquePersistentEntityIds(scenes, "Scene open");
 				});
+			m_SceneOpenStartedAt = std::chrono::steady_clock::now();
 			m_SceneOpenOperation = SceneManager::LoadSceneAsync(definitionName, false,
 				[this, lifetime, definitionName, path](uint64_t, const SceneLoadResult& result) {
 					if (lifetime.expired()) return;
@@ -558,6 +588,7 @@ namespace Funke {
 				| ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoCollapse);
 			const auto progress = SceneManager::GetSceneLoadProgress(m_SceneOpenOperation);
 			ImGui::ProgressBar(progress ? progress->Progress : 0.0f, ImVec2(320.0f, 0.0f));
+			ImGui::TextDisabled("Elapsed: %s", FormatElapsedTime(m_SceneOpenStartedAt).c_str());
 			if (ImGui::Button("Cancel")) SceneManager::CancelSceneLoad(m_SceneOpenOperation);
 			ImGui::End();
 			return;
@@ -1257,7 +1288,7 @@ namespace Funke {
 
 		TickSplashPreview();
 
-		if (ImGui::IsKeyChordPressed(EditorShortcuts::k_Profiler)) {
+		if (!Application::GetIsPlaying() && ImGui::IsKeyChordPressed(EditorShortcuts::k_Profiler)) {
 			m_ShowProfiler = !m_ShowProfiler;
 		}
 		if (m_ShowProfiler) {
@@ -1349,7 +1380,9 @@ namespace Funke {
 		if (showPopup) {
 			Win32BuildProgressWindow::Show(popupTitle); // idempotent — retitles if already shown
 			Win32BuildProgressWindow::Update(popupProgress, popupStage);
-		} else if (Win32BuildProgressWindow::IsVisible()) {
+		} else if (Win32BuildProgressWindow::IsVisible()
+			&& !m_AssetBrowser.IsImportingAssets() && !m_AssetBrowser.IsDeleting()) {
+			// Asset operations own the same popup; keep their progress and timer visible.
 			Win32BuildProgressWindow::Hide();
 		}
 

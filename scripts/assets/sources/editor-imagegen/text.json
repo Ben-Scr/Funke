@@ -1,0 +1,5 @@
+{
+  "tool": "image_gen.imagegen",
+  "prompt": "Create one production-ready flat typography UI icon for a desktop game editor: exactly the letters \"Aa\", a capital A beside a lowercase a, on one baseline. Rounded clean sans-serif letterforms, medium-bold weight with open counters, readable at 16 pixels. Solid dark graphite (#404040), all counters and background transparent. The letters together form one centered compact glyph with equal 12.5% margins in a square. No document, no caret, no border, no decoration, no shadow, no gradient, no texture, no extra text. Transparent PNG.",
+  "source": "text.png"
+}

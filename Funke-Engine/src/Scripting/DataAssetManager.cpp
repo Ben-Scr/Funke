@@ -259,3 +259,10 @@ namespace Funke {
 	}
 
 }
+
+namespace Funke {
+    size_t DataAssetManager::GetLoadedCount() {
+        std::lock_guard<std::mutex> lock(s_Mutex);
+        return s_LoadedTypes.size();
+    }
+}

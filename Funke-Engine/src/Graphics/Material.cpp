@@ -358,6 +358,12 @@ namespace Funke {
 		}
 	}
 
+
+	size_t MaterialLibrary::GetLoadedCount() {
+		size_t count = 0;
+		for (const auto& [guid, entry] : Entries()) if (entry.Valid) ++count;
+		return count;
+	}
 	void MaterialLibrary::Clear() {
 		Entries().clear();
 	}

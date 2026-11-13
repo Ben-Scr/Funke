@@ -150,7 +150,7 @@ namespace Funke {
 		if (text == "vector4Int")  return PropertyType::IntVec4;
 		if (text == "color")       return PropertyType::Color;
 		if (text == "enum")        return PropertyType::Enum;
-		if (text == "flagenum")    return PropertyType::FlagEnum;
+		if (text == "flagenum" || text == "physicslayer") return PropertyType::FlagEnum;
 		if (text == "texture")     return PropertyType::TextureRef;
 		if (text == "audio")       return PropertyType::AudioRef;
 		if (text == "asset")       return PropertyType::AssetRef;

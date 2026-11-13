@@ -38,7 +38,7 @@ public sealed class AgentLoop : EntityScript
         {
             Transform.Position += new Vector2(dx, 0);
             Travel += dx;
-            if (Coin && Coin.Transform != null && Math.Abs(Transform.Position.X - Coin.Transform.Position.X) < 0.3f)
+            if (Coin && Coin.Transform2D != null && Math.Abs(Transform.Position.X - Coin.Transform2D.Position.X) < 0.3f)
             {
                 Coin.Destroy();
                 Score += Revision;

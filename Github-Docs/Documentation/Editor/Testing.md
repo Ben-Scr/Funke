@@ -34,6 +34,16 @@ from passes, with their reason and execution flag. Assertion counts are `null` w
 provided by the runner. Native/smoke step success does not invent per-case or assertion counts;
 their detailed logs and GPU evidence remain in the existing artifacts.
 
+The sanitizer lane additionally retains `ci-logs/sanitize-tests.xml` from the
+actual doctest executable. A successful step without a complete XML report,
+executed cases and successful assertions fails evidence capture. Case totals
+must match the individual results; assertion failures and exceptions are rejected.
+Skipped/filtered native cases keep their identities and are not counted as
+executed. This report does not turn a normal native run into sanitizer evidence:
+the independent Linux lane still owns the instrumented build and sanitizer logs.
+Python reports require boolean completion and integer counts; a passed/failed
+case explicitly marked unexecuted is invalid.
+
 Local Python verification uses the same discovery as before, with a structured report:
 
 ```powershell
@@ -209,15 +219,20 @@ Shortcuts follow the platform the engine and runtime are built for. On macOS, th
 | Stats overlay | F6 | Cmd+Shift+6 |
 | Log overlay | F7 | Cmd+Shift+7 |
 | Physics overlay | F8 | Cmd+Shift+8 |
+| Developer console | F9 | Cmd+Shift+9 |
 | Profiler | Ctrl+F6 | Cmd+Shift+P |
 | Toggle fullscreen | F11 | Ctrl+Cmd+F |
 | Minimize window | Ctrl+M | Cmd+M |
 
 These actions are available when their respective runtime features are enabled. Fullscreen and minimize also apply to engine applications that enable those window shortcuts.
 
+In desktop game builds, the fullscreen shortcut returns a game started in exclusive, borderless, or maximized mode to its configured windowed size. With **Resizable** enabled, the restored window can be resized normally. Toggling again reuses the selected fullscreen mode and preserves subsequent windowed size changes. F11 switches window modes; **Ctrl+M** minimizes the game to the taskbar on Windows/Linux.
+
+The native regression test `Fullscreen startup restores resizable windowed bounds` is opt-in because it changes the real display state. Run the engine test executable with `--no-skip=true --test-case="Fullscreen startup restores resizable windowed bounds"` on a desktop to check startup restoration and repeated toggles for exclusive, borderless, maximized, legacy maximized, and fixed-size borderless windows.
+
 ## Developer console
 
-Development and Debug builds have a console. To open it, press **`** (the key left of 1, `^` on German keyboards) or tap the screen with three fingers. **Esc** closes it.
+Development and Debug builds have a console. To open it, press **F9** (**Cmd+Shift+9** on macOS), click the **Console** button in the bottom-right corner, or tap the screen with three fingers. The button shows the shortcut for the current platform. Press the shortcut again or **Esc** to close it. These runtime controls are available when **Dev Console** is enabled in the project/build profile (on by default for Debug and Development, off for Release).
 
 While the console is open, it takes the game's keyboard and mouse input. **Tab** completes command names. **↑** and **↓** go through earlier commands. Separate several commands with `;`.
 
@@ -288,6 +303,8 @@ In a game, the numbers include every camera and are averaged over the frames sin
 - the current contact points with their normals in orange.
 
 The overlay works for both 2D (Box2D) and 3D (Jolt). It is independent of `Gizmo.IsEnabled`.
+
+The **Physics: On/Off** button next to **Console** displays the current state and shortcut, and can also toggle the overlay. The shortcut works while the console is open, and toggling it records `physics.debug on/off` in the console and runtime log. With no physics module enabled, the controls say so; a scene without colliders or contacts has nothing to draw. The runtime physics shortcut and button are enabled by the **Dev Console** project/build-profile option.
 
 ## Isolated player data
 

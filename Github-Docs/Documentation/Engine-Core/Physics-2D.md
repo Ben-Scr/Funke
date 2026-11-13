@@ -1,5 +1,7 @@
 # Physics 2D
 
+See [Physics layers and project defaults](Physics-Layers.md) for named layers, the collision matrix, default gravity, and C# `PhysicsLayer` examples.
+
 Enable `Funke.Physics2D` to use this simulation. It also enables `Funke.2D`; selecting only `Funke.2D` provides rendering without Box2D. See [Engine Modules](Engine-Modules.md) for migration and export behavior.
 
 2D entities are simulated by [Box2D](https://box2d.org) (version 3). Every entity with a **Rigidbody 2D** or a collider is one Box2D body: a Rigidbody 2D makes it dynamic, kinematic or static, and a collider without a Rigidbody 2D is a static body. Colliders on child entities are separate bodies; join bodies with the joints below.

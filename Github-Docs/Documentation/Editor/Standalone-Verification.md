@@ -35,6 +35,13 @@ Native-tool traps cover `git`, `cmake`, `ninja`, native `msbuild`, C/C++ compile
 
 Every command has a bounded timeout (`--timeout`, default 600 seconds; player timeout 90 seconds). JSON evidence contains phases, exit codes, timings, log paths, input hashes, manifest data and player markers. Work directories and logs are retained for diagnosis. Exit codes are **0** for the complete gate passing, **1** for failure, and **2** for a successful partial diagnostic using `--skip-editor`. A partial run must not satisfy a release gate.
 
+Every command containing `--json`, including play/stop/screenshot, must have its
+complete stdout parsed as JSON. Diagnostic prefixes or trailing text fail the
+gate; the original stdout and separate stderr remain in the evidence directory.
+Each successful parse records `jsonStdout: passed`. Bridge discovery and ready-state
+polling share one deadline. Each initial CLI request is limited to the remaining
+budget, including the subprocess timeout; it receives no extra ten-second allowance.
+
 ## What a host run proves
 
 A successful host run demonstrates the copied payload's tested create/package/edit/play/export/player workflow under a restricted environment. It is labeled `host-limited`: PATH traps do not intercept absolute executable paths, Windows registry discovery, or arbitrary reads from other host folders. Renaming the copied project/installation does not make the original input payload or every repository on the host inaccessible. Consequently this result alone does **not** prove operation on a machine without a repository or native toolchain.

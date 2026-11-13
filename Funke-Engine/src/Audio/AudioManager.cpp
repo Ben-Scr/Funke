@@ -1180,3 +1180,9 @@ namespace Funke {
 	}
 
 }
+
+namespace Funke {
+    size_t AudioManager::GetLoadedCount() {
+        return s_audioMap.size();
+    }
+}

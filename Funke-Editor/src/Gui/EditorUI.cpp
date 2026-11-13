@@ -280,6 +280,37 @@ namespace Funke::EditorUI {
 		return clicked;
 	}
 
+	bool IconMenuItem(const char* id, const char* iconName, const char* tooltip,
+		bool enabled, const char* fallbackLabel) {
+		const float side = ImGui::GetFrameHeight();
+		const float iconSize = std::round(ImGui::GetFontSize() * 0.95f);
+		const uint64_t texture = EditorIcons::Get(iconName, static_cast<int>(iconSize));
+		ImGui::BeginDisabled(!enabled);
+		bool clicked;
+		if (!texture && fallbackLabel) {
+			ImGui::PushID(id);
+			clicked = ImGui::MenuItem(fallbackLabel);
+			ImGui::PopID();
+		}
+		else {
+			const auto flags = ImGuiSelectableFlags_NoHoldingActiveID | ImGuiSelectableFlags_SelectOnRelease
+				| ImGuiSelectableFlags_NoSetKeyOwner | ImGuiSelectableFlags_SetNavIdOnHover | ImGuiSelectableFlags_SpanAvailWidth;
+			clicked = ImGui::Selectable(id, false, flags, ImVec2(side, side));
+			if (texture) {
+				const ImVec2 min = ImGui::GetItemRectMin();
+				const float padding = (side - iconSize) * 0.5f;
+				const ImVec2 position(min.x + ImGui::GetStyle().ItemSpacing.x * 0.5f + padding,
+					min.y + ImGui::GetStyle().ItemSpacing.y * 0.5f + padding);
+				ImGui::GetWindowDrawList()->AddImage(static_cast<ImTextureID>(texture), position,
+					ImVec2(position.x + iconSize, position.y + iconSize), ImVec2(0, 1), ImVec2(1, 0),
+					ImGui::GetColorU32(ImGuiCol_Text));
+			}
+		}
+		Tooltip(tooltip);
+		ImGui::EndDisabled();
+		return clicked;
+	}
+
 	bool ToggleButton(const char* label, bool active, const char* tooltip) {
 		if (active) {
 			const ImVec4 fill = EditorTheme::Colors::ActiveToggle();

@@ -224,6 +224,21 @@ namespace Funke {
 		Save();
 	}
 
+	void ScriptEditorWindows::CaptureLayoutWindows(EditorDockLayout::WindowVisibility& state) const {
+		for (const auto& type : m_PendingLayoutOpen ? *m_PendingLayoutOpen : m_Open) {
+			state["ScriptWindow_" + type] = true;
+		}
+	}
+
+	void ScriptEditorWindows::ApplyLayoutWindows(const EditorDockLayout::WindowVisibility& state) {
+		m_PendingLayoutOpen.emplace();
+		for (const auto& [name, open] : state) {
+			if (open && name.starts_with("ScriptWindow_") && name.size() > 13) {
+				m_PendingLayoutOpen->push_back(name.substr(13));
+			}
+		}
+	}
+
 	std::string ScriptEditorWindows::TitleOf(const std::string& type) const {
 		for (const WindowType& entry : m_Types) {
 			if (entry.Type == type) return entry.Title;
@@ -258,6 +273,17 @@ namespace Funke {
 	}
 
 	void ScriptEditorWindows::Render() {
+		// Apply after LoadProject so its remembered window list cannot overwrite a restored layout.
+		if (m_PendingLayoutOpen) {
+			for (const auto& type : m_Open) {
+				if (std::find(m_PendingLayoutOpen->begin(), m_PendingLayoutOpen->end(), type) == m_PendingLayoutOpen->end()) {
+					ScriptEngine::CloseEditorWindow(type.c_str());
+				}
+			}
+			m_Open = std::move(*m_PendingLayoutOpen);
+			m_PendingLayoutOpen.reset();
+			Save();
+		}
 		if (m_Open.empty()) return;
 		Refresh();
 		// Copy: closing from inside the loop edits m_Open.

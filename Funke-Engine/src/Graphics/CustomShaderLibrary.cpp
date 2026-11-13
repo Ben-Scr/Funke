@@ -1,4 +1,6 @@
 #include "pch.hpp"
+#include "Core/Time.hpp"
+#include "Diagnostics/DebugStats.hpp"
 #include "Graphics/CustomShaderLibrary.hpp"
 #include "Graphics/CustomShaderGpu.hpp"
 
@@ -32,6 +34,7 @@ namespace Funke {
 			std::vector<ShaderDiagnostic> Diagnostics;
 			std::unique_ptr<CustomShaderProgram> Program;
 			bool CompilePending = false;
+            int LastRequestedFrame = -1;
 			std::unordered_set<int> WarnedTargets;
 			Clock::time_point LastLoad{};
 			Clock::time_point LastPoll{};
@@ -327,6 +330,23 @@ namespace Funke {
 		++g_Generation;
 	}
 
+    size_t CustomShaderLibrary::GetLoadedCount() {
+        size_t count = 0;
+        for (const auto& [guid, entry] : Entries()) if (entry.Description) ++count;
+        return count;
+    }
+    size_t CustomShaderLibrary::GetCompiledCount() {
+        size_t count = 0;
+        for (const auto& [guid, entry] : Entries()) if (entry.Program && entry.Program->Module) ++count;
+        return count;
+    }
+    size_t CustomShaderLibrary::GetRequestedCount(int frame) {
+        size_t count = 0;
+        for (const auto& [guid, entry] : Entries())
+            if (entry.Program && entry.Program->Module && entry.LastRequestedFrame == frame) ++count;
+        return count;
+    }
+
 	void CustomShaderLibrary::Clear() {
 		Entries().clear();
 		for (auto& fallback : Fallbacks()) fallback.reset();
@@ -412,6 +432,7 @@ namespace Funke {
 				}
 				return GetFallback(target);
 			}
+			if (Diagnostics::DebugStats::IsAvailable()) entry->LastRequestedFrame = Time::GetFrameCount();
 			return entry->Program.get();
 		}
 

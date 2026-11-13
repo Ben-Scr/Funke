@@ -42,6 +42,9 @@ public sealed partial class EntityCommandBuffer : IDisposable
     // the first AsParallelWriter() call — single-threaded callers never
     // pay the dictionary cost.
     private ConcurrentDictionary<int, WorkerSlot>? m_ParallelSlots;
+    private static long s_NextRecorderId;
+    private readonly long m_RecorderId = Interlocked.Increment(ref s_NextRecorderId);
+    [ThreadStatic] private static WeakReference<WorkerSlot>? t_WorkerSlot;
 
     // Version-gated cache: m_SlotSnapshotVersion bumps only when a new worker slot is added; Playback rebuilds m_CachedSortedSlots only on drift.
     private WorkerSlot[]? m_CachedSortedSlots;
@@ -137,7 +140,7 @@ public sealed partial class EntityCommandBuffer : IDisposable
     public unsafe void AddComponent<T>(EntityRef e, in T data) where T : unmanaged, IComponent
     {
         int payloadSize = sizeof(T);
-        if (payloadSize > ushort.MaxValue - (e.IsSceneEntity ? sizeof(ulong) : 0))
+        if (payloadSize > ushort.MaxValue || (payloadSize > ushort.MaxValue - sizeof(ulong) && e.IsSceneEntity))
         {
             throw new ArgumentException(
                 $"Component '{typeof(T).Name}' plus its entity reference exceeds the ECB's u16 payload limit.",
@@ -370,12 +373,10 @@ public sealed partial class EntityCommandBuffer : IDisposable
         where T1 : unmanaged, IComponent
     {
         ValidateCreateEntitiesArgs(length, output.Length);
-        for (int i = 0; i < length; i++)
-        {
-            EntityRef e = Create();
-            RecordDefaultConstruct<T1>(e);
-            output[i] = e;
-        }
+        if (length == 0) return;
+        ReadOnlySpan<uint> types = stackalloc uint[] { ComponentTypes<T1>.NativeId };
+        EcbWire.WriteCreateEntitiesWith(ref m_Commands, ref m_CommandsLen, ref m_CommandCount, ref m_EntityCount,
+            length, output, types);
     }
 
     public void CreateEntitiesWith<T1, T2>(int length, Span<EntityRef> output)
@@ -383,13 +384,10 @@ public sealed partial class EntityCommandBuffer : IDisposable
         where T2 : unmanaged, IComponent
     {
         ValidateCreateEntitiesArgs(length, output.Length);
-        for (int i = 0; i < length; i++)
-        {
-            EntityRef e = Create();
-            RecordDefaultConstruct<T1>(e);
-            RecordDefaultConstruct<T2>(e);
-            output[i] = e;
-        }
+        if (length == 0) return;
+        ReadOnlySpan<uint> types = stackalloc uint[] { ComponentTypes<T1>.NativeId, ComponentTypes<T2>.NativeId };
+        EcbWire.WriteCreateEntitiesWith(ref m_Commands, ref m_CommandsLen, ref m_CommandCount, ref m_EntityCount,
+            length, output, types);
     }
 
     public void CreateEntitiesWith<T1, T2, T3>(int length, Span<EntityRef> output)
@@ -398,14 +396,10 @@ public sealed partial class EntityCommandBuffer : IDisposable
         where T3 : unmanaged, IComponent
     {
         ValidateCreateEntitiesArgs(length, output.Length);
-        for (int i = 0; i < length; i++)
-        {
-            EntityRef e = Create();
-            RecordDefaultConstruct<T1>(e);
-            RecordDefaultConstruct<T2>(e);
-            RecordDefaultConstruct<T3>(e);
-            output[i] = e;
-        }
+        if (length == 0) return;
+        ReadOnlySpan<uint> types = stackalloc uint[] { ComponentTypes<T1>.NativeId, ComponentTypes<T2>.NativeId, ComponentTypes<T3>.NativeId };
+        EcbWire.WriteCreateEntitiesWith(ref m_Commands, ref m_CommandsLen, ref m_CommandCount, ref m_EntityCount,
+            length, output, types);
     }
 
     public void CreateEntitiesWith<T1, T2, T3, T4>(int length, Span<EntityRef> output)
@@ -415,15 +409,10 @@ public sealed partial class EntityCommandBuffer : IDisposable
         where T4 : unmanaged, IComponent
     {
         ValidateCreateEntitiesArgs(length, output.Length);
-        for (int i = 0; i < length; i++)
-        {
-            EntityRef e = Create();
-            RecordDefaultConstruct<T1>(e);
-            RecordDefaultConstruct<T2>(e);
-            RecordDefaultConstruct<T3>(e);
-            RecordDefaultConstruct<T4>(e);
-            output[i] = e;
-        }
+        if (length == 0) return;
+        ReadOnlySpan<uint> types = stackalloc uint[] { ComponentTypes<T1>.NativeId, ComponentTypes<T2>.NativeId, ComponentTypes<T3>.NativeId, ComponentTypes<T4>.NativeId };
+        EcbWire.WriteCreateEntitiesWith(ref m_Commands, ref m_CommandsLen, ref m_CommandCount, ref m_EntityCount,
+            length, output, types);
     }
 
     public void CreateEntitiesWith<T1, T2, T3, T4, T5>(int length, Span<EntityRef> output)
@@ -434,16 +423,10 @@ public sealed partial class EntityCommandBuffer : IDisposable
         where T5 : unmanaged, IComponent
     {
         ValidateCreateEntitiesArgs(length, output.Length);
-        for (int i = 0; i < length; i++)
-        {
-            EntityRef e = Create();
-            RecordDefaultConstruct<T1>(e);
-            RecordDefaultConstruct<T2>(e);
-            RecordDefaultConstruct<T3>(e);
-            RecordDefaultConstruct<T4>(e);
-            RecordDefaultConstruct<T5>(e);
-            output[i] = e;
-        }
+        if (length == 0) return;
+        ReadOnlySpan<uint> types = stackalloc uint[] { ComponentTypes<T1>.NativeId, ComponentTypes<T2>.NativeId, ComponentTypes<T3>.NativeId, ComponentTypes<T4>.NativeId, ComponentTypes<T5>.NativeId };
+        EcbWire.WriteCreateEntitiesWith(ref m_Commands, ref m_CommandsLen, ref m_CommandCount, ref m_EntityCount,
+            length, output, types);
     }
 
     public void CreateEntitiesWith<T1, T2, T3, T4, T5, T6>(int length, Span<EntityRef> output)
@@ -455,17 +438,10 @@ public sealed partial class EntityCommandBuffer : IDisposable
         where T6 : unmanaged, IComponent
     {
         ValidateCreateEntitiesArgs(length, output.Length);
-        for (int i = 0; i < length; i++)
-        {
-            EntityRef e = Create();
-            RecordDefaultConstruct<T1>(e);
-            RecordDefaultConstruct<T2>(e);
-            RecordDefaultConstruct<T3>(e);
-            RecordDefaultConstruct<T4>(e);
-            RecordDefaultConstruct<T5>(e);
-            RecordDefaultConstruct<T6>(e);
-            output[i] = e;
-        }
+        if (length == 0) return;
+        ReadOnlySpan<uint> types = stackalloc uint[] { ComponentTypes<T1>.NativeId, ComponentTypes<T2>.NativeId, ComponentTypes<T3>.NativeId, ComponentTypes<T4>.NativeId, ComponentTypes<T5>.NativeId, ComponentTypes<T6>.NativeId };
+        EcbWire.WriteCreateEntitiesWith(ref m_Commands, ref m_CommandsLen, ref m_CommandCount, ref m_EntityCount,
+            length, output, types);
     }
 
     public void CreateEntitiesWith<T1, T2, T3, T4, T5, T6, T7>(int length, Span<EntityRef> output)
@@ -478,18 +454,10 @@ public sealed partial class EntityCommandBuffer : IDisposable
         where T7 : unmanaged, IComponent
     {
         ValidateCreateEntitiesArgs(length, output.Length);
-        for (int i = 0; i < length; i++)
-        {
-            EntityRef e = Create();
-            RecordDefaultConstruct<T1>(e);
-            RecordDefaultConstruct<T2>(e);
-            RecordDefaultConstruct<T3>(e);
-            RecordDefaultConstruct<T4>(e);
-            RecordDefaultConstruct<T5>(e);
-            RecordDefaultConstruct<T6>(e);
-            RecordDefaultConstruct<T7>(e);
-            output[i] = e;
-        }
+        if (length == 0) return;
+        ReadOnlySpan<uint> types = stackalloc uint[] { ComponentTypes<T1>.NativeId, ComponentTypes<T2>.NativeId, ComponentTypes<T3>.NativeId, ComponentTypes<T4>.NativeId, ComponentTypes<T5>.NativeId, ComponentTypes<T6>.NativeId, ComponentTypes<T7>.NativeId };
+        EcbWire.WriteCreateEntitiesWith(ref m_Commands, ref m_CommandsLen, ref m_CommandCount, ref m_EntityCount,
+            length, output, types);
     }
 
     public void CreateEntitiesWith<T1, T2, T3, T4, T5, T6, T7, T8>(int length, Span<EntityRef> output)
@@ -503,19 +471,10 @@ public sealed partial class EntityCommandBuffer : IDisposable
         where T8 : unmanaged, IComponent
     {
         ValidateCreateEntitiesArgs(length, output.Length);
-        for (int i = 0; i < length; i++)
-        {
-            EntityRef e = Create();
-            RecordDefaultConstruct<T1>(e);
-            RecordDefaultConstruct<T2>(e);
-            RecordDefaultConstruct<T3>(e);
-            RecordDefaultConstruct<T4>(e);
-            RecordDefaultConstruct<T5>(e);
-            RecordDefaultConstruct<T6>(e);
-            RecordDefaultConstruct<T7>(e);
-            RecordDefaultConstruct<T8>(e);
-            output[i] = e;
-        }
+        if (length == 0) return;
+        ReadOnlySpan<uint> types = stackalloc uint[] { ComponentTypes<T1>.NativeId, ComponentTypes<T2>.NativeId, ComponentTypes<T3>.NativeId, ComponentTypes<T4>.NativeId, ComponentTypes<T5>.NativeId, ComponentTypes<T6>.NativeId, ComponentTypes<T7>.NativeId, ComponentTypes<T8>.NativeId };
+        EcbWire.WriteCreateEntitiesWith(ref m_Commands, ref m_CommandsLen, ref m_CommandCount, ref m_EntityCount,
+            length, output, types);
     }
 
     internal static void ValidateCreateEntitiesArgs(int length, int outputLength)
@@ -741,9 +700,9 @@ public sealed partial class EntityCommandBuffer : IDisposable
                   "ComponentInfo::emplaceFromBytes; default adds and removals require " +
                   "their corresponding callbacks. See the engine log for the typeId",
             -5 => "the batch would exceed the EnTT entity cap configured for this " +
-                  "build. Open Project Settings > Entity ID bits, raise the value " +
-                  "(24 -> 16M, 28 -> 268M), then regenerate project files and " +
-                  "rebuild. See the engine log for the current count / cap",
+                  "build. Reduce the number of live entities. A higher cap requires " +
+                  "rebuilding the engine from source with a larger 'entityBits' value. " +
+                  "See the engine log for the current count / cap",
             -6 => "an Ecb_InstantiatePrefab record referenced a prefab whose template " +
                   "can't be baked into a memcpy-ready form (e.g. a particle system or other " +
                   "component holding non-trivial heap state, or internal entity references). " +
@@ -853,17 +812,27 @@ public sealed partial class EntityCommandBuffer : IDisposable
 
     // ── Parallel-writer plumbing (called from ParallelWriter) ────────
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal WorkerSlot GetOrCreateSlotForCurrentThread()
     {
+        if (t_WorkerSlot != null && t_WorkerSlot.TryGetTarget(out WorkerSlot? slot)
+            && slot.RecorderId == m_RecorderId && m_ParallelSlots != null)
+            return slot;
+        return RegisterWorkerSlot();
+    }
+
+    private WorkerSlot RegisterWorkerSlot()
+    {
         int tid = Environment.CurrentManagedThreadId;
-        return m_ParallelSlots!.GetOrAdd(
-            tid,
-            static (id, self) =>
-            {
-                        Interlocked.Increment(ref self.m_SlotSnapshotVersion);
-                return new WorkerSlot(id);
-            },
-            this);
+        WorkerSlot slot = m_ParallelSlots!.GetOrAdd(tid, static (id, self) =>
+        {
+            Interlocked.Increment(ref self.m_SlotSnapshotVersion);
+            return new WorkerSlot(id, self.m_RecorderId);
+        }, this);
+        // A worker thread must not keep a disposed or abandoned recorder's buffers alive.
+        if (t_WorkerSlot == null) t_WorkerSlot = new WeakReference<WorkerSlot>(slot);
+        else t_WorkerSlot.SetTarget(slot);
+        return slot;
     }
 
     internal sealed class WorkerSlot
@@ -873,10 +842,12 @@ public sealed partial class EntityCommandBuffer : IDisposable
         public int CommandCount;
         public uint EntityCount;
         public readonly int ManagedThreadId;
+        public readonly long RecorderId;
 
-        public WorkerSlot(int managedThreadId)
+        public WorkerSlot(int managedThreadId, long recorderId)
         {
             ManagedThreadId = managedThreadId;
+            RecorderId = recorderId;
         }
     }
 }
@@ -1088,6 +1059,37 @@ internal static class EcbWire
 
         commandsLen += recordSize;
         commandCount++;
+    }
+
+    internal static unsafe void WriteCreateEntitiesWith(
+        ref byte[] commands, ref int commandsLen, ref int commandCount, ref uint entityCount,
+        int length, Span<EntityRef> output, ReadOnlySpan<uint> types)
+    {
+        int addedCommands = checked(length * types.Length);
+        int newCommandsLen = checked(commandsLen + addedCommands * COMMAND_PREFIX_BYTES);
+        int newCommandCount = checked(commandCount + addedCommands);
+        uint newEntityCount = checked(entityCount + (uint)length);
+        EnsureCapacity(ref commands, newCommandsLen);
+        fixed (byte* buffer = commands)
+        {
+            byte* cursor = buffer + commandsLen;
+            for (int i = 0; i < length; ++i)
+            {
+                uint index = entityCount + (uint)i;
+                output[i] = new EntityRef(index);
+                foreach (uint type in types)
+                {
+                    *cursor = OP_DEFAULT_CONSTRUCT_COMPONENT;
+                    Unsafe.WriteUnaligned(cursor + 1, index);
+                    Unsafe.WriteUnaligned(cursor + 5, type);
+                    Unsafe.WriteUnaligned(cursor + 9, (ushort)0);
+                    cursor += COMMAND_PREFIX_BYTES;
+                }
+            }
+        }
+        commandsLen = newCommandsLen;
+        commandCount = newCommandCount;
+        entityCount = newEntityCount;
     }
 
     public static void EnsureCapacity(ref byte[] buf, int needed)

@@ -308,6 +308,8 @@ namespace Funke {
 
 	void AnimatorControllerLibrary::Invalidate(uint64_t guid) { Cache().Invalidate(guid); }
 	size_t AnimatorControllerLibrary::ReloadChangedFromDisk() { return Cache().ReloadChangedFromDisk(); }
+
+	size_t AnimatorControllerLibrary::GetLoadedCount() { return Cache().GetLoadedCount(); }
 	void AnimatorControllerLibrary::Clear() { Cache().Clear(); }
 
 }

@@ -409,7 +409,7 @@ TEST_CASE("Native script legacy migration leaves distinct and ambiguous source f
 
 // FUNKE_TEST_KEEP_PROJECT_DIR=<dir> keeps the scaffold there (used to produce a starter project for
 // platform export smoke tests); otherwise it goes to a temp folder and is removed.
-TEST_CASE("New project scaffold contains the starter scene, scripts and C# project") {
+TEST_CASE("New project scaffold contains an empty scene and C# project without starter scripts") {
 	const char* keepDir = std::getenv("FUNKE_TEST_KEEP_PROJECT_DIR");
 	const std::filesystem::path parent = keepDir && *keepDir
 		? std::filesystem::path(keepDir)
@@ -422,7 +422,7 @@ TEST_CASE("New project scaffold contains the starter scene, scripts and C# proje
 	CHECK(std::filesystem::is_regular_file(Path::FromUtf8(project.ProjectFilePath)));
 	CHECK(std::filesystem::is_regular_file(Path::FromUtf8(project.GetSceneFilePath(project.StartupScene))));
 	CHECK(std::filesystem::is_regular_file(Path::FromUtf8(project.CsprojPath)));
-	CHECK(std::filesystem::is_regular_file(Path::FromUtf8(project.ScriptsDirectory) / "GameScript.cs"));
+	CHECK(std::filesystem::is_empty(Path::FromUtf8(project.ScriptsDirectory)));
 
 	if (!keepDir || !*keepDir) {
 		std::error_code ec;

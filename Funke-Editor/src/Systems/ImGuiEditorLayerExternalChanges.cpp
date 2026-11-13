@@ -307,6 +307,7 @@ namespace Funke {
 
 		ProjectManager::ApplyCurrentProjectSettings();
 		Time::SetFixedDeltaTime(project->GetFixedDeltaTimeSeconds());
+		ProjectManager::ApplyPhysicsDefaults();
 		if (!(project->Graphics == previous.Graphics)) {
 			RenderSettings::Apply(project->Graphics);
 		}

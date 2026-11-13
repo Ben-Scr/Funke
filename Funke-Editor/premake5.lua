@@ -46,7 +46,7 @@ project "Funke-Editor"
     -- Same cross-binary share pattern as ProfilerPanel: the .cpp files use
     -- ImGui directly and are excluded from the engine DLL; we compile them
     -- into the editor binary so the Game View toolbar can drive them.
-    files { path.join(ROOT_DIR, "Funke-Engine/src/Diagnostics/**.cpp") }
+    files { path.join(ROOT_DIR, "Funke-Engine/src/Diagnostics/*Overlay.cpp") }
 
     -- The ImGui WebGPU backend lives inside Funke-Engine.dll so the
     -- editor and engine share one wgpu::Device. The editor's
@@ -63,9 +63,8 @@ project "Funke-Editor"
     includedirs { path.join(ROOT_DIR, "External/ImGuizmo/src") }
     dependson { "ImGuizmo" }
     links { "ImGuizmo" }
-    -- The editor's Rebuild Engine flow rewrites FunkeEntityBitsConfig.h
-    -- to override FUNKE_ENTITY_BITS without a premake regen. The EnTT
-    -- patch picks it up via `#include "FunkeEntityBitsConfig.h"`. See
+    -- Premake writes FunkeEntityBitsConfig.h with the source build's
+    -- entity-bit width. The EnTT patch picks it up via that header. See
     -- WriteFunkeEntityBitsConfigHeader() in the root premake5.lua.
     includedirs { FunkeEntityBitsConfigIncludeDir }
 

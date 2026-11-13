@@ -1,5 +1,6 @@
 #include "pch.hpp"
 #include "Physics3D/PhysicsWorld3D.hpp"
+#include "Physics/PhysicsLayers.hpp"
 
 #include "Components/General/HierarchyComponent.hpp"
 #include "Components/General/Transform3DComponent.hpp"
@@ -447,6 +448,9 @@ namespace Funke {
 		ObjectLayerPairs ObjectPairs;
 		JPH::PhysicsSystem System;
 		std::array<std::atomic<bool>, k_MaxBodies> ActivatedSinceWriteBack{};
+		// Immutable while Jolt steps, including on its worker threads.
+		std::array<uint64_t, k_MaxBodies> BodyLayers{};
+		PhysicsLayerSettings LayerSettings;
 
 		Scene* OwningScene = nullptr;
 		std::unordered_map<EntityHandle, BodyRecord> Bodies;
@@ -484,7 +488,8 @@ namespace Funke {
 			constexpr JPH::uint k_MaxContactConstraints = 10240;
 			System.Init(k_MaxBodies, k_NumBodyMutexes, k_MaxBodyPairs, k_MaxContactConstraints,
 				BroadPhaseMap, ObjectVsBroadPhase, ObjectPairs);
-			System.SetGravity(JPH::Vec3(0.0f, -9.81f, 0.0f));
+			const auto* project = ProjectManager::GetCurrentProject();
+			System.SetGravity(ToJolt(project ? project->PhysicsGravity3D : Vec3(0, -9.81f, 0)));
 			System.SetContactListener(this);
 			System.SetBodyActivationListener(this);
 		}
@@ -506,6 +511,13 @@ namespace Funke {
 		}
 
 		void OnBodyDeactivated(const JPH::BodyID&, JPH::uint64) override {}
+
+		JPH::ValidateResult OnContactValidate(const JPH::Body& a, const JPH::Body& b,
+			JPH::RVec3Arg, const JPH::CollideShapeResult&) override {
+			return (LayerSettings.GetCollisionMask(BodyLayers[a.GetID().GetIndex()]) & BodyLayers[b.GetID().GetIndex()]) != 0
+				? JPH::ValidateResult::AcceptAllContactsForThisBodyPair
+				: JPH::ValidateResult::RejectAllContactsForThisBodyPair;
+		}
 
 		void OnContactAdded(const JPH::Body& body1, const JPH::Body& body2, const JPH::ContactManifold& manifold, JPH::ContactSettings&) override {
 			RecordContact(body1, body2, manifold);
@@ -1016,6 +1028,24 @@ namespace Funke {
 				record.ResetInterpolation(pose.Position, pose.Rotation);
 			}
 
+			const auto& layerSettings = GetPhysicsLayerSettings();
+			const bool matrixChanged = LayerSettings.CollisionMasks != layerSettings.CollisionMasks;
+			LayerSettings.CollisionMasks = layerSettings.CollisionMasks;
+			bool filtersChanged = matrixChanged;
+			for (const auto& [owner, record] : Bodies) {
+				const uint64_t layer = GetEntityPhysicsLayer(registry, owner);
+				auto& previous = BodyLayers[record.Id.GetIndex()];
+				filtersChanged |= previous != layer;
+				previous = layer;
+			}
+			if (filtersChanged) {
+				// A changed static body's layer must also recheck sleeping dynamic neighbours.
+				for (const auto& [owner, record] : Bodies) {
+					bodies.InvalidateContactCache(record.Id);
+					if (record.Motion != JPH::EMotionType::Static) bodies.ActivateBody(record.Id);
+				}
+			}
+
 			if (created > 16) {
 				System.OptimizeBroadPhase();
 			}
@@ -1264,7 +1294,12 @@ namespace Funke {
 	}
 
 	Vec3 PhysicsWorld3D::GetGravity() const { return FromJolt(m_Impl->System.GetGravity()); }
-	void PhysicsWorld3D::SetGravity(const Vec3& gravity) { m_Impl->System.SetGravity(ToJolt(gravity)); }
+	void PhysicsWorld3D::SetGravity(const Vec3& gravity) {
+		if (!std::isfinite(gravity.x) || !std::isfinite(gravity.y) || !std::isfinite(gravity.z)) return;
+		m_Impl->System.SetGravity(ToJolt(gravity));
+		for (const auto& [owner, record] : m_Impl->Bodies)
+			if (record.Motion != JPH::EMotionType::Static) m_Impl->System.GetBodyInterface().ActivateBody(record.Id);
+	}
 
 	size_t PhysicsWorld3D::GetBodyCount() const { return m_Impl->Bodies.size(); }
 

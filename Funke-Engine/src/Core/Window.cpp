@@ -280,12 +280,10 @@ namespace Funke {
 			return true;
 		}
 		Window* active = s_ActiveWindow;
-		if (active && active->m_Window && event->window.windowID == SDL_GetWindowID(active->m_Window)) {
-			active->SyncViewportFromFramebuffer();
-			active->UpdateViewport();
-		}
+		const bool refreshMainWindow = active && active->m_Window
+			&& event->window.windowID == SDL_GetWindowID(active->m_Window);
 		if (Application* app = Application::GetInstance()) {
-			app->RenderOnceForRefresh();
+			app->RenderOnceForRefresh(refreshMainWindow);
 		}
 		return true;
 	}
@@ -537,6 +535,12 @@ namespace Funke {
 	void Window::OnFramebufferResized() {
 		SyncViewportFromFramebuffer();
 		UpdateViewport();
+		int fbW = 0, fbH = 0;
+		SDL_GetWindowSizeInPixels(m_Window, &fbW, &fbH);
+		// Live refreshes and the queued pixel-size event describe the same change. Do not replay it
+		// when PollEvents resumes, or report resize events for expose ticks that only move the window.
+		if (m_LastNotifiedFramebufferSize.x == fbW && m_LastNotifiedFramebufferSize.y == fbH) return;
+		m_LastNotifiedFramebufferSize = { fbW, fbH };
 		if (s_MainViewport) {
 			FNK_CORE_INFO_TAG("Window", "Framebuffer {}x{}, viewport {}x{} at {},{}, window-to-framebuffer scale {}x{}",
 				s_MainViewport->GetFramebufferWidth(), s_MainViewport->GetFramebufferHeight(),
@@ -545,8 +549,6 @@ namespace Funke {
 		}
 
 		if (m_EventCallback) {
-			int fbW = 0, fbH = 0;
-			SDL_GetWindowSizeInPixels(m_Window, &fbW, &fbH);
 			WindowResizeEvent e(fbW, fbH);
 			m_EventCallback(e);
 		}
@@ -556,6 +558,10 @@ namespace Funke {
 		FNK_ASSERT(s_IsInitialized, FunkeErrorCode::NotInitialized, "The Window isn't initialized");
 
 		m_AspectLock = props.AspectLock > 0.0f ? props.AspectLock : 0.0f;
+		m_FullscreenMode = props.Fullscreen ? props.FullscreenMode : FullscreenMode::Exclusive;
+		if (props.Fullscreen && props.Windowed && m_FullscreenMode == FullscreenMode::Exclusive) {
+			m_FullscreenMode = FullscreenMode::Maximized;
+		}
 
 		int width = props.Width, height = props.Height;
 		int minWidth = props.MinWidth, minHeight = props.MinHeight;
@@ -615,7 +621,9 @@ namespace Funke {
 		flags |= SDL_WINDOW_FULLSCREEN;
 #endif
 
-		m_Window = SDL_CreateWindow(props.Title.c_str(), s_MainViewport->GetWidth(), s_MainViewport->GetHeight(), flags);
+		// SDL remembers this windowed size when fullscreen/maximized mode is entered.
+		// Creating at the monitor size would restore to a screen-sized window on F11.
+		m_Window = SDL_CreateWindow(props.Title.c_str(), width, height, flags);
 		FNK_ASSERT(m_Window, FunkeErrorCode::Undefined, std::string("Failed to create window: ") + SDL_GetError());
 
 		m_MinSize = { minWidth > 0 ? minWidth : 0, minHeight > 0 ? minHeight : 0 };
@@ -638,6 +646,7 @@ namespace Funke {
 			m_CustomTitlebar = true;
 		}
 		ApplyTitlebarAppearance();
+		if (FNK_PLATFORM_DESKTOP) CenterWindow();
 
 #if defined(FNK_PLATFORM_WEB) || FNK_PLATFORM_MOBILE
 		// Browser and mobile windows always cover their page / screen.
@@ -645,36 +654,19 @@ namespace Funke {
 #else
 		if (props.Fullscreen) {
 #endif
-			// Legacy compat: Fullscreen+Windowed=true maps to Maximized so old projects don't silently switch to Exclusive.
-			FullscreenMode mode = props.FullscreenMode;
-			if (mode == FullscreenMode::Exclusive && props.Windowed) {
-				mode = FullscreenMode::Maximized;
-			}
-			// Exclusive fullscreen would take the display away from the user.
-			if (background && mode == FullscreenMode::Exclusive) {
-				mode = FullscreenMode::BorderlessWindowed;
-			}
-			switch (mode) {
-				case FullscreenMode::Exclusive:
-					SetFullScreen(true);
-					break;
-				case FullscreenMode::BorderlessWindowed: {
+			// Automation stays windowed and never takes the display away from the user.
+			if (background) {
+				if (m_FullscreenMode == FullscreenMode::Maximized) FillWorkArea(m_Window);
+				else {
 					SDL_SetWindowBordered(m_Window, false);
 					SDL_Rect bounds{};
 					if (SDL_GetDisplayBounds(DisplayForWindow(m_Window), &bounds)) {
 						SDL_SetWindowSize(m_Window, bounds.w, bounds.h);
 						SDL_SetWindowPosition(m_Window, bounds.x, bounds.y);
 					}
-					break;
 				}
-				case FullscreenMode::Maximized:
-					if (background) FillWorkArea(m_Window);
-					else SDL_MaximizeWindow(m_Window);
-					break;
 			}
-		}
-		else if (FNK_PLATFORM_DESKTOP) {
-			CenterWindow();
+			else SetFullScreen(true);
 		}
 
 #ifdef FNK_PLATFORM_WINDOWS
@@ -707,6 +699,7 @@ namespace Funke {
 
 		// Vsync is handled by the render backend.
 		SyncViewportFromFramebuffer();
+		SDL_GetWindowSizeInPixels(m_Window, &m_LastNotifiedFramebufferSize.x, &m_LastNotifiedFramebufferSize.y);
 
 		s_ActiveWindow = this;
 	}
@@ -953,7 +946,17 @@ namespace Funke {
 			return;
 		}
 
-		if (enabled) {
+		if (m_FullscreenMode == FullscreenMode::Maximized) {
+			if (enabled) MaximizeWindow();
+			else RestoreWindow();
+			return;
+		}
+
+		if (enabled && m_FullscreenMode == FullscreenMode::BorderlessWindowed) {
+			// Desktop fullscreen lets SDL track the state and restore size, position and borders.
+			SDL_SetWindowFullscreenMode(m_Window, nullptr);
+		}
+		else if (enabled) {
 			const SDL_DisplayID display = DisplayForWindow(m_Window);
 			const SDL_DisplayMode* desktop = SDL_GetDesktopDisplayMode(display);
 			if (!desktop) {
@@ -1404,7 +1407,8 @@ namespace Funke {
 		return (SDL_GetWindowFlags(m_Window) & SDL_WINDOW_MINIMIZED) != 0;
 	}
 	bool Window::IsFullScreen() const {
-		return (SDL_GetWindowFlags(m_Window) & SDL_WINDOW_FULLSCREEN) != 0;
+		return (SDL_GetWindowFlags(m_Window) & SDL_WINDOW_FULLSCREEN) != 0
+			|| (m_FullscreenMode == FullscreenMode::Maximized && IsMaximized());
 	}
 	bool Window::IsVisible() const {
 		return (SDL_GetWindowFlags(m_Window) & SDL_WINDOW_HIDDEN) == 0;

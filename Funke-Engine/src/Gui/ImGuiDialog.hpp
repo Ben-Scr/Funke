@@ -40,15 +40,26 @@ namespace Funke::ImGuiDialog {
 		return true;
 	}
 
-	inline bool BeginBody(const char* id) {
+	// A non-negative footer height makes the body fill a user-resizable dialog.
+	// The default keeps content-driven sizing for message/confirmation dialogs.
+	inline bool BeginBody(const char* id, float footerHeight = -1.0f) {
 		const auto& style = ImGui::GetStyle();
-		const float footer = ImGui::GetFrameHeight() * 3.0f + style.ItemSpacing.y * 8.0f + style.WindowPadding.y;
-		const float workHeight = GetWorkArea(ImGui::GetWindowPos()).Size.y;
-		const float height = std::max(ImGui::GetTextLineHeight(), std::min(workHeight * 0.6f,
-			workHeight * 0.85f - ImGui::GetCursorPosY() - footer));
-		ImGui::SetNextWindowSizeConstraints(ImVec2(0.0f, 0.0f), ImVec2(FLT_MAX, height));
+		const bool fillWindow = footerHeight >= 0.0f;
+		float bodyHeight = 0.0f;
+		if (fillWindow) {
+			bodyHeight = std::max(ImGui::GetTextLineHeight(),
+				ImGui::GetContentRegionAvail().y - footerHeight - style.ItemSpacing.y);
+		}
+		else {
+			const float footer = ImGui::GetFrameHeight() * 3.0f + style.ItemSpacing.y * 8.0f + style.WindowPadding.y;
+			const float workHeight = GetWorkArea(ImGui::GetWindowPos()).Size.y;
+			const float height = std::max(ImGui::GetTextLineHeight(), std::min(workHeight * 0.6f,
+				workHeight * 0.85f - ImGui::GetCursorPosY() - footer));
+			ImGui::SetNextWindowSizeConstraints(ImVec2(0.0f, 0.0f), ImVec2(FLT_MAX, height));
+		}
 		const bool reset = ImGui::IsWindowAppearing();
-		const bool visible = ImGui::BeginChild(id, ImVec2(0.0f, 0.0f), ImGuiChildFlags_AutoResizeY,
+		const bool visible = ImGui::BeginChild(id, ImVec2(0.0f, bodyHeight),
+			fillWindow ? ImGuiChildFlags_None : ImGuiChildFlags_AutoResizeY,
 			ImGuiWindowFlags_NoBackground);
 		if (reset) ImGui::SetScrollY(0.0f);
 		ImGui::PushTextWrapPos(0.0f);
@@ -64,8 +75,10 @@ namespace Funke::ImGuiDialog {
 
 	inline float FooterButton(int index, int count, float preferredWidth) {
 		const float gap = ImGui::GetStyle().ItemSpacing.x;
-		const float left = ImGui::GetStyle().WindowPadding.x;
-		const float available = std::max(1.0f, ImGui::GetWindowWidth() - left * 2.0f - (ImGui::GetScrollMaxY() > 0.0f ? ImGui::GetStyle().ScrollbarSize : 0.0f));
+		// Begin() latches the window padding. A style override may already have
+		// been popped, so use the actual content bounds to avoid growing auto-sized dialogs.
+		const float left = ImGui::GetCursorStartPos().x;
+		const float available = std::max(1.0f, ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - left);
 		const float width = std::min(preferredWidth, available);
 		const int columns = std::max(1, static_cast<int>((available + gap) / (width + gap)));
 		if (index % columns != 0) ImGui::SameLine();

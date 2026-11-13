@@ -3,6 +3,13 @@ namespace Funke;
 /// <summary>Helpers for collider layer bitmasks (<see cref="Collider2D.Layer"/>, <see cref="Collider2D.CollisionMask"/>, query layer masks).</summary>
 public static class PhysicsLayers
 {
+    /// <summary>Gets a configured layer name from its index (not its mask).</summary>
+    public static string GetName(uint index) => PhysicsLayer.GetName(index);
+    /// <summary>Gets a layer index from its case-sensitive project name.</summary>
+    public static uint GetIndex(string name) => PhysicsLayer.GetIndex(name);
+    public static bool TryGetIndex(string? name, out uint index) => PhysicsLayer.TryGetIndex(name, out index);
+    public static PhysicsLayer FromName(string name) => PhysicsLayer.FromName(name);
+
     public const ulong All = ulong.MaxValue;
     public const ulong None = 0;
     /// <summary>Layer 0 — what new colliders start on.</summary>

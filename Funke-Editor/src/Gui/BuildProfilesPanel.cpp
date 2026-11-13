@@ -880,7 +880,8 @@ namespace Funke {
 		optionalSwitch("Logs", "Log Overlay", profile.ShowRuntimeLogs,
 			"Log window: F7 (macOS: Cmd+Shift+7). Project Default: on unless the build is Release.");
 		optionalSwitch("Console", "Dev Console", profile.DevConsole,
-			"Console on the ` key (three-finger tap on touch screens) with built-in and [DevCommand] commands.\n"
+			"Console: F9 (macOS: Cmd+Shift+9), the Console button, or a three-finger tap on touch screens.\n"
+			"Physics overlay: F8 (macOS: Cmd+Shift+8), including while the console is open.\n"
 			"Project Default: on unless the build is Release.");
 
 		ImGui::PushID("IsolatedPrefs");

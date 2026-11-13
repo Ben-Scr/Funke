@@ -1,5 +1,6 @@
 #include "pch.hpp"
 #include "Box2DWorld.hpp"
+#include "Physics/PhysicsLayers.hpp"
 #include "Scene/Scene.hpp"
 #include <Components/General/Transform2DComponent.hpp>
 #include "Physics/PhysicsSystem2D.hpp"
@@ -49,14 +50,43 @@ namespace Funke {
 		def.enqueueTask = EnqueuePhysicsTask;
 		def.finishTask = FinishPhysicsTask;
 
-		def.gravity = b2Vec2{ 0, -9.8f };
+		const auto* project = ProjectManager::GetCurrentProject();
+		const Vec2 gravity = project ? project->PhysicsGravity2D : Vec2(0, -9.8f);
+		def.gravity = b2Vec2{gravity.x, gravity.y};
 		m_WorldId = b2CreateWorld(&def);
+		m_LayerSettings = GetPhysicsLayerSettings();
+		b2World_SetCustomFilterCallback(m_WorldId, [](b2ShapeId a, b2ShapeId b, void* context) {
+			const auto& settings = static_cast<Box2DWorld*>(context)->m_LayerSettings;
+			const b2Filter left = b2Shape_GetFilter(a), right = b2Shape_GetFilter(b);
+			// Preserve Box2D's explicit group override.
+			if (left.groupIndex != 0 && left.groupIndex == right.groupIndex) return left.groupIndex > 0;
+			return (settings.GetCollisionMask(left.categoryBits) & right.categoryBits) != 0;
+		}, this);
 	}
 	Box2DWorld::~Box2DWorld() {
 		Destroy();
 	}
 
 	void Box2DWorld::Step(float dt) {
+		const auto& settings = GetPhysicsLayerSettings();
+		if (m_LayerSettings.CollisionMasks != settings.CollisionMasks) {
+			m_LayerSettings.CollisionMasks = settings.CollisionMasks;
+			// Box2D caches accepted contacts. Changing the filter wakes and rechecks sleeping pairs too.
+			std::vector<b2ShapeId> shapes;
+			for (const auto& [key, binding] : m_BodyBindings) {
+				const b2BodyId body = b2LoadBodyId(key);
+				if (!b2Body_IsValid(body)) continue;
+				shapes.resize(b2Body_GetShapeCount(body));
+				const int count = b2Body_GetShapes(body, shapes.data(), static_cast<int>(shapes.size()));
+				for (int i = 0; i < count; ++i) {
+					const b2Filter original = b2Shape_GetFilter(shapes[i]);
+					b2Filter temporary = original;
+					temporary.maskBits = ~original.maskBits;
+					b2Shape_SetFilter(shapes[i], temporary);
+					b2Shape_SetFilter(shapes[i], original);
+				}
+			}
+		}
 		const int availableWorkers = JobSystem::IsInitialized() ? JobSystem::GetWorkerCount() : 0;
 		const int currentWorkers = b2World_GetWorkerCount(m_WorldId);
 		// Hysteresis avoids reallocating Box2D worker contexts as bodies wake and sleep near the threshold.
@@ -153,6 +183,8 @@ namespace Funke {
 		shapeDef.isSensor = isSensor;
 		// Box2D only reports a sensor overlap when BOTH shapes opt in, so every shape must be visible to sensors.
 		shapeDef.enableSensorEvents = true;
+		shapeDef.enableCustomFiltering = true;
+		shapeDef.filter.categoryBits = GetEntityPhysicsLayer(scene.GetRegistry(), nativeEntity);
 
 		if (shapeType == ShapeType::Square) {
 			// Never build a zero-area box: a degenerate polygon makes Box2D's

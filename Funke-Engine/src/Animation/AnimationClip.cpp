@@ -333,6 +333,8 @@ namespace Funke {
 
 	void AnimationClipLibrary::Invalidate(uint64_t guid) { Cache().Invalidate(guid); }
 	size_t AnimationClipLibrary::ReloadChangedFromDisk() { return Cache().ReloadChangedFromDisk(); }
+
+	size_t AnimationClipLibrary::GetLoadedCount() { return Cache().GetLoadedCount(); }
 	void AnimationClipLibrary::Clear() { Cache().Clear(); }
 
 }

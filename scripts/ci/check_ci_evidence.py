@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
-from test_evidence import read_python, read_trx, suite_report
+from test_evidence import read_doctest, read_python, read_trx, suite_report
 
 
 CAPABILITIES = {
@@ -66,11 +66,12 @@ def capture_lane(lane: str, steps: dict, core_only: bool, results: Path | None) 
         checks.append({"step": step, "level": level, "status": status_of(outcome),
                        "reason": f"GitHub step outcome: {outcome}", "assertions": None})
     report = {"formatVersion": 1, **identity(), "lane": lane, "checks": checks, "suites": []}
-    if job in {"script-tests", "managed-tests"}:
+    if job in {"script-tests", "managed-tests"} or lane == "linux-instrumentation/sanitize":
         try:
             if results is None:
                 raise ValueError("No test report path supplied")
-            suite = read_trx(results) if job == "managed-tests" else read_python(results)
+            suite = (read_doctest(results) if lane == "linux-instrumentation/sanitize" else
+                     read_trx(results) if job == "managed-tests" else read_python(results))
             report["suites"].append(suite)
             if suite["failed"] or not suite["executed"]:
                 raise ValueError("Test report has failures or no executed cases")
@@ -124,7 +125,7 @@ def aggregate(needs: dict, platforms: str, core_only: bool, directory: Path, run
                 lane_suites = record["suites"]
                 if not isinstance(lane_suites, list) or any(not isinstance(s, dict) for s in lane_suites):
                     raise ValueError("Suites must be an array of objects")
-                if spec["job"] in {"script-tests", "managed-tests"} and len(lane_suites) != 1:
+                if (spec["job"] in {"script-tests", "managed-tests"} or lane == "linux-instrumentation/sanitize") and len(lane_suites) != 1:
                     raise ValueError("Expected one test suite report")
                 for raw_suite in lane_suites:
                     suite = suite_report(raw_suite["name"], raw_suite["cases"])

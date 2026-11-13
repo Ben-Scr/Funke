@@ -8,7 +8,7 @@ from unittest.mock import patch
 from check_ci_evidence import aggregate, capture_lane, expected_lanes, required_checks, summarize
 from coverage_report import summarize_lcov
 from run_script_tests import EvidenceResult
-from test_evidence import read_python, read_trx, suite_report
+from test_evidence import read_doctest, read_python, read_trx, suite_report
 
 
 class EvidenceGateTests(unittest.TestCase):
@@ -77,7 +77,7 @@ class StructuredEvidenceTests(unittest.TestCase):
             path.parent.mkdir(parents=True)
             cases = [{"id": f"Test{i}", "status": "passed", "reason": ""} for i in range(589)]
             suites = ([suite_report("ScriptCore" if spec["job"] == "managed-tests" else "CI scripts", cases)]
-                      if spec["job"] in {"script-tests", "managed-tests"} else [])
+                      if spec["job"] in {"script-tests", "managed-tests"} or lane == "linux-instrumentation/sanitize" else [])
             path.write_text(json.dumps({"formatVersion": 1, **self.RUN, "lane": lane,
                                         "checks": [{"step": step, "level": level, "status": "passed", "reason": "success"}
                                                    for step, level in spec["capabilities"].items()],
@@ -174,6 +174,37 @@ class StructuredEvidenceTests(unittest.TestCase):
         report = capture_lane("linux-instrumentation/sanitize", {
             "sanitize": {"outcome": "failure", "conclusion": "success"}}, False, None)
         self.assertEqual(report["checks"][0]["status"], "failed")
+
+    def test_successful_sanitizer_step_requires_actual_test_report(self):
+        report = capture_lane("linux-instrumentation/sanitize", {
+            "sanitize": {"outcome": "success"}}, False, self.root / "missing.xml")
+        self.assertEqual(report["checks"][0]["status"], "failed")
+
+    def test_doctest_requires_completed_nonempty_assertions(self):
+        path = self.root / "native.xml"
+        good = ('<doctest><TestSuite><TestCase name="Probe" filename="probe.cpp" line="1">'
+                '<OverallResultsAsserts successes="2" failures="0" test_case_success="true"/>'
+                '</TestCase></TestSuite><OverallResultsTestCases successes="1" failures="0"/>'
+                '<OverallResultsAsserts successes="2" failures="0"/></doctest>')
+        path.write_text(good, encoding="utf-8")
+        self.assertEqual(read_doctest(path)["executed"], 1)
+        for broken in (good.replace('successes="2"', 'successes="0"'),
+                       good.replace('failures="0"', 'failures="1"'),
+                       good.replace('test_case_success="true"', 'test_case_success="false"'),
+                       '<doctest/>'):
+            path.write_text(broken, encoding="utf-8")
+            with self.subTest(broken=broken), self.assertRaises(ValueError):
+                read_doctest(path)
+
+    def test_nonexecuted_pass_and_truthy_completion_are_not_evidence(self):
+        with self.assertRaises(ValueError):
+            suite_report("probe", [{"id": "A", "status": "passed", "executed": False}])
+        path = self.root / "python.json"
+        for completed, count in (("false", 1), (True, True)):
+            path.write_text(json.dumps({"completed": completed, "testsRun": count,
+                "cases": [{"id": "A", "status": "passed"}]}), encoding="utf-8")
+            with self.assertRaises(ValueError):
+                read_python(path)
 
     def test_capture_missing_results_never_attests_managed_execution(self):
         report = capture_lane("managed-tests/macos-15", {"managed": {"outcome": "success"}}, False, self.root)

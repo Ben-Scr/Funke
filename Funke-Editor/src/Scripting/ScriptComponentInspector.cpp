@@ -605,6 +605,7 @@ namespace Funke {
 			d.Metadata.ClampMin = rec.ClampMin;
 			d.Metadata.ClampMax = rec.ClampMax;
 			d.Metadata.Enum = rec.Enum;
+			d.Metadata.IsPhysicsLayerMask = rec.TypeTag == "physicslayer";
 			d.Metadata.ComponentTypeName = rec.ComponentTypeName;
 			d.Metadata.AssetKindFilter = ScriptAssetKindForTag(rec.TypeTag);
 			// Script TextureRefs carry only a UUID — slices can't round-trip, so keep them out of the picker.
@@ -667,6 +668,7 @@ namespace Funke {
 			d.Metadata.ClampMin = rec.ClampMin;
 			d.Metadata.ClampMax = rec.ClampMax;
 			d.Metadata.Enum = rec.Enum;
+			d.Metadata.IsPhysicsLayerMask = rec.TypeTag == "physicslayer";
 			d.Metadata.ComponentTypeName = rec.ComponentTypeName;
 			d.Metadata.AssetKindFilter = ScriptAssetKindForTag(rec.TypeTag);
 			// Script TextureRefs carry only a UUID — slices can't round-trip, so keep them out of the picker.
@@ -966,6 +968,7 @@ namespace Funke {
 			d.Metadata.ClampMin = rec.ClampMin;
 			d.Metadata.ClampMax = rec.ClampMax;
 			d.Metadata.Enum = rec.Enum;
+			d.Metadata.IsPhysicsLayerMask = rec.TypeTag == "physicslayer";
 			d.Metadata.ComponentTypeName = rec.ComponentTypeName;
 			d.Metadata.AssetKindFilter = ScriptAssetKindForTag(rec.TypeTag);
 			// Script TextureRefs carry only a UUID — slices can't round-trip, so keep them out of the picker.
@@ -1028,6 +1031,7 @@ namespace Funke {
 			d.Metadata.ClampMin = rec.ClampMin;
 			d.Metadata.ClampMax = rec.ClampMax;
 			d.Metadata.Enum = rec.Enum;
+			d.Metadata.IsPhysicsLayerMask = rec.TypeTag == "physicslayer";
 			d.Metadata.ComponentTypeName = rec.ComponentTypeName;
 			d.Metadata.AssetKindFilter = ScriptAssetKindForTag(rec.TypeTag);
 			// Script TextureRefs carry only a UUID — slices can't round-trip, so keep them out of the picker.

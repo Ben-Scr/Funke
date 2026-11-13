@@ -46,11 +46,15 @@ namespace Funke {
 	class FUNKE_API MeshLibrary {
 	public:
 		MeshLibrary() = delete;
+		// Successfully loaded cache entries; does not load or retain assets. Main thread.
+		static size_t GetLoadedCount();
 
 		// nullptr for 0, unknown GUIDs, unreadable files (retried at most once per second) and runtime meshes without triangles.
 		// Borrowed until invalidation, Clear, or a later end-of-frame purge after the mesh stops being accessed.
 		static const MeshAsset* Get(uint64_t guid);
 		static const MeshAsset* FindLoaded(uint64_t guid);
+        // Diagnostics: inspect without loading or extending cache lifetime. Main thread.
+        static const MeshAsset* PeekLoaded(uint64_t guid);
 		static const MeshAsset* StoreLoadedAsset(uint64_t guid, const std::string& path, MeshAsset&& asset);
 
 		static bool LoadFromFile(const std::string& path, PrimitiveMeshData& outMesh);

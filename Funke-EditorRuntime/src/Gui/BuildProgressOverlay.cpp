@@ -1,6 +1,7 @@
 #include "Gui/BuildProgressOverlay.hpp"
 
 #include "Core/Platform/Win32BuildProgressWindow.hpp"
+#include "Utils/ElapsedTime.hpp"
 
 #include <imgui.h>
 
@@ -28,6 +29,7 @@ namespace Funke::EditorRuntime {
 		if (ImGui::Begin(windowName.c_str(), nullptr, k_Flags)) {
 			if (!state.Stage.empty()) ImGui::TextUnformatted(state.Stage.c_str());
 			ImGui::ProgressBar(std::clamp(state.Progress, 0.0f, 1.0f), ImVec2(-1.0f, 0.0f));
+			ImGui::TextDisabled("Elapsed: %s", FormatElapsedTime(state.StartedAt).c_str());
 		}
 		ImGui::End();
 #endif

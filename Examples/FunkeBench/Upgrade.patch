@@ -1,0 +1,824 @@
+--- a/FunkeBench.csproj
++++ b/FunkeBench.csproj
+@@ -10,6 +10,7 @@
+     <EnableDefaultNoneItems>false</EnableDefaultNoneItems>
+     <Nullable>enable</Nullable>
+     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
++    <FunkeScriptCorePath Condition="'$(FunkeScriptCorePath)' == ''">Packages\Funke-ScriptCore\Funke-ScriptCore.dll</FunkeScriptCorePath>
+   </PropertyGroup>
+ 
+   <PropertyGroup Condition="'$(Configuration)' == 'Debug'">
+@@ -32,7 +33,7 @@
+ 
+   <ItemGroup>
+     <Reference Include="Funke-ScriptCore">
+-      <HintPath>Packages\Funke-ScriptCore\Funke-ScriptCore.dll</HintPath>
++      <HintPath>$(FunkeScriptCorePath)</HintPath>
+       <Private>true</Private>
+     </Reference>
+   </ItemGroup>
+--- a/README.md
++++ b/README.md
+@@ -1,64 +1,59 @@
+ # FunkeBench
+ 
+-Ein kleines Benchmark-Werkzeug, vollständig mit Funke gebaut. Die Oberfläche bleibt während der Messung bedienbar; große einzelne ECS-Operationen können den jeweiligen Frame blockieren, weil genau diese synchrone Arbeit gemessen wird.
++Editierbares Benchmark-Werkzeug für Entity-Operationen und 2D-/3D-Rendering. Benötigt .NET 10, eine gebaute Funke-Runtime und die Module Funke.2D und Funke.3D.
+ 
+ ## Starten
+ 
+-- `Start FunkeBench.cmd` kompiliert die C#-Skripte in Release und startet die Anwendung.
+-- `Open in Funke Editor.cmd` öffnet das editierbare Projekt. Im Editor **Play** starten.
+-- Das Projekt ist auch im Funke-Launcher registriert.
+-
+-Die Startskripte verwenden diesen Engine-Checkout: `C:\Users\benso\source\repos\Pending\Index`. Auf einem anderen Rechner `FUNKE_ENGINE_ROOT` setzen oder `Tools/Start.ps1 -EngineRoot <Pfad>` verwenden. Benötigt werden eine gebaute Funke-Runtime und .NET 10. Es ist ein Quellprojekt mit Startskripten, kein eigenständiges Engine-Installationspaket.
++- `Start FunkeBench.cmd` baut die Skripte in Release und startet die Runtime.
++- `Open in Funke Editor.cmd` öffnet das Projekt; anschließend Play starten.
++- Die Startskripte erkennen den umgebenden Engine-Checkout. Außerhalb davon `FUNKE_ENGINE_ROOT` setzen oder `Tools/Start.ps1 -EngineRoot <Pfad>` übergeben. Für das ursprüngliche lokale Projekt bleibt der bisherige Checkout-Pfad als Fallback erhalten.
++- Die Skripte kompilieren gegen die ScriptCore-DLL der ausgewählten Anwendung. Bei einem manuellen Build lässt sich deren Pfad mit `-p:FunkeScriptCorePath=<DLL>` angeben; ansonsten wird `Packages/Funke-ScriptCore/Funke-ScriptCore.dll` verwendet.
+ 
+ ## Bedienung
+ 
+-1. Links Create, Destroy, Move, Render 2D oder Render 3D wählen.
+-2. Die Anzahl frei eingeben oder **1k / 10k / 100k** wählen.
+-3. Jobs, Bewegung und VSync einstellen. **Operation samples** gilt für ECS-Tests, **Render seconds** für die Frame-Messung.
+-4. **Run benchmark** startet mit Aufwärmung; **Once** misst eine einzelne ECS-Operation ohne Aufwärmung. Bei Rendering nimmt Once eine Sekunde ohne die normale Aufwärmdauer auf.
+-5. **Stop** bricht die Messung ab und verwirft ihre unvollständigen Samples. Die Test-Entities bleiben sichtbar. **Clear workload** entfernt sie; fertige Ergebnisse bleiben erhalten.
+-6. **Export CSV** schreibt die letzten maximal 64 Ergebnisse in den `Results`-Ordner unter Funkes Anwendungsdaten. Der vollständige Pfad erscheint unten und im Log. Sichtbar sind die vier neuesten Ergebnisse.
++1. Szenario und 1 bis 100.000 Entities auswählen.
++2. Jobs, Animation und VSync einstellen. Operationen verwenden 1 bis 1.000 Samples, Rendering 1 bis 120 Sekunden. Das jeweils andere Eingabefeld beeinflusst den Lauf nicht.
++3. **Run benchmark** verwendet Warmup. **Once** misst eine Operation ohne Warmup beziehungsweise eine Sekunde Rendering nach dem Verwerfen des Setup-Frames.
++4. **Stop** verwirft unvollständige Samples und lässt den Workload stehen. **Clear workload** entfernt ihn; fertige Ergebnisse bleiben erhalten.
++5. **Export CSV** schreibt die letzten maximal 64 Ergebnisse in `Results` unter den Anwendungsdaten. Während einer Messung ist der Export gesperrt, damit Dateizugriffe keine Framezeiten verfälschen. Jeder Export erhält einen eigenen Dateinamen.
+ 
+-Jeder neue Lauf ersetzt den bisherigen Workload. Destroy und Move bereiten ihre benötigten Entities selbst vor, sodass dieselbe Anzahl reproduzierbar getestet wird. Änderungen an Auflösung, VSync oder Framelimit während einer Messung brechen sie ab, um gemischte Bedingungen zu vermeiden.
++Jeder Lauf ersetzt den bisherigen Workload. Änderungen an Auflösung, VSync oder Framelimit brechen eine aktive Messung ab. Große synchrone Entity-Operationen können ihren jeweiligen Frame blockieren.
+ 
+-## Was gemessen wird
++## Messumfang
+ 
+-| Test | Messumfang |
++| Test | Gemessene Arbeit |
+ |---|---|
+-| Create | Transform2D-Entities: Command-Buffer-Aufzeichnung und eine native `PlaybackInto`-Ausführung für den gesamten Batch. Speicherreservierung und nachträgliche Wrapper-Erstellung liegen außerhalb. |
+-| Destroy | Aufzeichnung der Löschbefehle und eine native `Playback`-Ausführung. Das Erstellen des Ausgangsbestands liegt außerhalb. |
+-| Move | Auflösen der nativen Transform-Referenzen und Positionsänderung aller Test-Entities, seriell oder über verbundene Funke-Jobs. |
+-| Render 2D | Reale Frameintervalle bei einem sichtbaren Raster farbiger Sprites. Erstellung und Aufwärmung liegen außerhalb. |
+-| Render 3D | Reale Frameintervalle bei beleuchteten Würfeln ohne Schatten. Der Aufbau erfolgt in Blöcken vor der Messung. |
++| Create | Bulk-Aufzeichnung von Transform2D-Entities plus ein `PlaybackInto`; Reservierung und nachträgliche Entity-Wrapper liegen außerhalb. Dies misst nicht einzelne Aufrufe von `Entity.Create()`. |
++| Destroy | Aufzeichnung der Löschbefehle plus ein `Playback`; Vorbereitung der Entities liegt außerhalb. |
++| Move | Auflösen nativer Transform2D-Referenzen auf dem Hauptthread plus Positionsänderungen, seriell oder in verbundenen Jobs. |
++| Render 2D | Reale Frameintervalle mit sichtbaren Sprites und optionaler Bewegung; Setup und Warmup liegen außerhalb. |
++| Render 3D | Reale Frameintervalle mit beleuchteten Würfeln ohne Schatten; Erstellung erfolgt vorab in Blöcken. Animierte Jobs berechnen Positionen, Transform3D-Eigenschaften werden auf dem Hauptthread gesetzt. |
+ 
+-**Workload Jobs / threads** steuert den Benchmark-Workload: parallele Command-Aufzeichnung bei Create/Destroy und parallele Positionsänderungen bei Move/animiertem 2D. Bei animiertem 3D berechnen Jobs die Positionen; das Setzen der Transform3D-Eigenschaften erfolgt auf dem Hauptthread. Statische Render-Workloads führen während der Aufnahme keine Bewegungs-Jobs aus. Der Schalter deaktiviert nicht sämtliche internen Engine-Threads. Die strukturelle Command-Buffer-Ausführung erfolgt auf dem Hauptthread.
++**Jobs** steuert Aufzeichnung beziehungsweise Bewegung. Bei Create verwenden beide Varianten `CreateEntitiesWith`: seriell einen Batch, mit Jobs Blöcke von 1.024 Entities. Die Jobzeit enthält Scheduling und Warten auf Abschluss. Kleine Batches können deshalb weiterhin seriell schneller sein. Die Workerzahl im CSV bezeichnet den verfügbaren Pool, nicht die tatsächlich beteiligten Threads.
+ 
+-Die angezeigten Framezeiten enthalten Engine, UI, Rendering und Präsentation. Sie sind **keine isolierte GPU-Zeit**. Gemessen wird mit `Stopwatch`, nicht mit einem eventuell künstlich gesetzten Spiel-Zeitschritt. Median und P95 beziehen sich bei ECS auf komplette Batch-Operationen, bei Rendering auf vollständige Frames. P95 verwendet die Nearest-Rank-Methode. **Setup** zeigt die aufsummierte Vorbereitung außerhalb der gemessenen Operationen.
++Die native ECB-Ausführung ist davon unabhängig. `bench.playback Automatic`, `Sequential` oder `Parallel` wählt den angeforderten Modus für den nächsten Lauf; Standard ist `Automatic`. Playback wird auf dem Hauptthread aufgerufen, darf aber geeignete native Arbeit an Worker verteilen. `Parallel` erzwingt keine Parallelisierung nicht unterstützter Befehle. Der angeforderte Modus wird für Create/Destroy in `timing_scope` gespeichert. Für einen Vergleich ausschließlich der Aufzeichnung denselben Playback-Modus verwenden.
+ 
+-Für belastbare Vergleiche dieselbe Auflösung, Anzahl, VSync- und Animationsoption verwenden. Zunächst aufwärmen, serielle und Jobs-Läufe mehrmals abwechseln und die Anwendung ohne parallel laufende Builds testen. Editor und Runtime separat vergleichen. Automatisierte Testläufe mit Screenshots prüfen Funktion und Layout und sind keine Performance-Referenz.
++Zeiten stammen aus `Stopwatch`. Renderwerte enthalten Engine, UI und Präsentation und sind keine isolierten GPU-Zeiten. Median und P95 beziehen sich auf komplette Operationen beziehungsweise Frames; P95 verwendet Nearest Rank. Setup ist eine separat aufsummierte Vorbereitung. CSV-Spalten und Dezimalpunkte bleiben kompatibel. Animation wird nur für Render-Ergebnisse als aktiv ausgewiesen.
+ 
+-CSV enthält Mittelwert, Median, P95, Min/Max, Samplezahl, FPS beziehungsweise Entities/s, Setup sowie Command-Aufzeichnung/Playback, Jobs/Animation, Workerzahl, Auflösung, VSync, Framelimit, Engine-/Skript-Konfiguration, Grafikbackend und GPU-Bezeichnung. Zahlen werden unabhängig von der Windows-Sprache mit Dezimalpunkt gespeichert.
++Für Vergleiche identische Einstellungen verwenden, mehrfach aufwärmen und serielle/Jobs-Läufe abwechseln. Editor und Runtime separat betrachten. Automatisierte Funktionsprüfungen mit Screenshots sind keine Performance-Referenz. Das vorhandene CSV allein erfüllt noch nicht den vollständigen Metadatenvertrag unter `Github-Docs/Documentation/Editor/Benchmark-Results.md`.
+ 
+-## Projekt und Tests
++## Entwicklung und Prüfungen
+ 
+-- `Assets/Scenes/Bench.scene`: Kamera, Licht und Oberfläche, im Editor bearbeitbar.
+-- `Assets/Scripts/Benchmarks`: Workloads, Messablauf, Statistik und Export.
++- `Assets/Scripts/Benchmarks`: Workload, Ablauf, Statistik und Export.
+ - `Assets/Scripts/UI`: Bedienung und Anzeige.
+-- `Tools/build_ui.py`: reproduzierbarer Szenengenerator; dauerhafte Layoutänderungen hier vornehmen.
+-- `Design/palette.json`: Funke-Farbrollen.
+-- `Tests/Input/Smoke.json`: Laufzeitprüfung aller fünf Szenarien mit und ohne Jobs sowie Stop/Reset/Export.
+-- `Tests/Input/Interaction.json`: echte UI-Klicks für Presets, Schalter, Once und Clear; animierte Render-Tests, 100.000 Entities und CSV-Prüfung.
+-- `Tools/Verify.ps1`: isolierter Teststart mit Logprüfung und Screenshots unter `Tests/Output`.
+-- `Tests/Statistics`: unabhängige Tests der tatsächlichen Statistik-, Einstellungs- und CSV-Klassen; native Umgebungsdaten sind dabei ersetzt.
++- `Tools/build_ui.py`: erzeugt `Assets/Scenes/Bench.scene` und die Palette. Projekteinstellungen und andere Szenen werden dabei beibehalten; eigene Änderungen an Bench.scene sollten in den Generator übernommen werden.
++- `Tests/Statistics`: Statistik, Eingabegrenzen und CSV; native Umgebungsdaten sind durch Stubs ersetzt.
++- `Tests/Input/Smoke.json`: alle fünf Szenarien seriell und mit Jobs, Stop, Clear und Export.
++- `Tests/Input/Creation.json`: Blockgrenzen 1/1.023/1.024/1.025, drei Playback-Modi und 100.000 Entities.
++- `Tests/Input/Interaction.json`: UI-Klicks, Animation und Export.
++- `Tools/Verify.ps1`: startet eine isolierte Runtime-Kopie mit eigenem Profil, prüft Fehler und die vollständige Anzahl erwarteter Assertions. `bench.check` validiert außerhalb aktiver Messungen auch eindeutige IDs, Transform-Komponenten und zerstörte Entities.
+ 
+ ```powershell
+-dotnet build FunkeBench.csproj -c Release
+ dotnet run --project Tests/Statistics/Statistics.csproj -c Release
++python Tests/test_generator.py
+ ./Tools/Verify.ps1
++./Tools/Verify.ps1 -InputScript Tests/Input/Creation.json
+ ./Tools/Verify.ps1 -InputScript Tests/Input/Interaction.json
+-python Tools/build_ui.py
+ ```
+ 
+-Dev-Konsole: `bench.run Render2D 10000 true 5 10`, `bench.once Create 10000 false`, `bench.animate true`, `bench.vsync false`, `bench.state`, `bench.cancel`, `bench.clear`, `bench.export`. Die Skripte verwenden für automatisierte Assertions zusätzlich `bench.check <results> <live> [busy]`, `bench.check-result` und `bench.check-export`.
+-
+-Runtime-Entities und direkte CSV-Dateiausgabe sind hier absichtlich vorgesehen: Die Erstellung ist selbst der Messgegenstand, der Export ist ein Auswertungsartefakt.
++Dev-Konsole: `bench.run Render2D 10000 true 5 10`, `bench.once Create 10000 false`, `bench.playback Sequential`, `bench.animate true`, `bench.vsync false`, `bench.state`, `bench.cancel`, `bench.clear`, `bench.export`.
+--- a/Assets/Scripts/Benchmarks/BenchmarkExport.cs
++++ b/Assets/Scripts/Benchmarks/BenchmarkExport.cs
+@@ -10,7 +10,8 @@
+     {
+         if (results.Count == 0) throw new InvalidOperationException("Run a benchmark before exporting results.");
+         Directory.CreateDirectory(directory);
+-        string path = Path.Combine(directory, "FunkeBench-" + DateTime.Now.ToString("yyyyMMdd-HHmmss-fff", CultureInfo.InvariantCulture) + ".csv");
++        string path = Path.Combine(directory, "FunkeBench-" + DateTime.Now.ToString("yyyyMMdd-HHmmss-fff", CultureInfo.InvariantCulture)
++            + "-" + Guid.NewGuid().ToString("N") + ".csv");
+         var csv = new StringBuilder("timestamp,benchmark,entities,jobs,animate,samples,mean_ms,median_ms,p95_ms,min_ms,max_ms,fps,entities_per_second,setup_ms,recording_mean_ms,playback_mean_ms,workers,width,height,vsync,target_fps,engine,engine_configuration,scripts_configuration,graphics_api,renderer,warmup_iterations,warmup_seconds,requested_seconds,captured_seconds,timing_scope\n");
+         foreach (BenchmarkResult r in results)
+         {
+@@ -28,7 +29,9 @@
+             }
+             csv.Append('\n');
+         }
+-        File.WriteAllText(path, csv.ToString(), new UTF8Encoding(false));
++        using (var file = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.Read))
++        using (var writer = new StreamWriter(file, new UTF8Encoding(false)))
++            writer.Write(csv.ToString());
+         return path;
+     }
+ }
+--- a/Assets/Scripts/Benchmarks/BenchmarkResult.cs
++++ b/Assets/Scripts/Benchmarks/BenchmarkResult.cs
+@@ -42,16 +42,29 @@
+         double setupMs, double recordingMs, double playbackMs, string timingScope,
+         int width, int height, bool vsync, float targetFrameRate)
+     {
++        if (!Enum.IsDefined(kind)) throw new ArgumentOutOfRangeException(nameof(kind));
++        settings = settings.Snapshot();
+         if (samples.Count == 0) throw new ArgumentException("A result requires at least one sample.", nameof(samples));
++        if (!double.IsFinite(setupMs) || setupMs < 0 || !double.IsFinite(recordingMs) || recordingMs < 0 ||
++            !double.IsFinite(playbackMs) || playbackMs < 0)
++            throw new ArgumentOutOfRangeException(nameof(setupMs), "Timing values must be finite and nonnegative.");
+         Timestamp = DateTimeOffset.Now;
+         Kind = kind;
+         Count = settings.Count;
+         UseJobs = settings.UseJobs;
+-        Animate = settings.Animate;
++        Animate = IsRendering && settings.Animate;
+         Samples = samples.Count;
+         var sorted = new double[Samples];
+         double total = 0;
+-        for (int i = 0; i < Samples; i++) { sorted[i] = samples[i]; total += samples[i]; }
++        for (int i = 0; i < Samples; i++)
++        {
++            double sample = samples[i];
++            if (!double.IsFinite(sample) || sample < 0)
++                throw new ArgumentOutOfRangeException(nameof(samples), "Samples must be finite and nonnegative.");
++            sorted[i] = sample;
++            total += sample;
++        }
++        if (!double.IsFinite(total)) throw new ArgumentOutOfRangeException(nameof(samples), "Sample total overflowed.");
+         Array.Sort(sorted);
+         AverageMs = total / Samples;
+         MedianMs = Samples % 2 == 0 ? (sorted[Samples / 2 - 1] + sorted[Samples / 2]) * 0.5 : sorted[Samples / 2];
+--- a/Assets/Scripts/Benchmarks/BenchmarkSession.cs
++++ b/Assets/Scripts/Benchmarks/BenchmarkSession.cs
+@@ -47,6 +47,7 @@
+         {
+             m_Workload.Clear();
+             m_Settings = snapshot;
++            m_Settings.Animate &= kind == BenchmarkKind.Render2D || kind == BenchmarkKind.Render3D;
+             WorkloadKind = kind;
+             m_SetView?.Invoke(kind);
+             m_Samples.Clear();
+@@ -104,11 +105,11 @@
+     {
+         long setupStart = Stopwatch.GetTimestamp();
+         if (WorkloadKind == BenchmarkKind.Create) m_Workload.Clear();
+-        else if (m_Workload.Count == 0) m_Workload.CreateBatch(m_Settings.Count, m_Settings.UseJobs, false);
++        else if (m_Workload.Count == 0) m_Workload.CreateBatch(m_Settings.Count, m_Settings.UseJobs, false, m_Settings.PlaybackMode);
+         SetupMs += ElapsedMs(setupStart);
+         double elapsed;
+-        if (WorkloadKind == BenchmarkKind.Create) elapsed = m_Workload.CreateBatch(m_Settings.Count, m_Settings.UseJobs, false);
+-        else if (WorkloadKind == BenchmarkKind.Destroy) elapsed = m_Workload.DestroyBatch(m_Settings.UseJobs);
++        if (WorkloadKind == BenchmarkKind.Create) elapsed = m_Workload.CreateBatch(m_Settings.Count, m_Settings.UseJobs, false, m_Settings.PlaybackMode);
++        else if (WorkloadKind == BenchmarkKind.Destroy) elapsed = m_Workload.DestroyBatch(m_Settings.UseJobs, m_Settings.PlaybackMode);
+         else elapsed = m_Workload.MoveBatch(m_Settings.UseJobs, m_MotionPhase += 0.1f);
+         if (m_Iteration >= m_Settings.WarmupIterations)
+         {
+@@ -133,7 +134,7 @@
+         if (m_RenderPhase == 0)
+         {
+             long start = Stopwatch.GetTimestamp();
+-            if (WorkloadKind == BenchmarkKind.Render2D) m_Workload.CreateBatch(m_Settings.Count, m_Settings.UseJobs, true);
++            if (WorkloadKind == BenchmarkKind.Render2D) m_Workload.CreateBatch(m_Settings.Count, m_Settings.UseJobs, true, m_Settings.PlaybackMode);
+             else m_Workload.Create3DChunk(m_Settings.Count);
+             SetupMs += ElapsedMs(start);
+             Progress = 0.2f * m_Workload.Count / m_Settings.Count;
+@@ -173,6 +174,10 @@
+             BenchmarkKind.Render2D => "Wall-clock frame intervals including engine, UI, presentation and optional movement; not GPU timestamps.",
+             _ => "Wall-clock frame intervals including engine, UI, presentation and optional movement; 3D job compute uses main-thread transform writeback, not GPU timestamps."
+         };
++        if (WorkloadKind == BenchmarkKind.Create || WorkloadKind == BenchmarkKind.Destroy)
++            scope += $" Recording: {(m_Settings.UseJobs ? "Jobs" : "serial")}; requested native playback: {m_Settings.PlaybackMode}.";
++        if (WorkloadKind == BenchmarkKind.Create)
++            scope += m_Settings.UseJobs ? $" Bulk blocks: {BenchmarkWorkload.CreationBatchSize}." : " Bulk recording.";
+         var result = new BenchmarkResult(WorkloadKind, m_Settings, m_Samples, SetupMs,
+             m_RecordingTotal / m_Samples.Count, m_PlaybackTotal / m_Samples.Count, scope,
+             m_Width, m_Height, m_Vsync, m_TargetFrameRate);
+@@ -208,8 +213,15 @@
+         Status = "Result history cleared.";
+     }
+ 
++    public void VerifyWorkload()
++    {
++        if (IsBusy) throw new InvalidOperationException("Finish or stop the measurement before validating its workload.");
++        m_Workload.VerifyContents(WorkloadKind == BenchmarkKind.Render3D);
++    }
++
+     public string ExportCsv(string directory)
+     {
++        if (IsBusy) throw new InvalidOperationException("Stop or finish the measurement before exporting; disk I/O changes frame timings.");
+         string path = BenchmarkExport.WriteCsv(directory, m_Results);
+         Status = "Exported " + Path.GetFileName(path);
+         Log.Info("[FunkeBench] CSV: " + path);
+@@ -219,6 +231,8 @@
+     private void Fail(Exception ex)
+     {
+         IsBusy = false;
++        m_Samples.Clear();
++        Progress = 0;
+         m_Settings.Animate = false;
+         Status = "Benchmark failed: " + ex.Message;
+         Log.Error("[FunkeBench] " + ex);
+--- a/Assets/Scripts/Benchmarks/BenchmarkSettings.cs
++++ b/Assets/Scripts/Benchmarks/BenchmarkSettings.cs
+@@ -1,4 +1,5 @@
+ using System;
++using Funke;
+ 
+ public enum BenchmarkKind
+ {
+@@ -11,6 +12,8 @@
+ 
+ public sealed class BenchmarkSettings
+ {
++    public const int MaximumEntities = 100000;
++    public const int MaximumIterations = 1000;
+     public int Count { get; set; } = 10000;
+     public int WarmupIterations { get; set; } = 2;
+     public int Iterations { get; set; } = 10;
+@@ -18,12 +21,13 @@
+     public double DurationSeconds { get; set; } = 5;
+     public bool UseJobs { get; set; } = true;
+     public bool Animate { get; set; }
++    public EntityCommandBufferPlaybackMode PlaybackMode { get; set; } = EntityCommandBufferPlaybackMode.Automatic;
+ 
+     public BenchmarkSettings Snapshot()
+     {
+-        if (Count < 1 || Count > 250000)
+-            throw new ArgumentOutOfRangeException(nameof(Count), "Entity count must be between 1 and 250,000.");
+-        if (Iterations < 1 || Iterations > 1000)
++        if (Count < 1 || Count > MaximumEntities)
++            throw new ArgumentOutOfRangeException(nameof(Count), "Entity count must be between 1 and 100,000.");
++        if (Iterations < 1 || Iterations > MaximumIterations)
+             throw new ArgumentOutOfRangeException(nameof(Iterations), "Samples must be between 1 and 1,000.");
+         if (WarmupIterations < 0 || WarmupIterations > 100)
+             throw new ArgumentOutOfRangeException(nameof(WarmupIterations));
+@@ -31,6 +35,8 @@
+             throw new ArgumentOutOfRangeException(nameof(DurationSeconds), "Capture must last between 0.1 and 120 seconds.");
+         if (!double.IsFinite(WarmupSeconds) || WarmupSeconds < 0 || WarmupSeconds > 30)
+             throw new ArgumentOutOfRangeException(nameof(WarmupSeconds));
++        if (!Enum.IsDefined(PlaybackMode))
++            throw new ArgumentOutOfRangeException(nameof(PlaybackMode));
+         return (BenchmarkSettings)MemberwiseClone();
+     }
+ }
+--- a/Assets/Scripts/Benchmarks/BenchmarkWorkload.cs
++++ b/Assets/Scripts/Benchmarks/BenchmarkWorkload.cs
+@@ -1,4 +1,5 @@
+ using System;
++using System.Collections.Generic;
+ using System.Diagnostics;
+ using System.Runtime.CompilerServices;
+ using Funke;
+@@ -7,6 +8,7 @@
+ 
+ public sealed class BenchmarkWorkload : IDisposable
+ {
++    public const int CreationBatchSize = 1024;
+     private EntityCommandBuffer m_Create = new();
+     private EntityCommandBuffer m_Destroy = new();
+     private ulong[] m_Ids = Array.Empty<ulong>();
+@@ -22,6 +24,7 @@
+ 
+     public void Reserve(int count)
+     {
++        if (count < 1 || count > BenchmarkSettings.MaximumEntities) throw new ArgumentOutOfRangeException(nameof(count));
+         if (Count != 0) throw new InvalidOperationException("Clear the existing workload before reserving a new one.");
+         m_Create.Dispose();
+         m_Destroy.Dispose();
+@@ -37,13 +40,18 @@
+         for (int i = 0; i < count; i++) m_Origins[i] = GridPosition(i, count);
+     }
+ 
+-    public double CreateBatch(int count, bool useJobs, bool renderable)
+-    {
++    public double CreateBatch(int count, bool useJobs, bool renderable,
++        EntityCommandBufferPlaybackMode playbackMode = EntityCommandBufferPlaybackMode.Automatic)
++    {
++        if (Count != 0) throw new InvalidOperationException("Clear the existing workload before creating a new batch.");
++        if (count < 1 || count > m_Ids.Length) throw new ArgumentOutOfRangeException(nameof(count));
+         m_Create.Clear();
+         long start = Stopwatch.GetTimestamp();
+         if (useJobs)
+         {
+-            Job.ScheduleParallelFor(new CreateJob { Writer = m_Create.AsParallelWriter(), Count = count, Renderable = renderable }, count, 256).Complete();
++            int batches = (count + CreationBatchSize - 1) / CreationBatchSize;
++            Job.ScheduleParallelFor(new CreateJob { Writer = m_Create.AsParallelWriter(), Refs = m_Refs,
++                Count = count, Renderable = renderable }, batches, 1).Complete();
+         }
+         else if (!renderable)
+         {
+@@ -59,7 +67,7 @@
+             }
+         }
+         long recorded = Stopwatch.GetTimestamp();
+-        Count = m_Create.PlaybackInto(m_Ids);
++        Count = m_Create.PlaybackInto(m_Ids, playbackMode);
+         long played = Stopwatch.GetTimestamp();
+         RecordingMs = Milliseconds(start, recorded);
+         PlaybackMs = Milliseconds(recorded, played);
+@@ -67,13 +75,14 @@
+         {
+             m_Entities[i] = Entity.FromID(m_Ids[i]);
+             m_Refs[i] = m_Entities[i].ToCommandBufferRef();
+-            if (renderable) m_Origins[i] = m_Entities[i].TransformRef.Position;
++            if (renderable) m_Origins[i] = m_Entities[i].TransformRefReadOnly.Position;
+         }
+         if (Count != count) throw new InvalidOperationException($"Expected {count} entities, created {Count}.");
+         return Milliseconds(start, played);
+     }
+ 
+-    public double DestroyBatch(bool useJobs)
++    public double DestroyBatch(bool useJobs,
++        EntityCommandBufferPlaybackMode playbackMode = EntityCommandBufferPlaybackMode.Automatic)
+     {
+         m_Destroy.Clear();
+         long start = Stopwatch.GetTimestamp();
+@@ -82,7 +91,7 @@
+         else
+             for (int i = 0; i < Count; i++) m_Destroy.Destroy(m_Refs[i]);
+         long recorded = Stopwatch.GetTimestamp();
+-        m_Destroy.Playback();
++        m_Destroy.Playback(playbackMode);
+         long played = Stopwatch.GetTimestamp();
+         RecordingMs = Milliseconds(start, recorded);
+         PlaybackMs = Milliseconds(recorded, played);
+@@ -104,20 +113,22 @@
+ 
+     public void Create3DChunk(int targetCount, int maximum = 512)
+     {
++        if (targetCount < Count || targetCount > m_Ids.Length) throw new ArgumentOutOfRangeException(nameof(targetCount));
++        if (maximum < 1) throw new ArgumentOutOfRangeException(nameof(maximum));
+         int end = Math.Min(targetCount, Count + maximum);
+         int columns = Math.Max(1, (int)Math.Ceiling(Math.Sqrt(targetCount * 2.4)));
+         float size = Math.Min(0.55f, 14f / columns * 0.68f);
+         while (Count < end)
+         {
+             int index = Count;
+-            Entity entity = Entity.Create();
++            Entity entity = Entity.Create3D();
++            if (entity == Entity.Invalid) throw new InvalidOperationException("Could not create the 3D benchmark entity.");
+             m_Entities[index] = entity;
+             m_Ids[index] = entity.ID;
+             m_Refs[index] = entity.ToCommandBufferRef();
+             Count++;
+-            entity.RemoveComponent<Transform2D>();
+-            Transform3D transform = entity.AddComponent<Transform3D>()
+-                ?? throw new InvalidOperationException("Could not attach Transform3D to the benchmark entity.");
++            Transform3D transform = entity.Transform3D
++                ?? throw new InvalidOperationException("The 3D benchmark entity has no Transform3D.");
+             m_Transforms3D[index] = transform;
+             Vector2 origin = m_Origins[index];
+             transform.Position = new Vector3(origin.X, origin.Y, 0);
+@@ -148,11 +159,29 @@
+         Array.Clear(m_Transforms);
+     }
+ 
++    public void VerifyContents(bool threeD)
++    {
++        var ids = new HashSet<ulong>();
++        for (int i = 0; i < Count; i++)
++        {
++            Entity entity = m_Entities[i];
++            if (entity == null || entity.ID != m_Ids[i] || m_Refs[i].ID != entity.ID || !ids.Add(entity.ID))
++                throw new InvalidOperationException($"BENCH_CHECK_FAIL: invalid or duplicate workload entity at {i}.");
++            if (threeD ? !entity.HasComponent<Transform3D>() || entity.HasComponent<Transform2D>() : !entity.HasComponent<Transform2D>())
++                throw new InvalidOperationException($"BENCH_CHECK_FAIL: incorrect transform at {i}.");
++        }
++        for (int i = Count; i < m_Entities.Length; i++)
++        {
++            Entity? entity = m_Entities[i];
++            if (entity != null && (entity.HasComponent<Transform2D>() || entity.HasComponent<Transform3D>()))
++                throw new InvalidOperationException($"BENCH_CHECK_FAIL: destroyed workload entity {i} is still alive.");
++        }
++    }
++
+     public void Dispose()
+     {
+-        Clear();
+-        m_Create.Dispose();
+-        m_Destroy.Dispose();
++        try { Clear(); }
++        finally { m_Create.Dispose(); m_Destroy.Dispose(); }
+     }
+ 
+     private static double Milliseconds(long from, long to) => (to - from) * 1000.0 / Stopwatch.Frequency;
+@@ -184,14 +213,25 @@
+     private struct CreateJob : IJobParallelFor
+     {
+         public EntityCommandBuffer.ParallelWriter Writer;
++        public EntityRef[] Refs;
+         public int Count;
+         public bool Renderable;
+-        public void Execute(int index)
+-        {
+-            if (!Renderable) { Writer.CreateWith<NativeTransform2D>(); return; }
+-            EntityRef entity = Writer.Create();
+-            Writer.AddComponent(entity, TransformFor(index, Count));
+-            Writer.AddComponent(entity, SpriteFor(index));
++        public void Execute(int batch)
++        {
++            int begin = batch * CreationBatchSize;
++            int length = Math.Min(CreationBatchSize, Count - begin);
++            if (!Renderable)
++            {
++                // These local refs are scratch only; playback replaces them with live scene refs.
++                Writer.CreateEntitiesWith<NativeTransform2D>(length, Refs.AsSpan(begin, length));
++                return;
++            }
++            for (int index = begin; index < begin + length; index++)
++            {
++                EntityRef entity = Writer.Create();
++                Writer.AddComponent(entity, TransformFor(index, Count));
++                Writer.AddComponent(entity, SpriteFor(index));
++            }
+         }
+     }
+ 
+--- a/Assets/Scripts/Diagnostics/BenchChecks.cs
++++ b/Assets/Scripts/Diagnostics/BenchChecks.cs
+@@ -12,6 +12,7 @@
+             throw new InvalidOperationException("BENCH_CHECK_FAIL: controller is unavailable.");
+         if (session.Results.Count != results || session.LiveEntityCount != live || session.IsBusy != busy)
+             throw new InvalidOperationException($"BENCH_CHECK_FAIL: expected results={results} live={live} busy={busy}; got results={session.Results.Count} live={session.LiveEntityCount} busy={session.IsBusy} status={session.Status}");
++        if (!busy) session.VerifyWorkload();
+         Log.Info($"BENCH_CHECK_PASS: results={results} live={live} busy={busy}");
+     }
+ 
+--- a/Assets/Scripts/UI/BenchCommands.cs
++++ b/Assets/Scripts/UI/BenchCommands.cs
+@@ -24,6 +24,8 @@
+     public static void Cancel() => Controller.Stop();
+     [DevCommand("bench.animate", Description = "Enable animation for the next rendering benchmark")]
+     public static void Animate(bool enabled) => Controller.SetAnimate(enabled);
++    [DevCommand("bench.playback", Description = "Set requested native ECB playback: Automatic, Sequential or Parallel; independent of recording jobs.")]
++    public static void Playback(EntityCommandBufferPlaybackMode mode) => Controller.SetPlaybackMode(mode);
+     [DevCommand("bench.vsync", Description = "Change VSync while no benchmark is active")]
+     public static void Vsync(bool enabled) => Controller.SetVsync(enabled);
+     [DevCommand("bench.clear")]
+--- a/Assets/Scripts/UI/BenchController.cs
++++ b/Assets/Scripts/UI/BenchController.cs
+@@ -7,7 +7,7 @@
+ 
+ public class BenchController : EntityScript
+ {
+-    public const int MaximumEntities = 100000;
++    public const int MaximumEntities = BenchmarkSettings.MaximumEntities;
+     public static BenchController? Instance { get; private set; }
+     public BenchmarkSession? Session { get; private set; }
+     public InputField? CountInput, IterationsInput, DurationInput;
+@@ -22,6 +22,7 @@
+     private bool m_Locked;
+     private bool m_HasOriginalSettings, m_OriginalVsync;
+     private float m_OriginalFrameRate;
++    private EntityCommandBufferPlaybackMode m_PlaybackMode;
+ 
+     public override void OnStart()
+     {
+@@ -78,8 +79,10 @@
+         if (Session?.IsBusy == true) { Notice("A benchmark is already running."); return; }
+         if (!ReadNumber(CountInput, 1, MaximumEntities, "Entity count", out int count)) return;
+         int iterations = 1, seconds = 1;
+-        if (!once && (!ReadNumber(IterationsInput, 1, 100, "Operation samples", out iterations) ||
+-            !ReadNumber(DurationInput, 1, 120, "Render seconds", out seconds))) return;
++        bool rendering = m_Selected == BenchmarkKind.Render2D || m_Selected == BenchmarkKind.Render3D;
++        if (!once && (rendering
++            ? !ReadNumber(DurationInput, 1, 120, "Render seconds", out seconds)
++            : !ReadNumber(IterationsInput, 1, BenchmarkSettings.MaximumIterations, "Operation samples", out iterations))) return;
+         RunCommand(m_Selected, count, JobsToggle?.IsOn ?? false, seconds, iterations, once);
+     }
+ 
+@@ -96,7 +99,16 @@
+         m_NoticeUntil = 0;
+         Session.Start(kind, new BenchmarkSettings { Count = count, UseJobs = jobs, Iterations = once ? 1 : samples,
+             WarmupIterations = once ? 0 : 2, WarmupSeconds = once ? 0 : 1, DurationSeconds = once ? 1 : seconds,
+-            Animate = AnimateToggle?.IsOn ?? false });
++            Animate = AnimateToggle?.IsOn ?? false, PlaybackMode = m_PlaybackMode });
++        LockInputs(Session.IsBusy);
++    }
++
++    public void SetPlaybackMode(EntityCommandBufferPlaybackMode mode)
++    {
++        if (Session?.IsBusy == true) throw new InvalidOperationException("Stop the active benchmark before changing playback.");
++        if (!Enum.IsDefined(mode)) throw new ArgumentOutOfRangeException(nameof(mode));
++        m_PlaybackMode = mode;
++        Notice("Requested native ECB playback: " + mode + ". Jobs controls recording separately.");
+     }
+ 
+     public void SetAnimate(bool enabled)
+--- a/Assets/Scripts/UI/BenchMetrics.cs
++++ b/Assets/Scripts/UI/BenchMetrics.cs
+@@ -28,6 +28,14 @@
+             BenchController.SetText(SetupLabel, Format(last.SetupMs) + " ms");
+             BenchController.SetText(ScopeLabel, last.TimingScope);
+         }
++        else
++        {
++            BenchController.SetText(MeanLabel, "--");
++            BenchController.SetText(MedianLabel, "--");
++            BenchController.SetText(P95Label, "--");
++            BenchController.SetText(SetupLabel, "--");
++            BenchController.SetText(ScopeLabel, "Run a benchmark to record a result.");
++        }
+         if (m_ResultCount == session.Results.Count && ReferenceEquals(m_LastResult, session.LastResult)) return;
+         m_ResultCount = session.Results.Count;
+         m_LastResult = session.LastResult;
+--- a/Tools/build_ui.py
++++ b/Tools/build_ui.py
+@@ -146,16 +146,4 @@
+          ProgressLabel=f_comp(progress,"TextRenderer"), **history)
+ s.save()
+ 
+-p = json.loads((PROJECT / "project.json").read_text(encoding="utf-8-sig"))
+-p.update(startupScene="Bench",lastOpenedScene="Bench",buildScenes=["Bench"],modules=["Funke.2D","Funke.3D"],
+-         gameViewAspect="16:10",gameViewVsync=False,buildWidth=1440,buildHeight=900,buildMinWidth=1152,buildMinHeight=720,
+-         buildFullscreen=False,buildResizable=True,buildRunInBackground=True,uiReferenceWidth=1440,uiReferenceHeight=900,
+-         uiScaleMode="Fit",showRuntimeStats=False,showRuntimeLogs=False,devConsole=True,prefsProfile="FunkeBench",
+-         productName="FunkeBench",graphics={"postProcessingEnabled":False})
+-p["splashScreen"]["enabled"] = False
+-write_json(PROJECT / "project.json", p)
+-for relative in ["Assets/Scenes/SampleScene.scene", "Assets/Scenes/SampleScene.scene.meta", "Assets/Scripts/GameScript.cs", "Assets/Scripts/GameScript.cs.meta"]:
+-    scaffold = PROJECT / relative
+-    if scaffold.exists():
+-        scaffold.unlink()
+ print(f"Generated Bench.scene with {len(s.entities)} authored entities")
+--- a/Tools/Start.ps1
++++ b/Tools/Start.ps1
+@@ -7,7 +7,11 @@
+ 
+ $ErrorActionPreference = 'Stop'
+ $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+-if (-not $EngineRoot) { $EngineRoot = 'C:\Users\benso\source\repos\Pending\Index' }
++if (-not $EngineRoot) {
++    $candidate = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\..'))
++    if (Test-Path -LiteralPath (Join-Path $candidate 'Funke-Engine')) { $EngineRoot = $candidate }
++    else { $EngineRoot = 'C:\Users\benso\source\repos\Pending\Index' }
++}
+ $appName = if ($Editor) { 'Funke-Editor' } else { 'Funke-Runtime' }
+ $appDirectory = Join-Path $EngineRoot "bin\Release-windows-x86_64\$appName"
+ $appExecutable = Join-Path $appDirectory "$appName.exe"
+@@ -15,7 +19,9 @@
+     throw "Funke executable missing: $appExecutable. Set FUNKE_ENGINE_ROOT or pass -EngineRoot."
+ }
+ if (-not $NoBuild) {
+-    & dotnet build (Join-Path $projectRoot 'FunkeBench.csproj') -c Release --nologo -v minimal
++    $corePath = Join-Path $appDirectory 'Funke-ScriptCore.dll'
++    if (-not (Test-Path -LiteralPath $corePath)) { throw "ScriptCore missing: $corePath" }
++    & dotnet build (Join-Path $projectRoot 'FunkeBench.csproj') -c Release --nologo -v minimal -m:1 -nr:false -p:UseSharedCompilation=false "-p:FunkeScriptCorePath=$corePath"
+     if ($LASTEXITCODE -ne 0) { throw 'FunkeBench script build failed.' }
+ }
+ Start-Process -FilePath $appExecutable -WorkingDirectory $appDirectory -ArgumentList "--project=`"$projectRoot`""
+--- a/Tools/Verify.ps1
++++ b/Tools/Verify.ps1
+@@ -2,27 +2,46 @@
+ param(
+     [string]$EngineRoot = $env:FUNKE_ENGINE_ROOT,
+     [string]$InputScript = 'Tests\Input\Smoke.json',
+-    [int]$TimeoutSeconds = 60,
++    [ValidateRange(1, 600)][int]$TimeoutSeconds = 60,
+     [switch]$NoBuild
+ )
+ 
+ $ErrorActionPreference = 'Stop'
+ $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+-if (-not $EngineRoot) { $EngineRoot = 'C:\Users\benso\source\repos\Pending\Index' }
+-if (-not $NoBuild) {
+-    & dotnet build (Join-Path $projectRoot 'FunkeBench.csproj') -c Release --nologo -v minimal
+-    if ($LASTEXITCODE -ne 0) { throw 'FunkeBench script build failed.' }
++if (-not $EngineRoot) {
++    $candidate = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\..'))
++    if (Test-Path -LiteralPath (Join-Path $candidate 'Funke-Engine')) { $EngineRoot = $candidate }
++    else { $EngineRoot = 'C:\Users\benso\source\repos\Pending\Index' }
+ }
+ $runtimeDirectory = Join-Path $EngineRoot 'bin\Release-windows-x86_64\Funke-Runtime'
+ $runtimeSource = Join-Path $runtimeDirectory 'Funke-Runtime.exe'
+-$testName = "FunkeBench-Verify-$PID"
+-$testExecutable = Join-Path $runtimeDirectory "$testName.exe"
+-$outputDirectory = Join-Path $projectRoot ('Tests\Output\' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
+-New-Item -ItemType Directory -Force -Path $outputDirectory | Out-Null
+-$testLog = Join-Path $env:LOCALAPPDATA "Funke\Logs\$testName.log"
++if (-not (Test-Path -LiteralPath $runtimeSource)) { throw "Runtime missing: $runtimeSource" }
+ $scriptPath = if ([IO.Path]::IsPathRooted($InputScript)) { $InputScript } else { Join-Path $projectRoot $InputScript }
+ if (-not (Test-Path -LiteralPath $scriptPath)) { throw "Test input missing: $scriptPath" }
++$inputDefinition = Get-Content -LiteralPath $scriptPath -Raw | ConvertFrom-Json
++$expectedChecks = 0
++foreach ($step in $inputDefinition.steps) {
++    $expectedChecks += [regex]::Matches([string]$step.command, '(?:^|;)\s*bench\.check(?:-result|-export)?(?=\s|;|$)').Count
++}
++if ($expectedChecks -eq 0) { throw 'Verification input must contain benchmark assertions.' }
++$testName = 'FunkeBench-Verify'
++$outputDirectory = Join-Path $projectRoot ('Tests\Output\' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N'))
++$isolatedRuntime = Join-Path $outputDirectory 'Runtime'
++New-Item -ItemType Directory -Force -Path $isolatedRuntime | Out-Null
++$testExecutable = Join-Path $isolatedRuntime "$testName.exe"
+ Copy-Item -LiteralPath $runtimeSource -Destination $testExecutable
++Get-ChildItem -LiteralPath $runtimeDirectory -File | Where-Object {
++    $_.Name -match '\.dll$|^Funke-ScriptCore\.(deps|runtimeconfig)\.json$'
++} | Copy-Item -Destination $isolatedRuntime
++Copy-Item -LiteralPath (Join-Path $runtimeDirectory 'FunkeAssets') -Destination $isolatedRuntime -Recurse
++if (-not $NoBuild) {
++    $corePath = Join-Path $isolatedRuntime 'Funke-ScriptCore.dll'
++    & dotnet build (Join-Path $projectRoot 'FunkeBench.csproj') -c Release --nologo -v minimal -m:1 -nr:false -p:UseSharedCompilation=false "-p:FunkeScriptCorePath=$corePath"
++    if ($LASTEXITCODE -ne 0) { throw 'FunkeBench script build failed.' }
++}
++$previousUserData = $env:FUNKE_USER_DATA_ROOT
++$env:FUNKE_USER_DATA_ROOT = Join-Path $outputDirectory 'UserData'
++$testLog = Join-Path $env:FUNKE_USER_DATA_ROOT "Funke\Logs\$testName.log"
+ $testProcess = $null
+ try {
+     $runArguments = @(
+@@ -33,10 +52,10 @@
+         "--screenshot-dir=`"$outputDirectory`"",
+         "--quit-after=$TimeoutSeconds"
+     )
+-    $testProcess = Start-Process -FilePath $testExecutable -WorkingDirectory $runtimeDirectory -ArgumentList $runArguments -WindowStyle Hidden -PassThru
+-    if (-not $testProcess.WaitForExit(($TimeoutSeconds + 15) * 1000)) {
+-        Stop-Process -Id $testProcess.Id -Force
+-        throw 'FunkeBench verification timed out.'
++    $testProcess = Start-Process -FilePath $testExecutable -WorkingDirectory $isolatedRuntime -ArgumentList $runArguments -WindowStyle Hidden -PassThru
++    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds + 15)
++    while (-not $testProcess.WaitForExit(1000)) {
++        if ([DateTime]::UtcNow -ge $deadline) { throw 'FunkeBench verification timed out.' }
+     }
+     $testProcess.Refresh()
+     if (-not (Test-Path -LiteralPath $testLog)) { throw 'Runtime did not write its log.' }
+@@ -47,11 +66,15 @@
+         $failures | ForEach-Object { Write-Output $_ }
+         throw "Runtime verification failed (exit $($testProcess.ExitCode)). See $outputDirectory"
+     }
+-    if ($logText -notmatch 'BENCH_CHECK_PASS') { throw "Missing successful assertions. See $outputDirectory" }
++    $actualChecks = [regex]::Matches($logText, 'BENCH_CHECK_PASS:').Count
++    if ($actualChecks -ne $expectedChecks) {
++        throw "Incomplete verification: expected $expectedChecks successful assertions, got $actualChecks. See $outputDirectory"
++    }
++    if ($logText -match '--quit-after .*elapsed') { throw "Verification reached its safety timeout. See $outputDirectory" }
+     $logText -split "`r?`n" | Where-Object { $_ -match 'BENCH_CHECK|\[FunkeBench\]' } | ForEach-Object { Write-Output $_ }
+     Write-Output "Verification output: $outputDirectory"
+ }
+ finally {
+     if ($null -ne $testProcess -and -not $testProcess.HasExited) { Stop-Process -Id $testProcess.Id -Force }
+-    if (Test-Path -LiteralPath $testExecutable) { Remove-Item -LiteralPath $testExecutable -Force }
++    $env:FUNKE_USER_DATA_ROOT = $previousUserData
+ }
+--- /dev/null
++++ b/Tests/test_generator.py
+@@ -0,0 +1,29 @@
++"""Verify that regenerating the UI preserves project configuration and other assets."""
++import json
++from pathlib import Path
++import shutil
++import subprocess
++import sys
++import tempfile
++
++project = Path(__file__).resolve().parents[1]
++with tempfile.TemporaryDirectory(prefix="FunkeBench-generator-") as directory:
++    target = Path(directory)
++    tools = target / "Tools"
++    tools.mkdir()
++    for name in ("build_ui.py", "funke_kit.py"):
++        shutil.copyfile(project / "Tools" / name, tools / name)
++    settings = b'{"graphics":{"renderScale":0.75},"modules":["Funke.2D","Funke.Physics2D"]}\n'
++    (target / "project.json").write_bytes(settings)
++    sentinel = target / "Assets" / "Scenes" / "SampleScene.scene"
++    sentinel.parent.mkdir(parents=True)
++    sentinel.write_bytes(b"user-authored asset")
++    subprocess.run([sys.executable, str(tools / "build_ui.py")], check=True)
++    assert (target / "project.json").read_bytes() == settings, "Generator reset project settings"
++    assert sentinel.read_bytes() == b"user-authored asset", "Generator deleted an unrelated scene"
++    scene = target / "Assets" / "Scenes" / "Bench.scene"
++    first = scene.read_bytes()
++    json.loads(first)
++    subprocess.run([sys.executable, str(tools / "build_ui.py")], check=True)
++    assert scene.read_bytes() == first, "Generator changed stable scene IDs on repeat"
++print("PASS: generator preserves project settings, unrelated assets and stable scene IDs.")
+--- /dev/null
++++ b/Tests/Input/Creation.json
+@@ -0,0 +1,17 @@
++{
++  "steps": [
++    { "at": "0.5s", "command": "bench.playback Sequential; bench.once Create 1 false" },
++    { "at": "1.5s", "command": "bench.check 1 1; bench.check-result Create false false 1; bench.once Create 1 true" },
++    { "at": "2.5s", "command": "bench.check 2 1; bench.check-result Create true false 1; bench.once Create 1023 true" },
++    { "at": "3.5s", "command": "bench.check 3 1023; bench.once Create 1024 true" },
++    { "at": "4.5s", "command": "bench.check 4 1024; bench.once Create 1025 true" },
++    { "at": "5.5s", "command": "bench.check 5 1025; bench.playback Parallel; bench.once Create 1025 false" },
++    { "at": "6.5s", "command": "bench.check 6 1025; bench.once Create 1025 true" },
++    { "at": "7.5s", "command": "bench.check 7 1025; bench.playback Automatic; bench.once Create 100000 true" },
++    { "at": "10s", "command": "bench.check 8 100000; bench.once Destroy 100000 true" },
++    { "at": "13s", "command": "bench.check 9 0; bench.once Create 100000 false" },
++    { "at": "16s", "command": "bench.check 10 100000; bench.once Destroy 100000 false" },
++    { "at": "19s", "command": "bench.check 11 0; bench.check-export; bench.clear; bench.check 11 0" },
++    { "at": "20s", "quit": true }
++  ]
++}
+--- a/Tests/Input/Interaction.json
++++ b/Tests/Input/Interaction.json
+@@ -22,7 +22,7 @@
+     { "at": "16s", "command": "bench.check 5 1000; bench.check-result Render3D false true" },
+     { "at": "16.2s", "mouse": [0.025, 0.827], "button": "left" },
+     { "at": "17s", "command": "bench.once Create 100000 true" },
+-    { "at": "20s", "command": "bench.check 6 100000; bench.check-result Create true true 1 true; bench.check-export" },
++    { "at": "20s", "command": "bench.check 6 100000; bench.check-result Create true false 1 true; bench.check-export" },
+     { "at": "21s", "mouse": [0.803, 0.036], "button": "left" },
+     { "at": "22s", "command": "bench.check 6 0" },
+     { "at": "23s", "quit": true }
+--- a/Tests/Statistics/EngineMetadata.cs
++++ b/Tests/Statistics/EngineMetadata.cs
+@@ -1,8 +1,9 @@
+ namespace Funke
+ {
++    public enum EntityCommandBufferPlaybackMode { Automatic, Sequential, Parallel }
+     public static class Engine
+     {
+-        public static string Version => "test";
++        public static string VersionLong => "test";
+         public static string ConfigurationName => "Test";
+         public static string GraphicsApiName => "Stub";
+         public static string GpuRenderer => "Test, \"renderer\"";
+--- a/Tests/Statistics/Program.cs
++++ b/Tests/Statistics/Program.cs
+@@ -2,6 +2,7 @@
+ using System.Globalization;
+ using System.IO;
+ using System.Linq;
++using Funke;
+ 
+ int assertions = 0;
+ void Check(bool condition, string message)
+@@ -39,19 +40,33 @@
+ Equal(7, Result(BenchmarkKind.Destroy, 7).MedianMs, "Single sample median.");
+ Equal(0, Result(BenchmarkKind.Render3D, 0).FPS, "Zero duration must avoid division by zero.");
+ Reject(() => Result(BenchmarkKind.Create), "Empty results must be rejected.");
++foreach (double invalid in new[] { -1.0, double.NaN, double.PositiveInfinity, double.NegativeInfinity })
++    Reject(() => Result(BenchmarkKind.Create, invalid), "Reject invalid sample duration.");
++Reject(() => Result(BenchmarkKind.Create, double.MaxValue, double.MaxValue), "Reject duration overflow.");
++Reject(() => Result((BenchmarkKind)99, 1), "Reject unknown benchmark kinds.");
++var animatedOperation = new BenchmarkResult(BenchmarkKind.Create, new BenchmarkSettings { Animate = true },
++    new[] { 1.0 }, 0, 0, 0, "test", 1, 1, false, 0);
++Check(!animatedOperation.Animate, "Operations must not claim to animate render entities.");
+ 
+ var settings = new BenchmarkSettings();
+ var snapshot = settings.Snapshot();
+ settings.Count = 7;
+ Check(snapshot.Count == 10000, "Snapshot must be independent of live controls.");
+ Reject(() => new BenchmarkSettings { Count = 0 }.Snapshot(), "Reject zero entities.");
+-Reject(() => new BenchmarkSettings { Count = 250001 }.Snapshot(), "Enforce entity cap.");
++Reject(() => new BenchmarkSettings { Count = BenchmarkSettings.MaximumEntities + 1 }.Snapshot(), "Enforce entity cap.");
++Check(new BenchmarkSettings { Count = BenchmarkSettings.MaximumEntities }.Snapshot().Count == 100000, "Allow the UI's maximum count.");
+ Reject(() => new BenchmarkSettings { Iterations = 0 }.Snapshot(), "Reject zero samples.");
+ Reject(() => new BenchmarkSettings { DurationSeconds = double.NaN }.Snapshot(), "Reject NaN capture length.");
+ Reject(() => new BenchmarkSettings { WarmupSeconds = double.PositiveInfinity }.Snapshot(), "Reject infinite warmup.");
++Reject(() => new BenchmarkSettings { PlaybackMode = (EntityCommandBufferPlaybackMode)99 }.Snapshot(), "Reject unknown playback mode.");
++Check(new BenchmarkSettings { PlaybackMode = EntityCommandBufferPlaybackMode.Sequential }.Snapshot().PlaybackMode == EntityCommandBufferPlaybackMode.Sequential,
++    "Preserve explicit native playback independently of recording jobs.");
++Reject(() => new BenchmarkResult(BenchmarkKind.Create, new BenchmarkSettings(), new[] { 1.0 }, double.NaN, 0, 0, "test", 1, 1, false, 0),
++    "Reject invalid setup time.");
+ 
+ string directory = Path.Combine(Path.GetTempPath(), "FunkeBench-statistics-" + Guid.NewGuid().ToString("N"));
+ string? exportedPath = null;
++string? repeatedPath = null;
+ CultureInfo previous = CultureInfo.CurrentCulture;
+ try
+ {
+@@ -62,11 +77,15 @@
+     Check(csv.Contains("\"Test, \"\"renderer\"\"\""), "CSV must quote embedded commas and quotes.");
+     Check(csv.Contains("\"frame, including \"\"UI\"\"\""), "CSV timing scope quoting.");
+     Check(csv.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length == 2, "CSV header and one result row.");
++    repeatedPath = BenchmarkExport.WriteCsv(directory, new[] { even });
++    Check(repeatedPath != exportedPath, "Repeated exports must have distinct names.");
++    Check(File.ReadAllText(exportedPath) == csv, "Repeated export must preserve previous results.");
+ }
+ finally
+ {
+     CultureInfo.CurrentCulture = previous;
+     if (exportedPath != null) File.Delete(exportedPath);
++    if (repeatedPath != null) File.Delete(repeatedPath);
+     if (Directory.Exists(directory)) Directory.Delete(directory);
+ }
+ Console.WriteLine($"PASS: {assertions} statistics, settings, and CSV assertions.");

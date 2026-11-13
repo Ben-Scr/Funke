@@ -228,6 +228,12 @@ The staged native path supports creation and eligible additions/removals of `Nat
 
 Batches requiring prefab loading, hierarchy or script lifecycle handling, custom component logic, extra callbacks, or ordering between mixed operations use the ordered path. Playback is synchronous in every mode. Finish all jobs that access the scene before playback; native parallel playback does not make direct entity/component structural calls thread-safe.
 
+For many entities with the same default components, use `CreateEntitiesWith<T1, T2, ...>(count, refs)`. It resolves component IDs and reserves command storage once for the batch, preserving the same entity order and native default-construction semantics as repeated `CreateWith` calls. Reuse the ECB with `Clear()` and reuse the output array between batches. Include `Playback()` when measuring creation; recording alone only queues work.
+
+Parallel writers cache their current thread's recorder without retaining abandoned or disposed buffers. `CreateWith` resolves that recorder once per entity, and `CreateEntitiesWith` resolves it once per batch. Live scene refs remain thread-independent, but newly recorded refs still belong to their producing worker. These optimizations do not change playback eligibility, callback order, or the requirement to finish all recording jobs before playback.
+
+Native staged creation reuses handle and identity scratch arrays between playbacks. Their capacity follows the largest batch on that thread; nested playback gets independent scratch while the outer batch is active. The focused [recording benchmark](../../../scripts/benchmarks/ecs-recording/README.md) separates managed recording/wire assembly from real native scene creation.
+
 #### Playback capability matrix
 
 Eligibility is checked for the entire batch before staged mutation. A single ineligible command selects ordered playback for the whole batch. `Parallel` requests the staged path even below the automatic threshold; it does not promise worker execution.

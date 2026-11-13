@@ -63,7 +63,7 @@ public sealed class ReloadState
 /// <summary>Base class for user C# scripts; also acts as a Component so GetComponent/AddComponent/HasComponent work uniformly.</summary>
 public abstract class EntityScript : Component
 {
-    public Transform2D? Transform => Entity.Transform;
+    public Transform2D? Transform => Entity.Transform2D;
     /// <summary>Cached 2D component, or null when absent; never adds a transform.</summary>
     public Transform2D? Transform2D => Entity.Transform2D;
     /// <summary>Cached 3D component, or null when absent; never adds a transform.</summary>

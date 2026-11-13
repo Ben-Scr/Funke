@@ -30,11 +30,13 @@ namespace Funke::PlatformShortcuts {
 	inline constexpr Binding k_Stats{ KeyCode::Alpha6, Modifiers::Super | Modifiers::Shift };
 	inline constexpr Binding k_Logs{ KeyCode::Alpha7, Modifiers::Super | Modifiers::Shift };
 	inline constexpr Binding k_PhysicsDebug{ KeyCode::Alpha8, Modifiers::Super | Modifiers::Shift };
+	inline constexpr Binding k_DevConsole{ KeyCode::Alpha9, Modifiers::Super | Modifiers::Shift };
 	inline constexpr Binding k_Profiler{ KeyCode::P, Modifiers::Super | Modifiers::Shift };
 	inline constexpr const char* k_FullscreenLabel = "Ctrl+Cmd+F";
 	inline constexpr const char* k_StatsLabel = "Cmd+Shift+6";
 	inline constexpr const char* k_LogsLabel = "Cmd+Shift+7";
 	inline constexpr const char* k_PhysicsDebugLabel = "Cmd+Shift+8";
+	inline constexpr const char* k_DevConsoleLabel = "Cmd+Shift+9";
 	inline constexpr const char* k_ProfilerLabel = "Cmd+Shift+P";
 #else
 	inline constexpr KeyCode k_PrimaryLeft = KeyCode::LeftControl;
@@ -44,11 +46,13 @@ namespace Funke::PlatformShortcuts {
 	inline constexpr Binding k_Stats{ KeyCode::F6 };
 	inline constexpr Binding k_Logs{ KeyCode::F7 };
 	inline constexpr Binding k_PhysicsDebug{ KeyCode::F8 };
+	inline constexpr Binding k_DevConsole{ KeyCode::F9 };
 	inline constexpr Binding k_Profiler{ KeyCode::F6, Modifiers::Control };
 	inline constexpr const char* k_FullscreenLabel = "F11";
 	inline constexpr const char* k_StatsLabel = "F6";
 	inline constexpr const char* k_LogsLabel = "F7";
 	inline constexpr const char* k_PhysicsDebugLabel = "F8";
+	inline constexpr const char* k_DevConsoleLabel = "F9";
 	inline constexpr const char* k_ProfilerLabel = "Ctrl+F6";
 #endif
 

@@ -38,10 +38,10 @@ namespace Funke {
 		TComponent* Resolve(uint64_t entityID) {
 			Scene* scene = nullptr;
 			EntityHandle handle = entt::null;
-			if (!ResolveEntityReference(entityID, scene, handle) || !scene->IsValid(handle) || !scene->HasComponent<TComponent>(handle)) {
+			if (!ResolveEntityReference(entityID, scene, handle) || !scene->IsValid(handle)) {
 				return nullptr;
 			}
-			return &scene->GetComponent<TComponent>(handle);
+			return scene->GetRegistry().try_get<TComponent>(handle);
 		}
 
 		void WriteVec3(const Vec3& value, float* x, float* y, float* z) {

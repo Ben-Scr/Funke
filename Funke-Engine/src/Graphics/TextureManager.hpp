@@ -23,6 +23,8 @@ namespace Funke {
 namespace Funke {
         class FUNKE_API TextureManager {
         public:
+        // Successfully loaded entries only; never initiates a load.
+        static size_t GetLoadedCount();
             static void Initialize();
             static void Shutdown();
 
