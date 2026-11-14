@@ -1351,7 +1351,13 @@ jobs:
           name: Funke-Installer-macOS-arm64
           path: release
 
-      - name: Create Draft Release
+      - name: Download Full CI Evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: Funke-CI-Evidence
+          path: release
+
+      - name: Create or Update Draft Release
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.windows-build.outputs.version }}
@@ -1361,8 +1367,4 @@ jobs:
             echo "CHANGELOG.md has no notes for $VERSION" >&2
             exit 1
           fi
-          flags=(--draft --verify-tag --title "Funke $VERSION" --notes-file release-notes.md)
-          if [[ "$VERSION" == *-* ]]; then
-            flags+=(--prerelease)
-          fi
-          gh release create "$GITHUB_REF_NAME" release/* "${flags[@]}"
+          python3 scripts/ci/prepare_github_release.py --directory release --notes release-notes.md
