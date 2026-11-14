@@ -306,6 +306,28 @@ class MacInstallerTests(unittest.TestCase):
         with patch.object(mac.platform, "system", return_value="Darwin"), self.assertRaisesRegex(ValueError, "Public installers"):
             mac.build(args)
 
+    def test_cli_preserves_signing_for_all_tags_except_the_approved_preview(self):
+        for tag, extra, required in (("v2026.1.0", [], True), ("v2026.1.0-beta.2", [], True),
+                                     ("v2026.1.0-beta.1", [], False),
+                                     ("v2026.1.0-beta.1", ["--require-signing"], True)):
+            with self.subTest(tag=tag, extra=extra):
+                with patch.dict(os.environ, {"GITHUB_REF_TYPE": "tag", "GITHUB_REF_NAME": tag}), \
+                        patch.object(mac.sys, "argv", ["BuildMacInstaller.py", "--bundle", str(self.bundle), *extra]), \
+                        patch.object(mac, "build", return_value=self.root / "Funke.dmg") as build, \
+                        patch("sys.stdout", new_callable=io.StringIO):
+                    self.assertEqual(mac.main(), 0)
+                    self.assertEqual(build.call_args.args[0].require_signing, required)
+
+    def test_preview_tag_still_requires_clean_identity(self):
+        args = argparse.Namespace(require_signing=False, signing_identity=None, notary_keychain_profile=None,
+                                  bundle=self.bundle, output_dir=self.root / "output")
+        with patch.dict(os.environ, {"GITHUB_REF_TYPE": "tag", "GITHUB_REF_NAME": "v2026.1.0-beta.1"}), \
+                patch.object(mac.platform, "system", return_value="Darwin"), \
+                patch.object(mac, "read_identity", side_effect=ValueError("dirty preview")) as identity:
+            with self.assertRaisesRegex(ValueError, "dirty preview"):
+                mac.build(args)
+            identity.assert_called_once_with(self.bundle.resolve(), True)
+
     def test_notary_rejection_is_fatal(self):
         with patch.object(mac, "run", return_value='{"status":"Invalid"}'), self.assertRaisesRegex(ValueError, "not accepted"):
             mac.notarize(Path("Funke.dmg"), "profile")

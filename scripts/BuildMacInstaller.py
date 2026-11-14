@@ -20,6 +20,7 @@ from pathlib import Path, PurePosixPath
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import sdk_manifest
+import release_policy
 
 ROOT = Path(__file__).resolve().parents[1]
 SUPPORT = ROOT / "installer" / "macos"
@@ -301,7 +302,10 @@ def build(args: argparse.Namespace) -> Path:
     bundle, output = args.bundle.resolve(), args.output_dir.resolve()
     if output.is_relative_to(bundle):
         raise ValueError("Output directory must be outside the input bundle")
-    manifest, metadata = read_identity(bundle, args.require_signing)
+    tag = release_policy.current_tag()
+    manifest, metadata = read_identity(bundle, args.require_signing or bool(tag))
+    if tag and tag != "v" + metadata["version"]:
+        raise ValueError("Release tag does not match the installer bundle version")
     architecture = manifest["architecture"]
     label = "arm64" if architecture == "arm64" else "x64"
     output.mkdir(parents=True, exist_ok=True)
@@ -365,7 +369,7 @@ def main() -> int:
     parser.add_argument("--notary-keychain-profile")
     parser.add_argument("--require-signing", action="store_true")
     args = parser.parse_args()
-    if os.environ.get("GITHUB_REF_TYPE") == "tag":
+    if release_policy.policy(release_policy.current_tag())["requiresSigning"]:
         args.require_signing = True
     try:
         result = build(args)

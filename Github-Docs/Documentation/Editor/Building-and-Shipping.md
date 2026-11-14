@@ -215,6 +215,8 @@ The structural verifier can also be run directly:
 
 For signing-account setup, repository protection and the handoff from a preparation draft to signed tag artifacts, see [Desktop engine release operations](Release-Operations.md).
 
+The explicitly approved first preview `v2026.1.0-beta.1` may be published unsigned for early testers, with Windows/macOS restrictions and pending manual acceptance disclosed. This exact exception is defined in `scripts/release_policy.py`; all other release tags follow the signing and final-acceptance requirements below. CI, clean build identity and checksums remain mandatory for the preview.
+
 Before tagging a public release, update `Version.props`, add the exact version to `CHANGELOG.md`, and use the matching `v<version>` tag. Prerelease and final versions are distinct: for example, `v2026.1.0-rc.1` requires `FunkeVersion` to be `2026.1.0-rc.1`.
 
 For unsigned local candidates, the normal publish command is sufficient. Official tags require Authenticode signing and a detached CMS signature over the checksum. CI reads the PFX and password from `FUNKE_SIGNING_CERTIFICATE_BASE64` and `FUNKE_SIGNING_CERTIFICATE_PASSWORD`; configure `FUNKE_SIGNING_TIMESTAMP_URL` as a repository variable when timestamping is required. Credentials stay outside the repository.

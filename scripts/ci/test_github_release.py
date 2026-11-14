@@ -15,7 +15,7 @@ class ReleaseArtifactTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
-        self.version = "2026.1.0-beta.1"
+        self.version = "2026.1.0-rc.1"
         self.commit = "a" * 40
         self.environment = mock.patch.dict(os.environ, {"GITHUB_RUN_ID": "42", "GITHUB_RUN_ATTEMPT": "2"})
         self.environment.start()
@@ -95,6 +95,28 @@ class ReleaseArtifactTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "CI evidence"):
                     self.prepare()
                 self.evidence = original
+
+    def test_only_the_explicit_preview_accepts_unsigned_artifacts(self):
+        preview = "2026.1.0-beta.1"
+        for path in list(self.root.iterdir()):
+            if path.name.endswith(".p7s"):
+                path.unlink()
+                continue
+            if path.name.endswith(".manifest.json"):
+                manifest = json.loads(path.read_text())
+                manifest["engine"]["version"] = preview
+                manifest.update(signed=False, notarized=False)
+                path.write_text(json.dumps(manifest), encoding="utf-8")
+            if path.name.endswith(".sha256"):
+                path.write_text(path.read_text().replace(self.version, preview), encoding="utf-8")
+            path.rename(path.with_name(path.name.replace(self.version, preview)))
+        self.version = preview
+        files = self.prepare()
+        self.assertEqual(len(files), 17)
+        provenance = json.loads((self.root / f"Funke-{preview}-provenance.json").read_text())
+        self.assertEqual(provenance["status"], "unsigned-preview-draft")
+        self.assertFalse(provenance["signing"]["required"])
+        self.assertFalse(provenance["signing"]["macosNotarized"])
 
 
 class DraftHandoffTests(unittest.TestCase):

@@ -623,7 +623,11 @@ try {
     }
     $isTagBuild = [bool]$ReleaseTag -or $env:GITHUB_REF_TYPE -eq "tag"
     if ($isTagBuild) {
-        $RequireSigning = $true
+        $effectiveTag = if ($ReleaseTag) { $ReleaseTag } else { $env:GITHUB_REF_NAME }
+        $policyJson = & python (Join-Path $PSScriptRoot 'release_policy.py') --tag $effectiveTag
+        if ($LASTEXITCODE -ne 0) { throw 'Cannot determine release signing policy.' }
+        $releasePolicy = $policyJson | ConvertFrom-Json
+        if ($releasePolicy.requiresSigning) { $RequireSigning = $true }
     }
 
     $metadata = Invoke-BuildMetadataGeneration -ForRelease:$PublishBundle

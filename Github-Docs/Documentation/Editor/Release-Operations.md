@@ -2,6 +2,8 @@
 
 This procedure publishes the engine installers. Game export uses [Building and Shipping](Building-and-Shipping.md).
 
+The project owner explicitly approved **`v2026.1.0-beta.1` as an unsigned preview for early testers**. `scripts/release_policy.py` contains this exact exception. It does not extend to later betas, release candidates or stable versions. That first preview does not need signing accounts; its notes disclose Windows/macOS warnings or launch blocks and the outstanding manual acceptance. All CI, clean identity and checksum checks remain required. The signing setup below is for subsequent signed releases.
+
 ## Protect and select the source
 
 Protect the default branch from deletion and force pushes. Require `windows-build`, `linux-build` and `ci-evidence` from the GitHub Actions integration. Validate a commit on `dev` before promoting that same commit to `master`. Protect existing `refs/tags/v*` tags from updates and deletion. Rulesets are repository settings, not checkout files.
@@ -42,11 +44,11 @@ Base64 is an encoding, not encryption. Keep credential files and their encoded v
 
 An unsigned preparation draft may hold CI installer candidates, provided the notes and provenance explicitly identify their signing status. Keep it unpublished. Its source commit remains the commit recorded in those candidates, even if newer release automation is subsequently merged.
 
-After signing is configured and the pre-tag acceptance is complete, push the matching version tag at the reviewed `master` commit. The tag CI runs the complete matrix and all required signing gates. `prepare_github_release.py` then creates a draft or refreshes the existing draft for that version. It:
+For a signed release, configure signing and complete the pre-tag acceptance first. The approved unsigned preview uses its explicit exception and discloses the remaining manual acceptance instead. Push the matching version tag at the reviewed `master` commit. The tag CI runs the complete matrix and the applicable signing gates. `prepare_github_release.py` then creates a draft or refreshes the existing draft for that version. It:
 
 - verifies the remote tag points to the tested commit;
 - requires the full artifact inventory and successful CI evidence from the same run attempt;
-- checks installer identities, checksums and macOS signing/notarization metadata;
+- checks installer identities, checksums and macOS signing/notarization metadata according to the exact tag policy;
 - replaces candidate provenance and combined checksums with records for the new tag artifacts;
 - refuses published releases and unexpected draft assets, including private symbols;
 - verifies the uploaded asset sizes and GitHub SHA-256 digests before updating the release notes;
@@ -65,3 +67,5 @@ CI covers the installer smoke paths documented in the platform installer guides.
 Store each private symbol ZIP and its SHA-256 with the exact build ID in durable, access-controlled backup storage for the full supported release lifetime. A local working copy and GitHub's expiring CI artifacts are not that backup. Repeat this for the final signed build; an earlier candidate's symbols do not substitute for a later build's symbols.
 
 Review the signed assets, changelog, included licenses, final acceptance and backup record before publishing the draft. No publication is performed by the CI helper.
+
+For the approved first preview, review the unsigned artifacts and their known limitations before publishing as a pre-release. Keep the unresolved clean-machine cases explicitly pending; do not present the preview as production-qualified. Preserve the corresponding private symbols under the exact build ID in either case.

@@ -93,7 +93,7 @@ Set the PFX password through `FUNKE_SIGNING_CERTIFICATE_PASSWORD`, or pass the n
 
 `BuildInstaller.ps1` passes the signing configuration to `SignInstaller.ps1` through process environment variables. Inno calls that helper for setup and the uninstaller. It locates Windows SDK `signtool.exe`, signs using SHA-256, verifies the signature and expected signer, and checks the timestamp when configured. The helper suppresses native diagnostics that could expose signing arguments.
 
-The Windows CI job builds the installer after the signed publish bundle, using the existing certificate secrets and timestamp setting. Tags require signing; builds without configured credentials remain unsigned for testing. CI uploads setup, checksum, payload inventory and dependency record. The tag release job adds them to the existing draft release.
+The Windows CI job builds the installer after the publish bundle, using the existing certificate secrets and timestamp setting. Tags require signing except for the explicitly approved `v2026.1.0-beta.1` early preview defined in `scripts/release_policy.py`. That preview retains clean identity and checksum checks and is clearly labeled unsigned; regular releases still require signing. Builds without configured credentials remain unsigned for testing. CI uploads setup, checksum, payload inventory and dependency record. The tag release job adds them to the existing draft release.
 
 ## Release checks
 

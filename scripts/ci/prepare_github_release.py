@@ -11,6 +11,9 @@ import re
 import subprocess
 import sys
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import release_policy
+
 
 def digest(path: Path) -> str:
     checksum = hashlib.sha256()
@@ -22,7 +25,9 @@ def digest(path: Path) -> str:
 
 def payload_names(version: str) -> set[str]:
     windows = f"Funke-Editor-{version}-Windows-x64.zip"
-    names = {windows, windows + ".sha256", windows + ".sha256.p7s", "ci-evidence.json"}
+    names = {windows, windows + ".sha256", "ci-evidence.json"}
+    if release_policy.policy("v" + version)["requiresSigning"]:
+        names.add(windows + ".sha256.p7s")
     for platform in ("Linux-x64", "macOS-arm64"):
         names.add(f"Funke-Editor-{version}-{platform}.tar.gz")
     for platform, extension in (("Windows-x64", "exe"), ("Linux-x64", "run"), ("macOS-arm64", "dmg")):
@@ -39,6 +44,9 @@ def prepare_assets(directory: Path, version: str, commit: str, repository: str) 
     if any(path.is_symlink() or not path.is_file() for path in entries):
         raise ValueError("Release directory must contain only regular files")
     actual = {path.name for path in entries}
+    signature_name = f"Funke-Editor-{version}-Windows-x64.zip.sha256.p7s"
+    if signature_name in actual:
+        expected.add(signature_name)
     if expected - actual or actual - expected - {provenance_name, "SHA256SUMS"}:
         raise ValueError(f"Unexpected release inventory; missing={sorted(expected - actual)}, "
                          f"extra={sorted(actual - expected - {provenance_name, 'SHA256SUMS'})}")
@@ -59,7 +67,8 @@ def prepare_assets(directory: Path, version: str, commit: str, repository: str) 
                     engine.get("dirty") is not False or engine.get("identityScope") != "repository"):
                 raise ValueError(f"Wrong or dirty installer identity: {name}")
             if name.endswith(".dmg.manifest.json"):
-                if manifest.get("signed") is not True or manifest.get("notarized") is not True:
+                mac_signed, mac_notarized = manifest.get("signed") is True, manifest.get("notarized") is True
+                if release_policy.policy("v" + version)["requiresSigning"] and not (mac_signed and mac_notarized):
                     raise ValueError("The macOS release must be signed and notarized")
     evidence = json.loads((directory / "ci-evidence.json").read_text(encoding="utf-8-sig"))
     if (evidence.get("commit") != commit or evidence.get("passed") is not True or evidence.get("errors") or
@@ -69,13 +78,18 @@ def prepare_assets(directory: Path, version: str, commit: str, repository: str) 
         raise ValueError("Full successful CI evidence from this tag-run attempt is required")
     records = [{"name": name, "bytes": (directory / name).stat().st_size,
                 "sha256": digest(directory / name)} for name in sorted(expected)]
+    preview = release_policy.policy("v" + version)["unsignedPreview"]
     provenance = {"schemaVersion": 1, "version": version, "tag": "v" + version, "commit": commit,
-                  "status": "signed-tag-draft", "publicationReady": False,
+                  "status": "unsigned-preview-draft" if preview else "signed-tag-draft", "publicationReady": False,
+                  "signing": {"required": not preview, "windowsChecksumSignatureIncluded": signature_name in actual,
+                              "macosDeveloperIdSigned": mac_signed, "macosNotarized": mac_notarized},
                   "ci": {"runId": evidence["runId"], "attempt": evidence["attempt"],
                          "url": f"https://github.com/{repository}/actions/runs/{evidence['runId']}"},
                   "assets": records,
-                  "pendingPublicationGates": ["Clean-machine acceptance", "Durable private-symbol backup",
-                                              "Final release review"]}
+                  "pendingPublicationGates": (["Early-preview release review and known-limitations disclosure",
+                                                "Durable private-symbol backup"] if preview else
+                                               ["Clean-machine acceptance", "Durable private-symbol backup",
+                                                "Final release review"])}
     (directory / provenance_name).write_text(json.dumps(provenance, indent=2) + "\n", encoding="utf-8")
     files = [directory / name for name in sorted(expected | {provenance_name})]
     (directory / "SHA256SUMS").write_text(
@@ -103,6 +117,7 @@ def sync_draft(repository: str, tag: str, commit: str, notes: Path, files: list[
     if len(matches) > 1:
         raise ValueError("Multiple releases match the tag")
     expected = {path.name: path for path in files}
+    title = f"Funke {tag[1:]}" + (" — Unsigned Preview" if release_policy.policy(tag)["unsignedPreview"] else "")
     if matches:
         release = json.loads(gh("api", f"repos/{repository}/releases/{matches[0]['id']}"))
         if release.get("draft") is not True or release.get("published_at"):
@@ -113,7 +128,7 @@ def sync_draft(repository: str, tag: str, commit: str, notes: Path, files: list[
         gh("release", "upload", tag, "--repo", repository, "--clobber", *map(str, files))
     else:
         gh("release", "create", tag, "--repo", repository, "--draft", "--verify-tag", "--latest=false",
-           "--target", commit, "--title", f"Funke {tag[1:]}", "--notes-file", str(notes),
+           "--target", commit, "--title", title, "--notes-file", str(notes),
            f"--prerelease={'true' if '-' in tag else 'false'}", *map(str, files))
     current = json.loads(gh("api", f"repos/{repository}/releases/tags/{tag}"))
     if current.get("draft") is not True or current.get("published_at"):
@@ -127,7 +142,7 @@ def sync_draft(repository: str, tag: str, commit: str, notes: Path, files: list[
                 asset.get("digest") != "sha256:" + digest(path)):
             raise ValueError(f"Uploaded asset does not match the verified artifact: {name}")
     gh("release", "edit", tag, "--repo", repository, "--draft=true", "--latest=false", "--target", commit,
-       "--title", f"Funke {tag[1:]}", "--notes-file", str(notes),
+       "--title", title, "--notes-file", str(notes),
        f"--prerelease={'true' if '-' in tag else 'false'}")
     return current["html_url"]
 
@@ -149,6 +164,14 @@ def main() -> int:
         if not args.notes.read_text(encoding="utf-8").strip():
             raise ValueError("Release notes cannot be empty")
         files = prepare_assets(args.directory, version, commit, repository)
+        if release_policy.policy("v" + version)["unsignedPreview"]:
+            notice = ("**Unsigned preview for early testers.** This version does not require Windows publisher signing "
+                      "or macOS Developer ID signing/notarization. Windows security features and macOS Gatekeeper "
+                      "may warn or block launch. All required CI tests and artifact checksum checks passed; manual "
+                      "clean-machine and hardware acceptance remain pending. Back up projects before testing.\n\n")
+            notes = args.notes.read_text(encoding="utf-8")
+            if not notes.startswith(notice):
+                args.notes.write_text(notice + notes, encoding="utf-8")
         print(sync_draft(repository, "v" + version, commit, args.notes, files))
     except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
         print(f"[Release draft] {error}", file=sys.stderr)

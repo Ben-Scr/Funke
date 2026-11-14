@@ -110,7 +110,13 @@ function Enable-PremakeUnicodePaths {
 if (-not (Get-Command python -ErrorAction SilentlyContinue)) { throw 'Python 3.10+ is required to prepare the installer.' }
 if ($SigningCertificatePath -and $SigningCertificateThumbprint) { throw 'Specify a signing certificate path OR thumbprint.' }
 if ($SigningPasswordEnvironmentVariable -notmatch '^[A-Za-z_][A-Za-z0-9_]*$') { throw 'Invalid signing password environment variable name.' }
-if ($env:GITHUB_REF_TYPE -eq 'tag') { $RequireSigning = $true }
+$isTagBuild = $env:GITHUB_REF_TYPE -eq 'tag'
+if ($isTagBuild) {
+    $policyJson = & python (Join-Path $PSScriptRoot 'release_policy.py') --tag $env:GITHUB_REF_NAME
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot determine release signing policy.' }
+    $releasePolicy = $policyJson | ConvertFrom-Json
+    if ($releasePolicy.requiresSigning) { $RequireSigning = $true }
+}
 $signingEnabled = [bool]($SigningCertificatePath -or $SigningCertificateThumbprint)
 if ($RequireSigning -and -not $signingEnabled) { throw 'A signing identity is required for a release installer.' }
 if ($SigningCertificatePath) { $SigningCertificatePath = (Resolve-Path -LiteralPath $SigningCertificatePath).Path }
@@ -118,17 +124,18 @@ if ($SigningCertificatePath) { $SigningCertificatePath = (Resolve-Path -LiteralP
 $metadata = Get-Content -LiteralPath (Join-Path $BundleDirectory 'BuildMetadata.json') -Raw | ConvertFrom-Json
 if ($metadata.version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') { throw 'Invalid version in bundle BuildMetadata.json.' }
 $appVersion = $metadata.version
+if ($isTagBuild -and $env:GITHUB_REF_NAME -cne "v$appVersion") { throw 'Release tag does not match the installer bundle version.' }
 $fileVersion = ($appVersion -split '-')[0] + '.0'
-if ($RequireSigning -and $metadata.dirty) { throw 'A signed release installer must use a clean release bundle.' }
+if (($RequireSigning -or $isTagBuild) -and $metadata.dirty) { throw 'A release installer must use a clean release bundle.' }
 
 New-Item -ItemType Directory -Force -Path $cacheDirectory, $workDirectory, $OutputDirectory | Out-Null
 $compiler = Find-InstallerCompiler
 Write-Host "[Installer] Preparing existing bundle: $BundleDirectory"
 
-if ($RequireSigning) {
+if ($RequireSigning -or $isTagBuild) {
     & (Join-Path $PSScriptRoot 'ci/verify_windows_release.ps1') -BundleDirectory $BundleDirectory `
-        -MetadataPath (Join-Path $BundleDirectory 'BuildMetadata.json') -RequireReleaseIdentity -RequireSigned
-    if ($LASTEXITCODE -ne 0) { throw 'Signed release bundle verification failed.' }
+        -MetadataPath (Join-Path $BundleDirectory 'BuildMetadata.json') -RequireReleaseIdentity -RequireSigned:$RequireSigning
+    if ($LASTEXITCODE -ne 0) { throw 'Release bundle verification failed.' }
 }
 
 $payloadArguments = @('--bundle', $BundleDirectory, '--repo', $repoRoot, '--output', $payloadDirectory,
@@ -200,4 +207,4 @@ Copy-Item -LiteralPath (Join-Path $payloadDirectory 'payload-manifest.json') -De
 Copy-Item -LiteralPath $lockPath -Destination "$installer.dependencies.json" -Force
 Write-Host "[Installer] Ready: $installer"
 Write-Host "[Installer] SHA-256: $hash"
-if (-not $signingEnabled) { Write-Host '[Installer] Local unsigned build. Public releases require -RequireSigning.' }
+if (-not $signingEnabled) { Write-Host '[Installer] Unsigned build. Only the explicitly approved preview tag permits an unsigned release.' }

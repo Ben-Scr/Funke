@@ -66,7 +66,12 @@ python3 scripts/BuildMacInstaller.py \
   --require-signing
 ```
 
-Tag builds require this mode automatically. Public mode requires clean commit
+Tag builds require this mode automatically, except for the explicitly approved
+`v2026.1.0-beta.1` early preview in `scripts/release_policy.py`. That preview keeps
+clean commit identity and checksum requirements, uses ad-hoc signing when no
+Developer ID is configured, and discloses that Gatekeeper may block launch.
+All subsequent tags require Developer ID signing and notarization.
+Public mode requires clean commit
 metadata, signs native components before the app, enables hardened runtime,
 notarizes and staples both the app and DMG, verifies signatures and runs the
 Gatekeeper assessment. Missing credentials or a rejected notarization abort

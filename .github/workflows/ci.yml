@@ -148,6 +148,11 @@ jobs:
         with:
           python-version: "3.13"
 
+      - name: Determine Release Signing Policy
+        id: release_policy
+        shell: bash
+        run: python scripts/release_policy.py --github-output "$GITHUB_OUTPUT"
+
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
@@ -164,7 +169,7 @@ jobs:
           python scripts/generate_build_metadata.py @arguments
 
       - name: Validate Tag Signing Configuration
-        if: github.ref_type == 'tag'
+        if: steps.release_policy.outputs.requires_signing == 'true'
         shell: pwsh
         env:
           FUNKE_SIGNING_CERTIFICATE_BASE64: ${{ secrets.FUNKE_SIGNING_CERTIFICATE_BASE64 }}
@@ -311,7 +316,7 @@ jobs:
             $arguments = @{ PublishBundle = $true }
             if ($env:GITHUB_REF_TYPE -eq 'tag') {
               $arguments.ReleaseTag = $env:GITHUB_REF_NAME
-              $arguments.RequireSigning = $true
+              $arguments.RequireSigning = '${{ steps.release_policy.outputs.requires_signing }}' -eq 'true'
             }
             if ($env:FUNKE_SIGNING_CERTIFICATE_BASE64) {
               $certificatePath = Join-Path $env:RUNNER_TEMP 'funke-code-signing.pfx'
@@ -328,7 +333,7 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw 'Windows bundle build failed.' }
             $installerArguments = @{ DownloadCompiler = $true }
             if ($env:GITHUB_REF_TYPE -eq 'tag') {
-              $installerArguments.RequireSigning = $true
+              $installerArguments.RequireSigning = '${{ steps.release_policy.outputs.requires_signing }}' -eq 'true'
             }
             if ($certificatePath) {
               $installerArguments.SigningCertificatePath = $certificatePath
@@ -401,7 +406,7 @@ jobs:
         run: |
           $archive = Join-Path 'bin/Release-windows-x86_64' '${{ steps.build_metadata.outputs.archive_name }}'
           $arguments = @{ ArchivePath = $archive; ChecksumPath = "$archive.sha256" }
-          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+          if ('${{ steps.release_policy.outputs.requires_signing }}' -eq 'true') {
             $arguments.RequireSignature = $true
           }
           scripts/VerifyRelease.ps1 @arguments
@@ -1075,6 +1080,11 @@ jobs:
         with:
           python-version: "3.13"
 
+      - name: Determine Release Signing Policy
+        id: release_policy
+        shell: bash
+        run: python scripts/release_policy.py --github-output "$GITHUB_OUTPUT"
+
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
@@ -1223,7 +1233,7 @@ jobs:
           APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
         run: |
           flags=()
-          if [[ "$GITHUB_REF_TYPE" == tag ]]; then flags+=(--require); fi
+          if [[ '${{ steps.release_policy.outputs.requires_signing }}' == true ]]; then flags+=(--require); fi
           python3 installer/macos/signing.py prepare "${flags[@]}"
 
       - name: Build macOS Installer
