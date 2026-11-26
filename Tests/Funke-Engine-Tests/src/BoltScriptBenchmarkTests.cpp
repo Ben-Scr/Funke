@@ -321,6 +321,39 @@ TEST_CASE("Bolt public scripting API resolves cameras and updates component sett
 #endif
 
 #if FUNKE_WITH_2D && FUNKE_WITH_3D
+TEST_CASE("Bolt polygon paths write bounded world points from a live Box2D shape" * doctest::skip(std::getenv("FUNKE_TEST_BOLT_SDK") == nullptr)) {
+    struct PolygonApplication : Application {
+        ApplicationConfig GetConfiguration() const override {
+            auto config = ApplicationConfig::Headless();
+            config.EnablePhysics2D = true;
+            config.EnableAudio = false;
+            config.EnablePackageHost = false;
+            config.EnableScripting = false;
+            return config;
+        }
+        void ConfigureScenes() override {
+            SceneManager::RegisterScene("Bolt polygon").WithoutDefaultCamera2D().SetAsStartupScene();
+        }
+    } app;
+    REQUIRE(app.BeginRun());
+    const FinishHeadlessRun finish{app};
+    auto* scene = SceneManager::GetActiveScene();
+    REQUIRE(scene);
+    const auto path = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path() / "Fixtures/BoltScripts/PolygonWorldProbe.bolt";
+    constexpr uint64_t guid = 0xAB04722026011178ull;
+    const auto identity = std::to_string(guid);
+    AssetRegistry::RegisterBuiltInAsset(Path::ToUtf8(path), guid, AssetKind::Script);
+    auto entity = scene->CreateEntity();
+    entity.GetOrAddComponent<Transform2DComponent>().SetPosition({7.0f, -3.0f});
+    entity.AddComponent<ScriptComponent>().AddScript(identity, ScriptType::Bolt);
+    ScriptSystem scripts;
+    scripts.Update(*scene);
+    const auto fields = BoltScriptHost::GetFields(entity, identity);
+    REQUIRE(fields.size() == 1);
+    CHECK(fields.front().Value == "3");
+    scripts.OnDestroy(*scene);
+}
+
 TEST_CASE("Bolt borrows native rows and transforms points in a loaded scene" * doctest::skip(std::getenv("FUNKE_TEST_BOLT_SDK") == nullptr)) {
     struct TestApplication : Application {
         ApplicationConfig GetConfiguration() const override {
@@ -858,6 +891,28 @@ TEST_CASE("Bolt data assets expose editable fields and validate shared values" *
     const std::string fields = ScriptEngine::GetDataAssetFields(guid);
     CHECK(fields.find("\"8\"") != fields.npos);
     CHECK(fields.find("Count") != fields.npos);
+    Json::Value schema;
+    REQUIRE(Json::TryParse(fields, schema, nullptr));
+    bool difficulty = false, flags = false;
+    for (const auto& field : schema.GetArray()) {
+        const auto name = field["name"].AsStringOr();
+        if (name == "Difficulty") {
+            difficulty = true;
+            CHECK(field["type"].AsStringOr() == "enum");
+            CHECK(field["value"].AsStringOr() == "-2");
+            REQUIRE(field["enumOptions"].GetArray().size() == 3);
+            CHECK(field["enumOptions"].GetArray().back()["name"].AsStringOr() == "Challenge");
+            CHECK(field["enumOptions"].GetArray().back()["value"].AsInt64Or() == 9);
+        } else if (name == "Features") {
+            flags = true;
+            CHECK(field["type"].AsStringOr() == "flagenum");
+            CHECK(field["enumIsFlags"].AsBoolOr());
+            REQUIRE(field["enumOptions"].GetArray().size() == 4);
+            CHECK(field["enumOptions"].GetArray().back()["value"].AsInt64Or() == 5);
+        }
+    }
+    CHECK(difficulty);
+    CHECK(flags);
     ScriptEngine::DestroyDataAssetInstance(guid);
     AssetRegistry::RegisterBuiltInAsset(Path::ToUtf8(script.parent_path() / "Probe.dataasset"), guid, AssetKind::DataAsset);
     constexpr uint64_t reader = 0xAB04722026011176ull;
@@ -870,7 +925,11 @@ TEST_CASE("Bolt data assets expose editable fields and validate shared values" *
     attachment.PendingFieldValues[identity + ".Config"] = std::to_string(guid);
     ScriptSystem scripts;
     scripts.Update(*scene);
-    CHECK(std::string(DataAssetManager::GetFields(guid)).find("read in gameplay") != std::string::npos);
+    const std::string live = DataAssetManager::GetFields(guid);
+    CHECK(live.find("read in gameplay") != std::string::npos);
+    REQUIRE(Json::TryParse(live, schema, nullptr));
+    for (const auto& field : schema.GetArray())
+        if (field["name"].AsStringOr() == "Difficulty") CHECK(field["value"].AsStringOr() == "3");
     scripts.OnDestroy(*scene);
     DataAssetManager::Unload(guid);
 }

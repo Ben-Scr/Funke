@@ -1,4 +1,5 @@
 #pragma once
+#include "Scripting/Bolt/FloatFormat.hpp"
 #include "Scripting/Bolt/NativeApi.hpp"
 #include <algorithm>
 #include <cctype>
@@ -44,6 +45,10 @@ namespace Funke::BoltScriptHost::Locales {
                 const auto* words = static_cast<const uint64_t*>(arguments);
                 const auto* format = reinterpret_cast<const char*>(static_cast<uintptr_t>(words[0]));
                 std::string_view spec = format ? format : "";
+                if (op == 6) {
+                    *output = FormatFloat(std::bit_cast<float>(static_cast<uint32_t>(words[1])), spec, locale, name.empty() || !found);
+                    return output->size();
+                }
                 const char code = spec.empty() ? 'G' : spec.front();
                 const char mode = static_cast<char>(std::toupper(static_cast<unsigned char>(code)));
                 int precision = -1;

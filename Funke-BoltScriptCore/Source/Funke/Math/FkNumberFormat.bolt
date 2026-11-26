@@ -4,6 +4,15 @@ namespace Funke;
 
 public static class FkNumberFormat {
 private:
+    static bool UsesPattern(string format) {
+        if (format.Length == 0) return false;
+        char first = format[0];
+        if ((first < 'A' || first > 'Z') && (first < 'a' || first > 'z')) return true;
+        for (int i = 1; i < format.Length; i++)
+            if (format[i] < '0' || format[i] > '9') return true;
+        return first == 'C' || first == 'c';
+    }
+
     // Convert the finite binary significand exactly before rounding decimal digits.
     static string DecimalDigits(uint bits, int& point) {
         int exponent = (int)((bits >> 23) & 255u);
@@ -66,6 +75,8 @@ public:
 
     static string Number(float value, string format) {
         if (format.Length == 0) return (string)value;
+        if (UsesPattern(format))
+            return System.Globalization.CultureInfo.InvariantCulture.FkNumber(6ul,(ulong)Reinterpret<uint>(value),format);
         char kind = format[0];
         bool upper = kind >= 'A' && kind <= 'Z';
         if (upper) kind = (char)((int)kind + 32);
@@ -115,7 +126,9 @@ public:
         charsWritten = value.Length;
         return true;
     }
-    static string Number(float value, string format, System.Globalization.NumberFormatInfo culture) {
+    static string Number(float value, string format, System.Globalization.CultureInfo provider) {
+        if (UsesPattern(format)) return provider.FkNumber(6ul,(ulong)Reinterpret<uint>(value),format);
+        var culture = provider.NumberFormat;
         string invariant = Number(value,format);
         if (culture.NumberDecimalSeparator == "." && culture.NumberGroupSeparator == ",") return invariant;
         string[] parts = new string[invariant.Length];

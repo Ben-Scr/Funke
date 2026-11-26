@@ -1,0 +1,32 @@
+import Funke
+import System
+
+public class PolygonWorldProbe : EntityScript {
+    public int Written;
+    public override void OnStart() {
+        PolygonCollider2D polygon = AddComponent<PolygonCollider2D>().Value;
+        Vector2[] a = {Vector2(0f, 0f), Vector2(2f, 0f), Vector2(0f, 2f)};
+        Vector2[] b = {Vector2(3f, 0f), Vector2(4f, 0f), Vector2(3f, 1f)};
+        Written = -1;
+        polygon.SetPaths(a, b);
+        if (polygon.PathCount != 2 || polygon.GetPath(1)[0] != b[0]) return;
+        Vector2[] output = new Vector2[4];
+        output[3] = Vector2(43f, 17f);
+        Written = -2;
+        int count = polygon.GetWorldPoints(Span<Vector2>(output, 0, 2));
+        if (count != 2 || output[2] != Vector2.Zero) return;
+        Written = -3;
+        count = polygon.GetWorldPoints(output);
+        if (count != 3 || output[3] != Vector2(43f, 17f)) return;
+        Written = -4;
+        for (int i = 0; i < count; i++) {
+            Vector2 local = output[i] - Vector2(7f, -3f);
+            if (local != a[0] && local != a[1] && local != a[2]) {
+                Log.Error("Unexpected polygon vertex " + output[i].ToString());
+                return;
+            }
+        }
+        Written = count;
+    }
+}
+

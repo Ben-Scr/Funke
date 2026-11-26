@@ -180,7 +180,7 @@ public:
     string ToString(string? requested, System.Globalization.CultureInfo? provider) {
         if (provider == null || provider.Value.Name.Length == 0) return ToString(requested);
         string format = requested == null ? "" : requested.Value;
-        var culture = provider.Value.NumberFormat;
+        var culture = provider.Value;
         return "Vector3(" + FkNumberFormat.Number(X,format,culture) + ", " + FkNumberFormat.Number(Y,format,culture) + ", " + FkNumberFormat.Number(Z,format,culture) + ")";
     }
     bool TryFormat(System.Span<char> destination, int& charsWritten, string format = "") {

@@ -1152,6 +1152,7 @@ namespace Funke::BoltScriptHost {
 			auto components = projectUnits ? *projectUnits : ComponentUnits();
 			FieldList schema{name};
 			AddReferences(schema, components);
+            if (kind == ScriptBase::DataAsset) AddDataEnums(schema, components, source);
 			BoltCompiledModule* next = nullptr;
 			int status;
 			const bool standaloneCommands = name.empty() && (!consoleSetup.empty() || !resetCalls.empty()) && source.find("int Main(") == source.npos;
@@ -1174,7 +1175,7 @@ namespace Funke::BoltScriptHost {
 					const auto found = std::find_if(components.begin(),components.end(),[&](const auto& unit){return unit.Name == name;});
 					const auto guid = found != components.end() ? found->Guid : AssetRegistry::GetGUID(path);
 					ComponentUnit self{guid, path, name, source, body, false, {}, kind};
-					if (!BindComponent(self, schema.References, error)) return false;
+					if (!BindComponent(self, schema, error)) return false;
 					source = std::move(self.Source);
 				} else if(kind!=ScriptBase::Job && kind!=ScriptBase::NativeStruct && kind!=ScriptBase::EditorWindow) {
 					if (body && source.find("async") != source.npos) {
@@ -1191,7 +1192,7 @@ namespace Funke::BoltScriptHost {
 					source.insert(body, accessors);
 				}
 				const auto& library = GetScriptLibrary();
-				std::string entry = name.empty() ? std::string{} : "import Funke\nimport System.Collections.Generic\n" + (kind == ScriptBase::Entity ? EntityEntryPoint(name, hotReloadState) : kind == ScriptBase::EditorWindow ? EditorWindowEntryPoint(name) : kind == ScriptBase::DataAsset ? "public static class FunkeScriptEntry { public: int Main() {" + name + " asset; asset.FkSetGuid(Funke.FkDataStorage.Current()); asset.OnValidate(); return 0;} }" : (kind == ScriptBase::Component || kind == ScriptBase::NativeStruct || kind==ScriptBase::Job) ? "public static class FunkeScriptEntry { public: int Main() { return 0; } }" : SystemEntryPoint(name, kind));
+				std::string entry = name.empty() ? std::string{} : "import Funke\nimport System.Collections.Generic\n" + (kind == ScriptBase::Entity ? EntityEntryPoint(name, hotReloadState) : kind == ScriptBase::EditorWindow ? EditorWindowEntryPoint(name) : kind == ScriptBase::DataAsset ? "public static class FunkeScriptEntry { public: int Main() {" + name + " asset; asset.FkSetGuid(Funke.FkDataStorage.Current()); if (Funke.FunkeApiTypes.EventId() == 22ul) asset.FkDescribeEnums(); else asset.OnValidate(); return 0;} }" : (kind == ScriptBase::Component || kind == ScriptBase::NativeStruct || kind==ScriptBase::Job) ? "public static class FunkeScriptEntry { public: int Main() { return 0; } }" : SystemEntryPoint(name, kind));
 
 				if (standaloneCommands)
                     entry = consoleSetup.empty()
@@ -1228,7 +1229,8 @@ namespace Funke::BoltScriptHost {
                     }
                     FieldList componentFields{unit.Name};
 					AddReferences(componentFields, components);
-					if (!BindComponent(unit, componentFields.References, error)) return false;
+					if (unit.Kind == ScriptBase::DataAsset) AddDataEnums(componentFields, components, unit.Source);
+					if (!BindComponent(unit, componentFields, error)) return false;
                     try { if (!unit.Managed) BindPlayResetMethods(unit.Source, unit.Path, resetCalls); }
                     catch (const std::exception& ex) { error = unit.Path + ": " + ex.what(); return false; }
                     units.push_back({unit.Path.c_str(), unit.Source.data(), unit.Source.size()});
@@ -2164,7 +2166,7 @@ roots = ["Assets", ".funke/Bolt"]
 		s_Inspection = previous;
 	}
 
-	static std::string FieldJson(const std::vector<Field>& fields) {
+	static std::string FieldJson(const std::vector<Field>& fields, const std::unordered_map<std::string,std::string>* assetValues = nullptr) {
 		auto array = Json::Value::MakeArray();
 		for (const auto& f : fields) {
 			auto row = Json::Value::MakeObject();
@@ -2172,6 +2174,13 @@ roots = ["Assets", ".funke/Bolt"]
 			if (tag.starts_with("Vector") || tag == "Color") tag.front() = static_cast<char>(std::tolower(tag.front()));
 			row.AddMember("name", f.Name);
 			row.AddMember("type", tag);
+            if (assetValues && (tag == "enum" || tag == "flagenum")) {
+                auto info = assetValues->find("$enum." + f.Name);
+                Json::Value options;
+                if (info != assetValues->end() && Json::TryParse(info->second, options, nullptr) && options.IsArray())
+                    row.AddMember("enumOptions", std::move(options));
+                row.AddMember("enumIsFlags", tag == "flagenum");
+            }
 			row.AddMember("displayName", f.DisplayName);
 			row.AddMember("value", f.Value);
 			row.AddMember("readOnly", f.ReadOnly);

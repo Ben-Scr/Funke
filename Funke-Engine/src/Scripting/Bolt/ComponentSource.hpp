@@ -152,6 +152,12 @@ namespace Funke::BoltScriptHost {
 		return units;
 	}
 
+    inline void AddDataEnums(FieldList& list, const std::vector<ComponentUnit>& units, const std::string& source) {
+        for (const auto& unit : units)
+            if (unit.Source.find("enum") != unit.Source.npos) CollectDataEnums(unit.Source, list.Enums);
+        CollectDataEnums(source, list.Enums);
+    }
+
 	inline void AddReferences(FieldList& list, const std::vector<ComponentUnit>& units) {
 		std::unordered_map<std::string, size_t> counts;
 		for (const auto& unit : units) {
@@ -183,8 +189,10 @@ namespace Funke::BoltScriptHost {
 		}
 	}
 
-	inline bool BindComponent(ComponentUnit& unit, const ReferenceNames& references, std::string& error) {
+	inline bool BindComponent(ComponentUnit& unit, const FieldList& schema, std::string& error) {
 		const bool dataAsset = unit.Kind == ScriptBase::DataAsset;
+        const auto& references = schema.References;
+        std::string describe = " public void FkDescribeEnums() {";
         if (unit.Kind != ScriptBase::Component && !dataAsset) return true;
 		const auto guid = std::to_string(unit.Guid);
 		const std::string id = guid + "ul";
@@ -247,7 +255,21 @@ namespace Funke::BoltScriptHost {
             const auto assetTag = AssetFieldTag(type, references);
 			const bool entity = name == "Entity";
 			std::string read, write = "(string)value";
-			if (number) read = type + " result; if (" + type + ".TryParse(raw.Value,result)) return result;";
+			const auto* enumType = dataAsset ? DataEnumFor(schema.Enums, unit.Name, type) : nullptr;
+            if (enumType && !optional) {
+                const auto& integer = enumType->Underlying;
+                read = integer + " parsed; if (" + integer + ".TryParse(raw.Value,parsed)) return (" + type + ")parsed;";
+                write = "(string)(" + integer + ")value";
+                const auto member = std::string(field);
+                describe += "Funke.FkDataStorage.Write(FkGuid," + key + ",(string)(" + integer + ")this." + member + ");";
+                std::string options = "\"[\"";
+                for (size_t i = 0; i < enumType->Members.size(); ++i) {
+                    const auto& item = enumType->Members[i];
+                    options += " + \"" + std::string(i ? "," : "") + "{\\\"name\\\":\\\"" + item +
+                        "\\\",\\\"value\\\":\" + (string)(" + integer + ")" + type + "." + item + " + \"}\"";
+                }
+                describe += "Funke.FkDataStorage.Write(FkGuid,\"$enum." + member + "\"," + options + " + \"]\");";
+            } else if (number) read = type + " result; if (" + type + ".TryParse(raw.Value,result)) return result;";
 			else if (name == "bool") read = "return raw.Value == \"true\" || raw.Value == \"True\";";
 			else if (name == "string") read = "return raw.Value;";
 			else if (!channels.empty()) {
@@ -299,7 +321,13 @@ namespace Funke::BoltScriptHost {
 			rest = tail;
 			last = rest.data();
 		}
-		output.append(last, static_cast<const char*>(unit.Source.data()) + unit.Source.size());
+		if (dataAsset) {
+            const char* end = rest.data() - 1;
+            output.append(last, end);
+            output += describe + "} ";
+            last = end;
+        }
+        output.append(last, static_cast<const char*>(unit.Source.data()) + unit.Source.size());
 		unit.Source = std::move(output);
 		return true;
 	}

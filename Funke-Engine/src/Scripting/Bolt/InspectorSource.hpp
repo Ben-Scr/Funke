@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Scripting/Bolt/CompilerHost.h"
+#include "Scripting/Bolt/DataAssetEnums.hpp"
 #include "Scripting/BoltScriptHost.hpp"
 #include <algorithm>
 #include <charconv>
@@ -21,6 +22,7 @@ namespace Funke::BoltScriptHost {
 		std::string Owner;
 		std::vector<Field> Fields;
 		ReferenceNames References = BuiltInReferences();
+        DataEnums Enums;
 	};
 
 	inline std::string_view FieldChannels(std::string_view type) {
@@ -58,7 +60,8 @@ namespace Funke::BoltScriptHost {
 			reference = references->find(std::string(shortType));
 		const bool isEntity = type == "Entity";
         const auto assetTag = AssetFieldTag(type, list.References);
-		if (assetTag.empty() && !isEntity && reference == references->end() && std::find(std::begin(supported), std::end(supported), type) == std::end(supported) && FieldChannels(type).empty()) return;
+		const auto* enumType = DataEnumFor(list.Enums, list.Owner, info->type);
+		if (!enumType && assetTag.empty() && !isEntity && reference == references->end() && std::find(std::begin(supported), std::end(supported), type) == std::end(supported) && FieldChannels(type).empty()) return;
 		bool visible = info->is_public;
 		Field field{info->name, std::string(type), info->name, info->literal, {}, info->is_constant != 0};
 		for (size_t i = 0; i < info->attribute_count; ++i) {
@@ -98,7 +101,10 @@ namespace Funke::BoltScriptHost {
             }
 		}
 		if (!visible) return;
-		if (!assetTag.empty() || isEntity || reference != references->end()) {
+		if (enumType) {
+            field.Type = enumType->Flags ? "flagenum" : "enum";
+            field.Value = "0";
+        } else if (!assetTag.empty() || isEntity || reference != references->end()) {
 			field.ReferenceType = std::string(info->type);
 			if (optional) field.ReferenceType.pop_back();
 			field.Optional = optional;

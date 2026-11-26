@@ -38,7 +38,7 @@ Each attachment has its own Bolt object and instance fields. Attachments of the 
 
 Import `Funke` for `Application`, `Engine`, `Window`, scenes, entities and components. Use `Funke.UI` for widget types, `Funke.Jobs` for jobs, `Funke.Collections.Native` for native containers and `Funke.Editor` for editor windows. The generated declarations in the project's `.funke/Bolt` directory supply completion and signature help. Host bindings whose names begin with `Fk` are internal implementation details.
 
-Window and input events use static event syntax, for example `Window.Resized += OnResize`. Widget subscriptions belong to the individual component and scene. Both of these Bolt forms accept a method group:
+Window and input events use static event syntax, for example `Window.Resized += OnResize`. Widget subscriptions belong to the individual component and scene. Both of these Bolt forms accept a method group.
 
 ```bolt
 slider.Events.ValueChanged += OnSlider;

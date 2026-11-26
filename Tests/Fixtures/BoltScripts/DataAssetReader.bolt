@@ -5,7 +5,9 @@ public class DataAssetReader : EntityScript {
     public override void OnStart() {
         if (Config == null) return;
         DataAssetProbe data = Config.Value;
-        if (data.Count == 8) data.Label = "read in gameplay";
+        if (data.Count != 8 || data.Difficulty != ProbeDifficulty.Challenge || data.Features != ProbeFeatures.Both) return;
+        data.Label = "read in gameplay";
+        data.Difficulty = ProbeDifficulty.Normal;
     }
 }
 

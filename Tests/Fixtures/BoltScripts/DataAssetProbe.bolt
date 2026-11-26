@@ -1,7 +1,14 @@
 import Funke
 
+public enum ProbeDifficulty : short { Story = -2, Normal = 3, Challenge = (1 << 3) + 1 }
+
+[Flags]
+public enum ProbeFeatures : uint { None = 0, Audio = 1, Physics = 4, Both = Audio | Physics }
+
 [CreateDataAsset("Tests/Bolt settings")]
 public class DataAssetProbe : DataAsset {
+    public ProbeDifficulty Difficulty = ProbeDifficulty.Story;
+    public ProbeFeatures Features = ProbeFeatures.Audio;
     public int Count = 4;
     public string Label = "initial";
     public override void OnValidate() { if (Count > 8) Count = 8; }

@@ -46,6 +46,12 @@ bool CreateDataAsset(const std::string& type, uint64_t guid) {
     Refresh(identity, module, false, ScriptBase::DataAsset);
     if (!module.Active || !module.Error.empty()) return false;
     s_DataAssets.insert_or_assign(guid, DataInstance{name, {}});
+    if (std::any_of(module.Fields.begin(), module.Fields.end(), [](const auto& field) {
+        return field.Type == "enum" || field.Type == "flagenum";
+    }) && !InvokeToolScript(identity, module, Event::Inspect, guid)) {
+        s_DataAssets.erase(guid);
+        return false;
+    }
     return true;
 }
 
@@ -59,7 +65,7 @@ std::string GetDataAssetFields(uint64_t guid) {
         auto stored = found->second.Values.find(field.Name);
         if (stored != found->second.Values.end()) field.Value = stored->second;
     }
-    return FieldJson(fields);
+    return FieldJson(fields, &found->second.Values);
 }
 
 void SetDataAssetField(uint64_t guid, const char* key, const char* value) {
