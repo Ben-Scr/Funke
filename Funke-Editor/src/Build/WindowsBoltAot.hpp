@@ -4,10 +4,19 @@
 #include "Serialization/Json.hpp"
 #include "Serialization/Path.hpp"
 #include "Utils/Process.hpp"
+#include <algorithm>
 #include <set>
 #include <sstream>
 
 namespace Funke::GameBuilder::WindowsBoltAot {
+    enum class CallShape { Words, Pointer, Submit };
+    struct HostImport { std::string_view Name; CallShape Shape; };
+    inline constexpr HostImport k_RawImports[] = {
+#define FUNKE_BOLT_RAW(kind, name, target) {#name, CallShape::kind},
+#include "Scripting/Bolt/RawBindings.inc"
+#undef FUNKE_BOLT_RAW
+    };
+
     inline std::string Tool(const std::filesystem::path& llvm, const char* name) {
         const auto sibling = llvm.parent_path() / name;
         if (std::filesystem::is_regular_file(sibling)) return Path::ToUtf8(sibling);
@@ -54,9 +63,10 @@ __declspec(dllexport) int FunkeBoltRunV1(Context** session, int persistent, int*
 )C";
         std::string bind = "__declspec(dllexport) const char* FunkeBoltBindV1(void* (*resolve)(const char*)) {\n";
         for (const auto& name : imports) {
-            const bool pointer = name == "FkCurrentUpdateSlot" || name == "FkJobRows" || name == "FkNativeStructAddress";
-            const bool submit = name == "FkRunJobRanges" || name == "FkSubmitJob" || name == "FkRememberUpdateSlot" || name == "FkEcb";
-            const std::string result = pointer ? "void*" : "U64";
+            const auto raw = std::find_if(std::begin(k_RawImports), std::end(k_RawImports), [&](const auto& item) { return item.Name == name; });
+            const auto shape = raw == std::end(k_RawImports) ? CallShape::Words : raw->Shape;
+            const bool submit = shape == CallShape::Submit;
+            const std::string result = shape == CallShape::Pointer ? "void*" : "U64";
             const std::string args = submit ? "U64 a, void* b, void* c" : "U64 a, U64 b";
             code += "static " + result + " (*slot_" + name + ")(" + args + ");\n";
             code += result + " " + name + "(" + args + ") { return slot_" + name + (submit ? "(a,b,c); }\n" : "(a,b); }\n");
@@ -81,8 +91,8 @@ __declspec(dllexport) int FunkeBoltRunV1(Context** session, int persistent, int*
             };
             const auto compiler = read(stage / "compiler.json").AsStringOr();
             const auto bindings = read(stage / "bindings.json");
-            std::set<std::string> hosts{"FkCurrentUpdateSlot", "FkJobRows", "FkNativeStructAddress",
-                "FkRunJobRanges", "FkSubmitJob", "FkRememberUpdateSlot", "FkEcb"};
+            std::set<std::string> hosts;
+            for (const auto& raw : k_RawImports) hosts.emplace(raw.Name);
             for (const auto& row : bindings.GetArray()) hosts.insert(row.AsStringOr());
             const auto destination = output / "BoltModules";
             std::filesystem::create_directories(destination);

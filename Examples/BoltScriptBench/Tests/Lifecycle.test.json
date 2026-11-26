@@ -63,7 +63,8 @@
         "component": "TextRenderer",
         "property": "Text",
         "expected": "Modus: Entity + Transform"
-      }
+      },
+      "timeoutSeconds": 5
     }
   ]
 }

@@ -74,21 +74,9 @@ void* ResolveWindowsBinding(const char* name) {
     for (const auto& binding : s_Bindings)
         if (std::string_view(name) == binding.name) return reinterpret_cast<void*>(binding.function);
     const std::pair<std::string_view, void*> extra[] = {
-        {"FkCurrentUpdateSlot", reinterpret_cast<void*>(CurrentUpdateSlot)},
-        {"FkJobRows", reinterpret_cast<void*>(JobRows)},
-        {"FkNativeStructAddress", reinterpret_cast<void*>(NativeStructAddress)},
-        {"FkRunJobRanges", reinterpret_cast<void*>(RunJobRanges)},
-        {"FkSubmitJob", reinterpret_cast<void*>(SubmitJob)},
-        {"FkRememberUpdateSlot", reinterpret_cast<void*>(RememberUpdateSlot)},
-        {"FkNativeInvoke", reinterpret_cast<void*>(Services::Call)},
-        {"FkPolygonPoints", reinterpret_cast<void*>(PolygonPoints)},
-        {"FkConsoleIo", reinterpret_cast<void*>(ConsoleIo)},
-        {"FkConsoleExecute", reinterpret_cast<void*>(ConsoleExecute)},
-        {"FkLocale", reinterpret_cast<void*>(Locales::Call)},
-        {"FkWriteImage", reinterpret_cast<void*>(WriteImage)},
-        {"FkAssetOperation", reinterpret_cast<void*>(AssetLoadCall)},
-        {"FkRuntimeTexture", reinterpret_cast<void*>(RuntimeTextureCall)},
-        {"FkEcb", reinterpret_cast<void*>(Commands::Call)}
+#define FUNKE_BOLT_RAW(kind, name, target) {#name, reinterpret_cast<void*>(target)},
+#include "Scripting/Bolt/RawBindings.inc"
+#undef FUNKE_BOLT_RAW
     };
     for (const auto& [symbol, address] : extra) if (symbol == name) return address;
     return nullptr;

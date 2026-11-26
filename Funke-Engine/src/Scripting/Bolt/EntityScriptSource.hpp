@@ -39,6 +39,32 @@ namespace Funke::BoltScriptHost {
 		return false;
 	}
 
+    struct NativeCollectionImports {
+        bool Collections = false;
+        bool Interop = false;
+
+        void Inspect(std::string_view source) {
+            if ((Collections && Interop) || (source.find("Native") == source.npos && source.find("Interop") == source.npos)) return;
+            std::string_view previous, beforePrevious;
+            while (!source.empty()) {
+                const auto token = NextBoltToken(source);
+                if (token == "NativeInterop" || (token == "Interop" && previous == "." && beforePrevious == "Funke")) {
+                    Interop = true;
+                    Collections = true; // NativeInterop allocates its UTF-8 buffers with NativeMemoryPool.
+                    return;
+                }
+                if (!Collections && ((token == "Native" && previous == "." && beforePrevious == "Collections") ||
+                    token == "NativeArray" || token == "NativeBitArray" || token == "NativeBool" || token == "NativeBuffer" ||
+                    token == "NativeDeque" || token == "NativeDictionary" || token == "NativeHashset" || token == "NativeList" ||
+                    token == "NativeMemoryPool" || token == "NativePriorityQueue" || token == "NativeQueue" ||
+                    token == "NativeStack" || token == "NativeString"))
+                    Collections = true;
+                beforePrevious = previous;
+                previous = token;
+            }
+        }
+    };
+
 	enum class ScriptBase { Procedural, Entity, Scene, Global, Component, NativeStruct, Job, EditorWindow, DataAsset };
 
     struct ScriptDeclaration { std::string Name; ScriptBase Kind; size_t Body; bool HotReloadState = false; };

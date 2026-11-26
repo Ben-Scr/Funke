@@ -212,7 +212,6 @@
     <Compile Include="Source\Funke\Scene\ComponentsPhysics3D.cs" />
     <Compile Include="Source\Funke\Scene\DataAsset.cs" />
     <Compile Include="Source\Funke\Scene\Entity.cs" />
-    <Compile Include="Source\Funke\Scene\RuntimePoints2D.cs" />
     <Compile Include="Source\Funke\Scene\EntityCommandBuffer.cs" />
     <Compile Include="Source\Funke\Scene\EntityCommandBufferParallelWriter.cs" />
     <Compile Include="Source\Funke\Scene\EntityPicker.cs" />
@@ -221,6 +220,7 @@
     <Compile Include="Source\Funke\Scene\GlobalSystem.cs" />
     <Compile Include="Source\Funke\Scene\QueryRef.cs" />
     <Compile Include="Source\Funke\Scene\QueryRefWithEntity.cs" />
+    <Compile Include="Source\Funke\Scene\RuntimePoints2D.cs" />
     <Compile Include="Source\Funke\Scene\SceneManager.cs" />
     <Compile Include="Source\Funke\Scene\SceneQuery.cs" />
     <Compile Include="Source\Funke\Scene\SceneSystem.cs" />

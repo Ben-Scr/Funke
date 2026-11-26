@@ -4,6 +4,23 @@ import BoltScriptBench
 
 public class LifecycleBench : EntityScript
 {
+    private float SumPositions(float* xy, int count)
+    {
+        float sum = 0.0f;
+        // A block covers eight XY pairs; advancing one pointer keeps all loads at fixed offsets.
+        int blocks = count / 8;
+        for (int i = 0; i < blocks; i++) {
+            sum += (xy[0] + xy[1]) + (xy[2] + xy[3]) + (xy[4] + xy[5]) + (xy[6] + xy[7])
+                + (xy[8] + xy[9]) + (xy[10] + xy[11]) + (xy[12] + xy[13]) + (xy[14] + xy[15]);
+            xy = &xy[16];
+        }
+        for (int i = 0; i < count % 8; i++) {
+            sum += xy[0] + xy[1];
+            xy = &xy[2];
+        }
+        return sum;
+    }
+
     private void MeasurePoints(BenchState state, int count)
     {
         ulong[] ids = new ulong[count];
@@ -19,11 +36,7 @@ public class LifecycleBench : EntityScript
 
             start = Clock.MonotonicTicks();
             int read = RuntimePoints2D.ReadPositions(ids, xy);
-            float checksum = 0.0f;
-            float* position = &xy[0];
-            for (int i = 0; i < count; i++) {
-                checksum += position[i * 2] + position[i * 2 + 1];
-            }
+            float checksum = SumPositions(&xy[0], count);
             long readTicks = Clock.MonotonicTicks() - start;
 
             start = Clock.MonotonicTicks();

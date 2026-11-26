@@ -3,6 +3,27 @@ namespace Funke;
 
 public static class RuntimePoints2D {
 public:
+    static int Create(Span<ulong> ids) {
+        return ids.IsEmpty ? 0 : FkService.RuntimePoints_Create(ids.Data, ids.Length);
+    }
+    static int Translate(ReadOnlySpan<ulong> ids, float dx, float dy) {
+        ulong[] copy = ids.ToArray();
+        return Translate(copy, dx, dy);
+    }
+    static int ReadPositions(ReadOnlySpan<ulong> ids, Span<float> xy) {
+        if (xy.Length / 2 < ids.Length) throw ArgumentException("Expected two floats per ID.");
+        if (ids.IsEmpty) return 0;
+        ulong[] copy = ids.ToArray();
+        return FkService.RuntimePoints_Read(&copy[0], copy.Length, xy.Data);
+    }
+    static int CountAlive(ReadOnlySpan<ulong> ids) {
+        ulong[] copy = ids.ToArray();
+        return CountAlive(copy);
+    }
+    static int Destroy(ReadOnlySpan<ulong> ids) {
+        ulong[] copy = ids.ToArray();
+        return Destroy(copy);
+    }
     static int Create(ulong[]& ids) {
         if (ids.Length == 0) return 0;
         return FkService.RuntimePoints_Create(&ids[0], ids.Length);

@@ -2,6 +2,7 @@ param([Parameter(Mandatory)][string]$AssemblyPath)
 $ErrorActionPreference = 'Stop'
 $assembly = [Reflection.Assembly]::LoadFrom((Resolve-Path -LiteralPath $AssemblyPath))
 $flags = [Reflection.BindingFlags]'Public,Instance,Static,DeclaredOnly'
+$nullability = [Reflection.NullabilityInfoContext]::new()
 
 function Format-Type([Type]$Type) {
     if ($Type.IsByRef) { return (Format-Type $Type.GetElementType()) + '&' }
@@ -47,9 +48,24 @@ $rows = foreach ($type in $assembly.GetExportedTypes() | Sort-Object FullName) {
         }
         if ($kind -eq 'NestedType' -or $name -eq 'value__' -or
             ($kind -eq 'Method' -and $member.IsSpecialName -and !$name.StartsWith('op_'))) { continue }
-        [ordered]@{ name=$name; kind=$kind; static=$static; result=$typeName; access=$access; generic=$generic;
+        $readOnly = $kind -eq 'Field' -and ($member.IsInitOnly -or $member.IsLiteral)
+        $arguments = @(
+            foreach ($parameter in $parameters) {
+                $passing = if ($parameter.IsOut) { 'out' } elseif ($parameter.IsIn) { 'in' } elseif ($parameter.ParameterType.IsByRef) { 'ref' } else { '' }
+                [ordered]@{
+                    name = $parameter.Name
+                    type = Format-Type $parameter.ParameterType
+                    nullable = $nullability.Create($parameter).ReadState.ToString()
+                    passing = $passing
+                    variadic = $parameter.IsDefined([ParamArrayAttribute], $false)
+                    optional = $parameter.IsOptional
+                    default = if ($parameter.HasDefaultValue) { $parameter.DefaultValue }
+                }
+            }
+        )
+        [ordered]@{ arguments=$arguments; readOnly=$readOnly; name=$name; kind=$kind; static=$static; result=$typeName; access=$access; generic=$generic;
             parameters=@($parameters | ForEach-Object { Format-Type $_.ParameterType }); signature=$member.ToString() }
     }
-    [ordered]@{ type=($type.FullName -replace '\+', '.'); members=@($members) }
+    [ordered]@{ type=($type.FullName -replace '\+', '.'); generic=@($type.GetGenericArguments() | ForEach-Object Name); members=@($members) }
 }
 ConvertTo-Json -InputObject @($rows) -Depth 6 -Compress

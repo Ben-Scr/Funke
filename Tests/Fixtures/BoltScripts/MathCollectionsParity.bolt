@@ -28,6 +28,8 @@ public:
     public override void OnUpdate() { Transform2D.Position = Vector2((float)signals,0); }
 }
 
+struct RankedValue { public int Priority; }
+
 public static class MathCollectionsParity {
 public:
     static int Verify() {
@@ -150,6 +152,18 @@ public:
         if (managed != "hé" || !(bool)NativeBool(true)) return 45;
         ulong mask = PhysicsLayer.FromMask(1ul << 58);
         if (mask != (1ul << 58) || ((PhysicsLayer)mask).Mask != mask) return 46;
+        System.Func<RankedValue,RankedValue,int> order = (RankedValue a,RankedValue b) => a.Priority-b.Priority;
+        NativePriorityQueue<RankedValue> sorted = NativePriorityQueue<RankedValue>(2,order);
+        RankedValue ranked;
+        ranked.Priority = 8; sorted.Enqueue(ranked);
+        ranked.Priority = 3; sorted.Enqueue(ranked);
+        if (sorted.Dequeue().Priority != 3) return 47;
+        var invariant = System.Globalization.CultureInfo.InvariantCulture;
+        if (Vector3(1,2,3).ToString("F1",invariant) != "Vector3(1.0, 2.0, 3.0)") return 48;
+        var culture = System.Globalization.CultureInfo.GetCultureInfo("de-DE");
+        if (culture.Name.Length != 0 && Vector2(1234.5f,-0.25f).ToString("N2",culture) != "Vector2(1.234,50, -0,25)") return 49;
+        char[] spec = "F1".ToCharArray();
+        if (!Vector4(1,2,3,4).TryFormat(System.Span<char>(dest),written,System.ReadOnlySpan<char>(spec),invariant) || written != "Vector4(1.0, 2.0, 3.0, 4.0)".Length) return 50;
         return 0;
     }
 }

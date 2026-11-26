@@ -55,7 +55,8 @@
         "component": "TextRenderer",
         "property": "Text",
         "expected": "Modus: Punkt-IDs"
-      }
+      },
+      "timeoutSeconds": 5
     }
   ]
 }

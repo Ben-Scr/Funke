@@ -88,13 +88,26 @@ public:
         return hash;
     }
     string ToString() { return ToString(""); }
-    string ToString(string format) {
+    string ToString(string? requested) {
+        string format = requested == null ? "" : requested.Value;
         return "Vector2(" + FkNumberFormat.Number(X,format) + ", " + FkNumberFormat.Number(Y,format) + ")";
+    }
+    string ToString(string? requested, System.Globalization.CultureInfo? provider) {
+        if (provider == null || provider.Value.Name.Length == 0) return ToString(requested);
+        string format = requested == null ? "" : requested.Value;
+        var culture = provider.Value.NumberFormat;
+        return "Vector2(" + FkNumberFormat.Number(X,format,culture) + ", " + FkNumberFormat.Number(Y,format,culture) + ")";
     }
     bool TryFormat(System.Span<char> destination, int& charsWritten, string format = "") {
         return FkNumberFormat.Write(destination, charsWritten, ToString(format));
     }
     bool TryFormat(System.Span<char> destination, int& charsWritten, System.ReadOnlySpan<char> format) {
         return TryFormat(destination, charsWritten, FkNumberFormat.ReadFormat(format));
+    }
+    bool TryFormat(System.Span<char> destination, int& charsWritten, string format, System.Globalization.CultureInfo? provider) {
+        return FkNumberFormat.Write(destination, charsWritten, ToString(format,provider));
+    }
+    bool TryFormat(System.Span<char> destination, int& charsWritten, System.ReadOnlySpan<char> format, System.Globalization.CultureInfo? provider) {
+        return TryFormat(destination, charsWritten, FkNumberFormat.ReadFormat(format), provider);
     }
 }

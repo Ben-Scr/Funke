@@ -2214,3 +2214,26 @@ TEST_CASE("Runtime point destruction respects native component lifecycle") {
 	CHECK_FALSE(child.IsValid());
 	CHECK(scene->GetEntityCount() == 0);
 }
+
+TEST_CASE("Runtime point bulk recycling advances the registry generation") {
+	using namespace Funke;
+	auto scene = Scene::CreateDetachedScene("Recycled point range");
+	auto keep = scene->CreateEntity("Keep");
+	std::array<uint64_t, 17> first{}, next{};
+	scene->CreateRuntimePoints(first);
+	CHECK(scene->DestroyRuntimePoints(first) == 17);
+	for (uint64_t id : first)
+		CHECK_FALSE(scene->IsValid(static_cast<EntityHandle>(static_cast<uint32_t>(id))));
+	scene->CreateRuntimePoints(next);
+	CHECK(scene->TranslateRuntimePoints(first, 1.f, 1.f) == 0);
+	for (size_t i = 0; i < first.size(); ++i) {
+		const auto previous = static_cast<EntityHandle>(static_cast<uint32_t>(first[i]));
+		const auto current = static_cast<EntityHandle>(static_cast<uint32_t>(next[i]));
+		CHECK(entt::to_entity(previous) == entt::to_entity(current));
+		CHECK(entt::to_version(previous) != entt::to_version(current));
+	}
+	scene->DestroyEntity(static_cast<EntityHandle>(static_cast<uint32_t>(next[4])));
+	CHECK(scene->DestroyRuntimePoints(next) == 16);
+	CHECK(keep.IsValid());
+	CHECK(scene->GetEntityCount() == 1);
+}

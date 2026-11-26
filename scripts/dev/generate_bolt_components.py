@@ -427,7 +427,7 @@ classes["PolygonCollider2D"].append("""    static const int MinVertices = 3;
         }
         return result;
     }
-    void SetPaths(Vector2[][] paths) {
+    void SetPaths(Vector2[]... paths) {
         int total = 0;
         int[] counts = new int[paths.Length];
         for (int i = 0; i < paths.Length; i++) {

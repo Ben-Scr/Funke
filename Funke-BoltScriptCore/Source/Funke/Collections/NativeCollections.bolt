@@ -1,5 +1,6 @@
 import System
 import System.Threading
+import Type
 import System.Text
 import System.Memory
 import System.Collections.Generic
@@ -608,13 +609,44 @@ public:
     }
 }
 
+public static class FkNativeOrder {
+private:
+    static ulong Integer(void* pointer, int width, bool unsignedValue) {
+        ulong bits = 0ul;
+        if (width == 1) bits = *((byte*)pointer);
+        else if (width == 2) bits = *((ushort*)pointer);
+        else if (width == 4) bits = *((uint*)pointer);
+        else bits = *((ulong*)pointer);
+        return unsignedValue ? bits : bits ^ (1ul << (width * 8 - 1));
+    }
+public:
+    static int Compare<T>(T left, T right) {
+        if (Type.IsInteger<T>() || Type.Name<T>() == Type.Name<char>() || Type.Name<T>() == Type.Name<bool>()) {
+            bool unsignedValue = Type.IsUnsigned<T>() || Type.Name<T>() == Type.Name<char>() || Type.Name<T>() == Type.Name<bool>();
+            ulong a = Integer((void*)&left, sizeof(T), unsignedValue);
+            ulong b = Integer((void*)&right, sizeof(T), unsignedValue);
+            return a < b ? -1 : (a > b ? 1 : 0);
+        }
+        if (Type.IsFloatingPoint<T>()) {
+            double a = Type.IsFloat32<T>() ? (double)*((float*)&left) : *((double*)&left);
+            double b = Type.IsFloat32<T>() ? (double)*((float*)&right) : *((double*)&right);
+            if (a != a) return b != b ? 0 : -1;
+            return b != b || a > b ? 1 : (a < b ? -1 : 0);
+        }
+        if (Type.Name<T>() == Type.Name<string>()) return string.Compare(*((string*)&left), *((string*)&right));
+        if (System.Reflection.Reflection.IsReflected<T>() && System.Reflection.Reflection.GetType<T>().HasMethod("CompareTo"))
+            return System.Reflection.Reflection.Invoke<int,T,T>(left, "CompareTo", right);
+        throw System.InvalidOperationException("Provide a comparer for this element type.");
+    }
+}
+
 public class NativePriorityQueue<T> {
 private:
     Shared<FkNativeSequence<T>> state;
     Func<T,T,int>? compare;
     int Compare(T a,T b) {
         if (compare != null) return compare.Value.Invoke(a,b);
-        return a < b ? -1 : (b < a ? 1 : 0);
+        return FkNativeOrder.Compare<T>(a,b);
     }
     void Swap(int a,int b) {
         T old = state.Get().At(a); state.Get().At(a) = state.Get().At(b); state.Get().At(b) = old;

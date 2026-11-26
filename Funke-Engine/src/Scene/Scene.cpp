@@ -841,6 +841,31 @@ namespace Funke {
 		if (stamp > UINT32_MAX) FNK_THROW(FunkeErrorCode::OutOfRange, "Runtime point ID space exhausted");
 		ReserveGeometrically(points, CheckedReservationSize(points.size(), ids.size()));
 		ReserveGeometrically(entities, CheckedReservationSize(entities.free_list(), ids.size()));
+		if (entities.on_construct().empty() && entities.on_destroy().empty() && points.on_construct().empty()) {
+			const size_t first = entities.free_list();
+			const size_t end = first + ids.size();
+			// Vacant EnTT slots already carry their next generation and their correct sparse index.
+			entities.free_list(std::min(end, entities.size()));
+			try {
+				while (entities.free_list() < end) entities.generate();
+				const EntityHandle* handles = entities.data() + first;
+				points.bulk_insert(handles, handles + ids.size(),
+					[](size_t count, auto& initialize) noexcept {
+						for (size_t i = 0; i < count; ++i) initialize(i);
+					},
+					[&](RuntimePoint* point, size_t i) noexcept {
+						std::construct_at(point, RuntimePoint{static_cast<uint32_t>(stamp), 0.f, 0.f});
+						ids[i] = (stamp << 32) | entt::to_integral(handles[i]);
+					});
+			} catch (...) {
+				// No IDs escaped and bulk_insert rolls back its component rows.
+				entities.free_list(first);
+				throw;
+			}
+			m_EntityCount += ids.size();
+			MarkHierarchyStructureDirty();
+			return;
+		}
 		size_t created = 0;
 		try {
 			for (uint64_t& id : ids) {
@@ -919,6 +944,28 @@ namespace Funke {
 					}
 				}
 			});
+		}
+		const size_t live = entities.free_list();
+		if (plain && !m_PendingDestroys.Size() && points.size() == ids.size() && live >= ids.size()) {
+			const size_t first = live - ids.size();
+			const EntityHandle* tail = entities.data() + first;
+			bool wholeTail = true;
+			for (size_t i = 0; i < ids.size(); ++i) {
+				const auto handle = static_cast<EntityHandle>(static_cast<uint32_t>(ids[i]));
+				if (tail[i] != handle || points.data()[i] != handle
+					|| points.get(handle).Stamp != (ids[i] >> 32) || IsEntityBeingDestroyed(handle)) {
+					wholeTail = false;
+					break;
+				}
+			}
+			if (wholeTail) {
+				points.clear();
+				for (size_t i = 0; i < ids.size(); ++i) entities.bump(entt::entt_traits<EntityHandle>::next(tail[i]));
+				entities.free_list(first);
+				m_EntityCount -= ids.size();
+				MarkHierarchyStructureDirty();
+				return static_cast<int>(ids.size());
+			}
 		}
 		int destroyed = 0;
 		for (uint64_t id : ids) {

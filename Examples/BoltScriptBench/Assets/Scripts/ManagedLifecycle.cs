@@ -29,8 +29,13 @@ internal static class ManagedLifecycle
             start = Stopwatch.GetTimestamp();
             int read = RuntimePoints2D.ReadPositions(ids, xy);
             float checksum = 0f;
-            for (int i = 0; i < xy.Length; i += 2)
-                checksum += xy[i] + xy[i + 1];
+            int i = 0;
+            for (; i + 15 < xy.Length; i += 16)
+                checksum += (xy[i] + xy[i + 1]) + (xy[i + 2] + xy[i + 3])
+                    + (xy[i + 4] + xy[i + 5]) + (xy[i + 6] + xy[i + 7])
+                    + (xy[i + 8] + xy[i + 9]) + (xy[i + 10] + xy[i + 11])
+                    + (xy[i + 12] + xy[i + 13]) + (xy[i + 14] + xy[i + 15]);
+            for (; i < xy.Length; i += 2) checksum += xy[i] + xy[i + 1];
             long readTicks = ElapsedTicks(start);
 
             start = Stopwatch.GetTimestamp();
@@ -85,7 +90,7 @@ internal static class ManagedLifecycle
             long destroy = ElapsedTicks(start);
 
             foreach (Entity entity in entities)
-                if (entity) throw new InvalidOperationException("Entity wurde nicht gelöscht.");
+                if (entity) throw new InvalidOperationException("Entity wurde nicht gelÃƒÂ¶scht.");
             destroyed = true;
             if (checksum != 3 * count) throw new InvalidOperationException("Positionssumme fehlerhaft.");
             return new LifecycleTimes(create, move, read, destroy);

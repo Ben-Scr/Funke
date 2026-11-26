@@ -1155,7 +1155,9 @@ namespace Funke::BoltScriptHost {
 			BoltCompiledModule* next = nullptr;
 			int status;
 			const bool standaloneCommands = name.empty() && (!consoleSetup.empty() || !resetCalls.empty()) && source.find("int Main(") == source.npos;
-			if (name.empty() && !ImportsFunke(source) && consoleSetup.empty() && resetCalls.empty()) {
+            NativeCollectionImports nativeImports;
+            nativeImports.Inspect(source);
+			if (name.empty() && !ImportsFunke(source) && !nativeImports.Collections && consoleSetup.empty() && resetCalls.empty()) {
 				if (aot) return aot->Write({{path.c_str(), source.data(), source.size()}}, "Program", schema.Fields, error);
 				status = api.Compile(compiler, path.c_str(), source.data(), source.size(), &next, diagnostic, sizeof(diagnostic));
 			} else {
@@ -1230,7 +1232,14 @@ namespace Funke::BoltScriptHost {
                     try { if (!unit.Managed) BindPlayResetMethods(unit.Source, unit.Path, resetCalls); }
                     catch (const std::exception& ex) { error = unit.Path + ": " + ex.what(); return false; }
                     units.push_back({unit.Path.c_str(), unit.Source.data(), unit.Source.size()});
+                    nativeImports.Inspect(unit.Source);
 				}
+                // The SDK eagerly specializes native container implementations even for scripts that never reference them.
+                std::erase_if(units, [&](const BoltSource& unit) {
+                    const std::string_view path = unit.name;
+                    return (path == "<Funke>/NativeCollections.bolt" && !nativeImports.Collections) ||
+                        (path == "<Funke>/Interop.bolt" && !nativeImports.Interop);
+                });
                 if (!resetCalls.empty()) {
                     std::sort(resetCalls.begin(), resetCalls.end());
                     std::string invoke = "if(Funke.FunkeApiTypes.EventId()==64ul){";
@@ -2043,11 +2052,13 @@ roots = ["Assets", ".funke/Bolt"]
     }
 
     void RegisterNativeStructs() {
+        if (!Application::IsMainThread()) return;
+        const auto* app = Application::GetInstance();
+        if (!app || !app->GetSceneManager()) return;
         static uint64_t lastAssets=UINT64_MAX, lastRegistry=UINT64_MAX;
         auto& registry=SceneManager::GetComponentRegistry();
         const auto version=AssetRegistry::GetChangeVersion();
         if(lastAssets==version && lastRegistry==registry.GetGeneration())return;
-        if(!Application::IsMainThread())return;
 #ifdef FUNKE_BOLT_AOT
         std::string error;
         if (!InstallAotLayouts(error)) { FNK_ERROR_TAG("Bolt", "{}", error); return; }

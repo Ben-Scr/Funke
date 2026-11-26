@@ -115,6 +115,17 @@ public:
         charsWritten = value.Length;
         return true;
     }
+    static string Number(float value, string format, System.Globalization.NumberFormatInfo culture) {
+        string invariant = Number(value,format);
+        if (culture.NumberDecimalSeparator == "." && culture.NumberGroupSeparator == ",") return invariant;
+        string[] parts = new string[invariant.Length];
+        for (int i = 0; i < invariant.Length; i++) {
+            char digit = invariant[i];
+            parts[i] = digit == '.' ? culture.NumberDecimalSeparator :
+                (digit == ',' ? culture.NumberGroupSeparator : (string)digit);
+        }
+        return string.Join("",parts);
+    }
     static string ReadFormat(System.ReadOnlySpan<char> chars) {
         string[] text = new string[chars.Length];
         for (int i = 0; i < chars.Length; i++) text[i] = (string)chars[i];
