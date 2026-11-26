@@ -25,12 +25,42 @@ def validate_source_run(run: dict, repository: str, expected_commit: str) -> Non
 def source_identity(root: Path, expected: str) -> None:
     options = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
     def git(*args):
-        return subprocess.run(["git", "-C", str(root), *args], check=True,
-                              capture_output=True, text=True, timeout=30, **options).stdout.strip()
+        result = subprocess.run(["git", "-C", str(root), *args], capture_output=True,
+                                text=True, timeout=30, **options)
+        if result.returncode:
+            raise ValueError(f"Git {args[0]} failed ({result.returncode}): {result.stderr.strip()}")
+        return result.stdout.strip()
     if git("rev-parse", "HEAD") != expected:
         raise ValueError("Source checkout does not match the expected commit.")
     if git("status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none"):
         raise ValueError("Source checkout has modified or untracked build inputs.")
+
+
+def platform_command(platform: str, source: Path, request: Path, artifact: Path) -> list[str]:
+    data = json.loads(request.read_text(encoding="utf-8-sig"))
+    if (type(data.get("protocol")) is not int or data["protocol"] != 1
+            or not Path(data["engineRoot"]).is_absolute() or Path(data["engineRoot"]).resolve() != source):
+        raise ValueError("The builder request must use protocol 1 and the verified engine checkout.")
+    output = Path(data["outputDir"])
+    if not output.is_absolute() or not artifact.is_relative_to(output.resolve()):
+        raise ValueError("Expected artifact must be inside the build request's absolute outputDir.")
+    package = {"android": "Android", "ios": "iOS", "web": "Web"}[platform]
+    builder = source / "platforms" / f"Funke.Platform.{package}" / "Builder" / "build.py"
+    return [sys.executable, str(builder), "build", "--request", str(request.resolve())]
+
+
+def verify_builder_result(protocol: Path, artifact: Path) -> None:
+    result = None
+    with protocol.open(encoding="utf-8") as events:
+        for line in events:
+            event = json.loads(line)
+            if result is not None:
+                raise ValueError("Unexpected protocol event after the final builder result.")
+            if event["event"] == "result":
+                result = event
+    if (result is None or result.get("ok") is not True or not result.get("artifact")
+            or Path(result["artifact"]).resolve() != artifact):
+        raise ValueError("Builder result did not report success for the expected artifact.")
 
 
 def build(args: argparse.Namespace) -> dict:
@@ -60,9 +90,21 @@ def build(args: argparse.Namespace) -> dict:
             if not text:
                 raise ValueError(f"Tool {name} returned no version information.")
             receipt["buildToolchain"][name] = text
+        command = args.command
+        request = getattr(args, "builder_request", None)
+        if request:
+            command = platform_command(args.platform, args.source_root, args.builder_request, args.artifact)
         with (output / "build.log").open("wb") as log:
-            subprocess.run(args.command, cwd=args.source_root, stdout=log, stderr=subprocess.STDOUT,
-                           check=True, timeout=args.timeout, **options)
+            if request:
+                protocol = output / "builder-events.jsonl"
+                with protocol.open("wb") as events:
+                    subprocess.run(command, cwd=args.source_root, stdout=events, stderr=log,
+                                   env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+                                   check=True, timeout=args.timeout, **options)
+                verify_builder_result(protocol, args.artifact)
+            else:
+                subprocess.run(command, cwd=args.source_root, stdout=log, stderr=subprocess.STDOUT,
+                               check=True, timeout=args.timeout, **options)
         source_identity(args.source_root, args.expected_commit)
         identity = artifact_identity(identity_args)
         receipt.update(artifactSha256=identity["sha256"], artifact=identity,
@@ -84,13 +126,14 @@ def main(argv=None) -> int:
     parser.add_argument("--output", type=Path, required=True, help="New evidence directory outside checkout/export.")
     parser.add_argument("--tool", action="append", required=True, help="name=executable; queries --version.")
     parser.add_argument("--timeout", type=int, default=7200)
+    parser.add_argument("--builder-request", type=Path, help="Run the selected platform's real builder with this staged protocol-v1 request.")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     if args.command[:1] == ["--"]:
         args.command = args.command[1:]
-    if (not args.command or args.timeout <= 0 or not re.fullmatch(r"[0-9a-f]{40}", args.expected_commit)
+    if (bool(args.command) == bool(args.builder_request) or args.timeout <= 0 or not re.fullmatch(r"[0-9a-f]{40}", args.expected_commit)
             or any("=" not in item for item in args.tool)):
-        parser.error("Supply a command, positive timeout, full commit hash and name=executable tools.")
+        parser.error("Supply exactly one command or --builder-request, positive timeout, full commit hash and name=executable tools.")
     args.source_root = args.source_root.resolve()
     args.artifact = args.artifact.resolve()
     try:

@@ -1,0 +1,7 @@
+import Funke.Jobs
+import Gameplay
+[WithAll(typeof(MotionData))]
+[EnabledFilter(EnableMode.EnabledOnly)]
+struct DistanceJob : IJobQuery {
+    public void Execute(int row,MotionData& data) { data.Distance+=0.5; }
+}

@@ -21,6 +21,10 @@
 namespace Funke {
 
 	namespace {
+		std::vector<uint64_t> g_FallbackFonts;
+        uint64_t g_FallbackRevision = 1;
+        std::unordered_set<uint64_t> g_FailedFallbacks;
+
 		// Protects the current frame's working set; zero before an Application is active.
 		int CurrentFrame() {
 			return Time::GetFrameCount();
@@ -33,6 +37,52 @@ namespace Funke {
 			return assetId ^ (static_cast<uint64_t>(static_cast<uint32_t>(quantizedSize)) * 0x9E3779B97F4A7C15ull);
 		}
 	}
+
+    void FontManager::SetFallbackFonts(const std::vector<uint64_t>& ids) {
+        std::vector<uint64_t> next;
+        for (const auto id : ids) {
+            if (id && std::find(next.begin(), next.end(), id) == next.end()) next.push_back(id);
+            if (next.size() == 16) break;
+        }
+        if (next == g_FallbackFonts) return;
+        g_FallbackFonts = std::move(next);
+        g_FailedFallbacks.clear();
+        ++g_FallbackRevision;
+        InvalidateUILayout();
+    }
+    const std::vector<uint64_t>& FontManager::GetFallbackFonts() { return g_FallbackFonts; }
+    uint64_t FontManager::GetFallbackRevision() { return g_FallbackRevision; }
+
+    namespace {
+        Font* LoadFallback(uint64_t id, float size) {
+            const uint64_t key = FailedBakeKey(id, FontManager::QuantizeBakeSize(size));
+            if (g_FailedFallbacks.contains(key)) return nullptr;
+            auto* font = FontManager::GetFont(FontManager::LoadFontByUUID(id, size));
+            if (!font) g_FailedFallbacks.insert(key);
+            return font;
+        }
+    }
+    const Font* FontManager::SelectGlyphFont(const Font& primary, uint32_t cp) {
+        if (primary.HasGlyph(cp) || cp < 32 || (cp >= 127 && cp < 160)) return &primary;
+        for (const auto id : g_FallbackFonts) {
+            auto* font = LoadFallback(id, primary.GetPixelSize());
+            if (font && font != &primary && font->HasGlyph(cp)) return font;
+        }
+        return &primary;
+    }
+    void FontManager::GetFamilyMetrics(const Font& primary, float& ascent, float& descent, float& height) {
+        ascent = primary.m_Ascent; descent = primary.m_Descent;
+        float leading = std::max(0.0f, primary.m_LineHeight - ascent + descent);
+        for (const auto id : g_FallbackFonts) {
+            auto* font = LoadFallback(id, primary.GetPixelSize());
+            if (!font || font == &primary || font->m_PixelSize <= 0) continue;
+            const float scale = primary.m_PixelSize / font->m_PixelSize;
+            ascent = std::max(ascent, font->m_Ascent * scale);
+            descent = std::min(descent, font->m_Descent * scale);
+            leading = std::max(leading, (font->m_LineHeight - font->m_Ascent + font->m_Descent) * scale);
+        }
+        height = ascent - descent + leading;
+    }
 
 	int FontManager::QuantizeBakeSize(float pixelSize) {
 		const int p = std::max(1, static_cast<int>(std::lround(pixelSize)));
@@ -172,6 +222,7 @@ namespace Funke {
 	void FontManager::Shutdown() {
 		if (!s_IsInitialized) return;
 		UnloadAll();
+        SetFallbackFonts({});
 		s_TtfBufferCache.clear();
 		s_DefaultFont = FontHandle::Invalid();
 		s_IsInitialized = false;
@@ -309,6 +360,7 @@ namespace Funke {
 		if (it != s_Lookup.end() && it->second == handle.index) {
 			s_Lookup.erase(it);
 		}
+		++g_FallbackRevision;
 		slot.Font.reset();
 		slot.AssetUUID = 0;
 		slot.PixelSize = 0.0f;
@@ -318,6 +370,8 @@ namespace Funke {
 	}
 
 	void FontManager::UnloadAll() {
+        ++g_FallbackRevision;
+        g_FailedFallbacks.clear();
 		AssetLoader::Invalidate(AssetKind::Font);
 		for (Slot& slot : s_Slots) {
 			if (slot.InUse) {
@@ -335,6 +389,7 @@ namespace Funke {
 	}
 
 	size_t FontManager::ReloadChangedFromDisk() {
+        g_FailedFallbacks.clear();
 		if (!s_IsInitialized) return 0;
 
 		std::vector<uint64_t> changed;
@@ -446,6 +501,7 @@ namespace Funke {
 
 	FontHandle FontManager::CreateSlot(std::unique_ptr<Font> font, uint64_t assetUUID, float pixelSize) {
 		if (!font) return FontHandle::Invalid();
+        ++g_FallbackRevision;
 		// Reuse a free slot if one exists, else append.
 		uint16_t idx = static_cast<uint16_t>(s_Slots.size());
 		for (size_t i = 0; i < s_Slots.size(); ++i) {

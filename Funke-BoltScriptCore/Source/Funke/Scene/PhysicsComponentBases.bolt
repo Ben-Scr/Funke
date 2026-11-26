@@ -1,0 +1,108 @@
+import System
+namespace Funke;
+
+public class Collider2D : Component {
+public:
+    [ReadOnly] virtual ulong FkShapeKind() { throw InvalidOperationException("Use an attached concrete physics component."); }
+public:
+    bool IsSensor {
+        get { return FkCollider2D_GetSensor(ID, FkShapeKind()) != 0ul; }
+        set { FkWriteExtra(FkShapeKind(), 0ul); FkCollider2D_SetSensor(ID, value ? 1ul : 0ul); }
+    }
+    ulong Layer {
+        get { return FkCollider2D_GetLayer(ID, FkShapeKind()); }
+        set { FkWriteExtra(FkShapeKind(), 0ul); FkCollider2D_SetLayer(ID, value); }
+    }
+    ulong CollisionMask {
+        get { return FkCollider2D_GetCollisionMask(ID, FkShapeKind()); }
+        set { FkWriteExtra(FkShapeKind(), 0ul); FkCollider2D_SetCollisionMask(ID, value); }
+    }
+    float Friction {
+        get { return Reinterpret<float>((uint)FkCollider2D_GetFriction(ID, FkShapeKind())); }
+        set { FkWriteExtra(FkShapeKind(), 0ul); FkCollider2D_SetFriction(ID, (ulong)Reinterpret<uint>(value)); }
+    }
+    float Bounciness {
+        get { return Reinterpret<float>((uint)FkCollider2D_GetBounciness(ID, FkShapeKind())); }
+        set { FkWriteExtra(FkShapeKind(), 0ul); FkCollider2D_SetBounciness(ID, (ulong)Reinterpret<uint>(value)); }
+    }
+    int GroupIndex {
+        get { return FkSceneAccess.Int(FkCollider2D_GetGroupIndex(ID, FkShapeKind())); }
+        set { FkWriteExtra(FkShapeKind(), 0ul); FkCollider2D_SetGroupIndex(ID, (ulong)Reinterpret<uint>(value)); }
+    }
+    float Density {
+        get { return Reinterpret<float>((uint)FkCollider2D_GetDensity(ID, FkShapeKind())); }
+        set { FkWriteExtra(FkShapeKind(), 0ul); FkCollider2D_SetDensity(ID, (ulong)Reinterpret<uint>(value)); }
+    }
+}
+
+public class Collider3D : Component {
+public:
+    [ReadOnly] virtual ulong FkShapeKind() { throw InvalidOperationException("Use an attached concrete physics component."); }
+private:
+    [ReadOnly] float[] Values() {
+        float[] data = new float[9];
+        FkSceneAccess.Call(FkNativeSlot.Collider3D_Get, ID, FkShapeKind(), FkNativeSlot.Pointer(&data[0]), 9ul);
+        return data;
+    }
+    void Update(float[] data) { FkSceneAccess.Call(FkNativeSlot.Collider3D_Set, ID, FkShapeKind(), FkNativeSlot.Pointer(&data[0]), 9ul); }
+public:
+    Vector3 Center {
+        get { float[] data = Values(); return Vector3(data[0], data[1], data[2]); }
+        set { float[] data = Values(); data[0] = value.X; data[1] = value.Y; data[2] = value.Z; Update(data); }
+    }
+    bool IsTrigger {
+        get { float[] data = Values(); return data[3] != 0.0f; }
+        set { float[] data = Values(); data[3] = value ? 1.0f : 0.0f; Update(data); }
+    }
+    float Friction {
+        get { float[] data = Values(); return data[4]; }
+        set { float[] data = Values(); data[4] = value; Update(data); }
+    }
+    float Bounciness {
+        get { float[] data = Values(); return data[5]; }
+        set { float[] data = Values(); data[5] = value; Update(data); }
+    }
+}
+
+public class Joint2D : Component {
+public:
+    [ReadOnly] virtual ulong FkShapeKind() { throw InvalidOperationException("Use an attached concrete physics component."); }
+private:
+    [ReadOnly] float[] Values() {
+        ulong kind = FkShapeKind();
+        int count = kind == 0ul ? 15 : (kind == 1ul ? 17 : 10);
+        float[] data = new float[count];
+        FkSceneAccess.Call(FkNativeSlot.Joint2D_Get, ID, kind, FkNativeSlot.Pointer(&data[0]), (ulong)count);
+        return data;
+    }
+    void Update(float[] data) { FkSceneAccess.Call(FkNativeSlot.Joint2D_Set, ID, FkShapeKind(), FkNativeSlot.Pointer(&data[0]), (ulong)data.Length); }
+    [ReadOnly] float[] State() {
+        float[] data = new float[7];
+        FkSceneAccess.Call(FkNativeSlot.Joint2D_GetState, ID, FkShapeKind(), FkNativeSlot.Pointer(&data[0]), 7ul);
+        return data;
+    }
+public:
+    Funke.Entity? ConnectedBody {
+        get { return Funke.Entity.FromId(FkSceneAccess.Call(FkNativeSlot.Joint2D_GetConnectedBody, ID, FkShapeKind())); }
+        set { FkSceneAccess.Call(FkNativeSlot.Joint2D_SetConnectedBody, ID, FkShapeKind(), value == null ? 0ul : value.Value.ID); }
+    }
+    Vector2 Anchor {
+        get { float[] data = Values(); return Vector2(data[0], data[1]); }
+        set { float[] data = Values(); data[0] = value.X; data[1] = value.Y; Update(data); }
+    }
+    Vector2 ConnectedAnchor {
+        get { float[] data = Values(); return Vector2(data[2], data[3]); }
+        set { float[] data = Values(); data[2] = value.X; data[3] = value.Y; Update(data); }
+    }
+    bool AutoConfigureConnectedAnchor {
+        get { float[] data = Values(); return data[4] != 0.0f; }
+        set { float[] data = Values(); data[4] = value ? 1.0f : 0.0f; Update(data); }
+    }
+    bool CollideConnected {
+        get { float[] data = Values(); return data[5] != 0.0f; }
+        set { float[] data = Values(); data[5] = value ? 1.0f : 0.0f; Update(data); }
+    }
+    bool IsCreated { get { float[] data = State(); return data[0] != 0.0f; } }
+    Vector2 ReactionForce { get { float[] data = State(); return Vector2(data[1], data[2]); } }
+    float ReactionTorque { get { float[] data = State(); return data[3]; } }
+}

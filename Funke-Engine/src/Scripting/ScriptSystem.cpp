@@ -1,6 +1,7 @@
 #include "pch.hpp"
 #include <sstream>
 #include "Scripting/ScriptSystem.hpp"
+#include "Scripting/BoltScriptHost.hpp"
 #include "Scripting/ScriptProcessTask.hpp"
 #include "Scripting/ScriptEngine.hpp"
 #include "Scripting/ManagedScriptCompiler.hpp"
@@ -57,6 +58,16 @@ namespace Funke {
 
 	namespace {
 		using ProcessTaskState = ScriptSystemProcessTaskState;
+
+		std::optional<int> s_BoltRebuildFrame;
+		std::chrono::steady_clock::time_point s_BoltRebuildStarted;
+
+		void QueueBoltRebuild(bool force) {
+			if (BoltScriptHost::QueueChangedScripts(force) && !s_BoltRebuildFrame) {
+				s_BoltRebuildFrame = Time::GetFrameCount();
+				s_BoltRebuildStarted = std::chrono::steady_clock::now();
+			}
+		}
 
 		std::string GetNativeLibraryFilename(const std::string& targetName)
 		{
@@ -893,6 +904,26 @@ namespace Funke {
 		}
 	}
 
+	static void DispatchBoltSceneEvent(Scene& scene, BoltScriptHost::Event event)
+	{
+		ScriptSceneScope sceneScope(scene);
+		for (EntityHandle entity : CollectScriptEntities(scene)) {
+			ForEachScriptOnEntitySafe(scene, entity, [&](ScriptComponent&, ScriptInstance& instance, size_t) {
+				if (instance.GetType() == ScriptType::Bolt)
+					BoltScriptHost::Dispatch(instance, entity, event);
+				return true;
+			});
+		}
+	}
+
+	void BoltScriptHost::Broadcast(Event event)
+	{
+		BroadcastSystems(event);
+		ForEachLoadedScene([event](Scene& scene) {
+			if (scene.IsSystemEnabled<ScriptSystem>()) DispatchBoltSceneEvent(scene, event);
+		});
+	}
+
 	void ScriptSystem::Awake(Scene& scene)
 	{
 		m_LastScene = &scene;
@@ -903,11 +934,17 @@ namespace Funke {
 			return;
 		}
 
+		auto enableBolt = [&scene] {
+			if (!Application::IsEditor() || Application::GetIsPlaying())
+				DispatchBoltSceneEvent(scene, BoltScriptHost::Event::Enable);
+		};
+
 		++m_ActiveSystemCount;
 		if (m_PollingOwner == nullptr) {
 			m_PollingOwner = this;
 		}
 		if (m_ActiveSystemCount > 1) {
+			enableBolt();
 			// First scene's Awake handles engine/assembly init; subsequent scenes still fire OnAwake.
 			if (ScriptEngine::IsInitialized())
 			{
@@ -925,7 +962,7 @@ namespace Funke {
 					ForEachScriptOnEntitySafe(scene, entity,
 						[entity](ScriptComponent& scriptComp, ScriptInstance& instance, size_t) -> bool {
 							if (instance.GetClassName().empty()) return true;
-							if (instance.GetType() == ScriptType::Native) return true;
+							if (!CanBeManagedScript(instance.GetType())) return true;
 
 							if (!instance.IsBound()) {
 								instance.Bind(entity);
@@ -1018,6 +1055,7 @@ namespace Funke {
 			ScriptEngine::LoadUserAssembly(m_UserAssemblyPath);
 		}
 		InitializeRegisteredGlobalSystems();
+		enableBolt();
 
 		// Host identity owns editor tooling because Dist also ships an Editor.
 
@@ -1149,7 +1187,7 @@ namespace Funke {
 				ForEachScriptOnEntitySafe(scene, entity,
 					[entity](ScriptComponent& scriptComp, ScriptInstance& instance, size_t) -> bool {
 						if (instance.GetClassName().empty()) return true;
-						if (instance.GetType() == ScriptType::Native) return true;
+						if (!CanBeManagedScript(instance.GetType())) return true;
 
 						if (!instance.IsBound()) {
 							instance.Bind(entity);
@@ -1386,6 +1424,7 @@ namespace Funke {
 	bool ScriptSystem::RequestRebuildAndReloadAll()
 	{
 		const bool wasRebuilding = IsRebuilding();
+		QueueBoltRebuild(true);
 
 		RebuildAndReloadScripts();
 		RebuildAndReloadNativeScripts();
@@ -1395,14 +1434,18 @@ namespace Funke {
 
 	bool ScriptSystem::IsRebuilding() const
 	{
-		return m_RebuildTask != nullptr || m_NativeRebuildTask != nullptr;
+		return m_RebuildTask != nullptr || m_NativeRebuildTask != nullptr || s_BoltRebuildFrame.has_value();
 	}
 
 	std::string ScriptSystem::GetLastRebuildOutput()
 	{
-		if (m_ManagedRebuildError.empty()) return m_NativeRebuildError;
-		if (m_NativeRebuildError.empty()) return m_ManagedRebuildError;
-		return m_ManagedRebuildError + "\n" + m_NativeRebuildError;
+		std::string output = BoltScriptHost::RebuildErrors();
+		for (const auto* error : {&m_ManagedRebuildError, &m_NativeRebuildError}) {
+			if (error->empty()) continue;
+			if (!output.empty()) output += '\n';
+			output += *error;
+		}
+		return output;
 	}
 
 	uint64_t ScriptSystem::GetCompletedRebuildCount()
@@ -1485,9 +1528,9 @@ namespace Funke {
 			scripts.reserve(scriptComp.Scripts.size());
 			for (const ScriptInstance& instance : scriptComp.Scripts) {
 				if (instance.HasManagedInstance()) {
-					// Snapshot live field values BEFORE teardown so a managed
-					// reload (recompile) re-applies them instead of resetting
-					// to type-defaults. See SnapshotManagedFieldsToPending.
+					// In Edit mode only, preserve authored instance values before teardown.
+					// In Play this is a no-op: PendingFieldValues must stay authored.
+					// Optional IHotReloadState uses a separate transient managed snapshot.
 					SnapshotManagedFieldsToPending(scriptComp, instance);
 					scripts.push_back(CaptureManagedTeardownState(instance));
 				}
@@ -1570,6 +1613,7 @@ namespace Funke {
 		}
 
 		const ScriptInstance& instance = scriptComp.Scripts[index];
+		const bool bolt = instance.GetType() == ScriptType::Bolt;
 		const std::string removedClassName = instance.GetClassName();
 		const ManagedScriptTeardownState managedState = CaptureManagedTeardownState(instance);
 		const NativeScriptTeardownState nativeState = CaptureNativeTeardownState(instance);
@@ -1585,6 +1629,11 @@ namespace Funke {
 			}
 		}
 
+		if (bolt) {
+			ScriptSceneScope sceneScope(*scene);
+			ScriptInstance removed(removedClassName, ScriptType::Bolt);
+			BoltScriptHost::Dispatch(removed, entity.GetHandle(), BoltScriptHost::Event::Destroy);
+		}
 		InvokeManagedScriptTeardown(*scene, managedState);
 		InvokeNativeScriptTeardown(*scene, nativeState, m_NativeHost);
 
@@ -1603,14 +1652,17 @@ namespace Funke {
 			RemoveScript(entity, index - 1);
 		}
 
-		scriptComp.PendingFieldValues.clear();
-		scriptComp.PendingFieldMetadata.clear();
+		if (entity.IsValid() && entity.HasComponent<ScriptComponent>()) {
+			auto& remaining = entity.GetComponent<ScriptComponent>();
+			remaining.PendingFieldValues.clear();
+			remaining.PendingFieldMetadata.clear();
+		}
 	}
 
 	void ScriptSystem::SetScriptsEnabled(Entity entity, bool enabled)
 	{
 		Scene* scene = entity.GetScene();
-		if (scene == nullptr || !entity.HasComponent<ScriptComponent>() || !ScriptEngine::IsInitialized()) {
+		if (scene == nullptr || !entity.HasComponent<ScriptComponent>()) {
 			return;
 		}
 
@@ -1622,6 +1674,12 @@ namespace Funke {
 		const bool createMissing = enabled && Application::GetIsPlaying() && scene->IsSystemEnabled<ScriptSystem>();
 		ForEachScriptOnEntitySafe(*scene, entityHandle,
 			[&](ScriptComponent& scriptComp, ScriptInstance& instance, size_t) -> bool {
+			if (instance.GetType() == ScriptType::Bolt) {
+				if (enabled && !createMissing && Application::IsEditor() && !Application::GetIsPlaying()) return true;
+				BoltScriptHost::Dispatch(instance, entityHandle, enabled ? BoltScriptHost::Event::Enable : BoltScriptHost::Event::Disable);
+				return true;
+			}
+			if (!ScriptEngine::IsInitialized()) return true;
 			if (createMissing && !instance.HasAnyInstance()
 				&& (instance.GetType() == ScriptType::Managed || instance.GetType() == ScriptType::Unknown)
 				&& !instance.GetClassName().empty()
@@ -1664,10 +1722,11 @@ namespace Funke {
 
 	void ScriptSystem::CreateScriptInstancesNow(Scene& scene, EntityHandle root)
 	{
-		if (!Application::GetIsPlaying() || !ScriptEngine::IsInitialized() || m_TeardownInProgress
+		if (!Application::GetIsPlaying() || m_TeardownInProgress
 			|| !scene.IsValid(root) || !scene.IsSystemEnabled<ScriptSystem>()) {
 			return;
 		}
+		if (!scene.HasComponent<ScriptComponent>(root) && scene.GetEntity(root).GetChildren().empty()) return;
 
 		// Disabled entities stay asleep until enabled (SetScriptsEnabled), as in the scene-start pass.
 		std::vector<EntityHandle> entities;
@@ -1689,7 +1748,11 @@ namespace Funke {
 		for (EntityHandle entity : entities) {
 			ForEachScriptOnEntitySafe(scene, entity,
 				[&](ScriptComponent&, ScriptInstance& instance, size_t) -> bool {
-				if (instance.HasAnyInstance() || instance.GetClassName().empty()
+				if (instance.GetType() == ScriptType::Bolt) {
+					BoltScriptHost::Dispatch(instance, entity, BoltScriptHost::Event::Enable);
+					return true;
+				}
+				if (!ScriptEngine::IsInitialized() || instance.HasAnyInstance() || instance.GetClassName().empty()
 					|| (instance.GetType() != ScriptType::Managed && instance.GetType() != ScriptType::Unknown)
 					|| !ScriptEngine::ClassExists(instance.GetClassName())) {
 					return true;
@@ -1737,9 +1800,6 @@ namespace Funke {
 
 		void DispatchCollision2D(const Collision2D& collision, CollisionDispatchPhase phase)
 		{
-			if (!ScriptEngine::IsInitialized()) {
-				return;
-			}
 
 			const auto dispatchToEntity = [&](Scene* selfScene, EntityHandle self, Scene* otherScene, EntityHandle other) {
 				if (!selfScene || !selfScene->IsValid(self)
@@ -1763,6 +1823,14 @@ namespace Funke {
 				// RemoveScript, or Destroy(self).
 				ForEachScriptOnEntitySafe(scene, self,
 					[&, phase](ScriptComponent&, ScriptInstance& instance, size_t) -> bool {
+						if (instance.GetType() == ScriptType::Bolt) {
+							using Event = BoltScriptHost::Event;
+							const auto base = collision.isTrigger ? Event::TriggerEnter2D : Event::CollisionEnter2D;
+							const auto event = static_cast<Event>(static_cast<int>(base) + static_cast<int>(phase));
+							BoltScriptHost::Dispatch(instance, self, event, {otherID, entityAID, entityBID,
+								collision.isTrigger ? 0.0f : collision.contactPoint.x, collision.isTrigger ? 0.0f : collision.contactPoint.y});
+							return true;
+						}
 						if (!instance.HasManagedInstance() || !instance.HasEnabled()) {
 							return true;
 						}
@@ -1816,9 +1884,7 @@ namespace Funke {
 	void ScriptSystem::DispatchCollision3D(const Collision3D& collision, CollisionPhase3D phase)
 	{
 		Scene* scene = collision.OwningScene;
-		if (!ScriptEngine::IsInitialized() || !scene) {
-			return;
-		}
+		if (!scene) return;
 
 		const auto dispatchToEntity = [&](EntityHandle self, EntityHandle other, const Vec3& normalTowardSelf) {
 			if (!scene->IsValid(self)
@@ -1832,6 +1898,15 @@ namespace Funke {
 			const uint64_t otherID = scene->IsValid(other) ? ToManagedEntityID(*scene, other) : 0;
 			ForEachScriptOnEntitySafe(*scene, self,
 				[&](ScriptComponent&, ScriptInstance& instance, size_t) -> bool {
+					if (instance.GetType() == ScriptType::Bolt) {
+						using Event = BoltScriptHost::Event;
+						const auto base = collision.IsTrigger ? Event::TriggerEnter3D : Event::CollisionEnter3D;
+						const auto event = static_cast<Event>(static_cast<int>(base) + static_cast<int>(phase));
+						BoltScriptHost::Dispatch(instance, self, event, {otherID, 0, 0,
+							collision.ContactPoint.x, collision.ContactPoint.y, collision.ContactPoint.z,
+							normalTowardSelf.x, normalTowardSelf.y, normalTowardSelf.z});
+						return true;
+					}
 					const bool skipStay = phase == CollisionPhase3D::Stay && !ScriptEngine::WantsCallback(instance,
 						collision.IsTrigger ? ScriptCallback_TriggerStay3D : ScriptCallback_CollisionStay3D);
 					if (instance.HasManagedInstance() && instance.HasEnabled() && !skipStay) {
@@ -1864,7 +1939,13 @@ namespace Funke {
 		if (!m_SuppressRecompile && m_AutoRecompileEnabled) {
 			m_ScriptWatcher.Poll(1.0f);
 			m_NativeWatcher.Poll(1.0f);
+			if (Application::IsEditor()) QueueBoltRebuild(false);
 			PollScriptDefines();
+		}
+
+		if (s_BoltRebuildFrame && *s_BoltRebuildFrame != Time::GetFrameCount()) {
+			s_BoltRebuildFrame.reset();
+			if (BoltScriptHost::ReloadQueuedScripts()) ++m_CompletedRebuildCount;
 		}
 
 		bool anyRebuilding = false;
@@ -2039,11 +2120,12 @@ namespace Funke {
 	{
 		const bool nativeRunning = IsTaskRunning(m_NativeRebuildTask);
 		const bool managedRunning = IsTaskRunning(m_RebuildTask);
-		if (!nativeRunning && !managedRunning) {
+		if (!nativeRunning && !managedRunning && !s_BoltRebuildFrame) {
 			return 0.0f;
 		}
 
-		const auto startTime = nativeRunning ? m_NativeRebuildTask->StartedAt : m_RebuildTask->StartedAt;
+		const auto startTime = nativeRunning ? m_NativeRebuildTask->StartedAt
+			: managedRunning ? m_RebuildTask->StartedAt : s_BoltRebuildStarted;
 		return std::chrono::duration<float>(std::chrono::steady_clock::now() - startTime).count();
 	}
 
@@ -2070,6 +2152,11 @@ namespace Funke {
 
 					if (!instance->IsBound())
 						instance->Bind(entity);
+
+					if (instance->GetType() == ScriptType::Bolt) {
+						BoltScriptHost::Dispatch(*instance, entity, BoltScriptHost::Event::Update);
+						return true;
+					}
 
 					if (!instance->HasAnyInstance())
 					{
@@ -2194,6 +2281,10 @@ namespace Funke {
 				[&](ScriptComponent&, ScriptInstance& instance, size_t) -> bool {
 					if (instance.GetClassName().empty() || !instance.IsBound() || !instance.HasStarted()) return true;
 
+					if (instance.GetType() == ScriptType::Bolt) {
+						BoltScriptHost::Dispatch(instance, entity, BoltScriptHost::Event::FixedUpdate);
+						return true;
+					}
 					if (instance.GetType() == ScriptType::Managed)
 					{
 						if (!managedRuntimeReady || !instance.HasManagedInstance()) return true;
@@ -2227,6 +2318,18 @@ namespace Funke {
 		if (ScriptEngine::IsInitialized()) {
 			TeardownManagedScripts(scene);
 		}
+		{
+			ScriptSceneScope sceneScope(scene);
+			std::vector<EntityHandle> entities;
+			for (auto entity : scene.GetRegistry().view<ScriptComponent>()) entities.push_back(entity);
+			for (auto entity : entities) {
+				ForEachScriptOnEntitySafe(scene, entity, [&](ScriptComponent&, ScriptInstance& instance, size_t) {
+					if (instance.GetType() == ScriptType::Bolt)
+						BoltScriptHost::Dispatch(instance, entity, BoltScriptHost::Event::Destroy);
+					return true;
+				});
+			}
+		}
 		TeardownNativeScripts(scene);
 
 		if (m_ActiveSystemCount > 0) {
@@ -2250,6 +2353,8 @@ namespace Funke {
 			ScriptEngine::Shutdown();
 		}
 
+		s_BoltRebuildFrame.reset();
+		BoltScriptHost::Shutdown();
 		m_NativeHost.UnloadDLL();
 		m_LastScene = nullptr;
 		m_CoreAssemblyPath.clear();

@@ -2,7 +2,7 @@
 
 This page explains the **whole asset system** of Funke: what an asset is, how Funke keeps track of them, how you reference them from components and scripts, and how they get loaded while your game runs.
 
-If you just want the short version: every file in your project's `Assets` folder is given a permanent ID. Components and scripts store that ID (not the file path), so you can freely move or rename files without breaking anything. The engine loads the actual data on demand and caches it.
+Funke indexes project assets by GUID. Move or rename an asset with its `.meta` file to preserve references stored by GUID. Update paths you wrote explicitly in scripts or external files when moving their targets.
 
 ---
 
@@ -19,8 +19,8 @@ Funke recognizes these asset kinds (from the `AssetKind` list):
 | **Font** | `.ttf`, `.otf` | Text rendering |
 | **Scene** | `.scene` | A level / screen of your game |
 | **Prefab** | `.prefab` | A reusable, saved entity (with children) |
-| **Script** | `.cs` (and C/C++ source) | Game logic |
-| **Shader** | `.wgsl` | Custom mesh, sprite, post-process and skybox shaders; legacy shader extensions are classified but are not executable GLSL backends |
+| **Script** | `.cs`, `.bolt` and C/C++ source and headers | Game logic |
+| **Shader** | `.wgsl` | Custom shaders for meshes, sprites, UI, post-processing and skyboxes. The Asset Browser marks legacy shader source formats as **Source only**. See [Custom shaders](../Engine-Core/Custom-Shaders.md). |
 | **Material** | `.material` | Shared surface and shader settings |
 | **Mesh** | `.obj`, `.gltf`, `.glb` | Static meshes and glTF skeletal models |
 | **Animation Clip** | `.anim` | Keyframe tracks and events |
@@ -28,9 +28,9 @@ Funke recognizes these asset kinds (from the `AssetKind` list):
 | **Data Asset** | `.dataasset` | Shared game data — items, stats, config (see [Data Assets](Data-Assets.md)) |
 | **Other** | anything else | Tracked but not specially handled |
 
-Anything with an unknown extension is still tracked as **Other**, so nothing in your project is invisible to the engine.
+Unrecognized extensions are classified as **Other**. Extensionless files are classified as **Unknown**.
 
-Every selected asset has **Open** and **Open in Explorer** (Windows), **Open in Finder** (macOS), or **Open in File Manager** (other platforms) buttons at the top of the Inspector. **Open** uses the same action as double-clicking in the Asset Browser: scenes and prefabs open in the editor, animation assets open in Animation or Animator, scripts use the configured external editor, and other files use their OS-associated application. Selected folders open in the Asset Browser. The file-manager button reveals the asset where supported, otherwise opens its containing folder.
+Every selected asset has **Open** and **Open in Explorer** (Windows), **Open in Finder** (macOS), or **Open in File Manager** (other platforms) buttons at the top of the Inspector. **Open** uses the same action as double-clicking in the Asset Browser: scenes and prefabs open in the editor, models and materials open in Editor View, animation assets open in Animation or Animator, scripts use the configured external editor, and other files use their OS-associated application. Selected folders open in the Asset Browser. The file-manager button reveals the asset where supported, otherwise opens its containing folder.
 
 Selecting a `.md` or `.markdown` file in the Asset Browser displays a read-only Markdown preview in the Inspector. It renders headings, emphasis, lists and task lists, quotes, code blocks, links and tables, and refreshes after external edits. Web and email links open on click. The preview accepts UTF-8 files up to 1 MB and shows a message for empty or unreadable files.
 
@@ -44,9 +44,9 @@ The preview supports HTML paragraph/line breaks (`p`, `div`, `br`) and collapsib
 
 This is the most important idea in the whole system.
 
-Every asset gets a permanent **GUID** (a 64-bit unique ID, also called an Asset ID). Once a file has a GUID, *that* is how everything refers to it — your scenes, prefabs, components, and scripts all store the GUID, **never the file path**.
+A registered asset has a 64-bit **GUID** (also called its asset ID). Components persist asset references such as textures and materials by GUID. APIs that accept a path still require that path to resolve.
 
-Why? Because paths change. If references used paths, renaming `player.png` to `hero.png` would break every sprite using it. With GUIDs, you can rename and move files freely and references keep working.
+For example, a Sprite Renderer still finds `hero.png` after you rename `player.png` and its sidecar together.
 
 ### The `.meta` file
 
@@ -65,11 +65,11 @@ The `.meta` is a small JSON file that stores:
 
 A texture's filter mode also decides which [graphics settings](../Engine-Core/Graphics-Settings.md) reach it: **Point** (pixel art) stays crisp at every setting, **Bilinear** follows *Texture Quality*, and **Trilinear** / **Anisotropic** follow *Texture Quality* and *Anisotropic Filtering*.
 
-> **Keep `.meta` files.** When you move or copy an asset, move its `.meta` too, and commit them to version control. The `.meta` is what preserves the asset's identity and its import settings. If a `.meta` goes missing, the engine generates a new one — but the new GUID won't match old references.
+> **Keep `.meta` files in version control.** When moving or renaming an asset, keep its sidecar with it. If you copy an asset to make a second, independent asset in the same project, give the copy its own ID. If two files claim the same GUID, the registry logs a collision and assigns a new ID to the one indexed later.
 
 ### Two kinds of GUID
 
-- **Project assets** (your files) get a GUID derived from the file. These live alongside your `.meta` files.
+- **Project assets** keep their assigned GUID in the accompanying `.meta` file.
 - **Built-in engine assets** (things shipped with Funke, like the default font and the default white texture) get fixed, stable GUIDs so they're identical on every machine. The default font, for example, always has the same ID.
 
 ---
@@ -154,7 +154,7 @@ Mesh? mesh = await AssetManager.LoadByGUIDAsync<Mesh>(meshGuidString, token);
 | `Font` | File reading and rasterizing the 32 px font cache bucket |
 | `Mesh` | File reading and mesh parsing |
 
-GUID/path resolution and import metadata access still run on the main thread. Workers prepare owned CPU data; the main thread publishes it into the existing managers and performs GPU uploads. By default, `AssetLoader::Pump()` allows one publication with a cooperative 2 ms budget per frame; an individual upload is indivisible and can exceed that budget. Completion means that publication has finished. Fonts at other sizes and additional Unicode glyphs retain their normal on-demand behavior.
+GUID/path resolution and import metadata access still run on the main thread. Workers prepare owned CPU data; the main thread publishes it into the existing managers and performs GPU uploads. By default, `AssetLoader::Pump()` allows one publication step with a cooperative 2 ms budget per frame. Textures use private row transfers before cache publication; allocation, individual driver calls and mip generation can still exceed that budget. See [cooperative loading](../Engine-Core/Cooperative-Loading.md). Completion means that publication has finished. Fonts at other sizes and additional Unicode glyphs retain their normal on-demand behavior.
 
 Each C# async load starts with one managed-to-native request containing the expected kind and the path or GUID. Pending assets require no per-asset native status polling. When results are ready, the engine delivers them together in one native-to-managed completion callback, creates the managed references and completes their tasks. Cancellation requests are also sent in batches. The public loading APIs and their return values are unchanged.
 
@@ -254,7 +254,7 @@ For materials and meshes, a temporarily missing, locked or incomplete file keeps
 
 On Windows, native filesystem notifications are processed on the editor update thread. The changed content becomes visible after decoding/import and GPU upload; large models can still take time and this is not a zero-latency guarantee. Platforms using the polling fallback can detect changes later. Change detection uses file timestamps and sizes, so a replacement preserving both may require a further save with an updated timestamp.
 
-Live reload does not imply complete material import. The current OBJ/glTF import loads geometry (and supported glTF animation), but does not automatically reconstruct glTF material slots, embedded textures or OBJ MTL materials. Standard materials expose base color/texture, metallic and roughness values, emissive color/intensity and opaque/transparent surfaces; normal, metallic/roughness and occlusion texture maps are not standard-material slots yet. A `.blend` edit becomes visible after exporting over the project's supported model file.
+OBJ and glTF imports preserve supported material slots, textures and stable named overrides. See [mesh import and materials](../Engine-Core/3D.md) for supported fields and texture maps. A `.blend` edit becomes visible after exporting over the project's supported model file.
 
 ### Unloading and purging
 
@@ -267,7 +267,11 @@ Managers can free assets that nothing is using anymore. Systems that hold refere
 The **Asset Browser** is the editor panel where you work with assets directly. From it you can:
 
 - Browse folders with a breadcrumb trail and a thumbnail grid.
+- See 3D materials on a shaded sphere with fixed studio lighting. Standard PBR and custom `Mesh3D` materials use cached 256-pixel previews, refreshed after material, shader or referenced texture changes. Material and model thumbnails share a cache and render at most one requested asset per frame; old previews remain visible during refresh. Animated shaders appear as snapshots. Materials for UI, sprites, skyboxes and post effects keep their file icon, as do projects without a 3D renderer. The cache retains up to 64 entries plus the currently visible tiles.
 - See prefabs as preview images: each `.prefab` tile renders the prefab once it has loaded, with its fonts baked. Sprites, world text and UI are framed from the front. Meshes are shown at a three-quarter angle if the project has Funke.3D enabled. Until the preview is ready, and for prefabs that draw nothing or fail to load, the tile keeps the file icon. A preview re-renders when its `.prefab` file changes (also when saved from Prefab edit mode) or when a texture is reloaded.
+- See `.obj`, `.gltf` and `.glb` models as rendered previews with their imported materials and textures. A fixed three-quarter camera fits the model bounds, including small, flat and off-centre geometry. Animated models show their rest pose. Model, external-buffer and texture changes inside the project refresh the previews; invalid models and projects without a 3D renderer keep the file icon. Cached images do not retain the source mesh on the GPU indefinitely.
+
+- Double-click a model or `.material` (or use **Open**) to inspect it in **Editor View**. Models load asynchronously and are centred with their imported materials; Standard PBR and custom `Mesh3D` materials appear on a sphere with studio lighting. Material edits and animated shaders remain live in this view. Drag with the left or right mouse button to orbit, middle-drag to pan, and scroll to zoom. **F** or **Frame** fits the preview; **Back** or **Esc** returns to the previous scene or prefab view with its camera and edits preserved. The preview requires the `Funke.3D` module; animated models show their rest pose. Shader targets for UI, sprites, skyboxes and post effects display an explanatory message instead of a sphere.
 - **Create** new scenes, prefabs, scripts, and folders.
 - **Drag and drop** assets onto components (e.g. drop a texture onto a sprite) or onto the scene.
 - Rename, duplicate, delete, copy/paste, and open files in an external editor.
@@ -293,7 +297,7 @@ See [Editor](../Editor/Editor.md) for how the Asset Browser fits with the other 
 | Hot-reload | Yes — edits apply live | No — files are read once |
 | Form on disk | Loose files | Loose files by default; optional bundles with lossless LZ4 or Zstandard compression |
 
-Builds prune unreachable assets and convert scenes, prefabs and Data Assets to binary. **Build Profiles › Asset Packaging › Bundle Assets** optionally packs the staged `Assets/` and `FunkeAssets/` into `Assets.fbundle` and `FunkeAssets.fbundle`; **Compress Bundles** enables lossless compression; the **Compression** selector offers LZ4 (default) or Zstandard. Both options default to off. Funke's asset APIs read either form, preserving GUIDs and import metadata. `Assets/StreamingAssets/` stays loose for `System.IO` and libraries that require real filenames. See [Asset bundles](../Editor/Building-and-Shipping.md#asset-bundles) for limits and distribution details.
+With unused-asset removal enabled, builds prune assets unreachable from the export roots. The exporter converts scenes, prefabs and Data Assets to binary. **Build Profiles › Asset Packaging › Bundle Assets** optionally packs the staged `Assets/` and `FunkeAssets/` into `Assets.fbundle` and `FunkeAssets.fbundle`; **Compress Bundles** enables lossless compression; the **Compression** selector offers LZ4 (default) or Zstandard. Both options default to off. Funke's asset APIs read either form, preserving GUIDs and import metadata. `Assets/StreamingAssets/` stays loose for `System.IO` and libraries that require real filenames. See [Asset bundles](../Editor/Building-and-Shipping.md#asset-bundles) for limits and distribution details.
 
 ---
 
@@ -301,12 +305,13 @@ Builds prune unreachable assets and convert scenes, prefabs and Data Assets to b
 
 - Drop files into `Assets/` — no import wizard.
 - Each file gets a permanent **GUID**, stored in a `.meta` file beside it.
-- Everything references assets **by GUID**, so you can move/rename freely. Keep the `.meta` files.
+- Keep an asset and its `.meta` together so references stored by GUID survive moves and renames.
 - The **Asset Registry** indexes everything; per-type **managers** load, cache, and hand out **handles**.
 - The editor hot-reloads changed assets; the runtime reads loose or bundled assets on demand.
 
 ## Related pages
 
+- [Resizable UI images](Resizable-UI-Images.md) covers texture and atlas borders for UI panels.
 - [Scenes](../Engine-Core/Scenes.md) — scenes and prefabs are assets too, and they store the GUIDs of the assets they use.
 - [Scripting](../Scripting/Scripting.md) — loading and referencing assets from C#.
 - [Editor](../Editor/Editor.md) — the Asset Browser and the build process.
@@ -317,6 +322,8 @@ Builds prune unreachable assets and convert scenes, prefabs and Data Assets to b
 `Texture.Create` owns one native texture and one shared CPU pixel buffer per UUID. Keep the texture alive for its rendering lifetime and call `Dispose()` when that ownership ends. Disposing any wrapper for that UUID invalidates every existing wrapper; repeated disposal is safe. A wrapper's garbage collection does not destroy the shared resource.
 
 ```csharp
+using Funke;
+
 public class PaintedIcon : EntityScript
 {
     private Texture? icon;
@@ -351,3 +358,7 @@ Font atlases and CPU source files have separate budgets. The source cache defaul
 The allocator's shutdown report is a snapshot of live allocations, including owners whose static destructors have not run yet. It is not proof that every listed allocation is lost. Tracking maps are cleared under their mutex after closing the allocation gate. `AllocatorData` is constructed once in aligned static storage and intentionally remains alive until process exit so a thread that already fetched its address can safely acquire the mutex. This control block does not leave an orphaned heap allocation. Late frees still release user memory; repeated initialization after shutdown does not create more trackers.
 
 Global allocation interception is enabled only for Windows Debug builds with `FNK_TRACK_MEMORY`. It does not account for all GPU, managed, driver, or third-party allocations. Use the resource-specific tests and counters alongside sanitizer runs.
+
+## Font coverage
+
+Project [font fallback families](Font-Fallbacks.md) select missing glyphs without changing the primary Text Renderer font.

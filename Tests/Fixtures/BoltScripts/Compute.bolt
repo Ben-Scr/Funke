@@ -1,0 +1,17 @@
+extern "C" ulong FunkeEntity(ulong a, ulong b);
+extern "C" ulong FunkeMoveRight(ulong entity, ulong milliUnits);
+extern "C" ulong FunkeReadState(ulong a, ulong b);
+extern "C" ulong FunkeWriteState(ulong a, ulong value);
+
+public static class Program {
+public:
+    int Main() {
+        ulong state = FunkeReadState(0ul, 0ul);
+        for (int i = 0; i < 256; i++) {
+            state = (state * 25173ul + 13849ul) % 65521ul;
+        }
+        FunkeWriteState(0ul, state);
+        FunkeMoveRight(FunkeEntity(0ul, 0ul), (1ul + state % 8ul) * 1000ul);
+        return 0;
+    }
+}

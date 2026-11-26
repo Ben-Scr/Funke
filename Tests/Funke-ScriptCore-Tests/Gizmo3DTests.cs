@@ -53,6 +53,22 @@ public unsafe class Gizmo3DTests
             Assert.Equal(new float[] { 1, 2, 3, 4, 32 }, captured);
             Gizmo.DrawSphere(new Vector3(1, 2, 3), 4, 16);
             Assert.Equal(new float[] { 1, 2, 3, 4, 16 }, captured);
+            int first = calls;
+            Gizmo.DrawAxes(Vector3.Zero, Quaternion.Identity, 2);
+            Assert.Equal(first + 3, calls);
+            Gizmo.DrawRay(new Ray(Vector3.One, Vector3.Up), 2);
+            Assert.Equal(new float[] { 1, 1, 1, 1, 3, 1 }, captured);
+            Gizmo.DrawArrow(Vector3.Zero, Vector3.Right, 0.5f);
+            Assert.Equal(first + 7, calls);
+            Gizmo.DrawCapsule(Vector3.Zero, Vector3.Up, 1, 8);
+            Assert.Equal(first + 43, calls);
+            Vector3[] near = { Vector3.Zero, Vector3.Right, Vector3.Right + Vector3.Up, Vector3.Up };
+            Vector3[] far = Array.ConvertAll(near, p => p + Vector3.Forward);
+            Gizmo.DrawFrustum(near, far);
+            Assert.Equal(first + 55, calls);
+            Assert.Equal(new float[] { 0, 1, 0, 0, 1, -1 }, captured);
+            Assert.Throws<ArgumentException>(() => Gizmo.DrawFrustum(Array.Empty<Vector3>(), far));
+            Assert.Throws<ArgumentOutOfRangeException>(() => Gizmo.DrawCapsule(Vector3.Zero, Vector3.Up, 1, 1024));
         }
         finally
         {

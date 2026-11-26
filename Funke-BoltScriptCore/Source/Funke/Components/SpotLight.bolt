@@ -1,0 +1,15 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public class SpotLight : Component {
+public:
+    protected override ulong FkType() { return 40ul; }
+    Color Color { get { return FunkeApiTypes.DecodeColor(FkGetSpotLight_Color(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkSetSpotLight_Color(ID, value.LowBits()); } }
+    float Intensity { get { return Reinterpret<float>((uint)FkGetSpotLight_Intensity(ID, 0ul)); } set { FkSetSpotLight_Intensity(ID, (ulong)Reinterpret<uint>(value)); } }
+    float Range { get { return Reinterpret<float>((uint)FkGetSpotLight_Range(ID, 0ul)); } set { FkSetSpotLight_Range(ID, (ulong)Reinterpret<uint>(value)); } }
+    float InnerAngle { get { return Reinterpret<float>((uint)FkGetSpotLight_InnerAngle(ID, 0ul)); } set { FkSetSpotLight_InnerAngle(ID, (ulong)Reinterpret<uint>(value)); } }
+    float OuterAngle { get { return Reinterpret<float>((uint)FkGetSpotLight_OuterAngle(ID, 0ul)); } set { FkSetSpotLight_OuterAngle(ID, (ulong)Reinterpret<uint>(value)); } }
+}

@@ -5,12 +5,13 @@
 -- finds Android Studio / standalone SDK installs on its own (`check` lists anything missing).
 return {
     name         = "Funke.Platform.Android",
-    version      = "0.1.0",
+    version      = "0.2.0",
     kind         = "platform",
     description  = "Build Funke games for Android (arm64-v8a APK, Vulkan / OpenGL ES).",
     platform     = "Android",
     builder      = "Builder/build.py",
     hosts        = "windows,macos,linux",
+    boltAot      = "1",
     protocol     = "1",
     dependencies = { "Funke.ScriptRuntime.Mono" },
 }

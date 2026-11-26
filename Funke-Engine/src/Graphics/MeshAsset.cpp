@@ -4,6 +4,8 @@
 #include "Assets/AssetRegistry.hpp"
 #include "Assets/AssetLoader.hpp"
 #include "Graphics/GltfImporter.hpp"
+#include "Graphics/ImageProcessing.hpp"
+#include <sstream>
 #include "Graphics/SkeletalAnimation.hpp"
 #include "Serialization/File.hpp"
 #include "Serialization/FileStamp.hpp"
@@ -129,7 +131,21 @@ namespace Funke {
 		}
 	}
 
-	bool ParseObjMesh(std::string_view text, PrimitiveMeshData& outMesh, std::string* outError) {
+	struct ObjGroups {
+		std::vector<std::pair<std::string, uint32_t>> Runs;
+		std::vector<std::string> Libraries;
+	};
+
+	static std::string ObjArgument(std::string_view line) {
+		const size_t first = line.find_first_not_of(" \t\r");
+		if (first == std::string_view::npos) return {};
+		line = line.substr(first, line.find_last_not_of(" \t\r") - first + 1);
+		if (line.size() >= 2 && line.front() == '"' && line.back() == '"') line = line.substr(1, line.size() - 2);
+		return std::string(line);
+	}
+
+	static bool ParseObjGeometry(std::string_view text, PrimitiveMeshData& outMesh, std::string* outError, ObjGroups* groups) {
+		std::string material;
 		outMesh = {};
 		std::vector<glm::vec3> positions;
 		std::vector<glm::vec2> uvs;
@@ -169,7 +185,11 @@ namespace Funke {
 				if (const std::string_view v = NextToken(line); !v.empty() && !ParseFloat(v, value.y)) return fail("invalid 'vt' value");
 				uvs.push_back(value);
 			}
+			else if (groups && keyword == "mtllib") groups->Libraries.push_back(ObjArgument(line));
+			else if (groups && keyword == "usemtl") material = ObjArgument(line);
 			else if (keyword == "f") {
+				if (groups && (groups->Runs.empty() || groups->Runs.back().first != material))
+					groups->Runs.emplace_back(material, static_cast<uint32_t>(outMesh.Indices.size()));
 				polygon.clear();
 				for (std::string_view token = NextToken(line); !token.empty(); token = NextToken(line)) {
 					const size_t slash = token.find('/');
@@ -205,7 +225,7 @@ namespace Funke {
 					outMesh.Indices.insert(outMesh.Indices.end(), { polygon[0], polygon[i], polygon[i + 1] });
 				}
 			}
-			// o, g, s, usemtl, mtllib, l, p, ... don't change the triangle geometry.
+			// o, g, s, l, p, ... don't change the triangle geometry.
 		}
 
 		if (outMesh.Indices.empty()) {
@@ -238,6 +258,10 @@ namespace Funke {
 			}
 		}
 		return true;
+	}
+
+	bool ParseObjMesh(std::string_view text, PrimitiveMeshData& outMesh, std::string* outError) {
+		return ParseObjGeometry(text, outMesh, outError, nullptr);
 	}
 
 	void RecalculateNormals(PrimitiveMeshData& mesh) {
@@ -338,6 +362,98 @@ namespace Funke {
 	}
 
 	namespace {
+		bool ReadObjMaterials(const std::filesystem::path& model, const ObjGroups& groups, MeshAsset& asset,
+			std::unordered_map<std::string, FileStamp>* dependencies, std::string& error) {
+			if (groups.Libraries.empty() && (groups.Runs.empty() || (groups.Runs.size() == 1 && groups.Runs.front().first.empty()))) return true;
+			std::unordered_map<std::string, uint32_t> slots;
+			std::unordered_map<std::string, int32_t> images;
+			std::error_code ec;
+			const auto root = std::filesystem::weakly_canonical(std::filesystem::absolute(model).parent_path(), ec);
+			if (ec) { error = "cannot resolve model directory"; return false; }
+			auto resolve = [&](const std::filesystem::path& directory, const std::string& name, std::string& result) {
+				const auto local = Path::FromUtf8(name);
+				if (name.empty() || name.find(':') != std::string::npos || local.has_root_path()) {
+					error = "invalid model dependency '" + name + "'"; return false;
+				}
+				const auto file = std::filesystem::weakly_canonical(directory / local, ec);
+				const auto relative = file.lexically_relative(root);
+				if (ec || relative.empty() || *relative.begin() == "..") {
+					error = "model dependency escapes import directory: " + name; return false;
+				}
+				result = Path::ToUtf8(file);
+				if (dependencies) (*dependencies)[result] = FileStamp::Read(result);
+				if (!File::Exists(result)) { error = "missing model dependency '" + result + "'"; return false; }
+				return true;
+			};
+			auto addMaterial = [&](const std::string& name) -> ImportedMeshMaterial& {
+				slots.emplace(name, static_cast<uint32_t>(asset.Materials.size()));
+				auto& added = asset.Materials.emplace_back();
+				added.Name = name;
+				added.Key = name.empty() ? "default" : "name:" + name;
+				return added;
+			};
+			for (const auto& library : groups.Libraries) {
+				std::string path;
+				if (!resolve(root, library, path)) return false;
+				const std::string source = File::ReadAllText(path);
+				std::istringstream lines(source);
+				ImportedMeshMaterial* current = nullptr;
+				for (std::string raw; std::getline(lines, raw);) {
+					std::string_view line(raw);
+					line = line.substr(0, line.find('#'));
+					const auto key = NextToken(line);
+					if (key.empty()) continue;
+					const std::string argument = ObjArgument(line);
+					error = "invalid " + std::string(key) + " in '" + path + "'";
+					if (key == "newmtl") {
+						if (argument.empty() || slots.contains(argument)) return false;
+						current = &addMaterial(argument);
+						continue;
+					}
+					if (!current) return false;
+					auto& surface = current->Surface;
+					auto scalar = [&](float& value) {
+						return ParseFloat(NextToken(line), value) && std::isfinite(value);
+					};
+					if (key == "Kd" || key == "Ke") {
+						Color& color = key == "Kd" ? surface.BaseColor : surface.EmissiveColor;
+						if (!scalar(color.r) || !scalar(color.g) || !scalar(color.b)) return false;
+					} else if (key == "d" || key == "Tr" || key == "Ns") {
+						float value;
+						if (!scalar(value)) return false;
+						if (key == "Ns") surface.Roughness = std::sqrt(2.0f / (std::max(0.0f, value) + 2.0f));
+						else {
+							surface.BaseColor.a = std::clamp(key == "Tr" ? 1.0f - value : value, 0.0f, 1.0f);
+							surface.Surface = surface.BaseColor.a < 1.0f ? MaterialSurface::Transparent : MaterialSurface::Opaque;
+						}
+					} else if (key == "map_Kd" && !argument.starts_with('-')) {
+						std::string texture;
+						if (!resolve(Path::FromUtf8(path).parent_path(), argument, texture)) return false;
+						auto [it, inserted] = images.try_emplace(texture, static_cast<int32_t>(asset.Textures.size()));
+						if (inserted) {
+							auto image = ImageProcessing::Decode(File::ReadAllBytes(texture));
+							if (!image) { error = "cannot decode '" + texture + "'"; return false; }
+							asset.Textures.emplace_back().Image = std::move(image);
+						}
+						current->Textures[0] = it->second;
+					} else {
+						FNK_CORE_WARN_TAG("Mesh", "Unsupported MTL directive or options '{}' in '{}'", raw, path);
+					}
+				}
+			}
+			for (size_t i = 0; i < groups.Runs.size(); ++i) {
+				const auto& [name, first] = groups.Runs[i];
+				if (!slots.contains(name)) {
+					if (!name.empty()) FNK_CORE_WARN_TAG("Mesh", "Undefined OBJ material '{}' in '{}'", name, Path::ToUtf8(model));
+					addMaterial(name);
+				}
+				const auto end = i + 1 < groups.Runs.size() ? groups.Runs[i + 1].second : static_cast<uint32_t>(asset.Data.Indices.size());
+				asset.Submeshes.push_back({ first, end - first, slots.at(name) });
+			}
+			error.clear();
+			return true;
+		}
+
 		bool LoadMeshAsset(const std::string& path, MeshAsset& outAsset, std::unordered_map<std::string, FileStamp>* dependencies) {
 			outAsset = MeshAsset{};
 			if (dependencies) (*dependencies)[path] = FileStamp::Read(path);
@@ -362,7 +478,9 @@ namespace Funke {
 				}, outAsset, &error);
 			}
 			else {
-				loaded = ParseObjMesh(File::ReadAllText(path), outAsset.Data, &error);
+				ObjGroups groups;
+				loaded = ParseObjGeometry(File::ReadAllText(path), outAsset.Data, &error, &groups)
+					&& ReadObjMaterials(nativePath, groups, outAsset, dependencies, error);
 			}
 			if (!loaded) {
 				FNK_CORE_WARN_TAG("Mesh", "Could not load mesh '{}': {}", path, error);

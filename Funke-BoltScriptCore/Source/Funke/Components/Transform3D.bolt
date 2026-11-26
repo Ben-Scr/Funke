@@ -1,0 +1,64 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public class Transform3D : Component {
+public:
+    protected override ulong FkType() { return 45ul; }
+    Vector3 Position { get { return FunkeApiTypes.DecodeVector3(FkTransform3D_GetPosition(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkTransform3D_SetPosition(ID, value.LowBits()); } }
+    Vector3 Rotation { get { return FunkeApiTypes.DecodeVector3(FkTransform3D_GetRotation(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkTransform3D_SetRotation(ID, value.LowBits()); } }
+    Vector3 Scale { get { return FunkeApiTypes.DecodeVector3(FkTransform3D_GetScale(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkTransform3D_SetScale(ID, value.LowBits()); } }
+    Vector3 WorldPosition => FunkeApiTypes.DecodeVector3(FkTransform3D_GetWorldPosition(ID, 0ul), FkReadExtra(0ul, 0ul));
+    Vector3 Forward => FunkeApiTypes.DecodeVector3(FkTransform3D_GetForward(ID, 0ul), FkReadExtra(0ul, 0ul));
+    Vector3 Right => FunkeApiTypes.DecodeVector3(FkTransform3D_GetRight(ID, 0ul), FkReadExtra(0ul, 0ul));
+    Vector3 Up => FunkeApiTypes.DecodeVector3(FkTransform3D_GetUp(ID, 0ul), FkReadExtra(0ul, 0ul));
+    Vector3 LocalPosition { get { return Position; } set { Position = value; } }
+    Quaternion LocalRotation {
+        get { return Quaternion.Euler(Rotation); }
+        set { Rotation = value.EulerAngles; }
+    }
+    private Quaternion ParentRotation() {
+        Quaternion orientation = Quaternion.Identity;
+        Funke.Entity owner = FunkeApiTypes.MakeEntity(ID);
+        Funke.Entity? parent = owner.Parent;
+        int depth = 0;
+        while (parent != null) {
+            if (++depth > 1024) throw System.InvalidOperationException("Transform hierarchy exceeds 1024 ancestors or contains a cycle.");
+            Funke.Entity current = parent.Value;
+            Transform3D? transform = current.GetComponent<Transform3D>();
+            if (transform != null) orientation = transform.Value.LocalRotation * orientation;
+            parent = current.Parent;
+        }
+        return orientation;
+    }
+    Quaternion WorldRotation {
+        get { return ParentRotation() * LocalRotation; }
+        set { LocalRotation = Quaternion.Inverse(ParentRotation()) * value; }
+    }
+    void SetLocalPose(Vector3 position, Quaternion rotation) {
+        if (!Vector3.FkIsFinite(position) || !Quaternion.IsValidRotation(rotation))
+            throw System.ArgumentOutOfRangeException("Invalid local pose.");
+        Position = position;
+        Rotation = rotation.EulerAngles;
+    }
+    Vector3 GetWorldPosition() { return TransformUtility.GetWorldPosition(this); }
+    WorldPose GetWorldPose() { return TransformUtility.GetWorldPose(this); }
+    bool TrySetWorldPose(Vector3 position, Quaternion rotation) { return TransformUtility.TrySetWorldPose(this, position, rotation); }
+    bool TrySetWorldPosition(Vector3 position) { return TransformUtility.TrySetWorldPosition(this, position); }
+    void SetWorldPosition(Vector3 position) { TransformUtility.SetWorldPosition(this, position); }
+    Vector3 TransformPoint(Vector3 value) { return TransformUtility.TransformPoint(this, value); }
+    Vector3 InverseTransformPoint(Vector3 value) { return TransformUtility.InverseTransformPoint(this, value); }
+    Vector3 TransformDirection(Vector3 value) { return TransformUtility.TransformDirection(this, value); }
+    Vector3 InverseTransformDirection(Vector3 value) { return TransformUtility.InverseTransformDirection(this, value); }
+    Vector3 TransformVector(Vector3 value) { return TransformUtility.TransformVector(this, value); }
+    Vector3 InverseTransformVector(Vector3 value) { return TransformUtility.InverseTransformVector(this, value); }
+    Vector3 TransformNormal(Vector3 value) { return TransformUtility.TransformNormal(this, value); }
+    void Translate(Vector3 displacement, Space space = Space.Local) { TransformUtility.Translate(this, displacement, space); }
+    void Rotate(Vector3 eulerDegrees, Space space = Space.Local) { TransformUtility.Rotate(this, eulerDegrees, space); }
+    void Rotate(Vector3 axis, float degrees, Space space = Space.Local) { TransformUtility.Rotate(this, axis, degrees, space); }
+    void RotateAround(Vector3 pivot, Vector3 axis, float degrees) { TransformUtility.RotateAround(this, pivot, axis, degrees); }
+    void FaceTowards3D(Vector3 target, float maxDegreesPerSecond, float deltaTime, Vector3? up = null) { TransformUtility.FaceTowards3D(this, target, maxDegreesPerSecond, deltaTime, up); }
+    bool FaceOnPlane3D(Vector3 target, Vector3 normal) { return TransformUtility.FaceOnPlane3D(this, target, normal); }
+}

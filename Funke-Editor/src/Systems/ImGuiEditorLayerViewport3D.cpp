@@ -361,7 +361,9 @@ namespace Funke {
 				const LocalBounds3D bounds = EntityPicker3D::GetHierarchyBounds(scene, selected);
 				renderer.DrawWireBox(transform->WorldMatrix * glm::translate(glm::mat4(1.0f), bounds.Center), bounds.HalfExtents * 1.02f, k_SelectionColor);
 				if (EngineModules::IsActive(EngineModule::Physics3D)) {
+#if FUNKE_WITH_PHYSICS3D
 					PhysicsDebugDraw3D::DrawColliders(renderer, scene, selected, transform->WorldMatrix);
+#endif
 				}
 				if (const auto* particles = registry.try_get<ParticleSystem3DComponent>(selected)) {
 					DrawParticleShapeGizmo(renderer, transform->WorldMatrix, *particles);

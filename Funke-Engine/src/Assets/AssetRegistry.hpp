@@ -1040,7 +1040,7 @@ namespace Funke {
 			if (extension == ".prefab") {
 				return AssetKind::Prefab;
 			}
-			if (extension == ".cs" || extension == ".cpp" || extension == ".cc" || extension == ".cxx" || extension == ".c"
+			if (extension == ".bolt" || extension == ".cs" || extension == ".cpp" || extension == ".cc" || extension == ".cxx" || extension == ".c"
 				|| extension == ".h" || extension == ".hh" || extension == ".hpp" || extension == ".hxx"
 				|| extension == ".inl" || extension == ".ipp") {
 				return AssetKind::Script;
@@ -1335,7 +1335,7 @@ namespace Funke {
 				SetOrAddMember(root, "border", MakeSpriteBorderValue(meta.Border));
 			}
 			else {
-				std::erase_if(root.GetObject(), [](const auto& member) { return member.first == "border"; });
+				std::erase_if(root.GetMembers(), [](const auto& member) { return member.first == "border"; });
 			}
 
 			const bool wrote = File::WriteAllText(metaPath, Json::Stringify(root, true));

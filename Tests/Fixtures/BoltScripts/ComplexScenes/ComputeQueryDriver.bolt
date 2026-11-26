@@ -1,0 +1,13 @@
+import Funke
+import Funke.Jobs
+import Gameplay
+
+public class ComputeQueryDriver : EntityScript {
+    private Scene target;
+    public override void OnStart() { target = SceneManager.GetActiveScene().Value; }
+
+    public override void OnUpdate() {
+        ComputeDistanceJob job;
+        target.ScheduleParallel<ComputeDistanceJob>(job, 64).Complete();
+    }
+}

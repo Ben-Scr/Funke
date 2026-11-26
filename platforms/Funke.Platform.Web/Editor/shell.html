@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="robots" content="noindex,follow">
+  <meta name="description" content="Experimenteller Web-Port des originalen Funke-Editors: 2D-Szenen bearbeiten, Physik testen und lokal speichern.">
+  <link rel="canonical" href="https://schneidertools.de/funke">
+  <link rel="icon" href="icon.png">
+  <title>Funke Originaleditor · Web-Prototyp</title>
+  <style>
+    :root{color-scheme:dark light;--bg:#1c1d20;--fg:#ebecef;--border:#36383d;--control:#292b30;--muted:#adb2bd}
+    @media(prefers-color-scheme:light){:root{--bg:#f2f3f5;--fg:#22252a;--border:#c7cbd3;--control:#e1e4e9;--muted:#5b6270}}
+    html,body{margin:0;width:100%;height:100%;overflow:hidden;background:var(--bg);color:var(--fg)}
+    #canvas{display:block;outline:none}button,a,summary{touch-action:manipulation}
+    #status{position:fixed;inset:0;display:grid;place-content:center;text-align:center;font:15px/1.5 system-ui;padding:24px;pointer-events:none;z-index:2}
+    #status.error{color:#f2918c;background:#1c1d20f5;pointer-events:auto}
+    #web-help{position:fixed;bottom:0;left:8px;z-index:3;font:12px/1.5 system-ui;background:var(--bg)}
+    summary{padding:5px 8px;cursor:pointer;color:var(--muted)}
+    #web-help[open]{width:min(390px,calc(100vw - 18px));border:1px solid var(--border);border-radius:5px}
+    .help-body{padding:4px 14px 12px}.help-body h1{font-size:16px;font-weight:600;margin:2px 0 8px}.help-body p{margin:8px 0}
+    .actions{display:flex;gap:6px;flex-wrap:wrap}button{font:inherit;background:var(--control);color:var(--fg);border:1px solid var(--border);border-radius:4px;padding:6px 9px;cursor:pointer}
+    button:hover{border-color:#6294e9}button:disabled{opacity:.45;cursor:wait}a{color:#6398ef}button:focus-visible,summary:focus-visible,a:focus-visible{outline:2px solid #6294e9;outline-offset:2px}
+    #notice{color:var(--muted);min-height:18px}noscript{position:fixed;inset:30px;font:16px system-ui}
+  </style>
+</head>
+<body>
+  <canvas id="canvas" tabindex="0" aria-label="Funke-Editor: Szene, Hierarchie und Inspector" oncontextmenu="event.preventDefault()"></canvas>
+  <div id="status" role="status">Originaler Funke-Editor wird geladen …</div>
+  <details id="web-help">
+    <summary>Web-Prototyp · Hilfe &amp; Szenendatei</summary>
+    <div class="help-body">
+      <h1>Funke im Browser</h1>
+      <p>Originaler Editor mit einer 2D-Testszene. Wähle links ein Objekt und bearbeite es im Inspector. Mit ▶ startest du die Physik; ■ kehrt zur bearbeiteten Szene zurück.</p>
+      <p><strong>Strg+S</strong> speichert im Browser. Beim nächsten Besuch wird die zuletzt geöffnete Szene geladen. Über Export bekommst du eine echte <code>.scene</code>-Datei als Sicherung. Externe Assets sind darin nicht enthalten.</p>
+      <div class="actions"><button id="save" disabled>Speichern</button><button id="export" disabled>Szene exportieren</button><button id="import" disabled>Szene importieren</button></div>
+      <input id="scene-file" type="file" accept=".scene" hidden>
+      <p id="notice" role="status" aria-live="polite"></p>
+      <p>Experimentell: C#-Skripte, Paketinstallation und Spiele-Export sind noch nicht verfügbar. Für diesen Test brauchst du WebGPU, eine Tastatur und eine Maus.</p>
+      <a href="/">Zu Schneidertools</a>
+    </div>
+  </details>
+  <noscript>Zum Starten des Editors muss JavaScript aktiviert sein.</noscript>
+  <script>
+    const statusElement=document.getElementById('status'), notice=document.getElementById('notice');
+    var Module={
+      canvas:document.getElementById('canvas'),funkeReady:false,
+      setStatus(text){if(statusElement.classList.contains('error'))return;statusElement.textContent=text||'';if(this.funkeReady){document.body.appendChild(document.getElementById('web-help'));document.querySelectorAll('.actions button').forEach(b=>b.disabled=false)}},
+      funkeReportError(text){document.body.appendChild(statusElement);statusElement.classList.add('error');statusElement.textContent=text},
+      print:console.log,printErr:console.error,
+      onAbort(reason){Module.funkeReportError('Der Editor wurde angehalten: '+reason)}
+    };
+    if(!navigator.gpu)Module.funkeReportError('Dieser Prototyp benötigt WebGPU. Bitte öffne ihn in einem Browser mit WebGPU-Unterstützung.');
+    const state=()=>JSON.parse(Module.ccall('FunkeWebEditorState','string',[],[]));
+    function requireEditMode(){if(!Module.funkeReady)throw Error('Der Editor lädt noch.');if(state().playing)throw Error('Bitte zuerst den Play-Modus beenden.');if(state().busy)throw Error('Bitte warten, bis der Editor fertig geladen hat.');}
+    async function save(){requireEditMode();const error=Module.ccall('FunkeWebEditorSave','string',[],[]);if(error)throw Error(error);await new Promise((resolve,reject)=>Module.FS.syncfs(false,e=>e?reject(e):resolve()));}
+    async function action(work){try{notice.textContent='';await work();}catch(e){notice.textContent=e.message||String(e);}}
+    document.getElementById('save').onclick=()=>action(async()=>{await save();notice.textContent='Im Browser gespeichert.';Module.canvas.focus();});
+    document.getElementById('export').onclick=()=>action(async()=>{
+      await save();const current=state(),bytes=Module.FS.readFile(current.scenePath);
+      const url=URL.createObjectURL(new Blob([bytes],{type:'application/octet-stream'})),a=document.createElement('a');
+      a.href=url;a.download=current.scene+'.scene';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);notice.textContent='Szenendatei exportiert.';
+    });
+    document.getElementById('import').onclick=()=>action(async()=>{requireEditMode();document.getElementById('scene-file').click();});
+    document.getElementById('scene-file').onchange=event=>action(async()=>{
+      const file=event.target.files[0];event.target.value='';if(!file)return;
+      requireEditMode();if(!/\.scene$/i.test(file.name)||file.size>16*1024*1024)throw Error('Bitte eine .scene-Datei bis 16 MB wählen.');
+      await save();const path='/libsdl/FunkeWebEditor/Assets/Scenes/Import-'+Date.now()+'.scene';
+      Module.FS.writeFile(path,new Uint8Array(await file.arrayBuffer()));
+      const error=Module.ccall('FunkeWebEditorOpen','string',['string'],[path]);
+      if(error){Module.FS.unlink(path);throw Error(error);}
+      notice.textContent='Szenendatei wird geöffnet. Die bisherige Szene wurde gespeichert.';document.getElementById('web-help').open=false;Module.canvas.focus();
+    });
+  </script>
+  {{{ SCRIPT }}}
+</body>
+</html>

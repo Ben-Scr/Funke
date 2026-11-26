@@ -111,7 +111,8 @@ namespace Funke {
 		static uint64_t PreloadSceneAsync(const std::string& name, SceneLoadCompletion completion = {});
 		static bool ActivatePreloadedScene(uint64_t operationId, bool additive = false, SceneLoadCompletion completion = {});
 		static std::optional<SceneLoadProgress> GetSceneLoadProgress(uint64_t operationId);
-		// Cooperative limits; a single entity/prefab, callback or lifecycle step may exceed the time budget.
+		// Cooperative limits, including individual prefab entities/parents. Preparation, fixups,
+        // a single component decoder, user callback or lifecycle/teardown step may exceed the budget.
 		static void SetAsyncSceneLoadBudget(double milliseconds, size_t maxEntitiesPerFrame = 128);
 		static bool CancelSceneLoad(uint64_t operationId);
 		// Loads without scene notifications or system Awake/Start and never makes the instance active.

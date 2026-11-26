@@ -1,0 +1,88 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public class EntityCommandBuffer {
+public:
+    struct ParallelWriter {
+    public:
+        System.Memory.Shared<FkEcbOwner> Owner;
+        EntityRef Make(ulong op,ulong arg){
+            FkEcbRequest req;req.Op=op;req.Argument=arg;
+            EntityRef entity;entity.Buffer=Owner.Get().Id;entity.Ticket=req.Call(entity.Buffer,null);return entity;
+        }
+        EntityRef Create(){return Make(2ul,0ul);}
+        EntityRef Instantiate(ulong guid){return Make(3ul,guid);}
+        EntityRef Instantiate(Entity prefab){if(!prefab.FkPrefabAsset())throw System.ArgumentException("Expected a prefab asset.");return Instantiate(prefab.PrefabGUID);}
+        FkEcbRequest Request(EntityRef entity,ulong op){
+            if(entity.Live==0ul && entity.Buffer!=Owner.Get().Id)throw System.ArgumentException("EntityRef belongs to another ECB.");
+            FkEcbRequest req;req.Op=op;req.Ticket=entity.Ticket;req.Live=entity.Live;return req;
+        }
+        void Destroy(EntityRef entity){var req=Request(entity,4ul);req.Call(Owner.Get().Id,null);}
+        void Destroy(Entity entity){Destroy(entity.ToCommandBufferRef());}
+        void SetEnabled(EntityRef entity,bool enabled){var req=Request(entity,5ul);req.Argument=enabled?1ul:0ul;req.Call(Owner.Get().Id,null);}
+        void SetEnabled(Entity entity,bool enabled){SetEnabled(entity.ToCommandBufferRef(),enabled);}
+        void Component<T>(EntityRef entity,ulong op,void* payload){
+            var req=Request(entity,op);
+            byte[] name=Type.Name<T>().ToUtf8();
+            req.Name=(void*)&name[0];req.NameLength=(uint)name.Length;req.Size=(uint)sizeof(T);
+            req.Call(Owner.Get().Id,payload);
+        }
+        void AddComponent<T>(EntityRef entity,T data){Component<T>(entity,6ul,&data);}
+        void AddComponent<T>(Entity entity,T data){AddComponent<T>(entity.ToCommandBufferRef(),data);}
+        void AddComponent<T>(EntityRef entity){Component<T>(entity,7ul,null);}
+        void AddComponent<T>(Entity entity){AddComponent<T>(entity.ToCommandBufferRef());}
+        void RemoveComponent<T>(EntityRef entity){Component<T>(entity,8ul,null);}
+        void RemoveComponent<T>(Entity entity){RemoveComponent<T>(entity.ToCommandBufferRef());}
+        private void AddRemaining<T...>(EntityRef entity) { AddComponent<T>(entity); }
+        EntityRef CreateWith<T, Rest...>() {
+            EntityRef entity = Create();
+            AddComponent<T>(entity);
+            AddRemaining<Rest...>(entity);
+            return entity;
+        }
+        void CreateEntitiesWith<T, Rest...>(int length, System.Span<EntityRef> output) {
+            if (length < 0 || length > output.Length)
+                throw System.ArgumentOutOfRangeException("Invalid ECB output length.");
+            for (int i = 0; i < length; i++) output[i] = CreateWith<T, Rest...>();
+        }
+    }
+private:
+    System.Memory.Shared<FkEcbOwner> owner;
+    ulong Control(ulong op,ulong arg){FkEcbRequest req;req.Op=op;req.Argument=arg;return req.Call(owner.Get().Id,null);}
+public:
+    EntityCommandBuffer(int initialCapacity=1024){owner=System.Memory.Shared<FkEcbOwner>.Create();}
+    ParallelWriter AsParallelWriter(){ParallelWriter writer;writer.Owner=owner;return writer;}
+    EntityRef Create(){return AsParallelWriter().Create();}
+    EntityRef Instantiate(ulong guid){return AsParallelWriter().Instantiate(guid);}
+    EntityRef Instantiate(Entity prefab){return AsParallelWriter().Instantiate(prefab);}
+    void Destroy(EntityRef entity){AsParallelWriter().Destroy(entity);}
+    void Destroy(Entity entity){AsParallelWriter().Destroy(entity);}
+    void SetEnabled(EntityRef entity,bool enabled){AsParallelWriter().SetEnabled(entity,enabled);}
+    void SetEnabled(Entity entity,bool enabled){AsParallelWriter().SetEnabled(entity,enabled);}
+    void AddComponent<T>(EntityRef entity,T data){AsParallelWriter().AddComponent<T>(entity,data);}
+    void AddComponent<T>(Entity entity,T data){AsParallelWriter().AddComponent<T>(entity,data);}
+    void AddComponent<T>(EntityRef entity){AsParallelWriter().AddComponent<T>(entity);}
+    void AddComponent<T>(Entity entity){AsParallelWriter().AddComponent<T>(entity);}
+    void RemoveComponent<T>(EntityRef entity){AsParallelWriter().RemoveComponent<T>(entity);}
+    void RemoveComponent<T>(Entity entity){AsParallelWriter().RemoveComponent<T>(entity);}
+    int Playback(EntityCommandBufferPlaybackMode mode=EntityCommandBufferPlaybackMode.Automatic){return (int)Control(9ul,(ulong)(int)mode);}
+    int Playback(Funke.Jobs.JobHandle dependency,EntityCommandBufferPlaybackMode mode=EntityCommandBufferPlaybackMode.Automatic){dependency.Complete();return Playback(mode);}
+    int PlaybackInto(System.Span<ulong> destination,EntityCommandBufferPlaybackMode mode=EntityCommandBufferPlaybackMode.Automatic){
+        FkEcbRequest req;req.Op=14ul;req.Size=(uint)destination.Length;req.Argument=(ulong)(int)mode;
+        void* data=null;if(destination.Length>0)data=&destination[0];
+        return (int)req.Call(owner.Get().Id,data);
+    }
+    ulong GetCreatedEntityId(int index){return Control(10ul,(ulong)(long)index);}
+    Entity GetCreatedEntity(int index){return FunkeApiTypes.MakeEntity(GetCreatedEntityId(index));}
+    int EntityCount => (int)Control(12ul,0ul);
+    int CommandCount => (int)Control(13ul,0ul);
+    void Clear(){Control(11ul,0ul);}
+    void Dispose(){owner.Get().Close();}
+    EntityRef CreateWith<T, Rest...>() { return AsParallelWriter().CreateWith<T, Rest...>(); }
+    void CreateEntitiesWith<T, Rest...>(int length, System.Span<EntityRef> output) {
+        AsParallelWriter().CreateEntitiesWith<T, Rest...>(length, output);
+    }
+}

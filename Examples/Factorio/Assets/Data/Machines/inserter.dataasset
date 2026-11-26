@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "type": "MachineDefinition",
+  "fields": {
+    "Id": "inserter",
+    "DisplayName": "Inserter",
+    "Description": "Picks up behind its base and drops in front. R rotates it.",
+    "Kind": "5",
+    "CycleSeconds": "0.7",
+    "Prefab": "prefab:6773808766174868710",
+    "Icon": "1039721937119298735",
+    "SpriteName": "",
+    "BuildingItem": "6865905726367670073",
+    "ConnectionTexture": "0",
+    "Recipes": ""
+  }
+}

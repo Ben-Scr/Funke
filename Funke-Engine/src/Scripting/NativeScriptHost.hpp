@@ -12,6 +12,7 @@
 namespace Funke {
 
 	class NativeScript;
+	struct NativeEngineAPI;
 	class Scene;
 
 	struct NativeScriptFieldInfo {
@@ -29,6 +30,7 @@ namespace Funke {
 
 	class FUNKE_API NativeScriptHost {
 	public:
+		static const NativeEngineAPI& GetEngineAPI();
 		bool LoadDLL(const std::string& dllPath);
 		void UnloadDLL();
 		bool IsLoaded() const { return m_DllHandle != nullptr; }

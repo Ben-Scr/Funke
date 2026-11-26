@@ -1,0 +1,9 @@
+import Funke
+namespace Funke.UI;
+
+public class WidthConstraint : Component {
+public:
+    protected override ulong FkType() { return 48ul; }
+    float MinWidth { get { return Reinterpret<float>((uint)FkWidthConstraint_GetMinWidth(ID, 0ul)); } set { FkWidthConstraint_SetMinWidth(ID, (ulong)Reinterpret<uint>(value)); } }
+    float MaxWidth { get { return Reinterpret<float>((uint)FkWidthConstraint_GetMaxWidth(ID, 0ul)); } set { FkWidthConstraint_SetMaxWidth(ID, (ulong)Reinterpret<uint>(value)); } }
+}

@@ -168,6 +168,15 @@ namespace Funke {
 		root.AddMember("surface", Json::Value(static_cast<int>(material.Surface)));
 		root.AddMember("baseColor", ColorToJson(material.BaseColor));
 		root.AddMember("baseColorTexture", Json::Value(std::to_string(material.BaseColorTexture)));
+		if (material.NormalTexture) root.AddMember("normalTexture", Json::Value(std::to_string(material.NormalTexture)));
+		if (material.MetallicRoughnessTexture) root.AddMember("metallicRoughnessTexture", Json::Value(std::to_string(material.MetallicRoughnessTexture)));
+		if (material.EmissiveTexture) root.AddMember("emissiveTexture", Json::Value(std::to_string(material.EmissiveTexture)));
+		if (material.OcclusionTexture) root.AddMember("occlusionTexture", Json::Value(std::to_string(material.OcclusionTexture)));
+		if (material.NormalScale != 1.0f) root.AddMember("normalScale", Json::Value(material.NormalScale));
+		if (material.OcclusionStrength != 1.0f) root.AddMember("occlusionStrength", Json::Value(material.OcclusionStrength));
+		if (material.AlphaCutoff != 0.5f) root.AddMember("alphaCutoff", Json::Value(material.AlphaCutoff));
+		if (material.DoubleSided) root.AddMember("doubleSided", Json::Value(true));
+		if (material.LinearColorFactors) root.AddMember("linearColorFactors", Json::Value(true));
 		root.AddMember("metallic", Json::Value(material.Metallic));
 		root.AddMember("roughness", Json::Value(material.Roughness));
 		root.AddMember("emissiveColor", ColorToJson(material.EmissiveColor));
@@ -227,6 +236,15 @@ namespace Funke {
 		m.Surface = surfaceValue >= 0 && surfaceValue < k_MaterialSurfaceCount ? static_cast<MaterialSurface>(surfaceValue) : d.Surface;
 		m.BaseColor = ColorFromJson(value.FindMember("baseColor"), d.BaseColor);
 		m.BaseColorTexture = ReadGuid(value.FindMember("baseColorTexture"));
+		m.NormalTexture = ReadGuid(value.FindMember("normalTexture"));
+		m.MetallicRoughnessTexture = ReadGuid(value.FindMember("metallicRoughnessTexture"));
+		m.EmissiveTexture = ReadGuid(value.FindMember("emissiveTexture"));
+		m.OcclusionTexture = ReadGuid(value.FindMember("occlusionTexture"));
+		m.NormalScale = std::max(ReadFloat(value, "normalScale", d.NormalScale), 0.0f);
+		m.OcclusionStrength = std::clamp(ReadFloat(value, "occlusionStrength", d.OcclusionStrength), 0.0f, 1.0f);
+		m.AlphaCutoff = std::clamp(ReadFloat(value, "alphaCutoff", d.AlphaCutoff), 0.0f, 1.0f);
+		if (const auto* v = value.FindMember("doubleSided")) m.DoubleSided = v->AsBoolOr(false);
+		if (const auto* v = value.FindMember("linearColorFactors")) m.LinearColorFactors = v->AsBoolOr(false);
 		m.Metallic = std::clamp(ReadFloat(value, "metallic", d.Metallic), 0.0f, 1.0f);
 		m.Roughness = std::clamp(ReadFloat(value, "roughness", d.Roughness), 0.0f, 1.0f);
 		m.EmissiveColor = ColorFromJson(value.FindMember("emissiveColor"), d.EmissiveColor);
@@ -341,8 +359,16 @@ namespace Funke {
 		for (auto [entity, sprite] : registry.view<const SpriteRendererComponent>().each()) materials.insert(sprite.Material);
 #endif
 #if FUNKE_WITH_3D
-		for (auto [entity, mesh] : registry.view<const MeshRendererComponent>().each()) materials.insert(mesh.Material);
-		for (auto [entity, mesh] : registry.view<const SkinnedMeshRendererComponent>().each()) materials.insert(mesh.Material);
+		for (auto [entity, mesh] : registry.view<const MeshRendererComponent>().each()) {
+            materials.insert(mesh.Material);
+            if (mesh.Material == 0 && mesh.MaterialOverrides.Model == mesh.CustomMesh)
+                for (const auto& [key, guid] : mesh.MaterialOverrides.Slots) materials.insert(guid);
+        }
+		for (auto [entity, mesh] : registry.view<const SkinnedMeshRendererComponent>().each()) {
+            materials.insert(mesh.Material);
+            if (mesh.Material == 0 && mesh.MaterialOverrides.Model == mesh.Model)
+                for (const auto& [key, guid] : mesh.MaterialOverrides.Slots) materials.insert(guid);
+        }
 		for (auto [entity, camera] : registry.view<const Camera3DComponent>().each()) materials.insert(camera.SkyboxMaterial);
 #endif
 		for (auto [entity, effects] : registry.view<const PostProcessing2DComponent>().each()) {
@@ -352,6 +378,10 @@ namespace Funke {
 			const Material* material = Get(guid);
 			if (!material) continue;
 			if (material->BaseColorTexture != 0) emit(material->BaseColorTexture);
+			if (material->NormalTexture != 0) emit(material->NormalTexture);
+			if (material->MetallicRoughnessTexture != 0) emit(material->MetallicRoughnessTexture);
+			if (material->EmissiveTexture != 0) emit(material->EmissiveTexture);
+			if (material->OcclusionTexture != 0) emit(material->OcclusionTexture);
 			for (const auto& [name, property] : material->Properties) {
 				if (property.Type == ShaderPropertyType::Texture && property.Texture != 0) emit(property.Texture);
 			}

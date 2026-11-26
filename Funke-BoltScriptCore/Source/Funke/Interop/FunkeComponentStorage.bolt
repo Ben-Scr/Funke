@@ -1,0 +1,18 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public static class FunkeComponentStorage {
+public:
+    bool Has(ulong entity, ulong guid) { return FkCustomHas(entity, guid) != 0ul; }
+    bool Add(ulong entity, ulong guid) { return FkCustomAdd(entity, guid) != 0ul; }
+    bool Remove(ulong entity, ulong guid) { return FkCustomRemove(entity, guid) != 0ul; }
+    string? Read(ulong entity, string key) {
+        ulong size = FkCustomRead(entity, FunkeText.Put(key));
+        if (size == 0ul) return null;
+        return FunkeText.Read(size - 1ul);
+    }
+    void Write(ulong entity, string key, string value) { FkCustomWrite(entity, FunkeText.Put(key + "=" + value)); }
+}

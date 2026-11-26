@@ -1,0 +1,36 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public class ParticleSystem3D : Component {
+public:
+    protected override ulong FkType() { return 26ul; }
+    void Emit(int count) { FkParticleSystem3D_Emit(ID, (ulong)Reinterpret<uint>(count)); }
+    void Play() { FkParticleSystem3D_Control(ID, 0ul); }
+    void Pause() { FkParticleSystem3D_Control(ID, 1ul); }
+    void Stop() { FkParticleSystem3D_Control(ID, 2ul); }
+    void Restart() { FkParticleSystem3D_Control(ID, 3ul); }
+    void Clear() { FkParticleSystem3D_Control(ID, 4ul); }
+    Funke.Texture? Texture { get { return Funke.Texture.FromAssetUUID(FkParticleSystem3D_GetTexture(ID, 0ul)); } set { ulong guid = 0ul; if (value != null) guid = value.Value.UUID; FkParticleSystem3D_SetTexture(ID, guid); } }
+    bool IsEmitting => (FkParticleSystem3D_GetState(ID, 0ul) & 1ul) != 0ul;
+    bool IsPlaying => IsEmitting;
+    int ParticleCount => (int)(FkParticleSystem3D_GetState(ID, 0ul) >> 32);
+    float LifeTime { get { return Reinterpret<float>((uint)FkGetParticleSystem3D_LifeTime(ID, 0ul)); } set { FkSetParticleSystem3D_LifeTime(ID, (ulong)Reinterpret<uint>(value)); } }
+    float Speed { get { return Reinterpret<float>((uint)FkGetParticleSystem3D_Speed(ID, 0ul)); } set { FkSetParticleSystem3D_Speed(ID, (ulong)Reinterpret<uint>(value)); } }
+    float Size { get { return Reinterpret<float>((uint)FkGetParticleSystem3D_Size(ID, 0ul)); } set { FkSetParticleSystem3D_Size(ID, (ulong)Reinterpret<uint>(value)); } }
+    float EmitOverTime { get { return Reinterpret<float>((uint)FkGetParticleSystem3D_EmitOverTime(ID, 0ul)); } set { FkSetParticleSystem3D_EmitOverTime(ID, (ulong)Reinterpret<uint>(value)); } }
+    Color Color { get { return FunkeApiTypes.DecodeColor(FkGetParticleSystem3D_Color(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkSetParticleSystem3D_Color(ID, value.LowBits()); } }
+    bool UseGravity { get { return Reinterpret<float>((uint)FkGetParticleSystem3D_UseGravity(ID, 0ul)) != 0.0f; } set { FkSetParticleSystem3D_UseGravity(ID, (ulong)Reinterpret<uint>((value ? 1.0f : 0.0f))); } }
+    Vector3 Gravity { get { return FunkeApiTypes.DecodeVector3(FkGetParticleSystem3D_Gravity(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkSetParticleSystem3D_Gravity(ID, value.LowBits()); } }
+    int MaxParticles { get { return (int)(int)Reinterpret<float>((uint)FkGetParticleSystem3D_MaxParticles(ID, 0ul)); } set { FkSetParticleSystem3D_MaxParticles(ID, (ulong)Reinterpret<uint>((float)(int)value)); } }
+    bool PlayOnAwake { get { return Reinterpret<float>((uint)FkGetParticleSystem3D_PlayOnAwake(ID, 0ul)) != 0.0f; } set { FkSetParticleSystem3D_PlayOnAwake(ID, (ulong)Reinterpret<uint>((value ? 1.0f : 0.0f))); } }
+    ParticleBlendMode3D BlendMode { get { return (ParticleBlendMode3D)(int)Reinterpret<float>((uint)FkGetParticleSystem3D_BlendMode(ID, 0ul)); } set { FkSetParticleSystem3D_BlendMode(ID, (ulong)Reinterpret<uint>((float)(int)value)); } }
+    ParticleSpace3D SimulationSpace { get { return (ParticleSpace3D)(int)Reinterpret<float>((uint)FkGetParticleSystem3D_SimulationSpace(ID, 0ul)); } set { FkSetParticleSystem3D_SimulationSpace(ID, (ulong)Reinterpret<uint>((float)(int)value)); } }
+    ParticleShape3D Shape { get { return (ParticleShape3D)(int)Reinterpret<float>((uint)FkGetParticleSystem3D_Shape(ID, 0ul)); } set { FkSetParticleSystem3D_Shape(ID, (ulong)Reinterpret<uint>((float)(int)value)); } }
+    float Radius { get { return Reinterpret<float>((uint)FkGetParticleSystem3D_Radius(ID, 0ul)); } set { FkSetParticleSystem3D_Radius(ID, (ulong)Reinterpret<uint>(value)); } }
+    float ConeAngle { get { return Reinterpret<float>((uint)FkGetParticleSystem3D_ConeAngle(ID, 0ul)); } set { FkSetParticleSystem3D_ConeAngle(ID, (ulong)Reinterpret<uint>(value)); } }
+    float Drag { get { return Reinterpret<float>((uint)FkGetParticleSystem3D_Drag(ID, 0ul)); } set { FkSetParticleSystem3D_Drag(ID, (ulong)Reinterpret<uint>(value)); } }
+    float AngularVelocity { get { return Reinterpret<float>((uint)FkGetParticleSystem3D_AngularVelocity(ID, 0ul)); } set { FkSetParticleSystem3D_AngularVelocity(ID, (ulong)Reinterpret<uint>(value)); } }
+}

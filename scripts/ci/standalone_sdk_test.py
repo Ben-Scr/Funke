@@ -174,9 +174,11 @@ def kill_tree(process: subprocess.Popen) -> None:
     if process.poll() is not None:
         return
     if os.name == "nt":
-        subprocess.run([str(Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32/taskkill.exe"),
+        termination = subprocess.run([str(Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32/taskkill.exe"),
                         "/PID", str(process.pid), "/T", "/F"], stdout=subprocess.DEVNULL,
                        stderr=subprocess.DEVNULL, timeout=15, check=False)
+        if termination.returncode and process.poll() is None:
+            process.kill()
     else:
         process.kill()
     process.wait(timeout=15)
@@ -247,7 +249,10 @@ class Harness:
                 self.save()
         if log.stat().st_size + error_log.stat().st_size > 8 * 1024 * 1024:
             raise RuntimeError(f"{label} exceeded the parsed log budget; complete output remains at {log} and {error_log}")
-        output = log.read_text(encoding="utf-8-sig", errors="replace")
+        try:
+            output = log.read_text(encoding="utf-8-sig", errors="strict" if "--json" in command else "replace")
+        except UnicodeDecodeError as error:
+            raise RuntimeError(f"{label} emitted invalid UTF-8 on JSON stdout; see {log}") from error
         diagnostic = error_log.read_text(encoding="utf-8-sig", errors="replace")
         if phase["exitCode"] not in allowed:
             raise RuntimeError(f"{label} failed ({phase['exitCode']}); see {log}")
@@ -351,19 +356,23 @@ def require_clean_log(path: Path, label: str):
             tail = data[-overlap:]
 
 
+class EditorExited(RuntimeError):
+    """The owned editor exited before readiness could be confirmed."""
+
+
 def wait_for_editor_ready(editor, query_status, timeout: float):
     deadline = time.monotonic() + timeout
     last_status = None
     while True:
         if editor.poll() is not None:
-            raise RuntimeError(f"Editor pid {editor.pid} exited before becoming ready")
+            raise EditorExited(f"Editor pid {editor.pid} exited before becoming ready")
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise RuntimeError(f"Editor pid {editor.pid} readiness timeout; last status: {last_status}")
         exit_code, status = query_status(min(5.0, remaining))
         last_status = status
         if editor.poll() is not None:
-            raise RuntimeError(f"Editor pid {editor.pid} exited while checking readiness")
+            raise EditorExited(f"Editor pid {editor.pid} exited while checking readiness")
         if time.monotonic() >= deadline:
             raise RuntimeError(f"Editor pid {editor.pid} readiness timeout; last status: {last_status}")
         if not isinstance(status, dict):

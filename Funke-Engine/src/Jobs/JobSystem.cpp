@@ -38,6 +38,7 @@ namespace Funke {
 		// NOT touch s_Workers — a concurrent Reconfigure/Shutdown mutates the vector.
 		// Mirror the size into an atomic instead.
 		std::atomic<int>                 s_WorkerCount{ 0 };
+		std::atomic<uint32_t>            s_ParallelWorkloads{ k_AllParallelWorkloads };
 
 		// Serializes the multi-step structural transitions (Initialize/Shutdown/
 		// Reconfigure) against each other. Reconfigure re-enters Shutdown+Initialize,
@@ -201,6 +202,18 @@ namespace Funke {
 		spec.WorkerCount = workerCount;
 		Initialize(spec);
 		return GetWorkerCount();
+	}
+
+	void JobSystem::SetParallelWorkloads(uint32_t workloads) {
+		s_ParallelWorkloads.store(workloads & k_AllParallelWorkloads, std::memory_order_relaxed);
+	}
+
+	uint32_t JobSystem::GetParallelWorkloads() {
+		return s_ParallelWorkloads.load(std::memory_order_relaxed);
+	}
+
+	bool JobSystem::CanParallelize(ParallelWorkload workload) {
+		return (GetParallelWorkloads() & static_cast<uint32_t>(workload)) != 0 && GetWorkerCount() > 1;
 	}
 
 	bool JobSystem::IsInitialized() {

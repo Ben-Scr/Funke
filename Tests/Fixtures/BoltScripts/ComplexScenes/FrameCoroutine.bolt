@@ -1,0 +1,20 @@
+import Funke
+import Funke.Coroutines
+import System.Threading.Tasks
+
+public class FrameCoroutine : EntityScript {
+    private int resumes;
+
+    public override void OnStart() { RunCoroutine(CountFrames); }
+
+    private async Task<void> CountFrames() {
+        while (true) {
+            await WaitForNextFrame();
+            resumes++;
+        }
+    }
+
+    public override void OnFixedUpdate() {
+        Transform2D.Position = Vector2((float)resumes, 0.0f);
+    }
+}

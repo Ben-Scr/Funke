@@ -1,0 +1,257 @@
+import System
+import Funke
+namespace Funke.Physics;
+
+public struct RaycastHit2D {
+public:
+    Funke.Entity? Entity;
+    Vector2 Point, Normal;
+    float Distance;
+    bool Hit;
+}
+public struct RaycastHit3D {
+public:
+    Funke.Entity Entity;
+    Vector3 Point, Normal;
+    float Distance;
+}
+
+public static class Physics2D {
+public:
+    static int MaxPolygonVertices = 8;
+    static Vector2 Gravity {
+        get {
+            Vector2 g;
+            FkService.Physics2D_GetGravity(&g.X, &g.Y);
+            return g;
+        }
+        set { FkService.Physics2D_SetGravity(value.X, value.Y); }
+    }
+    static RaycastHit2D Raycast(Vector2 origin, Vector2 direction) { return Raycast(origin, direction, Mathf.Infinity); }
+    static RaycastHit2D Raycast(Vector2 origin, Vector2 direction, float maxDistance) {
+        return Raycast(origin, direction, maxDistance, ulong.MaxValue);
+    }
+    static RaycastHit2D Raycast(Vector2 origin, Vector2 direction, float maxDistance, ulong layerMask) {
+        RaycastHit2D hit;
+        if (!(maxDistance > 0.0f) || !(direction.LengthSquared() > Mathf.Epsilon * Mathf.Epsilon)) return hit;
+        ulong id = 0ul;
+        FkService.Physics2D_SetQueryLayerMask(layerMask);
+        try {
+            hit.Hit = FkService.Physics2D_Raycast(origin.X, origin.Y, direction.X, direction.Y, maxDistance,
+                &id, &hit.Point.X, &hit.Point.Y, &hit.Normal.X, &hit.Normal.Y, &hit.Distance) != 0;
+        } finally { FkService.Physics2D_SetQueryLayerMask(ulong.MaxValue); }
+        if (hit.Hit) hit.Entity = Funke.Entity.FromId(id);
+        return hit;
+    }
+    static RaycastHit2D Raycast(Vector2 origin, Vector2 direction, PhysicsLayer layerMask) { return Raycast(origin, direction, layerMask, Mathf.Infinity); }
+    static RaycastHit2D Raycast(Vector2 origin, Vector2 direction, PhysicsLayer layerMask, float maxDistance) {
+        return Raycast(origin, direction, maxDistance, layerMask.Mask);
+    }
+    static bool RaycastCheck(Vector2 origin, Vector2 direction) { return RaycastCheck(origin, direction, Mathf.Infinity); }
+    static bool RaycastCheck(Vector2 origin, Vector2 direction, float maxDistance) {
+        return Raycast(origin, direction, maxDistance).Hit;
+    }
+    static bool RaycastCheck(Vector2 origin, Vector2 direction, PhysicsLayer layerMask) { return RaycastCheck(origin, direction, layerMask, Mathf.Infinity); }
+    static bool RaycastCheck(Vector2 origin, Vector2 direction, PhysicsLayer layerMask, float maxDistance) {
+        return Raycast(origin, direction, maxDistance, layerMask.Mask).Hit;
+    }
+private:
+    static bool ValidPolygon(float[] points) {
+        if (points.Length < 6 || points.Length % 2 != 0 || points.Length / 2 > MaxPolygonVertices) return false;
+        for (int i = 0; i < points.Length; i++) if (!(Mathf.Abs(points[i]) < Mathf.Infinity)) return false;
+        return true;
+    }
+public:
+    static Funke.Entity? OverlapCircle(Vector2 origin, float radius) { return OverlapCircle(origin, radius, ulong.MaxValue); }
+    static Funke.Entity? OverlapCircle(Vector2 origin, float radius, PhysicsLayer layerMask) { return OverlapCircle(origin, radius, layerMask.Mask); }
+    static Funke.Entity? OverlapCircle(Vector2 origin, float radius, ulong layerMask) {
+        if (!(radius > 0.0f)) return null;
+        FkService.Physics2D_SetQueryLayerMask(layerMask);
+        try {
+            ulong id = 0ul;
+            if (FkService.Physics2D_OverlapCircle(origin.X, origin.Y, radius, 0, &id) == 0) return null;
+            return Funke.Entity.FromId(id);
+        } finally { FkService.Physics2D_SetQueryLayerMask(ulong.MaxValue); }
+    }
+    static Funke.Entity[] OverlapCircleAll(Vector2 origin, float radius) { return OverlapCircleAll(origin, radius, ulong.MaxValue); }
+    static Funke.Entity[] OverlapCircleAll(Vector2 origin, float radius, PhysicsLayer layerMask) { return OverlapCircleAll(origin, radius, layerMask.Mask); }
+    static Funke.Entity[] OverlapCircleAll(Vector2 origin, float radius, ulong layerMask) {
+        if (!(radius > 0.0f)) return new Funke.Entity[0];
+        FkService.Physics2D_SetQueryLayerMask(layerMask);
+        try {
+            int capacity = 16;
+            while (true) {
+                ulong[] ids = new ulong[capacity];
+                int count = FkService.Physics2D_OverlapCircleAll(origin.X, origin.Y, radius, &ids[0], capacity);
+                if (count <= capacity) {
+                    if (count < 0) count = 0;
+                    Funke.Entity[] entities = new Funke.Entity[count];
+                    for (int i = 0; i < count; i++) entities[i] = FunkeApiTypes.MakeEntity(ids[i]);
+                    return entities;
+                }
+                capacity = count;
+            }
+        } finally { FkService.Physics2D_SetQueryLayerMask(ulong.MaxValue); }
+        return new Funke.Entity[0];
+    }
+    static bool OverlapCircleCheck(Vector2 origin, float radius) { return OverlapCircle(origin, radius) != null; }
+    static bool OverlapCircleCheck(Vector2 origin, float radius, PhysicsLayer layerMask) { return OverlapCircle(origin, radius, layerMask) != null; }
+    static Funke.Entity? OverlapBox(Vector2 origin, Vector2 size, float rotation = 0.0f) { return OverlapBox(origin, size, rotation, ulong.MaxValue); }
+    static Funke.Entity? OverlapBox(Vector2 origin, Vector2 size, PhysicsLayer layerMask, float rotation = 0.0f) { return OverlapBox(origin, size, rotation, layerMask.Mask); }
+    static Funke.Entity? OverlapBox(Vector2 origin, Vector2 size, float rotation, ulong layerMask) {
+        if (size.X <= 0.0f || size.Y <= 0.0f || rotation != rotation) return null;
+        FkService.Physics2D_SetQueryLayerMask(layerMask);
+        try {
+            ulong id = 0ul;
+            if (FkService.Physics2D_OverlapBox(origin.X, origin.Y, size.X * 0.5f, size.Y * 0.5f, rotation, 0, &id) == 0) return null;
+            return Funke.Entity.FromId(id);
+        } finally { FkService.Physics2D_SetQueryLayerMask(ulong.MaxValue); }
+    }
+    static Funke.Entity[] OverlapBoxAll(Vector2 origin, Vector2 size, float rotation = 0.0f) { return OverlapBoxAll(origin, size, rotation, ulong.MaxValue); }
+    static Funke.Entity[] OverlapBoxAll(Vector2 origin, Vector2 size, PhysicsLayer layerMask, float rotation = 0.0f) { return OverlapBoxAll(origin, size, rotation, layerMask.Mask); }
+    static Funke.Entity[] OverlapBoxAll(Vector2 origin, Vector2 size, float rotation, ulong layerMask) {
+        if (size.X <= 0.0f || size.Y <= 0.0f || rotation != rotation) return new Funke.Entity[0];
+        FkService.Physics2D_SetQueryLayerMask(layerMask);
+        try {
+            int capacity = 16;
+            while (true) {
+                ulong[] ids = new ulong[capacity];
+                int count = FkService.Physics2D_OverlapBoxAll(origin.X, origin.Y, size.X * 0.5f, size.Y * 0.5f, rotation, &ids[0], capacity);
+                if (count <= capacity) {
+                    if (count < 0) count = 0;
+                    Funke.Entity[] entities = new Funke.Entity[count];
+                    for (int i = 0; i < count; i++) entities[i] = FunkeApiTypes.MakeEntity(ids[i]);
+                    return entities;
+                }
+                capacity = count;
+            }
+        } finally { FkService.Physics2D_SetQueryLayerMask(ulong.MaxValue); }
+        return new Funke.Entity[0];
+    }
+    static bool OverlapBoxCheck(Vector2 origin, Vector2 size, float rotation = 0.0f) { return OverlapBox(origin, size, rotation) != null; }
+    static bool OverlapBoxCheck(Vector2 origin, Vector2 size, PhysicsLayer layerMask, float rotation = 0.0f) { return OverlapBox(origin, size, layerMask, rotation) != null; }
+    static Funke.Entity? ContainsPoint(Vector2 origin) { return ContainsPoint(origin, ulong.MaxValue); }
+    static Funke.Entity? ContainsPoint(Vector2 origin, PhysicsLayer layerMask) { return ContainsPoint(origin, layerMask.Mask); }
+    static Funke.Entity? ContainsPoint(Vector2 origin, ulong layerMask) {
+        FkService.Physics2D_SetQueryLayerMask(layerMask);
+        try {
+            ulong id = 0ul;
+            if (FkService.Physics2D_ContainsPoint(origin.X, origin.Y, 0, &id) == 0) return null;
+            return Funke.Entity.FromId(id);
+        } finally { FkService.Physics2D_SetQueryLayerMask(ulong.MaxValue); }
+    }
+    static Funke.Entity[] ContainsPointAll(Vector2 origin) { return ContainsPointAll(origin, ulong.MaxValue); }
+    static Funke.Entity[] ContainsPointAll(Vector2 origin, PhysicsLayer layerMask) { return ContainsPointAll(origin, layerMask.Mask); }
+    static Funke.Entity[] ContainsPointAll(Vector2 origin, ulong layerMask) {
+        FkService.Physics2D_SetQueryLayerMask(layerMask);
+        try {
+            int capacity = 16;
+            while (true) {
+                ulong[] ids = new ulong[capacity];
+                int count = FkService.Physics2D_ContainsPointAll(origin.X, origin.Y, &ids[0], capacity);
+                if (count <= capacity) {
+                    if (count < 0) count = 0;
+                    Funke.Entity[] entities = new Funke.Entity[count];
+                    for (int i = 0; i < count; i++) entities[i] = FunkeApiTypes.MakeEntity(ids[i]);
+                    return entities;
+                }
+                capacity = count;
+            }
+        } finally { FkService.Physics2D_SetQueryLayerMask(ulong.MaxValue); }
+        return new Funke.Entity[0];
+    }
+    static bool ContainsPointCheck(Vector2 origin) { return ContainsPoint(origin) != null; }
+    static bool ContainsPointCheck(Vector2 origin, PhysicsLayer layerMask) { return ContainsPoint(origin, layerMask) != null; }
+    static bool ContainsPointCheck(Vector2 origin, ulong layerMask) { return ContainsPoint(origin, layerMask) != null; }
+    static Funke.Entity? OverlapPolygon(Vector2 origin, float[] points) { return OverlapPolygon(origin, points, ulong.MaxValue); }
+    static Funke.Entity? OverlapPolygon(Vector2 origin, PhysicsLayer layerMask, float[] points) { return OverlapPolygon(origin, points, layerMask.Mask); }
+    private static Funke.Entity? OverlapPolygon(Vector2 origin, float[] points, ulong layerMask) {
+        if (!ValidPolygon(points)) return null;
+        FkService.Physics2D_SetQueryLayerMask(layerMask);
+        try {
+            ulong id = 0ul;
+            if (FkService.Physics2D_OverlapPolygon(origin.X, origin.Y, &points[0], points.Length / 2, 0, &id) == 0) return null;
+            return Funke.Entity.FromId(id);
+        } finally { FkService.Physics2D_SetQueryLayerMask(ulong.MaxValue); }
+    }
+    static Funke.Entity[] OverlapPolygonAll(Vector2 origin, float[] points) { return OverlapPolygonAll(origin, points, ulong.MaxValue); }
+    static Funke.Entity[] OverlapPolygonAll(Vector2 origin, PhysicsLayer layerMask, float[] points) { return OverlapPolygonAll(origin, points, layerMask.Mask); }
+    private static Funke.Entity[] OverlapPolygonAll(Vector2 origin, float[] points, ulong layerMask) {
+        if (!ValidPolygon(points)) return new Funke.Entity[0];
+        FkService.Physics2D_SetQueryLayerMask(layerMask);
+        try {
+            int capacity = 16;
+            while (true) {
+                ulong[] ids = new ulong[capacity];
+                int count = FkService.Physics2D_OverlapPolygonAll(origin.X, origin.Y, &points[0], points.Length / 2, &ids[0], capacity);
+                if (count <= capacity) {
+                    if (count < 0) count = 0;
+                    Funke.Entity[] entities = new Funke.Entity[count];
+                    for (int i = 0; i < count; i++) entities[i] = FunkeApiTypes.MakeEntity(ids[i]);
+                    return entities;
+                }
+                capacity = count;
+            }
+        } finally { FkService.Physics2D_SetQueryLayerMask(ulong.MaxValue); }
+        return new Funke.Entity[0];
+    }
+    static bool OverlapPolygonCheck(Vector2 origin, float[] points) { return OverlapPolygon(origin, points) != null; }
+    static bool OverlapPolygonCheck(Vector2 origin, PhysicsLayer layerMask, float[] points) { return OverlapPolygon(origin, layerMask, points) != null; }
+}
+
+public static class Physics3D {
+private:
+    static bool Finite(float value) { return Mathf.Abs(value) < Mathf.Infinity; }
+    static bool Finite(Vector3 v) { return Finite(v.X) && Finite(v.Y) && Finite(v.Z); }
+    static bool Cast(Vector3 origin, Vector3 direction, RaycastHit3D& hit, ulong mask, float distance, bool filtered, bool triggers) {
+        hit = default;
+        if (!(distance > 0.0f) || !(direction.LengthSquared() > Mathf.Epsilon * Mathf.Epsilon)) return false;
+        if (filtered && (mask == 0ul || !Finite(distance) || !Finite(origin) || !Finite(direction.LengthSquared()))) return false;
+        float[] values = new float[7];
+        ulong id = 0ul;
+        int ok;
+        if (filtered)
+            ok = FkService.Physics3D_RaycastMasked(origin.X, origin.Y, origin.Z, direction.X, direction.Y, direction.Z,
+                distance, mask, triggers ? 1 : 0, &id, &values[0], 7);
+        else
+            ok = FkService.Physics3D_Raycast(origin.X, origin.Y, origin.Z, direction.X, direction.Y, direction.Z,
+                distance, &id, &values[0], 7);
+        if (ok == 0) return false;
+        hit.Entity = FunkeApiTypes.MakeEntity(id);
+        hit.Point = Vector3(values[0], values[1], values[2]);
+        hit.Normal = Vector3(values[3], values[4], values[5]);
+        hit.Distance = values[6];
+        return true;
+    }
+public:
+    static Vector3 Gravity {
+        get { Vector3 g; FkService.Physics3D_GetGravity(&g.X, &g.Y, &g.Z); return g; }
+        set { FkService.Physics3D_SetGravity(value.X, value.Y, value.Z); }
+    }
+    static bool Raycast(Vector3 origin, Vector3 direction, RaycastHit3D& hit, float maxDistance = 1000.0f) {
+        return Cast(origin, direction, hit, ulong.MaxValue, maxDistance, false, false);
+    }
+    static bool Raycast(Vector3 origin, Vector3 direction, RaycastHit3D& hit, PhysicsLayer layers, float maxDistance = 1000.0f, bool includeTriggers = false) {
+        return Cast(origin, direction, hit, layers.Mask, maxDistance, true, includeTriggers);
+    }
+    static bool Raycast(Ray ray, RaycastHit3D& hit, PhysicsLayer layers, float maxDistance = 1000.0f, bool includeTriggers = false) {
+        return Raycast(ray.Origin, ray.Direction, hit, layers, maxDistance, includeTriggers);
+    }
+    static bool Raycast(Vector3 origin, Vector3 direction, float maxDistance = 1000.0f) {
+        RaycastHit3D hit;
+        return Raycast(origin, direction, hit, maxDistance);
+    }
+    static bool Raycast(Ray ray, RaycastHit3D& hit, float maxDistance = 1000.0f) { return Raycast(ray.Origin, ray.Direction, hit, maxDistance); }
+    static bool Raycast(Ray ray, float maxDistance = 1000.0f) { return Raycast(ray.Origin, ray.Direction, maxDistance); }
+    static bool RaycastFromScreen(Vector2 point, RaycastHit3D& hit, float maxDistance = 1000.0f) {
+        hit = default;
+        Camera3D? camera = Camera3D.Main;
+        return camera != null && Raycast(camera.Value.ScreenPointToRay(point), hit, maxDistance);
+    }
+    static bool CheckSphere(Vector3 center, float radius, PhysicsLayer layers, bool includeTriggers = false) {
+        return !layers.IsEmpty && radius > 0.0f && Finite(radius) && Finite(center) &&
+            FkService.Physics3D_CheckSphere(center.X, center.Y, center.Z, radius, layers.Mask, includeTriggers ? 1 : 0) != 0;
+    }
+    static bool CheckSphere(Vector3 center, float radius) { return CheckSphere(center, radius, PhysicsLayer.All); }
+}
+

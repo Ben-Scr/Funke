@@ -53,6 +53,20 @@ python scripts/ci/run_script_tests.py --output artifacts/ci-python.json
 Workflow integration still needs a real CI run after source changes. Local parser tests and
 synthetic cancellation cases verify the gate logic, not a Linux, macOS or physical-device pass.
 
+### Verified desktop CI run
+
+The [full master run at 67e570bf](https://github.com/Ben-Scr/Funke/actions/runs/43692056280) produced a passing aggregate for all seven required job groups and twelve lanes on attempt 1 (all platforms, core-only disabled). These results apply to that commit.
+
+| Evidence | Result and scope |
+| --- | --- |
+| [Windows native](https://github.com/Ben-Scr/Funke/actions/runs/43692056280/job/132745148416) and [standalone](https://github.com/Ben-Scr/Funke/actions/runs/43692056280/job/132780074442) | Release and Debug suites passed after the fix reserving runtime mesh GUIDs. The copied SDK passed the host-limited Unicode-path test, parsed complete JSON stdout and ran relocated Development and Release players. The separate installed agent workflow also passed under the runner PATH. |
+| [Linux build and GPU](https://github.com/Ben-Scr/Funke/actions/runs/43692056280/job/132745148345) | Dependency installation succeeded with the mirror fallback. Software Vulkan used the Lavapipe ICD. Preflight, five readback stages and the expected-failure negative probe passed their gates. The normal agent workflow passed, including recovery from a compiler error. |
+| [Linux sanitizer](https://github.com/Ben-Scr/Funke/actions/runs/43692056280/job/132744597362) and [coverage](https://github.com/Ben-Scr/Funke/actions/runs/43692056280/job/132744597519) | Both jobs installed dependencies and completed. The native Engine coverage report recorded 31,424 of 64,944 lines and 9,382 of 18,139 functions across 435 files in scope. This supplies a baseline for calibrating a tolerance. |
+| [macOS build and installer](https://github.com/Ben-Scr/Funke/actions/runs/43692056280/job/132745148357) | The DMG smoke test resolved assets under Contents/Resources after relocation to a Unicode path. Launcher, Editor, CLI, Premake, Runtime, project creation and the relocated C# export passed. Native signing regression fixtures and the agent workflow passed in the same job. Production signing has its own release procedure. |
+| Native convenience SDK | The Windows, Linux and macOS jobs above passed the native SDK check shipped in this commit. Subsequent changes to its harness need their own reports. |
+
+The restricted-PATH *agent* run, delayed-start/process-exit probes and intentional editor-failure dispatch in the working tree extend this baseline. The prior run also predates the stricter evidence parser.
+
 ## C# scripting regression checks
 
 Use the managed suite for component helpers and nullable/ref contracts, type identities, compiler diagnostics, collection serialization and reload/reset behavior:
@@ -232,7 +246,7 @@ The native regression test `Fullscreen startup restores resizable windowed bound
 
 ## Developer console
 
-Development and Debug builds have a console. To open it, press **F9** (**Cmd+Shift+9** on macOS), click the **Console** button in the bottom-right corner, or tap the screen with three fingers. The button shows the shortcut for the current platform. Press the shortcut again or **Esc** to close it. These runtime controls are available when **Dev Console** is enabled in the project/build profile (on by default for Debug and Development, off for Release).
+Development and Debug builds have a console. To open it, press **F9** (**Cmd+Shift+9** on macOS), or tap the screen with three fingers. No console or physics controls are displayed while the console is closed. Press the shortcut again or **Esc** to close it. These runtime controls are available when **Dev Console** is enabled in the project/build profile (on by default for Debug and Development, off for Release).
 
 While the console is open, it takes the game's keyboard and mouse input. **Tab** completes command names. **↑** and **↓** go through earlier commands. Separate several commands with `;`.
 
@@ -267,8 +281,9 @@ public static class CheatCommands
     [DevCommand("coins.add", Description = "Gives the player coins")]
     static string AddCoins(int amount = 100)
     {
-        Wallet.Coins += amount;
-        return $"Coins: {Wallet.Coins}";
+        int total = PlayerPrefs.GetInt("CoinsCollected") + amount;
+        PlayerPrefs.SetInt("CoinsCollected", total);
+        return $"Coins: {total}";
     }
 
     [DevCommand("level.goto")]
@@ -304,7 +319,7 @@ In a game, the numbers include every camera and are averaged over the frames sin
 
 The overlay works for both 2D (Box2D) and 3D (Jolt). It is independent of `Gizmo.IsEnabled`.
 
-The **Physics: On/Off** button next to **Console** displays the current state and shortcut, and can also toggle the overlay. The shortcut works while the console is open, and toggling it records `physics.debug on/off` in the console and runtime log. With no physics module enabled, the controls say so; a scene without colliders or contacts has nothing to draw. The runtime physics shortcut and button are enabled by the **Dev Console** project/build-profile option.
+Inside the open console, the **Physics: On/Off** button displays the current state and shortcut, and can also toggle the overlay. The shortcut works whether the console is open or closed, and toggling it records `physics.debug on/off` in the console and runtime log. With no physics module enabled, the open console says so; a scene without colliders or contacts has nothing to draw. The runtime physics shortcut and button are enabled by the **Dev Console** project/build-profile option.
 
 ## Isolated player data
 
@@ -397,3 +412,70 @@ Engine contributors and agents can drive runs from `scripts\dev\Run.ps1`:
 - Its runtime runs use the player-data profile `agent` unless `-RealPrefs` is passed.
 - With `-ScreenshotAt`, `-InputScript` or `-QuitAt` the game takes its own screenshots into a new `bin-int\_agent\run\shots-<time>-<pid>\` folder and quits by itself.
 - Without a quit step, it quits half a second after the last screenshot.
+
+
+Additional contracts: [serialized asset export](Build-Asset-Validation.md),
+[interop declarations](../Scripting/Binding-Contracts.md), and
+[verified backlog checks](Verified-Contracts-2026-11.md).
+
+## Focused loading and resource contracts
+
+The opt-in [loading/resource probe](../../../Tests/Loading-Resource-Probe/README.md) covers cooperative prefab construction, loading diagnostics, string-table file transactions and texture/font resource contracts. Its source/import build and Null-backend results do not replace the complete test suite or real-device visual/performance acceptance.
+
+## Desktop CI acceptance (20 November 2026)
+
+* The installed Windows agent lane resolves Python and .NET before restricting
+  the child PATH to the .NET directory and Windows system directories. The
+  standalone gate decodes JSON stdout as UTF-8 and parses the entire stream.
+  The local binary bundle from commit `ed9552a2` started the launcher and
+  reached project creation, where Premake rejected the `funke-project` option.
+  With the same installed generator and scripts under an ASCII path, Premake
+  recognized the option but failed to write the solution under the Unicode
+  project path. Under the Unicode installation path even a relative script
+  argument failed to open. This evidence is specific to that binary bundle.
+  A separate installed-agent run compiled the fixture packages and emitted a
+  parseable failure document (`editor_unreachable`, Windows error 5).
+* Linux CI passes `--probe-linux-startup` to the agent workflow. A two-second
+  delay precedes the actual editor exec and counts towards the normal shared
+  deadline. After saving the scene, the probe terminates the editor during a
+  status query and requires the readiness check to detect the exit. A later
+  suite introduces a script compile error and checks the reported failure code.
+* For the sanitizer independence check, dispatch the CI workflow for Linux with
+  `fail_linux_editor_probe=true` and the full Linux build enabled. The Linux
+  editor step intentionally fails. Inspect the sanitizer matrix job and its
+  doctest XML separately. The aggregate should remain red for this diagnostic
+  run. Use a second ordinary run for the all-platform acceptance report.
+* The aggregate preserves skipped, cancelled and missing step outcomes when XML
+  is unavailable. A successful sanitizer step still requires valid XML with
+  executed assertions. The workflow summary lists individual incomplete checks.
+  These aggregation rules were tested locally. WSL returned `E_ACCESSDENIED`
+  and no matching CI artifacts were available for these local workflow edits.
+
+## Recorded results
+
+For the tested platforms, fixtures and hardware, see [Verification and benchmarks](Verification.md).
+
+### Windows installed package under reduced PATH
+
+On 26 November 2026, the local Windows checks used the `2026.1.0-beta.1+67e570bf2940` package from GitHub Actions run `43692056280` and .NET SDK 10.0.403. The current standalone harness passed its full-stream UTF-8 JSON checks, Unicode install and project paths, installed authoring, and relocated Development and Release players. With only the .NET and Windows system directories on PATH, the separate bridge and agent workflow both passed against the same installation, including the expected negative checks and recovery after a script compilation error.
+
+### Linux editor startup and recovery acceptance
+
+On 26 November 2026 the current `--probe-linux-startup` workflow passed locally on Ubuntu under WSL2 using Xvfb, Mesa lavapipe and the packaged Linux editor and CLI from `67e570bf2940`. The real editor started after the injected two-second delay. The readiness check detected termination during its status query within the shared timeout. The suite reported `recompile_failed` for the deliberately broken revision and passed after the corrected revision compiled.
+
+### Local sanitizer independence checks
+
+On 26 November 2026 the workflow’s intentional Linux editor failure guard was run locally with the input set to true and returned exit code 1. The instrumentation job has no job dependencies, disables matrix fail-fast and feeds the aggregate alongside the Linux build. All 24 CI evidence tests passed. The current evidence reader accepted the XML from normal hosted run `43692056280`, with 957 executed tests and 3,051,239 successful assertions. A hosted run that contains both the injected editor failure and the successful sanitizer result in the same attempt is still outstanding.
+
+## Reference project acceptance on Windows
+
+Use the Windows x64 beta.1 SDK and .NET 10 SDK. Extract each project into a new writable directory and open its project.json from the Launcher. Neither project declares an additional registry package. Record the installer build ID and archive SHA-256 before opening the project.
+
+| Project archive | SHA-256 | Steps and expected result |
+| --- | --- | --- |
+| FunkeBench 1.0.0, public Asset Library archive | `4317cb3c21add954a91df66d1d58c50525cb6020dcb4d993f3da61962d9e8b17` | Open Bench, press Play and select Create entities. Select 10k and Once. The live count should reach 10,000 and one measurement should appear. |
+| Factorio / Rust & Steel, local reference archive `factorio-mainmenu-local.zip` from 26 November 2026 | `b34b31b1019eeaa98c1d881b8b3a710878ceb5ad5b053fba2e6d36c957a68521` | Open MainMenu and press Play. Choose New factory. Look for the Freeplay HUD, inventory and six construction slots. This archive contains the MainMenu and Factory scenes. The example at engine commit 67e570bf contains only SampleScene. |
+
+Stop Play. Run `funke build --project <extracted-directory> --profile Windows --development --output <empty-directory>`, launch the exported executable and repeat the interaction. A local check opened both projects in the rebuilt Windows editor, exported both using the beta SDK and observed the benchmark result and the factory HUD in the standalone games. The game's export used the full-runtime fallback. These observations are from the maintainer workspace. Independent and production results have yet to be collected.
+
+For an independent run, record the project hash, engine build ID, OS, graphics backend, steps completed, first failure, time spent and expected/actual result. Attach the relevant editor or runtime log and a screenshot. The existing [bug report fields](../../../.github/ISSUE_TEMPLATE/bug_report.yml) can also be filled in locally. [FunkeBench 1.0.0 archive](https://github.com/Ben-Scr/Funke-AssetLibrary/releases/download/funkebench-1.0.0/funkebench-1.0.0.zip).

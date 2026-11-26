@@ -1,0 +1,64 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public class Animator : Component {
+public:
+    protected override ulong FkType() { return 1ul; }
+    float Speed { get { return Reinterpret<float>((uint)FkAnimator_GetSpeed(ID, 0ul)); } set { FkAnimator_SetSpeed(ID, (ulong)Reinterpret<uint>(value)); } }
+    private void SetParameter(string name, int kind, float value) {
+        FunkeText.Put(name);
+        FkWriteExtra((ulong)kind, 0ul);
+        FkAnimator_SetParameter(ID, (ulong)Reinterpret<uint>(value));
+    }
+    private float GetParameter(string name, int kind) {
+        FunkeText.Put(name);
+        return Reinterpret<float>((uint)FkAnimator_GetParameter(ID, (ulong)kind));
+    }
+    void SetFloat(string name, float value) { SetParameter(name, 0, value); }
+    float GetFloat(string name) { return GetParameter(name, 0); }
+    void SetInteger(string name, int value) { SetParameter(name, 1, (float)value); }
+    int GetInteger(string name) { return (int)GetParameter(name, 1); }
+    void SetBool(string name, bool value) { SetParameter(name, 2, value ? 1.0f : 0.0f); }
+    bool GetBool(string name) { return GetParameter(name, 2) != 0.0f; }
+    void SetTrigger(string name) { SetParameter(name, 3, 1.0f); }
+    void ResetTrigger(string name) { SetParameter(name, 4, 0.0f); }
+    bool HasParameter(string name) { return FkAnimator_HasParameter(ID, FunkeText.Put(name)) != 0ul; }
+    bool Play(string state, float normalizedTime = 0.0f) {
+        FunkeText.Put(state);
+        return FkAnimator_Play(ID, Vector2(normalizedTime, -1.0f).Bits()) != 0ul;
+    }
+    bool CrossFade(string state, float duration) {
+        FunkeText.Put(state);
+        return FkAnimator_Play(ID, Vector2(0.0f, Mathf.Max(0.0f, duration)).Bits()) != 0ul;
+    }
+    string CurrentStateName => FunkeText.Read(FkAnimator_GetStateBuffer(ID, 0ul));
+    string NextStateName => FunkeText.Read(FkAnimator_GetStateBuffer(ID, 1ul));
+    AnimationCullingMode CullingMode { get { return (AnimationCullingMode)(int)Reinterpret<float>((uint)FkGetAnimator_CullingMode(ID, 0ul)); } set { FkSetAnimator_CullingMode(ID, (ulong)Reinterpret<uint>((float)(int)value)); } }
+    AnimationDistanceRate DistanceRate { get { return (AnimationDistanceRate)(int)Reinterpret<float>((uint)FkGetAnimator_DistanceRate(ID, 0ul)); } set { FkSetAnimator_DistanceRate(ID, (ulong)Reinterpret<uint>((float)(int)value)); } }
+    float HalfRateDistance { get { return Reinterpret<float>((uint)FkGetAnimator_HalfRateDistance(ID, 0ul)); } set { FkSetAnimator_HalfRateDistance(ID, (ulong)Reinterpret<uint>(value)); } }
+    float QuarterRateDistance { get { return Reinterpret<float>((uint)FkGetAnimator_QuarterRateDistance(ID, 0ul)); } set { FkSetAnimator_QuarterRateDistance(ID, (ulong)Reinterpret<uint>(value)); } }
+    float NormalizedTime => Reinterpret<float>((uint)FkGetAnimator_NormalizedTime(ID, 0ul));
+    bool IsInTransition => Reinterpret<float>((uint)FkGetAnimator_IsInTransition(ID, 0ul)) != 0.0f;
+    float TransitionProgress => Reinterpret<float>((uint)FkGetAnimator_TransitionProgress(ID, 0ul));
+    Funke.AnimatorController? Controller {
+        get { return Funke.AnimatorController.FromAssetUUID(FkAnimator_GetAsset(ID, 0ul)); }
+        set {
+            ulong guid = 0ul;
+            if (value != null) guid = value.Value.UUID;
+            FkWriteExtra(0ul, 0ul);
+            FkAnimator_SetAsset(ID, guid);
+        }
+    }
+    Funke.AnimationClip? Clip {
+        get { return Funke.AnimationClip.FromAssetUUID(FkAnimator_GetAsset(ID, 1ul)); }
+        set {
+            ulong guid = 0ul;
+            if (value != null) guid = value.Value.UUID;
+            FkWriteExtra(1ul, 0ul);
+            FkAnimator_SetAsset(ID, guid);
+        }
+    }
+}

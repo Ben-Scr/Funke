@@ -1,0 +1,59 @@
+import System
+import Math
+namespace Funke;
+
+public struct Vector4Int {
+public:
+    int X;
+    int Y;
+    int Z;
+    int W;
+    static Vector4Int Zero => Vector4Int(0, 0, 0, 0);
+    static Vector4Int One => Vector4Int(1, 1, 1, 1);
+    Vector4Int(int scalar = 0) { X = scalar; Y = scalar; Z = scalar; W = scalar; }
+    Vector4Int(int x, int y, int z, int w) { X = x; Y = y; Z = z; W = w; }
+    Vector4Int(Vector3Int v, int w) { X = v.X; Y = v.Y; Z = v.Z; W = w; }
+    Vector4Int(Vector2Int v, int z, int w) { X = v.X; Y = v.Y; Z = z; W = w; }
+    Vector2Int XY => Vector2Int(X, Y);
+    Vector3Int XYZ => Vector3Int(X, Y, Z);
+    float Length() { return Mathf.Sqrt(LengthSquared()); }
+    int LengthSquared() { return X * X + Y * Y + Z * Z + W * W; }
+    void Clamp(Vector4Int min, Vector4Int max) {
+        X = Mathf.FkClampDouble(X, min.X, max.X);
+        Y = Mathf.FkClampDouble(Y, min.Y, max.Y);
+        Z = Mathf.FkClampDouble(Z, min.Z, max.Z);
+        W = Mathf.FkClampDouble(W, min.W, max.W);
+    }
+    static int Dot(Vector4Int a, Vector4Int b) { return a.X * b.X + a.Y * b.Y + a.Z * b.Z + a.W * b.W; }
+    static Vector4Int Min(Vector4Int a, Vector4Int b) { return Vector4Int(
+        Math.Min<double>(a.X, b.X),
+        Math.Min<double>(a.Y, b.Y),
+        Math.Min<double>(a.Z, b.Z),
+        Math.Min<double>(a.W, b.W)); }
+    static Vector4Int Max(Vector4Int a, Vector4Int b) { return Vector4Int(
+        Math.Max<double>(a.X, b.X),
+        Math.Max<double>(a.Y, b.Y),
+        Math.Max<double>(a.Z, b.Z),
+        Math.Max<double>(a.W, b.W)); }
+    static Vector4Int operator +(Vector4Int a, Vector4Int b) { return Vector4Int(a.X + b.X, a.Y + b.Y, a.Z + b.Z, a.W + b.W); }
+    static Vector4Int operator -(Vector4Int a, Vector4Int b) { return Vector4Int(a.X - b.X, a.Y - b.Y, a.Z - b.Z, a.W - b.W); }
+    static Vector4Int operator *(Vector4Int a, Vector4Int b) { return Vector4Int(a.X * b.X, a.Y * b.Y, a.Z * b.Z, a.W * b.W); }
+    static Vector4Int operator /(Vector4Int a, Vector4Int b) { return Vector4Int(a.X / b.X, a.Y / b.Y, a.Z / b.Z, a.W / b.W); }
+    static Vector4Int operator *(Vector4Int v, int s) { return Vector4Int(v.X * s, v.Y * s, v.Z * s, v.W * s); }
+    static Vector4Int operator *(int s, Vector4Int v) { return Vector4Int(s * v.X, s * v.Y, s * v.Z, s * v.W); }
+    static Vector4Int operator /(Vector4Int v, int s) { return Vector4Int(v.X / s, v.Y / s, v.Z / s, v.W / s); }
+    static Vector4Int operator -(Vector4Int v) { return Vector4Int(-v.X, -v.Y, -v.Z, -v.W); }
+    static bool operator ==(Vector4Int a, Vector4Int b) { return a.Equals(b); }
+    static bool operator !=(Vector4Int a, Vector4Int b) { return !a.Equals(b); }
+    bool Equals(Vector4Int other) { return X == other.X && Y == other.Y && Z == other.Z && W == other.W; }
+    implicit Vector4() { return Vector4(X, Y, Z, W); }
+    int GetHashCode() {
+        int hash = -2128831035;
+        hash = FkNumberFormat.Hash(hash, Reinterpret<uint>(X));
+        hash = FkNumberFormat.Hash(hash, Reinterpret<uint>(Y));
+        hash = FkNumberFormat.Hash(hash, Reinterpret<uint>(Z));
+        hash = FkNumberFormat.Hash(hash, Reinterpret<uint>(W));
+        return hash;
+    }
+    string ToString() { return "Vector4Int(" + (string)X + ", " + (string)Y + ", " + (string)Z + ", " + (string)W + ")"; }
+}

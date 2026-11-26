@@ -52,7 +52,9 @@ Logging and formatting use spdlog and fmt, enum reflection uses magic_enum, and 
 
 ## A note on supported frameworks
 
-For C# scripting, Funke targets **.NET 10.0 LTS**. Scripts and C# packages build against that runtime.
+C# scripts and managed packages target **.NET 10**. Desktop players use CoreCLR. The [mobile and Web platform packages](../Editor/Platform-Packages.md) provide their own Mono runtime and build prerequisites.
+
+Desktop projects with Bolt assets use a compatible Bolt compiler host. A desktop export containing these assets includes the compiler library and SDK notices. See [Bolt setup and export](../Scripting/Bolt.md#desktop-exports).
 
 macOS distributions include `libnethost.dylib` beside the engine library, including SDK export runtimes. Keeping the native host in a separate dynamic library prevents its private C++ type information from interfering with engine exception handling. Re-run Setup after updating an older source checkout that only contains `libnethost.a`.
 

@@ -1,0 +1,45 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public class Rigidbody3D : Component {
+public:
+    protected override ulong FkType() { return 34ul; }
+    Vector3 LinearVelocity {
+        get { return Vector3.FromParts(FkRigidbody3D_GetVelocity(ID, 0ul), FkReadExtra(0ul, 0ul)); }
+        set {
+            FkWriteExtra(value.HighBits(), 0ul);
+            FkWriteExtra(0ul, 1ul);
+            FkRigidbody3D_SetVelocity(ID, value.LowBits());
+        }
+    }
+    Vector3 AngularVelocity {
+        get { return Vector3.FromParts(FkRigidbody3D_GetVelocity(ID, 1ul), FkReadExtra(0ul, 0ul)); }
+        set {
+            FkWriteExtra(value.HighBits(), 0ul);
+            FkWriteExtra(1ul, 1ul);
+            FkRigidbody3D_SetVelocity(ID, value.LowBits());
+        }
+    }
+    bool IsSleeping => FkRigidbody3D_IsSleeping(ID, 0ul) != 0ul;
+    void WakeUp() { FkRigidbody3D_SetSleeping(ID, 0ul); }
+    void Sleep() { FkRigidbody3D_SetSleeping(ID, 1ul); }
+    private void Apply(int kind, ForceMode3D mode, Vector3 value, Vector3 point) {
+        FkWriteExtra(value.LowBits(), 0ul);
+        FkWriteExtra(Vector2(value.Z, point.X).Bits(), 1ul);
+        FkWriteExtra(Vector2(point.Y, point.Z).Bits(), 2ul);
+        FkRigidbody3D_AddForce(ID, (ulong)kind | ((ulong)mode << 32));
+    }
+    void AddForce(Vector3 force, ForceMode3D mode = ForceMode3D.Force) { Apply(0, mode, force, Vector3.Zero); }
+    void AddForceAtPosition(Vector3 force, Vector3 position, ForceMode3D mode = ForceMode3D.Force) { Apply(1, mode, force, position); }
+    void AddTorque(Vector3 torque, ForceMode3D mode = ForceMode3D.Force) { Apply(2, mode, torque, Vector3.Zero); }
+    BodyType BodyType { get { return (BodyType)(int)Reinterpret<float>((uint)FkGetRigidbody3D_BodyType(ID, 0ul)); } set { FkSetRigidbody3D_BodyType(ID, (ulong)Reinterpret<uint>((float)(int)value)); } }
+    float Mass { get { return Reinterpret<float>((uint)FkGetRigidbody3D_Mass(ID, 0ul)); } set { FkSetRigidbody3D_Mass(ID, (ulong)Reinterpret<uint>(value)); } }
+    float LinearDrag { get { return Reinterpret<float>((uint)FkGetRigidbody3D_LinearDrag(ID, 0ul)); } set { FkSetRigidbody3D_LinearDrag(ID, (ulong)Reinterpret<uint>(value)); } }
+    float AngularDrag { get { return Reinterpret<float>((uint)FkGetRigidbody3D_AngularDrag(ID, 0ul)); } set { FkSetRigidbody3D_AngularDrag(ID, (ulong)Reinterpret<uint>(value)); } }
+    float GravityScale { get { return Reinterpret<float>((uint)FkGetRigidbody3D_GravityScale(ID, 0ul)); } set { FkSetRigidbody3D_GravityScale(ID, (ulong)Reinterpret<uint>(value)); } }
+    bool ContinuousCollision { get { return Reinterpret<float>((uint)FkGetRigidbody3D_ContinuousCollision(ID, 0ul)) != 0.0f; } set { FkSetRigidbody3D_ContinuousCollision(ID, (ulong)Reinterpret<uint>((value ? 1.0f : 0.0f))); } }
+    RigidbodyConstraints3D Constraints { get { return (RigidbodyConstraints3D)(int)Reinterpret<float>((uint)FkGetRigidbody3D_Constraints(ID, 0ul)); } set { FkSetRigidbody3D_Constraints(ID, (ulong)Reinterpret<uint>((float)(int)value)); } }
+}

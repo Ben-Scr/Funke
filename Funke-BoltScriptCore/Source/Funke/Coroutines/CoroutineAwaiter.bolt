@@ -1,0 +1,42 @@
+import System
+import System.Threading
+import System.Threading.Tasks
+import System.Memory
+namespace Funke.Coroutines;
+
+public class FkCoroutineCompletion {
+public:
+    Task<void> Wait;
+    bool Registered;
+}
+
+public struct CoroutineAwaiter {
+private:
+    int frames;
+    float seconds;
+    bool fixedStep;
+    Func<bool>? predicate;
+    CancellationToken token;
+    Shared<FkCoroutineCompletion> completion;
+public:
+    CoroutineAwaiter(int frames, float seconds, bool fixedStep, Func<bool>? predicate, CancellationToken token)
+        : frames(frames), seconds(seconds), fixedStep(fixedStep), predicate(predicate), token(token) {
+        completion = Shared<FkCoroutineCompletion>.Create();
+    }
+    bool IsCompleted => token.IsCancellationRequested;
+    void OnCompleted(Action continuation) {
+        var owner = completion;
+        owner.Get().Registered = true;
+        Action<Task<void>> finished = (Task<void> task) => {
+            owner.Get().Wait = task;
+            continuation.Invoke();
+        };
+        CoroutineContext.FkWait(frames,seconds,fixedStep,predicate,token,finished);
+    }
+    void GetResult() {
+        token.ThrowIfCancellationRequested();
+        if (completion.HasValue && completion.Get().Registered && completion.Get().Wait.IsCompleted)
+            completion.Get().Wait.Wait();
+    }
+}
+

@@ -1,0 +1,496 @@
+{
+  "version": "Bolt 0.1.0 (x86_64-pc-windows-msvc)",
+  "system": "Windows-11-10.0.26300-SP0",
+  "dotnet_sdk": "10.0.403",
+  "compiler": "BoltCompiler.dll",
+  "compiler_sha256": "21dfc50c0d6327e3fb12d1661c1d9fe6212818ddab321db345292d12dc644064",
+  "llvm": "LLVM-C.dll",
+  "llvm_sha256": "19ebfb8901720344d237068f3015b9d07fb3420c7767f9f2bd666b8654638b3e",
+  "runs": [
+    {
+      "round": 1,
+      "workload": "compile",
+      "profile": "cs",
+      "cold_ms": 1625.8098,
+      "edit_ms": 11.8294,
+      "reload_ms": 34.7764
+    },
+    {
+      "round": 1,
+      "workload": "compile",
+      "profile": "fast",
+      "cold_ms": 340.5558,
+      "edit_ms": 281.5907,
+      "reload_ms": 281.7529
+    },
+    {
+      "round": 1,
+      "workload": "compile",
+      "profile": "llvm",
+      "cold_ms": 1209.0431,
+      "edit_ms": 1371.0592,
+      "reload_ms": 1371.2646
+    },
+    {
+      "round": 1,
+      "workload": "move",
+      "profile": "fast",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 313.8058,
+      "update_ms": 0.770419,
+      "startup_ms": 313.8058
+    },
+    {
+      "round": 1,
+      "workload": "move",
+      "profile": "llvm",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 1187.0996,
+      "update_ms": 0.574037,
+      "startup_ms": 1187.0996
+    },
+    {
+      "round": 1,
+      "workload": "move",
+      "profile": "cs",
+      "core_ms": 66.5773,
+      "assembly_ms": 83.1721,
+      "first_ms": 16.226,
+      "update_ms": 0.282825,
+      "startup_ms": 165.97539999999998
+    },
+    {
+      "round": 1,
+      "workload": "compute",
+      "profile": "llvm",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 1142.0402,
+      "update_ms": 1.387256,
+      "startup_ms": 1142.0402
+    },
+    {
+      "round": 1,
+      "workload": "compute",
+      "profile": "cs",
+      "core_ms": 61.3805,
+      "assembly_ms": 68.5787,
+      "first_ms": 14.7252,
+      "update_ms": 0.957512,
+      "startup_ms": 144.6844
+    },
+    {
+      "round": 1,
+      "workload": "compute",
+      "profile": "fast",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 305.6047,
+      "update_ms": 1.962456,
+      "startup_ms": 305.6047
+    },
+    {
+      "round": 2,
+      "workload": "compile",
+      "profile": "fast",
+      "cold_ms": 432.1177,
+      "edit_ms": 292.5038,
+      "reload_ms": 292.6811
+    },
+    {
+      "round": 2,
+      "workload": "compile",
+      "profile": "llvm",
+      "cold_ms": 1196.8149,
+      "edit_ms": 1228.1906,
+      "reload_ms": 1228.3879
+    },
+    {
+      "round": 2,
+      "workload": "compile",
+      "profile": "cs",
+      "cold_ms": 1570.7525,
+      "edit_ms": 7.4568,
+      "reload_ms": 30.0991
+    },
+    {
+      "round": 2,
+      "workload": "move",
+      "profile": "llvm",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 1122.6521,
+      "update_ms": 0.562819,
+      "startup_ms": 1122.6521
+    },
+    {
+      "round": 2,
+      "workload": "move",
+      "profile": "cs",
+      "core_ms": 61.0885,
+      "assembly_ms": 43.0686,
+      "first_ms": 14.9924,
+      "update_ms": 0.341469,
+      "startup_ms": 119.14950000000002
+    },
+    {
+      "round": 2,
+      "workload": "move",
+      "profile": "fast",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 320.511,
+      "update_ms": 0.761269,
+      "startup_ms": 320.511
+    },
+    {
+      "round": 2,
+      "workload": "compute",
+      "profile": "cs",
+      "core_ms": 61.6688,
+      "assembly_ms": 43.1378,
+      "first_ms": 14.9113,
+      "update_ms": 0.947525,
+      "startup_ms": 119.7179
+    },
+    {
+      "round": 2,
+      "workload": "compute",
+      "profile": "fast",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 305.3822,
+      "update_ms": 1.946338,
+      "startup_ms": 305.3822
+    },
+    {
+      "round": 2,
+      "workload": "compute",
+      "profile": "llvm",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 1161.9785,
+      "update_ms": 1.404556,
+      "startup_ms": 1161.9785
+    },
+    {
+      "round": 3,
+      "workload": "compile",
+      "profile": "llvm",
+      "cold_ms": 1213.6947,
+      "edit_ms": 1087.2597,
+      "reload_ms": 1087.4086
+    },
+    {
+      "round": 3,
+      "workload": "compile",
+      "profile": "cs",
+      "cold_ms": 1535.1397,
+      "edit_ms": 6.77,
+      "reload_ms": 28.4782
+    },
+    {
+      "round": 3,
+      "workload": "compile",
+      "profile": "fast",
+      "cold_ms": 328.712,
+      "edit_ms": 265.2921,
+      "reload_ms": 265.4329
+    },
+    {
+      "round": 3,
+      "workload": "move",
+      "profile": "cs",
+      "core_ms": 59.8803,
+      "assembly_ms": 41.4701,
+      "first_ms": 14.1897,
+      "update_ms": 0.339175,
+      "startup_ms": 115.54010000000001
+    },
+    {
+      "round": 3,
+      "workload": "move",
+      "profile": "fast",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 335.0982,
+      "update_ms": 0.756713,
+      "startup_ms": 335.0982
+    },
+    {
+      "round": 3,
+      "workload": "move",
+      "profile": "llvm",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 1175.2598,
+      "update_ms": 0.561025,
+      "startup_ms": 1175.2598
+    },
+    {
+      "round": 3,
+      "workload": "compute",
+      "profile": "fast",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 299.4694,
+      "update_ms": 1.940269,
+      "startup_ms": 299.4694
+    },
+    {
+      "round": 3,
+      "workload": "compute",
+      "profile": "llvm",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 1105.5098,
+      "update_ms": 1.371063,
+      "startup_ms": 1105.5098
+    },
+    {
+      "round": 3,
+      "workload": "compute",
+      "profile": "cs",
+      "core_ms": 60.9256,
+      "assembly_ms": 43.31,
+      "first_ms": 14.805,
+      "update_ms": 0.971012,
+      "startup_ms": 119.04060000000001
+    }
+  ],
+  "medians": {
+    "compile": {
+      "cs": {
+        "cold_ms": 1570.7525,
+        "edit_ms": 7.4568,
+        "reload_ms": 30.0991
+      },
+      "fast": {
+        "cold_ms": 340.5558,
+        "edit_ms": 281.5907,
+        "reload_ms": 281.7529
+      },
+      "llvm": {
+        "cold_ms": 1209.0431,
+        "edit_ms": 1228.1906,
+        "reload_ms": 1228.3879
+      }
+    },
+    "move": {
+      "fast": {
+        "core_ms": 0.0,
+        "assembly_ms": 0.0,
+        "first_ms": 320.511,
+        "update_ms": 0.761269,
+        "startup_ms": 320.511
+      },
+      "llvm": {
+        "core_ms": 0.0,
+        "assembly_ms": 0.0,
+        "first_ms": 1175.2598,
+        "update_ms": 0.562819,
+        "startup_ms": 1175.2598
+      },
+      "cs": {
+        "core_ms": 61.0885,
+        "assembly_ms": 43.0686,
+        "first_ms": 14.9924,
+        "update_ms": 0.339175,
+        "startup_ms": 119.14950000000002
+      }
+    },
+    "compute": {
+      "llvm": {
+        "core_ms": 0.0,
+        "assembly_ms": 0.0,
+        "first_ms": 1142.0402,
+        "update_ms": 1.387256,
+        "startup_ms": 1142.0402
+      },
+      "cs": {
+        "core_ms": 61.3805,
+        "assembly_ms": 43.31,
+        "first_ms": 14.805,
+        "update_ms": 0.957512,
+        "startup_ms": 119.7179
+      },
+      "fast": {
+        "core_ms": 0.0,
+        "assembly_ms": 0.0,
+        "first_ms": 305.3822,
+        "update_ms": 1.946338,
+        "startup_ms": 305.3822
+      }
+    }
+  },
+  "previous_compiler_sha256": "483e9b299e3dff31fc4cfa27d86420ed43c10094385d632e637b182072e642f4",
+  "paired_llvm_runs": [
+    {
+      "round": 1,
+      "workload": "move",
+      "compiler": "previous",
+      "ms_per_frame": 0.565425
+    },
+    {
+      "round": 1,
+      "workload": "move",
+      "compiler": "current",
+      "ms_per_frame": 0.564738
+    },
+    {
+      "round": 1,
+      "workload": "compute",
+      "compiler": "current",
+      "ms_per_frame": 1.409619
+    },
+    {
+      "round": 1,
+      "workload": "compute",
+      "compiler": "previous",
+      "ms_per_frame": 1.388181
+    },
+    {
+      "round": 2,
+      "workload": "move",
+      "compiler": "current",
+      "ms_per_frame": 0.553588
+    },
+    {
+      "round": 2,
+      "workload": "move",
+      "compiler": "previous",
+      "ms_per_frame": 0.571594
+    },
+    {
+      "round": 2,
+      "workload": "compute",
+      "compiler": "previous",
+      "ms_per_frame": 1.442219
+    },
+    {
+      "round": 2,
+      "workload": "compute",
+      "compiler": "current",
+      "ms_per_frame": 1.423875
+    },
+    {
+      "round": 3,
+      "workload": "move",
+      "compiler": "previous",
+      "ms_per_frame": 0.958794
+    },
+    {
+      "round": 3,
+      "workload": "move",
+      "compiler": "current",
+      "ms_per_frame": 0.567388
+    },
+    {
+      "round": 3,
+      "workload": "compute",
+      "compiler": "current",
+      "ms_per_frame": 1.422144
+    },
+    {
+      "round": 3,
+      "workload": "compute",
+      "compiler": "previous",
+      "ms_per_frame": 1.443175
+    },
+    {
+      "round": 4,
+      "workload": "move",
+      "compiler": "current",
+      "ms_per_frame": 0.591431
+    },
+    {
+      "round": 4,
+      "workload": "move",
+      "compiler": "previous",
+      "ms_per_frame": 0.576106
+    },
+    {
+      "round": 4,
+      "workload": "compute",
+      "compiler": "previous",
+      "ms_per_frame": 1.422581
+    },
+    {
+      "round": 4,
+      "workload": "compute",
+      "compiler": "current",
+      "ms_per_frame": 1.431787
+    },
+    {
+      "round": 5,
+      "workload": "move",
+      "compiler": "previous",
+      "ms_per_frame": 0.582337
+    },
+    {
+      "round": 5,
+      "workload": "move",
+      "compiler": "current",
+      "ms_per_frame": 0.579419
+    },
+    {
+      "round": 5,
+      "workload": "compute",
+      "compiler": "current",
+      "ms_per_frame": 1.431288
+    },
+    {
+      "round": 5,
+      "workload": "compute",
+      "compiler": "previous",
+      "ms_per_frame": 1.555294
+    },
+    {
+      "round": 6,
+      "workload": "move",
+      "compiler": "current",
+      "ms_per_frame": 0.591163
+    },
+    {
+      "round": 6,
+      "workload": "move",
+      "compiler": "previous",
+      "ms_per_frame": 0.606287
+    },
+    {
+      "round": 6,
+      "workload": "compute",
+      "compiler": "previous",
+      "ms_per_frame": 1.426038
+    },
+    {
+      "round": 6,
+      "workload": "compute",
+      "compiler": "current",
+      "ms_per_frame": 1.438837
+    }
+  ],
+  "paired_llvm_medians": {
+    "move": {
+      "previous": 0.5792215000000001,
+      "current": 0.5734035
+    },
+    "compute": {
+      "previous": 1.4341285,
+      "current": 1.4275815
+    }
+  },
+  "source_manifest_sha256": "36f186fc6a779190b7d492ff37a3456607859ddc987a8b0cacd08d64e21e61c4",
+  "engine_sha256": "5209763e09e0ede5304e14466cbc63114311b227ee7e9102b5950373e511da4f",
+  "test_executable_sha256": "eedfd77297a774a01568d50b8c48c5189f7ddbcb830b843865f5dc40bd3d8310",
+  "fixtures_sha256": {
+    "EntityMove.bolt": "01b13853a2a7cbb46f94afddf50c5aa17ae6c8845624f8c8721919cb2b50d566",
+    "Move.cs": "96dfc5641d34830e4911269728bbe66f03cc4e5c20b19e46454e8c7dc3caf62c",
+    "EntityCompute.bolt": "7ed77c2ebba4bb94e41d819dbdd9f05a857773104ecaefff7810005d38779d9f",
+    "Compute.cs": "327c42f377d7603ea6539166d0993c2c275676d71ac02d3919f994f471b79c99"
+  },
+  "source_snapshot_local_time": "2026-11-21T16:59:39+01:00",
+  "processor": "AMD Ryzen 9 7900X"
+}

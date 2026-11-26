@@ -1,0 +1,44 @@
+import Funke
+import Funke.Coroutines
+import System.Threading.Tasks
+import MixedGameplay
+
+public class ManagedReference : EntityScript {
+    public Vitals? Target;
+    public override void OnStart() {
+        if (Target == null) return;
+        Vitals vitals = Target.Value;
+        PlayerPrefs.SetInt(vitals.ProbeId, 9007199254740993l);
+        SaveData.Save<int>(vitals.ProbeId, 73);
+        RunCoroutine(() => Observe(vitals));
+        RunCoroutine(() => WaitForStop(vitals));
+        Entity.AddNativeComponent<ManagedMeter>();
+        ManagedMeter& meter=GetRefOrThrow<ManagedMeter>();
+        meter.Value=13;
+        vitals.Points += meter.Value-1;
+        vitals.Label = "Bolt=ok";
+        vitals.Related = vitals;
+        if (vitals.Related != null)
+            Transform2D.Position = Vector2((float)vitals.Related.Value.DoublePoints, 1.0f);
+    }
+    private async Task<void> Observe(Vitals vitals) {
+        int value=await vitals.Pending;
+        int? saved;
+        string? error;
+        bool received = SaveData.TryLoadVersioned<int>(vitals.ProbeId, 2, saved, error)
+            && saved != null && saved.Value == 29 && PlayerPrefs.GetString(vitals.ProbeId) == "Grüße";
+        if (!received || value != 19) {
+            string why = error == null ? "" : error.Value;
+            string found = saved == null ? "<null>" : (string)saved.Value;
+            Log.Error("Persistence roundtrip: managed=" + (string)value + ", saved=" + found
+                + ", error=" + why + ", pref=" + PlayerPrefs.GetString(vitals.ProbeId, "<missing>") + ", path=" + Application.PersistentDataPath);
+        }
+        SaveData.Delete(vitals.ProbeId);
+        PlayerPrefs.DeleteKey(vitals.ProbeId);
+        Transform2D.Position=Vector2(66.0f, received ? (float)value : -2.0f);
+    }
+    private async Task<void> WaitForStop(Vitals vitals) {
+        try { await WaitForFrames(1000,vitals.Stop); }
+        finally { GetRefOrThrow<ManagedMeter>().Value=81; }
+    }
+}

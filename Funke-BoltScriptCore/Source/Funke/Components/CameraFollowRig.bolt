@@ -1,0 +1,71 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public class CameraFollowRig : Component {
+public:
+    protected override ulong FkType() { return 8ul; }
+    Entity? Target {
+        get { return Funke.Entity.FromId(FkSceneAccess.Call(FkNativeSlot.CameraFollowRig_GetTarget, ID)); }
+        set {
+            ulong target = 0ul;
+            if (value != null) {
+                if (value.Value.FkPrefabAsset()) throw System.ArgumentException("Target must be a live scene entity.");
+                target = value.Value.ID;
+            }
+            if (FkSceneAccess.Call(FkNativeSlot.CameraFollowRig_SetTarget, ID, target) == 0ul)
+                throw System.ArgumentException("Target must be another live entity in the same scene.");
+        }
+    }
+    Vector3 Offset {
+        get {
+            float x = 0.0f, y = 0.0f, z = 0.0f;
+            FkSceneAccess.Call(FkNativeSlot.CameraFollowRig_GetOffset, ID, FkNativeSlot.Pointer(&x), FkNativeSlot.Pointer(&y), FkNativeSlot.Pointer(&z));
+            return Vector3(x, y, z);
+        }
+        set {
+            Vector3.FkValidateFinite(value, "value");
+            FkSceneAccess.Call(FkNativeSlot.CameraFollowRig_SetOffset, ID, (ulong)Reinterpret<uint>(value.X),
+                (ulong)Reinterpret<uint>(value.Y), (ulong)Reinterpret<uint>(value.Z));
+        }
+    }
+    void Reset() { FkSceneAccess.Call(FkNativeSlot.CameraFollowRig_Reset, ID); }
+    bool Orbit {
+        get { return FkSceneAccess.Call(FkNativeSlot.CameraFollowRig_GetOrbit, ID) != 0ul; }
+        set { FkSceneAccess.Call(FkNativeSlot.CameraFollowRig_SetOrbit, ID, value ? 1ul : 0ul); }
+    }
+    bool LookAtTarget {
+        get { return FkSceneAccess.Call(FkNativeSlot.CameraFollowRig_GetLookAtTarget, ID) != 0ul; }
+        set { FkSceneAccess.Call(FkNativeSlot.CameraFollowRig_SetLookAtTarget, ID, value ? 1ul : 0ul); }
+    }
+    float Damping {
+        get { return Reinterpret<float>((uint)FkSceneAccess.Call(FkNativeSlot.CameraFollowRig_GetDamping, ID)); }
+        set {
+            if (!Mathf.FkFinite(value) || value < 0.0f) throw System.ArgumentOutOfRangeException("value");
+            FkSceneAccess.Call(FkNativeSlot.CameraFollowRig_SetDamping, ID, (ulong)Reinterpret<uint>(value));
+        }
+    }
+    float Yaw {
+        get { return Reinterpret<float>((uint)FkSceneAccess.Call(FkNativeSlot.CameraFollowRig_GetYaw, ID)); }
+        set {
+            if (!Mathf.FkFinite(value)) throw System.ArgumentOutOfRangeException("value");
+            FkSceneAccess.Call(FkNativeSlot.CameraFollowRig_SetYaw, ID, (ulong)Reinterpret<uint>(value));
+        }
+    }
+    float Pitch {
+        get { return Reinterpret<float>((uint)FkSceneAccess.Call(FkNativeSlot.CameraFollowRig_GetPitch, ID)); }
+        set {
+            if (!Mathf.FkFinite(value) || value < -89.0f || value > 89.0f) throw System.ArgumentOutOfRangeException("value");
+            FkSceneAccess.Call(FkNativeSlot.CameraFollowRig_SetPitch, ID, (ulong)Reinterpret<uint>(value));
+        }
+    }
+    float Distance {
+        get { return Reinterpret<float>((uint)FkSceneAccess.Call(FkNativeSlot.CameraFollowRig_GetDistance, ID)); }
+        set {
+            if (!Mathf.FkFinite(value) || value <= 0.0f) throw System.ArgumentOutOfRangeException("value");
+            FkSceneAccess.Call(FkNativeSlot.CameraFollowRig_SetDistance, ID, (ulong)Reinterpret<uint>(value));
+        }
+    }
+}

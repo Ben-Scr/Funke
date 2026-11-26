@@ -1,0 +1,706 @@
+{
+  "platform": "Windows x64",
+  "project": "Examples/BoltScriptBench",
+  "protocol": "10,000 operations per batch. Four fresh processes per workload and version, alternating versions across trials. Each process warms up once and reports seven-sample medians in 100 ns ticks. Millisecond results are medians across processes.",
+  "workloads": {
+    "create": "Unmodified lifecycle benchmark. Read uses the stored transform handle.",
+    "clone": "Create stores clones of one unparented live entity, created outside the timer.",
+    "lookup": "Read calls GetComponent<Transform2D>() and reads its position for every entity in both languages. Bolt checks the nullable result before using Value.Position. The original position checksum and destruction checks remain enabled."
+  },
+  "compilerPatch": "scripts/bolt/patches/0009-optional-values-and-handle-arrays.patch",
+  "hostSha256": {
+    "before": "be01bde68bd9a3c63b54db63f5e8e9fd9fe2ca0203b58e99228684cbbfe2459a",
+    "after": "f3ad66c6a5d1af3cbdd24e447d92c8f3345d19f7482161455d6ed6d567b4b856"
+  },
+  "engineSha256": "a71c8280b7fbaf4958f7d8eb7980e27fb199aec1dbe3bc96bc5004d14695b08e",
+  "aot": {
+    "create": {
+      "before": {
+        "processMediansTicks": [
+          {
+            "Bolt": {
+              "Create": 21970,
+              "Move": 9145,
+              "Read": 3991,
+              "Destroy": 22697
+            },
+            "C#": {
+              "Create": 20814,
+              "Move": 44223,
+              "Read": 14039,
+              "Destroy": 32714
+            }
+          },
+          {
+            "Bolt": {
+              "Create": 22694,
+              "Move": 9496,
+              "Read": 4104,
+              "Destroy": 24044
+            },
+            "C#": {
+              "Create": 21627,
+              "Move": 44565,
+              "Read": 14381,
+              "Destroy": 33990
+            }
+          },
+          {
+            "Bolt": {
+              "Create": 21307,
+              "Move": 9235,
+              "Read": 3993,
+              "Destroy": 23049
+            },
+            "C#": {
+              "Create": 21149,
+              "Move": 45774,
+              "Read": 13879,
+              "Destroy": 33019
+            }
+          },
+          {
+            "Bolt": {
+              "Create": 22221,
+              "Move": 9098,
+              "Read": 4234,
+              "Destroy": 23822
+            },
+            "C#": {
+              "Create": 22138,
+              "Move": 49532,
+              "Read": 14671,
+              "Destroy": 33773
+            }
+          }
+        ],
+        "medianMs": {
+          "Bolt": {
+            "Create": 2.20955,
+            "Move": 0.919,
+            "Read": 0.40485,
+            "Destroy": 2.34355
+          },
+          "C#": {
+            "Create": 2.1388,
+            "Move": 4.51695,
+            "Read": 1.421,
+            "Destroy": 3.3396
+          }
+        },
+        "moduleSha256": "1984d7b38fa6cea6cc7a0c9c6a93ea86244dfdb1cc0263e8dee490c68c874a67"
+      },
+      "after": {
+        "processMediansTicks": [
+          {
+            "Bolt": {
+              "Create": 24374,
+              "Move": 12724,
+              "Read": 4294,
+              "Destroy": 23982
+            },
+            "C#": {
+              "Create": 26273,
+              "Move": 50874,
+              "Read": 15977,
+              "Destroy": 34839
+            }
+          },
+          {
+            "Bolt": {
+              "Create": 21430,
+              "Move": 9012,
+              "Read": 4000,
+              "Destroy": 24252
+            },
+            "C#": {
+              "Create": 21006,
+              "Move": 46839,
+              "Read": 13888,
+              "Destroy": 31892
+            }
+          },
+          {
+            "Bolt": {
+              "Create": 21101,
+              "Move": 9290,
+              "Read": 4042,
+              "Destroy": 24861
+            },
+            "C#": {
+              "Create": 21144,
+              "Move": 47979,
+              "Read": 14287,
+              "Destroy": 32652
+            }
+          },
+          {
+            "Bolt": {
+              "Create": 22533,
+              "Move": 8960,
+              "Read": 4019,
+              "Destroy": 23055
+            },
+            "C#": {
+              "Create": 21198,
+              "Move": 44927,
+              "Read": 13828,
+              "Destroy": 31887
+            }
+          }
+        ],
+        "medianMs": {
+          "Bolt": {
+            "Create": 2.19815,
+            "Move": 0.9151,
+            "Read": 0.40305,
+            "Destroy": 2.4117
+          },
+          "C#": {
+            "Create": 2.1171,
+            "Move": 4.7409,
+            "Read": 1.40875,
+            "Destroy": 3.2272
+          }
+        },
+        "moduleSha256": "71fc6be7f49ce5a3bc79cc36f0a85ff5e7a321018a5fba560459127f95938325"
+      }
+    },
+    "clone": {
+      "before": {
+        "processMediansTicks": [
+          {
+            "Bolt": {
+              "Create": 416336,
+              "Move": 9317,
+              "Read": 4117,
+              "Destroy": 35867
+            },
+            "C#": {
+              "Create": 392393,
+              "Move": 40325,
+              "Read": 12382,
+              "Destroy": 38321
+            }
+          },
+          {
+            "Bolt": {
+              "Create": 392273,
+              "Move": 9121,
+              "Read": 4049,
+              "Destroy": 31780
+            },
+            "C#": {
+              "Create": 368225,
+              "Move": 41008,
+              "Read": 12178,
+              "Destroy": 36774
+            }
+          },
+          {
+            "Bolt": {
+              "Create": 415761,
+              "Move": 9305,
+              "Read": 4047,
+              "Destroy": 33214
+            },
+            "C#": {
+              "Create": 402383,
+              "Move": 44755,
+              "Read": 13201,
+              "Destroy": 40944
+            }
+          },
+          {
+            "Bolt": {
+              "Create": 394914,
+              "Move": 9917,
+              "Read": 4396,
+              "Destroy": 34012
+            },
+            "C#": {
+              "Create": 376492,
+              "Move": 37752,
+              "Read": 12050,
+              "Destroy": 37209
+            }
+          }
+        ],
+        "medianMs": {
+          "Bolt": {
+            "Create": 40.53375,
+            "Move": 0.9311,
+            "Read": 0.4083,
+            "Destroy": 3.3613
+          },
+          "C#": {
+            "Create": 38.44425,
+            "Move": 4.06665,
+            "Read": 1.228,
+            "Destroy": 3.7765
+          }
+        },
+        "moduleSha256": "d6b4634968dff7a44a0e5aed7d9f0e3f3dfa9320a3b43049d28672cf006c91bc"
+      },
+      "after": {
+        "processMediansTicks": [
+          {
+            "Bolt": {
+              "Create": 394872,
+              "Move": 9473,
+              "Read": 4276,
+              "Destroy": 34822
+            },
+            "C#": {
+              "Create": 383717,
+              "Move": 42453,
+              "Read": 13456,
+              "Destroy": 44177
+            }
+          },
+          {
+            "Bolt": {
+              "Create": 378816,
+              "Move": 9260,
+              "Read": 4055,
+              "Destroy": 33385
+            },
+            "C#": {
+              "Create": 374524,
+              "Move": 42649,
+              "Read": 11922,
+              "Destroy": 37152
+            }
+          },
+          {
+            "Bolt": {
+              "Create": 378983,
+              "Move": 9182,
+              "Read": 4016,
+              "Destroy": 32777
+            },
+            "C#": {
+              "Create": 368233,
+              "Move": 43028,
+              "Read": 12065,
+              "Destroy": 35664
+            }
+          },
+          {
+            "Bolt": {
+              "Create": 388942,
+              "Move": 9117,
+              "Read": 4064,
+              "Destroy": 31690
+            },
+            "C#": {
+              "Create": 355910,
+              "Move": 37545,
+              "Read": 12138,
+              "Destroy": 37156
+            }
+          }
+        ],
+        "medianMs": {
+          "Bolt": {
+            "Create": 38.39625,
+            "Move": 0.9221,
+            "Read": 0.40595,
+            "Destroy": 3.3081
+          },
+          "C#": {
+            "Create": 37.13785,
+            "Move": 4.2551,
+            "Read": 1.21015,
+            "Destroy": 3.7154
+          }
+        },
+        "moduleSha256": "1e274c8c14d3591bea93349ab071fa01aa4d7a62737f86d27ac2fde995fc8476"
+      }
+    },
+    "lookup": {
+      "before": {
+        "processMediansTicks": [
+          {
+            "Bolt": {
+              "Create": 31028,
+              "Move": 10092,
+              "Read": 28688,
+              "Destroy": 27425
+            },
+            "C#": {
+              "Create": 26459,
+              "Move": 49014,
+              "Read": 14958,
+              "Destroy": 35793
+            }
+          },
+          {
+            "Bolt": {
+              "Create": 24485,
+              "Move": 9169,
+              "Read": 27710,
+              "Destroy": 25784
+            },
+            "C#": {
+              "Create": 22880,
+              "Move": 48754,
+              "Read": 14280,
+              "Destroy": 36221
+            }
+          },
+          {
+            "Bolt": {
+              "Create": 24385,
+              "Move": 9048,
+              "Read": 27486,
+              "Destroy": 25093
+            },
+            "C#": {
+              "Create": 22312,
+              "Move": 44940,
+              "Read": 14930,
+              "Destroy": 34263
+            }
+          },
+          {
+            "Bolt": {
+              "Create": 22782,
+              "Move": 8908,
+              "Read": 27338,
+              "Destroy": 22663
+            },
+            "C#": {
+              "Create": 21657,
+              "Move": 44290,
+              "Read": 14755,
+              "Destroy": 32949
+            }
+          }
+        ],
+        "medianMs": {
+          "Bolt": {
+            "Create": 2.4435,
+            "Move": 0.91085,
+            "Read": 2.7598,
+            "Destroy": 2.54385
+          },
+          "C#": {
+            "Create": 2.2596,
+            "Move": 4.6847,
+            "Read": 1.48425,
+            "Destroy": 3.5028
+          }
+        },
+        "moduleSha256": "ed15881328143d8fe90a4899a025936dc3cdd31708cc1010ec89b47bb8e647da"
+      },
+      "after": {
+        "processMediansTicks": [
+          {
+            "Bolt": {
+              "Create": 23109,
+              "Move": 9409,
+              "Read": 11240,
+              "Destroy": 24617
+            },
+            "C#": {
+              "Create": 22982,
+              "Move": 47881,
+              "Read": 14423,
+              "Destroy": 37042
+            }
+          },
+          {
+            "Bolt": {
+              "Create": 21715,
+              "Move": 9165,
+              "Read": 11026,
+              "Destroy": 23659
+            },
+            "C#": {
+              "Create": 21172,
+              "Move": 53834,
+              "Read": 17305,
+              "Destroy": 32951
+            }
+          },
+          {
+            "Bolt": {
+              "Create": 21705,
+              "Move": 9181,
+              "Read": 11733,
+              "Destroy": 24440
+            },
+            "C#": {
+              "Create": 21893,
+              "Move": 49512,
+              "Read": 15252,
+              "Destroy": 34753
+            }
+          },
+          {
+            "Bolt": {
+              "Create": 20790,
+              "Move": 9088,
+              "Read": 11545,
+              "Destroy": 22794
+            },
+            "C#": {
+              "Create": 21042,
+              "Move": 50623,
+              "Read": 17455,
+              "Destroy": 31072
+            }
+          }
+        ],
+        "medianMs": {
+          "Bolt": {
+            "Create": 2.171,
+            "Move": 0.9173,
+            "Read": 1.13925,
+            "Destroy": 2.40495
+          },
+          "C#": {
+            "Create": 2.15325,
+            "Move": 5.00675,
+            "Read": 1.62785,
+            "Destroy": 3.3852
+          }
+        },
+        "moduleSha256": "ba5f985e910805b0e1788d891081a11b42b1f1f8bc83b95ea7efe5a1ef9da2d7"
+      }
+    }
+  },
+  "editorFastJit": {
+    "before": {
+      "processMediansTicks": [
+        {
+          "Bolt": {
+            "Create": 34918,
+            "Move": 17961,
+            "Read": 37191,
+            "Destroy": 27177
+          },
+          "C#": {
+            "Create": 30248,
+            "Move": 38153,
+            "Read": 12302,
+            "Destroy": 28370
+          }
+        },
+        {
+          "Bolt": {
+            "Create": 34495,
+            "Move": 18310,
+            "Read": 37445,
+            "Destroy": 27693
+          },
+          "C#": {
+            "Create": 28885,
+            "Move": 68047,
+            "Read": 22256,
+            "Destroy": 32995
+          }
+        },
+        {
+          "Bolt": {
+            "Create": 35213,
+            "Move": 19380,
+            "Read": 37661,
+            "Destroy": 26655
+          },
+          "C#": {
+            "Create": 27866,
+            "Move": 66648,
+            "Read": 20436,
+            "Destroy": 32938
+          }
+        },
+        {
+          "Bolt": {
+            "Create": 35885,
+            "Move": 19741,
+            "Read": 43325,
+            "Destroy": 37077
+          },
+          "C#": {
+            "Create": 33898,
+            "Move": 75317,
+            "Read": 25958,
+            "Destroy": 40256
+          }
+        }
+      ],
+      "medianMs": {
+        "Bolt": {
+          "Create": 3.50655,
+          "Move": 1.8845,
+          "Read": 3.7553,
+          "Destroy": 2.7435
+        },
+        "C#": {
+          "Create": 2.95665,
+          "Move": 6.73475,
+          "Read": 2.1346,
+          "Destroy": 3.29665
+        }
+      }
+    },
+    "after": {
+      "processMediansTicks": [
+        {
+          "Bolt": {
+            "Create": 37180,
+            "Move": 18179,
+            "Read": 20711,
+            "Destroy": 27549
+          },
+          "C#": {
+            "Create": 30186,
+            "Move": 61912,
+            "Read": 22250,
+            "Destroy": 35658
+          }
+        },
+        {
+          "Bolt": {
+            "Create": 35488,
+            "Move": 18457,
+            "Read": 21257,
+            "Destroy": 27284
+          },
+          "C#": {
+            "Create": 30796,
+            "Move": 64276,
+            "Read": 21427,
+            "Destroy": 34276
+          }
+        },
+        {
+          "Bolt": {
+            "Create": 35639,
+            "Move": 17859,
+            "Read": 20387,
+            "Destroy": 26661
+          },
+          "C#": {
+            "Create": 28825,
+            "Move": 63352,
+            "Read": 21230,
+            "Destroy": 34794
+          }
+        },
+        {
+          "Bolt": {
+            "Create": 34371,
+            "Move": 17966,
+            "Read": 20043,
+            "Destroy": 26697
+          },
+          "C#": {
+            "Create": 27816,
+            "Move": 62165,
+            "Read": 20428,
+            "Destroy": 32356
+          }
+        }
+      ],
+      "medianMs": {
+        "Bolt": {
+          "Create": 3.55635,
+          "Move": 1.80725,
+          "Read": 2.0549,
+          "Destroy": 2.69905
+        },
+        "C#": {
+          "Create": 2.95055,
+          "Move": 6.27585,
+          "Read": 2.13285,
+          "Destroy": 3.4535
+        }
+      }
+    }
+  },
+  "boltValues": {
+    "fixture": "Tests/Fixtures/BoltScripts/CompilerBenchmark/OptionalHandles.bolt",
+    "protocol": "Four fresh processes per version and backend; Fast JIT uses its default profile, LLVM JIT uses --release. Eight rounds per process; discard the first. Rows hold the median copy and array release time in 100 ns ticks for 10,000 elements. Every round checks the checksum 25000000 and empty final array.",
+    "processMediansTicks": {
+      "fast": {
+        "before": [
+          [
+            12015,
+            2924
+          ],
+          [
+            7502,
+            1801
+          ],
+          [
+            8294,
+            1849
+          ],
+          [
+            7263,
+            1675
+          ]
+        ],
+        "after": [
+          [
+            1667,
+            11
+          ],
+          [
+            1642,
+            6
+          ],
+          [
+            1624,
+            6
+          ],
+          [
+            1634,
+            5
+          ]
+        ]
+      },
+      "llvm": {
+        "before": [
+          [
+            8687,
+            2620
+          ],
+          [
+            6574,
+            1796
+          ],
+          [
+            6680,
+            1823
+          ],
+          [
+            6914,
+            1664
+          ]
+        ],
+        "after": [
+          [
+            698,
+            6
+          ],
+          [
+            690,
+            4
+          ],
+          [
+            1136,
+            17
+          ],
+          [
+            689,
+            6
+          ]
+        ]
+      }
+    }
+  }
+}

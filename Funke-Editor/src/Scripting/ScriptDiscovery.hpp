@@ -1,8 +1,11 @@
 #pragma once
 
 #include "Project/ProjectManager.hpp"
+#include "Assets/AssetRegistry.hpp"
 #include "Scripting/ScriptEngine.hpp"
 #include "Scripting/ScriptType.hpp"
+#include "Scripting/Bolt/EntityScriptSource.hpp"
+#include "Scripting/BoltScriptHost.hpp"
 #include "Serialization/Json.hpp"
 #include "Serialization/Path.hpp"
 
@@ -38,9 +41,25 @@ namespace Funke::EditorScriptDiscovery {
 		bool IsPackage() const { return !Package.empty(); }
 	};
 
+	// Presentation only: keep the canonical identity for lookups and saved data.
+	inline std::string ClassDisplayName(const std::string& className)
+	{
+		if (!className.empty() && std::isdigit(static_cast<unsigned char>(className.front()))) {
+			auto path = BoltScriptHost::ResolveAsset(className);
+			if (!path.empty()) return Path::ToUtf8(Path::FromUtf8(path).stem());
+		}
+		return className.starts_with("type:") ? className.substr(5) : className;
+	}
+
+	inline constexpr const char* ScriptIconName(ScriptType type)
+	{
+		if (type == ScriptType::Bolt) return "script_bolt";
+		return type == ScriptType::Native ? "script_cpp" : "script";
+	}
+
 	inline std::string MenuLabel(const ScriptEntry& entry)
 	{
-		const std::string name = entry.ClassName.starts_with("type:") ? entry.ClassName.substr(5) : entry.ClassName;
+		const std::string name = entry.Type == ScriptType::Bolt ? Path::ToUtf8(entry.Path.stem()) : ClassDisplayName(entry.ClassName);
 		return entry.Extension.empty() ? name : name + "  " + entry.Extension;
 	}
 
@@ -54,8 +73,9 @@ namespace Funke::EditorScriptDiscovery {
 	// "Funke.Networking.NetworkObject" -> "NetworkObject".
 	inline std::string ShortClassName(const std::string& className)
 	{
-		const std::size_t dot = className.find_last_of('.');
-		return dot == std::string::npos ? className : className.substr(dot + 1);
+		const std::string name = ClassDisplayName(className);
+		const std::size_t dot = name.find_last_of('.');
+		return dot == std::string::npos ? name : name.substr(dot + 1);
 	}
 
 	// "Pkg.Funke.Networking" -> "Funke.Networking".
@@ -120,6 +140,19 @@ namespace Funke::EditorScriptDiscovery {
 			offset += 2;
 		}
 		return false;
+	}
+
+	inline std::string BuildBoltScriptSource(const std::string& className)
+	{
+		return "import Funke\n\npublic class " + className + " : EntityScript\n"
+			"{\n"
+			"    public override void OnStart()\n"
+			"    {\n"
+			"    }\n\n"
+			"    public override void OnUpdate()\n"
+			"    {\n"
+			"    }\n"
+			"}\n";
 	}
 
 	inline std::string BuildNativeScriptSource(const std::string& className)
@@ -391,6 +424,24 @@ namespace Funke::EditorScriptDiscovery {
 	inline void CollectScriptFile(const std::filesystem::path& filePath, std::vector<ScriptEntry>& entries)
 	{
 		std::string extension = ToLowerCopy(filePath.extension().string());
+		if (ToLowerCopy(extension) == ".bolt") {
+			const uint64_t id = AssetRegistry::GetGUID(Path::ToUtf8(filePath));
+			if (id) {
+				std::ifstream file(filePath, std::ios::binary);
+				const std::string source{std::istreambuf_iterator<char>(file), {}};
+				auto kind = BoltScriptHost::ScriptBase::Procedural;
+				BoltScriptHost::ScriptClass(source, kind);
+				for (const auto& declaration : BoltScriptHost::ScriptDeclarations(source)) {
+					if (declaration.Kind == BoltScriptHost::ScriptBase::NativeStruct) {
+						AppendScriptEntry(entries, "bolt:" + declaration.Name, filePath, ".bolt", ScriptType::Bolt, false, true);
+					}
+				}
+				if (kind == BoltScriptHost::ScriptBase::NativeStruct) return;
+				AppendScriptEntry(entries, std::to_string(id), filePath, ".bolt", ScriptType::Bolt, false, false, {},
+					kind == BoltScriptHost::ScriptBase::Scene, kind == BoltScriptHost::ScriptBase::Global);
+			}
+			return;
+		}
 		if (IsCSharpScriptExtension(extension)) {
 			std::vector<ScriptEntry> compiled;
 			AppendCompiledProjectScripts(compiled);

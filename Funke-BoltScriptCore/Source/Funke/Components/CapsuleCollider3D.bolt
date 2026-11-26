@@ -1,0 +1,14 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public class CapsuleCollider3D : Collider3D {
+public:
+    [ReadOnly] public override ulong FkShapeKind() { return 2ul; }
+    protected override ulong FkType() { return 9ul; }
+    float Radius { get { return Reinterpret<float>((uint)FkGetCapsuleCollider3D_Radius(ID, 0ul)); } set { FkSetCapsuleCollider3D_Radius(ID, (ulong)Reinterpret<uint>(value)); } }
+    float Height { get { return Reinterpret<float>((uint)FkGetCapsuleCollider3D_Height(ID, 0ul)); } set { FkSetCapsuleCollider3D_Height(ID, (ulong)Reinterpret<uint>(value)); } }
+    CapsuleDirection Direction { get { return (CapsuleDirection)(int)Reinterpret<float>((uint)FkGetCapsuleCollider3D_Direction(ID, 0ul)); } set { FkSetCapsuleCollider3D_Direction(ID, (ulong)Reinterpret<uint>((float)(int)value)); } }
+}

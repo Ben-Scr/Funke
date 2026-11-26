@@ -9,6 +9,8 @@ public enum MaterialSurface
     Opaque = 0,
     /// <summary>Blended by the alpha of BaseColor, the texture and the renderer's Color; drawn back to front, no depth writes.</summary>
     Transparent = 1,
+    /// <summary>Discards pixels below AlphaCutoff in color and shadow rendering.</summary>
+    Cutout = 2,
 }
 
 /// <summary>
@@ -43,6 +45,18 @@ public sealed class Material : IEquatable<Material>
         get => Texture.FromAssetUUID(InternalCalls.Material_GetTexture(UUID));
         set => InternalCalls.Material_SetTexture(UUID, value?.UUID ?? 0);
     }
+
+    /// <summary>Tangent-space normal map, sampled as linear data.</summary>
+    public Texture? NormalTexture { get => GetTexture("__funke.normalTexture"); set => SetTexture("__funke.normalTexture", value); }
+    /// <summary>Linear packed map: green = roughness, blue = metallic; multiplied by the scalar factors.</summary>
+    public Texture? MetallicRoughnessTexture { get => GetTexture("__funke.metallicRoughnessTexture"); set => SetTexture("__funke.metallicRoughnessTexture", value); }
+    public Texture? EmissiveTexture { get => GetTexture("__funke.emissiveTexture"); set => SetTexture("__funke.emissiveTexture", value); }
+    /// <summary>Ambient occlusion from the red channel of a linear texture.</summary>
+    public Texture? OcclusionTexture { get => GetTexture("__funke.occlusionTexture"); set => SetTexture("__funke.occlusionTexture", value); }
+    public float NormalScale { get => GetFloat("__funke.normalScale"); set => SetFloat("__funke.normalScale", value); }
+    public float OcclusionStrength { get => GetFloat("__funke.occlusionStrength"); set => SetFloat("__funke.occlusionStrength", value); }
+    public float AlphaCutoff { get => GetFloat("__funke.alphaCutoff"); set => SetFloat("__funke.alphaCutoff", value); }
+    public bool DoubleSided { get => GetFloat("__funke.doubleSided") != 0; set => SetFloat("__funke.doubleSided", value ? 1 : 0); }
 
     /// <summary>0 = dielectric, 1 = metal.</summary>
     public float Metallic

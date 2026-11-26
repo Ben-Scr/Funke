@@ -102,4 +102,40 @@ Jolt is compiled without any `JPH_*` feature defines (no debug renderer, profile
 ## Limitations
 
 - Non-convex mesh shapes are limited to static and kinematic bodies; dynamic bodies use a convex hull. Custom OBJ/glTF meshes and runtime meshes are supported as described in [3D](3D.md#custom-meshes).
-- The built-in 3D API does not expose joints, a character controller or collision-layer masks. Collider outlines are available in the 3D Editor View.
+- The built-in 3D API does not expose joints or a character controller. Collision membership and the project layer matrix are supported; masked raycasts and sphere-overlap checks are supported. Collider outlines are available in the 3D Editor View.
+
+## Collision membership and query masks
+
+The project physics layer names and collision matrix apply to 3D contacts. Body
+membership comes from the body owner (the Rigidbody entity for a compound), not
+from each child collider. Matrix/membership changes invalidate the affected contact
+cache during synchronization. A query mask is a direct membership filter; it does
+not select a matrix row.
+
+C++ `PhysicsWorld3D::Raycast(origin, direction, distance, hit, layerMask,
+includeTriggers = false)` filters candidates before closest-hit selection. A nearer
+excluded body cannot hide a farther included body. The original overload includes
+all memberships and skips triggers. Zero masks return no hit. Call scene sync after
+membership edits; queries use the synchronized physics state. Hits still identify
+the child collider while filtering uses its body owner's membership.
+
+C# exposes the same body-owner filtering through `PhysicsLayer`:
+
+```csharp
+var enemies = PhysicsLayer.FromName("Enemy");
+bool blocked = Physics3D.Raycast(origin, direction, out var hit, enemies, 100f);
+bool overlaps = Physics3D.CheckSphere(center, 1f, enemies, includeTriggers: true);
+```
+
+`Raycast(Ray, out hit, layers, maxDistance, includeTriggers)` is also available.
+`CheckSphere(center, radius)` defaults to all memberships and excludes triggers.
+C++ uses `CheckSphere(center, radius, uint64_t mask, bool includeTriggers)`.
+Invalid/nonpositive radii, nonfinite coordinates and zero masks yield no overlap.
+An overlap is a boolean test; it does not allocate or return a collider collection.
+
+Freshly compiled native query regressions cover nearer excluded bodies, zero
+masks, live membership changes, triggers and compound owner/child membership.
+For a compound, a ray returns the child collider while both query types filter
+using the owner's mask. Managed tests additionally cover bit 63 and hit decoding.
+See [binding contracts](../Scripting/Binding-Contracts.md) for the coordinated
+layout change and required engine/ScriptCore rebuild.

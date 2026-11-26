@@ -1,0 +1,186 @@
+import System
+import System.Collections.Generic
+import System.Memory
+import System.Threading
+import System.Threading.Tasks
+namespace Funke;
+
+public struct SceneLoadProgress {
+public:
+    SceneLoadPhase Phase;
+    float Progress;
+    SceneLoadProgress(SceneLoadPhase phase, float progress) : Phase(phase), Progress(progress) {}
+    void Deconstruct(SceneLoadPhase& phase, float& progress) { phase = Phase; progress = Progress; }
+    bool Equals(SceneLoadProgress other) {
+        return Phase == other.Phase && (Progress == other.Progress || (Progress != Progress && other.Progress != other.Progress));
+    }
+    static bool operator ==(SceneLoadProgress a, SceneLoadProgress b) { return a.Equals(b); }
+    static bool operator !=(SceneLoadProgress a, SceneLoadProgress b) { return !a.Equals(b); }
+    int GetHashCode() {
+        int hash = -2128831035;
+        hash = FkNumberFormat.Hash(hash, Reinterpret<uint>((int)Phase));
+        hash = FkNumberFormat.Hash(hash, Progress != Progress ? Reinterpret<float>(2143289344u) : Progress);
+        return hash;
+    }
+    string ToString() {
+        return "SceneLoadProgress { Phase = " + (string)Phase + ", Progress = " + (string)Progress + " }";
+    }
+}
+
+public class PreloadedScene {
+private:
+    ulong operation, guid;
+public:
+    void FkBind(ulong id, ulong sceneGuid) { operation = id; guid = sceneGuid; }
+    Task<Scene?> ActivateAsync(LoadSceneMode mode = LoadSceneMode.Single, CancellationToken cancellationToken = default,
+                               Action<SceneLoadProgress>? progress = null) {
+        if (cancellationToken.IsCancellationRequested) return FkSceneLoads.Canceled<Scene?>();
+        if (!FkSceneLoads.TakePrepared(operation)) throw ObjectDisposedException("PreloadedScene");
+        if (FkSceneAccess.Call(FkNativeSlot.Scene_ActivatePreloaded, operation, mode == LoadSceneMode.Additive ? 1ul : 0ul) == 0ul) {
+            FkSceneAccess.Call(FkNativeSlot.Scene_CancelLoadAsync, operation);
+            return Task.FromResult<Scene?>(null);
+        }
+        return FkSceneLoads.Track(operation, guid, cancellationToken, progress);
+    }
+    void Dispose() {
+        if (FkSceneLoads.TakePrepared(operation)) FkSceneAccess.Call(FkNativeSlot.Scene_CancelLoadAsync, operation);
+    }
+}
+
+public class FkPendingLoad {
+public:
+    bool Preload;
+    ulong Guid;
+    Task<Scene?> LoadTask;
+    Task<PreloadedScene?> PrepareTask;
+    CancellationToken Token;
+    Action<SceneLoadProgress>? Progress;
+    bool CancelSent;
+    void Report(SceneLoadPhase phase, float value) {
+        if (Progress != null) {
+            try { Progress.Value.Invoke(SceneLoadProgress(phase, value)); }
+            catch (System.Exception& error) { Log.Error(error.Message); }
+        }
+    }
+    void Cancel() {
+        OperationCanceledException canceled("Scene operation canceled.");
+        if (Preload) { PrepareTask.SetCanceled(canceled); PrepareTask.Complete(); }
+        else { LoadTask.SetCanceled(canceled); LoadTask.Complete(); }
+    }
+}
+
+public static class FkSceneLoads {
+private:
+    static Dictionary<ulong, Shared<FkPendingLoad>> pending;
+    static Dictionary<ulong, bool> prepared;
+    static void RefreshWatch() { FkWatchSceneLoads(pending.Count != 0 || prepared.Count != 0 ? 1ul : 0ul, 0ul); }
+public:
+    static Task<T> Canceled<T>() {
+        Task<T> task = Task<T>.CreatePending();
+        OperationCanceledException canceled("Scene operation canceled.");
+        task.SetCanceled(canceled);
+        task.Complete();
+        return task;
+    }
+    static bool TakePrepared(ulong id) {
+        bool found = prepared.Remove(id);
+        if (found) FkOwnSceneLoad(id, 0ul);
+        RefreshWatch();
+        return found;
+    }
+    static Task<Scene?> Track(ulong id, ulong guid, CancellationToken token, Action<SceneLoadProgress>? progress) {
+        if (id == 0ul || FkOwnSceneLoad(id, 1ul) == 0ul) return Task.FromResult<Scene?>(null);
+        var request = Shared<FkPendingLoad>.Create();
+        request.Get().Guid = guid;
+        request.Get().Token = token;
+        request.Get().Progress = progress;
+        request.Get().LoadTask = Task<Scene?>.CreatePending();
+        pending.Add(id, request);
+        RefreshWatch();
+        return request.Get().LoadTask;
+    }
+    static Task<PreloadedScene?> Prepare(ulong id, ulong guid, CancellationToken token, Action<SceneLoadProgress>? progress) {
+        if (id == 0ul || FkOwnSceneLoad(id, 1ul) == 0ul) return Task.FromResult<PreloadedScene?>(null);
+        var request = Shared<FkPendingLoad>.Create();
+        request.Get().Preload = true;
+        request.Get().Guid = guid;
+        request.Get().Token = token;
+        request.Get().Progress = progress;
+        request.Get().PrepareTask = Task<PreloadedScene?>.CreatePending();
+        pending.Add(id, request);
+        RefreshWatch();
+        return request.Get().PrepareTask;
+    }
+    static void Dispatch(ulong eventId) {
+        if (eventId == 55ul) {
+            ulong[] ids = pending.Keys;
+            for (int i = 0; i < ids.Length; i++) {
+                ulong id = ids[i];
+                if (!pending.ContainsKey(id)) continue;
+                var request = pending.GetRef(id);
+                if (request.Get().Token.IsCancellationRequested && !request.Get().CancelSent) {
+                    request.Get().CancelSent = true;
+                    FkSceneAccess.Call(FkNativeSlot.Scene_CancelLoadAsync, id);
+                }
+                if (request.Get().Progress != null) {
+                    int phase = 0;
+                    float progress = 0.0f;
+                    if (FkSceneAccess.Call(FkNativeSlot.Scene_GetLoadProgress, id, FkNativeSlot.Pointer(&phase), FkNativeSlot.Pointer(&progress)) != 0ul)
+                        request.Get().Report((SceneLoadPhase)phase, progress);
+                }
+            }
+            return;
+        }
+        ulong id = FkEventWord(0ul, 0ul);
+        if (!pending.ContainsKey(id)) return;
+        var request = pending.GetRef(id);
+        pending.Remove(id);
+        if (!request.Get().Preload || eventId != 52ul) FkOwnSceneLoad(id, 0ul);
+        ulong guid = FkEventWord(1ul, 0ul);
+        if (guid == 0ul) guid = request.Get().Guid;
+        if (eventId == 54ul) request.Get().Cancel();
+        else if (request.Get().Preload) {
+            PreloadedScene? result = null;
+            if (eventId == 52ul) {
+                prepared.Add(id, true);
+                PreloadedScene scene;
+                scene.FkBind(id, guid);
+                result = scene;
+            }
+            request.Get().PrepareTask.SetResult(result);
+            request.Get().PrepareTask.Complete();
+            if (result != null) request.Get().Report(SceneLoadPhase.Ready, 1.0f);
+        } else {
+            Scene? result = null;
+            if (eventId == 52ul) {
+                Scene scene;
+                scene.Name = FunkeText.Read(FkEventText(0ul, 0ul));
+                scene.Guid = guid;
+                result = scene;
+            }
+            request.Get().LoadTask.SetResult(result);
+            request.Get().LoadTask.Complete();
+            if (result != null) request.Get().Report(SceneLoadPhase.Completed, 1.0f);
+        }
+        RefreshWatch();
+    }
+    static void CancelAll() {
+        ulong[] ids = pending.Keys;
+        for (int i = 0; i < ids.Length; i++) {
+            if (!pending.ContainsKey(ids[i])) continue;
+            var request = pending.GetRef(ids[i]);
+            pending.Remove(ids[i]);
+            FkOwnSceneLoad(ids[i], 0ul);
+            FkSceneAccess.Call(FkNativeSlot.Scene_CancelLoadAsync, ids[i]);
+            request.Get().Cancel();
+        }
+        ids = prepared.Keys;
+        prepared.Clear();
+        for (int i = 0; i < ids.Length; i++) {
+            FkOwnSceneLoad(ids[i], 0ul);
+            FkSceneAccess.Call(FkNativeSlot.Scene_CancelLoadAsync, ids[i]);
+        }
+        RefreshWatch();
+    }
+}
+

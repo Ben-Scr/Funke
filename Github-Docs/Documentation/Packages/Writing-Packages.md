@@ -234,18 +234,30 @@ The names and signatures **must match exactly** on both sides — there's no too
 
 ### C# wrappers for native components
 
+This example assumes that your native package exports `MyGame_Loot_GetDropChance(uint64_t)` returning `float` and `MyGame_Loot_SetDropChance(uint64_t, float)` returning `void`. Implement them against the component registered by your package. The `RollDrop` export above is a separate entry point.
+
 For `entity.GetComponent<LootDrop>()` and `AddComponent<LootDrop>()` on a component registered in C++, derive a wrapper from `Component`. The engine finds the component by the class name when it equals the serialized name; map the wrapper to the component's **display name** once, from a module initializer, so the script core also treats it as a native component (no managed field state) and name lookups such as `"Loot Drop"` resolve:
 
 ```csharp
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+using Funke;
 
 public class LootDrop : Component
 {
     public float DropChance
     {
-        get => Native.GetDropChance(RequireComponent<LootDrop>());   // RequireComponent returns Entity.ID
-        set => Native.SetDropChance(RequireComponent<LootDrop>(), value);
+        get => GetDropChance(RequireComponent<LootDrop>());   // RequireComponent returns Entity.ID
+        set => SetDropChance(RequireComponent<LootDrop>(), value);
     }
+
+    private const string Library = "Pkg.MyGame.Loot.Native";
+
+    [DllImport(Library, EntryPoint = "MyGame_Loot_GetDropChance", CallingConvention = CallingConvention.Cdecl)]
+    private static extern float GetDropChance(ulong entityId);
+
+    [DllImport(Library, EntryPoint = "MyGame_Loot_SetDropChance", CallingConvention = CallingConvention.Cdecl)]
+    private static extern void SetDropChance(ulong entityId, float value);
 }
 
 internal static class Registration

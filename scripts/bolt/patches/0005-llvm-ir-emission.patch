@@ -1,0 +1,110 @@
+diff --git a/src/native/IR.cpp b/src/native/IR.cpp
+--- a/src/native/IR.cpp
++++ b/src/native/IR.cpp
+@@ -3,7 +3,8 @@
+ #include <unordered_map>
+ #include <algorithm>
+ #include <bit>
+-#include <iomanip>
++#include <string_view>
++#include <utility>
+ #include <set>
+ #include <sstream>
+ #include <stdexcept>
+@@ -42,7 +43,23 @@
+ }
+ std::string dump(const Module& m) { return llvm_text(m,"",false); }
+ namespace {
+-std::string q(const std::string& s) {std::ostringstream o;o<<'"';for(unsigned char c:s){if(c>=32&&c<127&&c!='"'&&c!='\\')o<<static_cast<char>(c);else o<<'\\'<<std::hex<<std::setw(2)<<std::setfill('0')<<unsigned(c)<<std::dec;}return o.str()+'"';}
++std::string q(std::string_view bytes) {
++    constexpr char hex[] = "0123456789abcdef";
++    std::string quoted;
++    quoted.reserve(bytes.size() + 2);
++    quoted.push_back('"');
++    for (const unsigned char byte : bytes) {
++        if (byte >= 32 && byte < 127 && byte != '"' && byte != '\\') {
++            quoted.push_back(static_cast<char>(byte));
++        } else {
++            quoted.push_back('\\');
++            quoted.push_back(hex[byte >> 4]);
++            quoted.push_back(hex[byte & 15]);
++        }
++    }
++    quoted.push_back('"');
++    return quoted;
++}
+ std::string r(Reg v){return "%r"+std::to_string(v);}
+ std::string sym(const std::string& s){return "@"+s;}
+ std::string signature(Type result,const std::vector<Type>& args){std::string s=name(result);s+=" (";for(std::size_t j=0;j<args.size();++j){if(j)s+=", ";s+=name(args[j]);}return s+")";}
+@@ -158,17 +175,18 @@
+         o<<"$_fltused = comdat any\n@_fltused = weak_odr global i32 0, comdat, align 4\n";
+     }
+     for(const auto& g:m.globals){
++        const std::string_view bytes(reinterpret_cast<const char*>(g.bytes.data()), g.bytes.size());
+         if(g.relocations.empty()) {
+             o<<sym(g.name)<<" = internal "<<(g.writable?"global":"constant")<<" ["<<g.bytes.size()<<" x i8] c";
+-            o<<q(std::string(g.bytes.begin(),g.bytes.end()))<<", align "<<g.alignment<<"\n";
++            o<<q(bytes)<<", align "<<g.alignment<<"\n";
+         } else { // Pointer relocations are only used in descriptor/function tables.
+             o<<sym(g.name)<<" = internal "<<(g.writable?"global":"constant")<<" <{ ";
+             std::size_t pos=0;bool first=true;
+             for(const auto& rel:g.relocations){if(rel.offset<pos)throw std::runtime_error("overlapping IR relocations");if(rel.offset>pos){if(!first)o<<", ";o<<"["<<rel.offset-pos<<" x i8]";first=false;}if(!first)o<<", ";o<<"ptr";first=false;pos=rel.offset+8;}
+             if(pos<g.bytes.size()){if(!first)o<<", ";o<<"["<<g.bytes.size()-pos<<" x i8]";}
+             o<<" }> <{ ";pos=0;first=true;
+-            for(const auto& rel:g.relocations){if(rel.offset>pos){if(!first)o<<", ";o<<"["<<rel.offset-pos<<" x i8] c"<<q(std::string(g.bytes.begin()+static_cast<std::ptrdiff_t>(pos),g.bytes.begin()+static_cast<std::ptrdiff_t>(rel.offset)));first=false;}if(!first)o<<", ";o<<"ptr ";if(rel.addend)o<<"getelementptr (i8, ptr "<<sym(rel.symbol)<<", i64 "<<rel.addend<<")";else o<<sym(rel.symbol);first=false;pos=rel.offset+8;}
+-            if(pos<g.bytes.size()){if(!first)o<<", ";o<<"["<<g.bytes.size()-pos<<" x i8] c"<<q(std::string(g.bytes.begin()+static_cast<std::ptrdiff_t>(pos),g.bytes.end()));}o<<" }>, align "<<g.alignment<<"\n";
++            for(const auto& rel:g.relocations){if(rel.offset>pos){if(!first)o<<", ";o<<"["<<rel.offset-pos<<" x i8] c"<<q(bytes.substr(pos, rel.offset - pos));first=false;}if(!first)o<<", ";o<<"ptr ";if(rel.addend)o<<"getelementptr (i8, ptr "<<sym(rel.symbol)<<", i64 "<<rel.addend<<")";else o<<sym(rel.symbol);first=false;pos=rel.offset+8;}
++            if(pos<g.bytes.size()){if(!first)o<<", ";o<<"["<<g.bytes.size()-pos<<" x i8] c"<<q(bytes.substr(pos));}o<<" }>, align "<<g.alignment<<"\n";
+         }
+     }
+     // Match Clang's narrow C argument/return extension on Darwin. Bolt-to-Bolt
+@@ -322,6 +340,7 @@
+     };
+     std::size_t compile_unit=0;
+     if(debug){auto file=md("!DIFile(filename: \"Bolt\", directory: \".\")");compile_unit=md("distinct !DICompileUnit(language: DW_LANG_C_plus_plus, file: !"+std::to_string(file)+", producer: \"Bolt 0.4 native\", isOptimized: false, runtimeVersion: 0, emissionKind: LineTablesOnly)");}
++    std::string block_text;
+     for(const auto& f:m.functions){
+         o<<"\ndefine "<<(f.exported?"":"internal ")<<name(f.result)<<' '<<sym(f.name)<<'(';
+         for(std::size_t j=0;j<f.parameters.size();++j){if(j)o<<", ";o<<name(f.parameters[j])<<' '<<r(static_cast<Reg>(j+1));}
+@@ -335,10 +354,13 @@
+         if(debug)o<<" !dbg !"<<scope;o<<" {\n";
+         auto typed=[&](Reg v){return std::string(name(f.registers.at(v)))+" "+r(v);};
+         for(std::size_t b=0;b<f.blocks.size();++b){o<<"b"<<b<<":\n";
++            block_text.clear();
+             for(std::size_t j=0;j<f.blocks[b].code.size();++j){
+                 const auto& i=f.blocks[b].code[j];std::string suffix;
+                 if(debug){auto loc=md("!DILocation(line: "+std::to_string(std::max<std::size_t>(1,i.at.line))+", column: "+std::to_string(i.at.column)+", scope: !"+std::to_string(scope)+")");suffix=", !dbg !"+std::to_string(loc);}
+-                auto emit=[&](const std::string& s){o<<"  "<<s<<suffix<<'\n';};
++                auto emit = [&](std::string_view line) {
++                    block_text.append("  ").append(line).append(suffix).push_back('\n');
++                };
+                 auto dest=i.result?r(i.result)+" = ":"";
+                 auto ty=i.result?f.registers[i.result]:Type::Void;
+                 auto a=[&](std::size_t n){return r(i.args.at(n));};
+@@ -484,16 +506,21 @@
+                 case Op::Return:emit(i.args.empty()?"ret void":"ret "+typed(i.args[0]));break;
+                 }
+             }
++            o << block_text;
+         }
+         o<<"}\n";
+     }
+     for(const auto& s:intrinsic_declarations)o<<s<<'\n';
+-    if(debug){auto flags=md("!{i32 2, !\"Debug Info Version\", i32 3}");o<<"!llvm.dbg.cu = !{!"<<compile_unit<<"}\n!llvm.module.flags = !{!"<<flags<<"}\n";
+-        if(triple.find("windows")!=std::string::npos){auto cv=md("!{i32 2, !\"CodeView\", i32 1}"); // Append an additional flag via a separate named entry below.
+-            // Rebuild the named module-flags line rather than defining it twice.
+-            auto str=o.str();auto needle="!llvm.module.flags = !{!"+std::to_string(flags)+"}";auto at=str.find(needle);str.replace(at,needle.size(),"!llvm.module.flags = !{!"+std::to_string(flags)+", !"+std::to_string(cv)+"}");o.str("");o.clear();o<<str;}
++    if (debug) {
++        const auto flags = md("!{i32 2, !\"Debug Info Version\", i32 3}");
++        o << "!llvm.dbg.cu = !{!" << compile_unit << "}\n!llvm.module.flags = !{!" << flags;
++        if (triple.find("windows") != std::string::npos) {
++            const auto codeview = md("!{i32 2, !\"CodeView\", i32 1}");
++            o << ", !" << codeview;
++        }
++        o << "}\n";
+     }
+     for(std::size_t i=0;i<metadata.size();++i)o<<'!'<<i<<" = "<<metadata[i]<<'\n';
+-    return o.str();
++    return std::move(o).str();
+ }
+ } // namespace bolt::ir

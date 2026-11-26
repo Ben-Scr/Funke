@@ -1,4 +1,4 @@
-# Download and archive verification — November 2026
+# Download and archive verification â€” November 2026
 
 QAL-028 was checked on Windows x64 Release, from `4ed58316af85` plus the current working changes. This is a local adversarial verification, not a certification of every network provider or platform. The loopback fixtures never contact external services.
 
@@ -34,3 +34,25 @@ Sixteen native package-registration/output-path cases passed with 74 assertions,
 All four cached Windows prerequisites matched `installer/windows/dependencies.lock.json`: .NET SDK 10.0.403 (SHA-512), VC Redistributable x64/x86 14.51.36247.0 (SHA-256), Inno Setup 6.7.3 (SHA-256). Their Authenticode signatures were valid; `BuildInstaller.ps1` also requires the configured publisher. The five cached installer package archives matched their exact release versions and SHA-256 values in `installer/windows/packages.lock.json`. Hash verification protects against replaced release assets even when a hosting service permits replacement.
 
 Deliberately moving development inputs remain visible: registry discovery uses `main`, CI uses `10.0.x` and versioned action tags, and the ImGui submodule declares the `docking` tracking branch. Normal submodule checkout still uses the superproject's recorded gitlink commit. Discovery metadata is not equivalent to a locked archive hash. No dependency version, credential, signing policy or publication was changed by this verification.
+
+
+## Running extraction checks without a network server
+
+The fixture classes can be selected independently:
+
+```powershell
+python -m unittest scripts.ci.package_download_adversarial_test.PackageArchiveTests
+python -m unittest scripts.ci.package_download_adversarial_test.PackageTransferTests
+python -m unittest scripts.ci.package_download_adversarial_test.PackageFilesystemLinkTests
+```
+
+`PackageArchiveTests` runs nine local ZIP checks without creating a listening
+socket. `PackageTransferTests` retains the HTTP adversarial cases, including
+malformed archives delivered through registry installation. The separate link
+fixture creates an actual Windows junction and requires filesystem support;
+it is not counted as passed merely because the nine offline archive checks pass.
+The default script invocation still discovers all three groups.
+
+On 13 November, the nine offline checks passed again against a freshly built
+Release PackageTool. This rerun does not replace the earlier transfer, pin and
+junction evidence or constitute a new network/platform acceptance run.

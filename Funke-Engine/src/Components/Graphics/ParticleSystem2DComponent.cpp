@@ -8,6 +8,7 @@
 
 #include <Core/Time.hpp>
 #include "Graphics/ParticleQualityPolicy.hpp"
+#include "Jobs/ParallelFor.hpp"
 
 #if FUNKE_WITH_APPLICATION
 #include "Core/Application.hpp"
@@ -103,23 +104,40 @@ namespace Funke {
 		if (m_IsSimulating) {
 			const bool scaleOverLife = ParticleSettings.ScaleOverLifetime.Enabled;
 			const bool colorOverLife = ParticleSettings.ColorOverLifetime.Enabled;
-			for (auto& particle : m_Particles) {
-				if (ParticleSettings.UseGravity) {
-					particle.Velocity += ParticleSettings.Gravity * deltaTime;
+			if (!scaleOverLife && !colorOverLife) {
+				for (auto& particle : m_Particles) {
+					if (ParticleSettings.UseGravity) particle.Velocity += ParticleSettings.Gravity * deltaTime;
+					particle.Transform.Position += particle.Velocity * deltaTime;
 				}
+			} else {
+				auto integrate = [&](size_t begin, size_t end) {
+					for (auto& particle : std::span(m_Particles).subspan(begin, end - begin)) {
+						if (ParticleSettings.UseGravity) {
+							particle.Velocity += ParticleSettings.Gravity * deltaTime;
+						}
 
-				particle.Transform.Position += particle.Velocity * deltaTime;
+						particle.Transform.Position += particle.Velocity * deltaTime;
 
-				if (scaleOverLife || colorOverLife) {
-					const float age01 = particle.StartLifeTime > 0.f
-						? std::clamp(1.0f - particle.LifeTime / particle.StartLifeTime, 0.0f, 1.0f)
-						: 1.0f;
-					if (scaleOverLife) {
-						particle.Transform.Scale = particle.StartScale * ParticleSettings.ScaleOverLifetime.Evaluate(age01);
+						if (scaleOverLife || colorOverLife) {
+							const float age01 = particle.StartLifeTime > 0.f
+								? std::clamp(1.0f - particle.LifeTime / particle.StartLifeTime, 0.0f, 1.0f)
+								: 1.0f;
+							if (scaleOverLife) {
+								particle.Transform.Scale = particle.StartScale * ParticleSettings.ScaleOverLifetime.Evaluate(age01);
+							}
+							if (colorOverLife) {
+								particle.Color = particle.StartColor * ParticleSettings.ColorOverLifetime.Gradient.Evaluate(age01);
+							}
+						}
 					}
-					if (colorOverLife) {
-						particle.Color = particle.StartColor * ParticleSettings.ColorOverLifetime.Gradient.Evaluate(age01);
-					}
+
+				};
+				const int workers = JobSystem::GetWorkerCount();
+				if (JobSystem::CanParallelize(ParallelWorkload::Particles) && m_Particles.size() >= 8192) {
+					const size_t grain = std::max<size_t>(2048, (m_Particles.size() + workers * 2 - 1) / (workers * 2));
+					ParallelFor(0, m_Particles.size(), integrate, grain);
+				} else {
+					integrate(0, m_Particles.size());
 				}
 			}
 

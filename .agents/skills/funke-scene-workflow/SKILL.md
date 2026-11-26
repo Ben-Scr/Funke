@@ -1,6 +1,6 @@
 ---
 name: funke-scene-workflow
-description: Use when working with Funke scenes in engine/editor C++ — defining, loading, reloading, restarting, switching, saving, multi-scene setups, the load/unload lifecycle, scene events, or editor play-mode snapshot/restore. Triggers on "RegisterScene", "SceneDefinition", "OnLoadChecked", "SetAsStartupScene", "SetPersistent", "WithoutDefaultCamera2D", "TryLoadScene", "SceneLoadStatus", "LoadSceneAdditive", "ReloadScene / TryRestartScene", "ProjectSceneLoader", "SetActiveScene", "SceneSerializer LoadFromFile / SaveToFile", "staged swap", "CreateDetachedScene", "lifecycle suspended", "ScenePreStartEvent / ScenePostStopEvent", "play mode", "PreparePlayModeSnapshot", "RestoreEditorSceneAfterPlaymode", "EntityOrigin", "default camera", or work in `Funke-Engine/src/Scene/` and the editor's scene handling in `Funke-Editor/src/Systems/ImGuiEditorLayer*.cpp`. For C# `SceneManager.LoadScene` from game code see `funke-game-scripting`; for scene file fields see `funke-serialize-field`.
+description: "Change Funke scene lifecycle in engine or editor C++, including staged loads, additive scenes, restart, scene events and Play-mode snapshot restoration."
 ---
 
 # Scene Workflow
@@ -37,7 +37,7 @@ SceneManager::SetActiveScene("HUD");      // target for implicit entity creation
 SceneManager::UnloadScene("HUD");
 SceneManager::UnloadAllScenes(/*includePersistent*/ false);
 ```
-- `LoadScene`/`LoadSceneAdditive`/`ReloadScene` return `weak_ptr<Scene>` and hide the status; prefer the `Try*` forms.
+- The convenience load/reload methods return a `weak_ptr<Scene>` and hide the status. Prefer `Try*` when the outcome matters. Reacquire the scene after a swap because a saved raw pointer can refer to the old instance.
 - A failed single load leaves the previously loaded set intact (staged: the new scene is fully started before the old ones are released).
 - Loading from inside a load or an unload callback is rejected (`ReentrantLoad`).
 - Additive loads of the same name create multiple instances; lookups by name return the first.
@@ -99,16 +99,10 @@ Enter (`BeginPlayModeRequest` → `PreparePlayModeSnapshot` → `CompletePlayMod
 
 Stop (`RestoreEditorSceneAfterPlaymode`): stages every snapshot as a new suspended additive scene and validates names/IDs before suspending and releasing the play scenes. Staging failures leave Play active; suspension failures attempt to resume the live play scenes. Once those scenes are released, a later failure leaves Play stopped with recovered edit scenes loaded for inspection and an error shown; it cannot restore the released live gameplay state. Success re-applies captured C# fields, activates and commits the restored scenes, restores the active scene and selection, and re-marks previously dirty scenes dirty.
 
-Consequence: anything not serialized is lost on Stop, and anything that relies on in-memory edit-mode state across Play won't see it after Stop (scenes are new instances). See `funke-serialize-field`.
+After Stop, reacquire scene references and check that any field that should survive has a serializer. [Persisted fields](../funke-serialize-field/SKILL.md) covers round-trip tests.
 
 ## Tests (`Tests/Funke-Engine-Tests/src`, doctest)
 
 `SceneManagerFailureTests.cpp` (load statuses, rollback, reentrancy, persistent scenes, wrong-thread), `SceneExecutionContextTests.cpp` (implicit scene, enable/disable), `SceneIsolationTests.cpp`, `SceneManagerDefaultCameraTests.cpp`, `ApplicationLifecycleTests.cpp`, `SceneSerializerRoundTripTests.cpp` (file round-trips, rejected formats/headers). Pattern: headless `Application` subclass (`ApplicationConfig::Headless()`), `ConfigureScenes()`, assertions captured in `Start()`, `Application::Quit()`, checks after `Run()`. New test files: `scripts\dev\Test.ps1` builds via `Build.ps1`, which regenerates premake automatically.
 
-## Pitfalls
-
-- `SceneSerializer::LoadFromFile(*SceneManager::GetActiveScene(), path)` fails; use a definition with `OnLoadFromFile` and an owner-level scene swap.
-- Holding `Scene*` across a single load/reload: the old instance is destroyed. Re-query by name or keep the `weak_ptr`.
-- Relying on `Awake`/`Start` to mean "play started" in the editor.
-- Creating entities with `CreateRuntimeEntity` in an `OnLoad` callback and expecting them in the saved file.
-- Persistent scenes block entering Play in the editor.
+In editor tests, scene `Awake` and `Start` can occur in Edit mode. Exercise Play entry separately when the distinction matters.

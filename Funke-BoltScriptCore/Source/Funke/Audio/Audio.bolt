@@ -1,0 +1,47 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public class Audio {
+private:
+    ulong guid;
+public:
+    ulong UUID => guid;
+    ulong FkKind() { return 2ul; }
+    void FkSetGuid(ulong value) { guid = value; }
+    string Path => guid == 0ul ? "" : FunkeText.Read(FkAsset_GetPathBuffer(guid, 0ul));
+    string Name {
+        get {
+            if (guid == 0ul) return "(None)";
+            string name = FunkeText.Read(FkAsset_GetDisplayNameBuffer(guid, 0ul));
+            return name.Length == 0 ? "(Missing Asset)" : name;
+        }
+    }
+    static float MasterVolume { get { return Reinterpret<float>((uint)FkAudio_GetMasterVolume(0ul,0ul)); } set { FkAudio_SetMasterVolume((ulong)Reinterpret<uint>(value),0ul); } }
+    static bool PlayInBackground { get { return FkAudio_GetPlayInBackground(0ul,0ul) != 0ul; } set { FkAudio_SetPlayInBackground(value ? 1ul : 0ul,0ul); } }
+    static Audio? FromAssetUUID(ulong guid) { return AssetManager.LoadByGUID<Audio>(guid); }
+    bool IsValid => UUID != 0ul && FkService.Audio_LoadAsset(UUID) != 0;
+    void PlayOneShot(float volume = 1.0f) { if (UUID != 0ul) FkService.Audio_PlayOneShotAsset(UUID, volume); }
+    void PlayOneShotAt(Vector3 position, float volume = 1.0f, float minDistance = 1.0f, float maxDistance = 50.0f,
+        AudioRolloff rolloff = AudioRolloff.Logarithmic, float panning = 0.8f, float dopplerLevel = 0.0f) {
+        PlayOneShotAt(position, false, volume, minDistance, maxDistance, rolloff, panning, dopplerLevel);
+    }
+    void PlayOneShotAt(Vector3 position, bool hrtf, float volume = 1.0f, float minDistance = 1.0f, float maxDistance = 50.0f,
+        AudioRolloff rolloff = AudioRolloff.Logarithmic, float panning = 0.8f, float dopplerLevel = 0.0f) {
+        if (UUID == 0ul) return;
+        float[] args = {position.X, position.Y, position.Z, volume, minDistance, maxDistance, (float)(int)rolloff, panning, dopplerLevel, hrtf ? 1.0f : 0.0f};
+        FkService.Audio_PlayOneShotAt(UUID, &args[0], args.Length);
+    }
+    string ToString() { return Name; }
+    bool Equals(Audio? other) { return other != null && UUID == other.Value.UUID; }
+    int GetHashCode() { return Reinterpret<int>((uint)((UUID ^ (UUID >> 32)) & 4294967295ul)); }
+
+    static void PlayOneShotAt(Audio? clip, Vector3 position, float volume = 1.0f, float maxDistance = 50.0f) {
+        if (clip != null) clip.Value.PlayOneShotAt(position, volume, 1.0f, maxDistance);
+    }
+    static void PlayOneShotAt(Audio? clip, Vector3 position, bool hrtf, float volume = 1.0f, float maxDistance = 50.0f) {
+        if (clip != null) clip.Value.PlayOneShotAt(position, hrtf, volume, 1.0f, maxDistance);
+    }
+}

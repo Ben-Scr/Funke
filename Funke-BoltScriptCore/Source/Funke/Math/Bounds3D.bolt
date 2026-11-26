@@ -1,0 +1,49 @@
+import System
+import Math
+namespace Funke;
+
+public struct Bounds3D {
+public:
+    Bounds3D() {}
+    Vector3 Min;
+    Vector3 Max;
+    Bounds3D(Vector3 min, Vector3 max) {
+        Vector3.FkValidateFinite(min, "min");
+        Vector3.FkValidateFinite(max, "max");
+        if (min.X > max.X || min.Y > max.Y || min.Z > max.Z)
+            throw System.ArgumentException("Minimum exceeds maximum.");
+        Min = min;
+        Max = max;
+    }
+    bool Contains(Vector3 p) { return p.X >= Min.X && p.X <= Max.X && p.Y >= Min.Y && p.Y <= Max.Y && p.Z >= Min.Z && p.Z <= Max.Z; }
+    bool Intersects(Bounds3D other) { return Min.X <= other.Max.X && Max.X >= other.Min.X &&
+        Min.Y <= other.Max.Y && Max.Y >= other.Min.Y && Min.Z <= other.Max.Z && Max.Z >= other.Min.Z; }
+    Vector3 ClosestPoint(Vector3 point) { return Vector3(Mathf.Clamp(point.X, Min.X, Max.X),
+        Mathf.Clamp(point.Y, Min.Y, Max.Y), Mathf.Clamp(point.Z, Min.Z, Max.Z)); }
+    Bounds3D Encapsulate(Vector3 p) { return Bounds3D(
+        Vector3(Mathf.Min(Min.X, p.X), Mathf.Min(Min.Y, p.Y), Mathf.Min(Min.Z, p.Z)),
+        Vector3(Mathf.Max(Max.X, p.X), Mathf.Max(Max.Y, p.Y), Mathf.Max(Max.Z, p.Z))); }
+    Bounds3D Expand(float distance) {
+        if (!Mathf.FkFinite(distance) || distance < 0) throw System.ArgumentOutOfRangeException("distance");
+        Vector3 extent = Vector3(distance);
+        return Bounds3D(Min - extent, Max + extent);
+    }
+    bool TryRaycast(Ray ray, float& distance) {
+        Vector3 direction;
+        distance = 0;
+        if (!Vector3.FkIsFinite(ray.Origin) || !Vector3.TryNormalize(ray.Direction, direction)) return false;
+        double near = 0, far = (double)Mathf.Infinity;
+        if (!Clip(ray.Origin.X, direction.X, Min.X, Max.X, near, far) ||
+            !Clip(ray.Origin.Y, direction.Y, Min.Y, Max.Y, near, far) ||
+            !Clip(ray.Origin.Z, direction.Z, Min.Z, Max.Z, near, far) || near > 3.402823466e38f) return false;
+        distance = (float)near;
+        return true;
+    }
+    private static bool Clip(double origin, double direction, double min, double max, double& near, double& far) {
+        if (direction == 0) return origin >= min && origin <= max;
+        double t1 = (min - origin) / direction, t2 = (max - origin) / direction;
+        near = Math.Max<double>(near, Math.Min<double>(t1, t2));
+        far = Math.Min<double>(far, Math.Max<double>(t1, t2));
+        return near <= far;
+    }
+}

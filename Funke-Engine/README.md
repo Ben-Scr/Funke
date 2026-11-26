@@ -1,6 +1,6 @@
 # Funke-Engine
 
-The Funke engine static/shared library, implemented in C++20. **Funke supports game development in both C++ and C#.** This README specifically documents the public C++ application and SDK entry path for users who want to ship a game without the editor. For editor-based C++ and C# game development, see the [scripting guide](../Github-Docs/Documentation/Scripting/Scripting.md). For build setup, dependency installation, and submodule init see the top-level [README.md](../README.md).
+Funke is a C++20 engine. This guide covers the C++ application entry point and native SDK for games that supply their own application. Editor projects can use [C# and native C++ scripts](../Github-Docs/Documentation/Scripting/Scripting.md) and [Bolt scripts](../Github-Docs/Documentation/Scripting/Bolt.md). For dependencies and source builds, see the [repository setup instructions](../README.md#build-from-source).
 
 ## Quick start (for game developers)
 
@@ -138,7 +138,7 @@ Per-subsystem flags on `ApplicationConfig` (override individually after a factor
 | `EnablePhysics2D` | Skips `PhysicsSystem2D`; Box2D world is never created. |
 | `EnableAudio` | Skips miniaudio device init; `AudioSource` components are inert. |
 | `EnableScripting` | Skips CoreCLR + ScriptCore + user-assembly load. `ScriptSystem` still attaches but bails in `Awake`. |
-| `EnableRenderer2D` | Disables scene rendering, including Renderer3D despite the historical flag name. |
+| `EnableSceneRendering` | Enables scene rendering for both Renderer2D and Renderer3D. |
 | `AutoCreateDefaultCamera2D` | Disables the fallback; active camera-free scenes remain unchanged. |
 | `EnableTextureManager` | Skips `TextureManager::Initialize`/`Shutdown`. Window-icon falls back to Win32 resource. |
 | `EnablePackageHost` | Skips `PackageHost::LoadAll`. Native packages next to the exe are not discovered. |

@@ -35,7 +35,7 @@ internal static class DynamicComponentRegistrar
                 }
             }
             Log.Error($"DynamicComponentRegistrar: partial type load — {message}");
-            types = ex.Types ?? Array.Empty<Type?>();
+            throw new InvalidOperationException("Cannot register an incompletely loaded component assembly.", ex);
         }
 
         int registered = 0;
@@ -46,9 +46,7 @@ internal static class DynamicComponentRegistrar
             if (!typeof(IComponent).IsAssignableFrom(type)) continue;
 
             if (!TryRegisterStruct(type))
-            {
-                continue;
-            }
+                throw new InvalidOperationException($"Dynamic component registration failed for '{type.FullName}'.");
             ++registered;
         }
 

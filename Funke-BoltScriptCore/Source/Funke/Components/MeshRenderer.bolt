@@ -1,0 +1,43 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public class MeshRenderer : Component {
+public:
+    protected override ulong FkType() { return 23ul; }
+    PrimitiveMesh Mesh { get { return (PrimitiveMesh)FkMeshRenderer_GetMesh(ID, 0ul); } set { FkMeshRenderer_SetMesh(ID, (ulong)value); } }
+    Color Color { get { return FunkeApiTypes.DecodeColor(FkMeshRenderer_GetColor(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkMeshRenderer_SetColor(ID, value.LowBits()); } }
+    bool Lit { get { return (FkMeshRenderer_GetLit(ID, 0ul) != 0ul); } set { FkMeshRenderer_SetLit(ID, (value ? 1ul : 0ul)); } }
+    bool CastShadows { get { return (FkMeshRenderer_GetCastShadows(ID, 0ul) != 0ul); } set { FkMeshRenderer_SetCastShadows(ID, (value ? 1ul : 0ul)); } }
+    Funke.Material? Material { get { return Funke.Material.FromAssetUUID(FkMeshRenderer_GetMaterial(ID, 0ul)); } set { ulong guid = 0ul; if (value != null) guid = value.Value.UUID; FkMeshRenderer_SetMaterial(ID, guid); } }
+    Funke.Mesh? CustomMesh {
+        get { return Funke.Mesh.FromAssetUUID(FkMeshRenderer_GetCustomMesh(ID, 0ul)); }
+        set {
+            ulong guid = 0ul;
+            if (value != null) guid = value.Value.UUID;
+            FkMeshRenderer_SetCustomMesh(ID, guid);
+        }
+    }
+    int MaterialSlotCount => (int)FkSceneAccess.Call(FkNativeSlot.MeshRenderer_GetMaterialSlotCount, ID, 0ul);
+    private void CheckMaterialSlot(int slot) {
+        if (slot < 0 || slot >= MaterialSlotCount) throw System.ArgumentOutOfRangeException("slot");
+    }
+    string GetMaterialSlotName(int slot) {
+        CheckMaterialSlot(slot);
+        ulong[] args = {ID, 0ul, (ulong)slot, 0ul, 0ul};
+        return FkSceneAccess.Text(FkNativeSlot.MeshRenderer_GetMaterialSlotName, args);
+    }
+    Funke.Material? GetMaterialOverride(int slot) {
+        CheckMaterialSlot(slot);
+        return Funke.Material.FromAssetUUID(FkSceneAccess.Call(FkNativeSlot.MeshRenderer_GetMaterialSlotOverride, ID, 0ul, (ulong)slot));
+    }
+    void SetMaterialOverride(int slot, Funke.Material? material) {
+        CheckMaterialSlot(slot);
+        ulong guid = 0ul;
+        if (material != null) guid = material.Value.UUID;
+        if (FkSceneAccess.Call(FkNativeSlot.MeshRenderer_SetMaterialSlotOverride, ID, 0ul, (ulong)slot, guid) == 0ul)
+            throw System.InvalidOperationException("The model material slot is no longer available.");
+    }
+}

@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="robots" content="noindex,follow">
+  <meta name="description" content="Der originale Funke-Editor im Browser: 2D-Szenen, C#-Skripte, lokale Projekte und eigenständige Webspiele.">
+  <link rel="canonical" href="https://schneidertools.de/funke">
+  <title>Funke · Web Editor</title>
+  <link rel="icon" href="icon.png">
+  <link rel="stylesheet" href="browser.css">
+</head>
+<body>
+  <canvas id="canvas" tabindex="0" aria-label="Funke-Editor" oncontextmenu="event.preventDefault()"></canvas>
+  <div id="status" role="status">Funke und die C#-Laufzeit werden geladen …</div>
+  <nav id="web-tools" aria-label="Web-Editor">
+    <button id="scripts-open">C#-Skripte</button>
+    <button id="build-open">Webspiel exportieren</button>
+    <details id="web-help"><summary>Projekt &amp; Hilfe</summary><div class="help-body">
+      <h1>Funke im Browser</h1>
+      <p>Bearbeite die Szene im originalen Editor. ▶ startet das Spiel, ■ kehrt zur bearbeiteten Szene zurück. Strg+S speichert lokal in diesem Browser.</p>
+      <p>C# wird mit Roslyn im Browser kompiliert. Weise EntityScripts im Inspector oder über den Skript-Dialog einem Objekt zu. Öffne vorhandene Skripte auch per Doppelklick im Project-Bereich.</p>
+      <div class="actions"><button id="save">Speichern</button><button id="project-export">Projekt sichern</button><button id="project-import">Projekt öffnen</button></div>
+      <div class="actions"><button id="export">Szene exportieren</button><button id="import">Szene importieren</button><button id="assets-import">Assets importieren</button></div>
+      <p id="notice" role="status" aria-live="polite"></p>
+      <p>Projekt-ZIPs enthalten Szenen, Assets und Quellcode. Szenendateien allein enthalten keine externen Assets. Leere Browserdaten löschen lokale Projekte.</p>
+      <p>Desktop mit WebGPU erforderlich. Der Web-Export enthält die C#-Laufzeit und läuft auf statischem Webhosting. Native Erweiterungen, Desktop-/Mobil-Builds und Paketinstallation benötigen den Desktop-Editor.</p>
+      <a href="/">Zu Schneidertools</a>
+    </div></details>
+  </nav>
+  <dialog id="scripts-dialog" aria-labelledby="scripts-title">
+    <header><h2 id="scripts-title">C#-Skripte</h2><button class="close" aria-label="Skripte schließen">×</button></header>
+    <div class="script-toolbar"><select id="script-list" aria-label="Skriptdatei"></select><button id="script-new">Neu</button><button id="script-import">.cs importieren</button><span id="script-dirty"></span></div>
+    <label class="sr-only" for="script-code">C#-Quellcode</label><textarea id="script-code" spellcheck="false" autocomplete="off" autocapitalize="off" wrap="off"></textarea>
+    <pre id="compiler-output" role="status" aria-live="polite">Wähle ein Skript oder erstelle ein neues EntityScript.</pre>
+    <div class="attach-row"><label for="script-class">Klasse</label><input id="script-class" placeholder="PlayerController"><label for="script-entity">Objekt</label><select id="script-entity"></select><button id="script-attach">Zuweisen</button></div>
+    <footer><span>Strg+S speichert · Strg+Enter kompiliert</span><button id="script-save">Speichern</button><button class="primary" id="script-compile">Kompilieren</button></footer>
+  </dialog>
+  <dialog id="build-dialog" aria-labelledby="build-title">
+    <header><h2 id="build-title">Webspiel exportieren</h2><button class="close" aria-label="Export schließen">×</button></header>
+    <div class="build-body"><label for="game-title">Spielname</label><input id="game-title" value="Mein Funke-Spiel" maxlength="80">
+      <label for="startup-scene">Startszene</label><select id="startup-scene"></select>
+      <p>Das ZIP enthält dein eigenständig lauffähiges Spiel: Szenen, Assets, kompilierte C#-Skripte und Laufzeit. Der Editor wird beim Spielen nicht angezeigt.</p>
+      <p>ZIP entpacken und den gesamten Inhalt auf statisches Webhosting laden. Lokal mit dem enthaltenen Startskript öffnen; ein Doppelklick auf index.html genügt für WebAssembly nicht.</p>
+      <p id="build-status" role="status" aria-live="polite">Export als Webspiel mit WebGPU.</p>
+    </div><footer><button class="primary" id="game-export">Spiel als ZIP exportieren</button></footer>
+  </dialog>
+  <input id="scene-file" type="file" accept=".scene" hidden>
+  <input id="project-file" type="file" accept=".zip" hidden>
+  <input id="script-file" type="file" accept=".cs" multiple hidden>
+  <input id="asset-files" type="file" multiple hidden>
+  <noscript>Zum Starten des Editors muss JavaScript aktiviert sein.</noscript>
+  <script src="zip.js"></script>
+  <script type="module" src="boot.js"></script>
+</body>
+</html>

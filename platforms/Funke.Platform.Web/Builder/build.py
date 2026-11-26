@@ -54,6 +54,7 @@ def _bootstrap_sdk_path(engine_root: Path | None) -> None:
 
 _bootstrap_sdk_path(_engine_root_from_argv())
 
+from funke_platform_sdk.bolt_aot import prepare_bolt
 from funke_platform_sdk import (  # noqa: E402
     BuildRequest, BuilderError, emit_log, emit_progress, find_cmake, platform_cache, prepare_native_packages, run,
     run_builder, which,
@@ -238,6 +239,7 @@ def build(request: BuildRequest) -> Path:
     request.output_dir.mkdir(parents=True, exist_ok=True)
     work = platform_cache("Web", "work", hashlib.sha256(str(request.project_root.resolve()).encode()).hexdigest()[:10])
     set_log_file(work / "build.log")
+    bolt_args = prepare_bolt(request, work / "bolt", "web")
     emit_log(f"Build log: {work / 'build.log'}")
 
     ninja = find_ninja()
@@ -286,6 +288,7 @@ def build(request: BuildRequest) -> Path:
         f"-DFUNKE_CONFIGURATION={request.configuration}",
         f"-DFUNKE_ENTITY_BITS={request.entity_bits}",
         *request.cmake_module_args(),
+        *bolt_args,
         # DWARF makes the wasm 10x larger; function names for stack traces survive without it.
         "-DCMAKE_BUILD_TYPE=" + ("RelWithDebInfo" if _wants_debug_symbols(request) else "Release"),
     ]
@@ -337,6 +340,9 @@ def _build_managed(request: BuildRequest, toolchain: CMakeToolchain, cmake: Path
     archives += sorted(p for p in build_dir.glob("*.a") if p.name != "FunkeWeb.a")
     # Named like their [DllImport] library, so the relink resolves the package's P/Invokes from them.
     archives += [build_dir / "packages" / f"{target}.a" for target in package_targets]
+    for arg in args:
+        if arg.startswith("-DFUNKE_BOLT_RUNTIME=") and arg != "-DFUNKE_BOLT_RUNTIME=":
+            archives.append(Path(arg.split("=", 1)[1]))
     archives.append(sdl3 / "lib" / "libSDL3.a")
     missing = [a for a in archives if not a.is_file()]
     if missing:

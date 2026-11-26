@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "type": "ItemDefinition",
+  "fields": {
+    "Id": "plate",
+    "DisplayName": "Iron plate",
+    "Icon": "3799167722807270014",
+    "SpriteName": "plate"
+  }
+}

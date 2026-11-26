@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "type": "RecipeDefinition",
+  "fields": {
+    "Id": "belt",
+    "Result": "4823978683378489478",
+    "Amount": "2",
+    "Seconds": "0.6",
+    "CreativeOnly": "false",
+    "Ingredients": "\n\\n2353410425120650349\\n1\n\\n1758807086289073383\\n1"
+  }
+}

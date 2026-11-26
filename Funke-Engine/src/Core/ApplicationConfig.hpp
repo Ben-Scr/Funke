@@ -30,8 +30,8 @@
 #define FUNKE_DEFAULT_ENABLE_SCRIPTING 1
 #endif
 
-#ifndef FUNKE_DEFAULT_ENABLE_RENDERER_2D
-#define FUNKE_DEFAULT_ENABLE_RENDERER_2D 1
+#ifndef FUNKE_DEFAULT_ENABLE_SCENE_RENDERING
+#define FUNKE_DEFAULT_ENABLE_SCENE_RENDERING 1
 #endif
 
 #ifndef FUNKE_DEFAULT_ENABLE_TEXTURE_MANAGER
@@ -74,7 +74,7 @@ namespace Funke {
 		bool EnableAudio = FUNKE_DEFAULT_ENABLE_AUDIO != 0;
 		// Off: skips CoreCLR + ScriptCore + user-assembly setup; avoids holding a file lock on Funke-ScriptCore.dll (blocks editor rebuilds).
 		bool EnableScripting = FUNKE_DEFAULT_ENABLE_SCRIPTING != 0;
-		bool EnableRenderer2D = FUNKE_DEFAULT_ENABLE_RENDERER_2D != 0;
+		bool EnableSceneRendering = FUNKE_DEFAULT_ENABLE_SCENE_RENDERING != 0;
 		bool EnableTextureManager = FUNKE_DEFAULT_ENABLE_TEXTURE_MANAGER != 0;
 		bool EnableShaderManager = FUNKE_DEFAULT_ENABLE_SHADER_MANAGER != 0;
 		bool EnablePackageHost = FUNKE_DEFAULT_ENABLE_PACKAGE_HOST != 0;

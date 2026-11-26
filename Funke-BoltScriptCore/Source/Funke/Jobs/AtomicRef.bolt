@@ -1,0 +1,27 @@
+import System
+import System.Threading
+import System.Threading.Tasks
+namespace Funke.Jobs;
+
+public class AtomicRef<T> {
+private:
+    System.Memory.Shared<FkAtomicRefState<T>> state;
+public:
+    AtomicRef(){state=System.Memory.Shared<FkAtomicRefState<T>>.Create();}
+    AtomicRef(System.Memory.Shared<T> initialValue){state=System.Memory.Shared<FkAtomicRefState<T>>.Create();state.Get().Value=initialValue;}
+    System.Memory.Shared<T> Value {get {return Load();} set {Store(value);}}
+    System.Memory.Shared<T> Load(){state.Get().Gate.Lock();try{return state.Get().Value;}finally{state.Get().Gate.Unlock();}}
+    void Store(System.Memory.Shared<T> value){Exchange(value);}
+    System.Memory.Shared<T> Exchange(System.Memory.Shared<T> value){
+        state.Get().Gate.Lock();
+        try{var old=state.Get().Value;state.Get().Value=value;return old;}finally{state.Get().Gate.Unlock();}
+    }
+    System.Memory.Shared<T> CompareExchange(System.Memory.Shared<T> value,System.Memory.Shared<T> comparand){
+        state.Get().Gate.Lock();
+        try{var old=state.Get().Value;if(old.Borrow()==comparand.Borrow())state.Get().Value=value;return old;}finally{state.Get().Gate.Unlock();}
+    }
+    bool TrySetIfNull(System.Memory.Shared<T> value){
+        System.Memory.Shared<T> empty;
+        return !CompareExchange(value,empty).HasValue;
+    }
+}

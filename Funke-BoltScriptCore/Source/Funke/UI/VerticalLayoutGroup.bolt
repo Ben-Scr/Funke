@@ -1,0 +1,20 @@
+import Funke
+namespace Funke.UI;
+
+public class VerticalLayoutGroup : Component {
+public:
+    protected override ulong FkType() { return 46ul; }
+    float PaddingLeft { get { return Reinterpret<float>((uint)FkVerticalLayoutGroup_GetPaddingLeft(ID, 0ul)); } set { FkVerticalLayoutGroup_SetPaddingLeft(ID, (ulong)Reinterpret<uint>(value)); } }
+    float PaddingRight { get { return Reinterpret<float>((uint)FkVerticalLayoutGroup_GetPaddingRight(ID, 0ul)); } set { FkVerticalLayoutGroup_SetPaddingRight(ID, (ulong)Reinterpret<uint>(value)); } }
+    float PaddingTop { get { return Reinterpret<float>((uint)FkVerticalLayoutGroup_GetPaddingTop(ID, 0ul)); } set { FkVerticalLayoutGroup_SetPaddingTop(ID, (ulong)Reinterpret<uint>(value)); } }
+    float PaddingBottom { get { return Reinterpret<float>((uint)FkVerticalLayoutGroup_GetPaddingBottom(ID, 0ul)); } set { FkVerticalLayoutGroup_SetPaddingBottom(ID, (ulong)Reinterpret<uint>(value)); } }
+    float Spacing { get { return Reinterpret<float>((uint)FkVerticalLayoutGroup_GetSpacing(ID, 0ul)); } set { FkVerticalLayoutGroup_SetSpacing(ID, (ulong)Reinterpret<uint>(value)); } }
+    UIAlignment ChildAlignment { get { return (UIAlignment)FkVerticalLayoutGroup_GetChildAlignment(ID, 0ul); } set { FkVerticalLayoutGroup_SetChildAlignment(ID, (ulong)value); } }
+    bool ReverseArrangement { get { return (FkVerticalLayoutGroup_GetReverseArrangement(ID, 0ul) != 0ul); } set { FkVerticalLayoutGroup_SetReverseArrangement(ID, (value ? 1ul : 0ul)); } }
+    bool ControlChildWidth { get { return (FkVerticalLayoutGroup_GetControlChildWidth(ID, 0ul) != 0ul); } set { FkVerticalLayoutGroup_SetControlChildWidth(ID, (value ? 1ul : 0ul)); } }
+    bool ControlChildHeight { get { return (FkVerticalLayoutGroup_GetControlChildHeight(ID, 0ul) != 0ul); } set { FkVerticalLayoutGroup_SetControlChildHeight(ID, (value ? 1ul : 0ul)); } }
+    bool UseChildScaleWidth { get { return (FkVerticalLayoutGroup_GetUseChildScaleWidth(ID, 0ul) != 0ul); } set { FkVerticalLayoutGroup_SetUseChildScaleWidth(ID, (value ? 1ul : 0ul)); } }
+    bool UseChildScaleHeight { get { return (FkVerticalLayoutGroup_GetUseChildScaleHeight(ID, 0ul) != 0ul); } set { FkVerticalLayoutGroup_SetUseChildScaleHeight(ID, (value ? 1ul : 0ul)); } }
+    bool ChildForceExpandWidth { get { return (FkVerticalLayoutGroup_GetChildForceExpandWidth(ID, 0ul) != 0ul); } set { FkVerticalLayoutGroup_SetChildForceExpandWidth(ID, (value ? 1ul : 0ul)); } }
+    bool ChildForceExpandHeight { get { return (FkVerticalLayoutGroup_GetChildForceExpandHeight(ID, 0ul) != 0ul); } set { FkVerticalLayoutGroup_SetChildForceExpandHeight(ID, (value ? 1ul : 0ul)); } }
+}

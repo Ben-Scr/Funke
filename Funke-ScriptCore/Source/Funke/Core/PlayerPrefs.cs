@@ -10,7 +10,7 @@ namespace Funke;
 /// Stored as <c>prefs.json</c> in <see cref="Application.PersistentDataPath"/>; saved automatically on quit
 /// and when editor play mode stops. Use <see cref="SaveData"/> for larger structured save games.
 /// </summary>
-public static class PlayerPrefs
+public static unsafe class PlayerPrefs
 {
     internal const string FileName = "prefs.json";
     private const int FormatVersion = 1;
@@ -23,6 +23,28 @@ public static class PlayerPrefs
     private static Dictionary<string, Entry>? s_Values;
     private static bool s_Dirty;
     private static string? s_PathOverride;
+
+    private enum Operation { GetInt, GetFloat, GetString, SetInt, SetFloat, SetString, HasKey, DeleteKey, DeleteAll, Save }
+    private static bool UseNative => s_PathOverride == null && Interop.NativeCallbacks.Bindings.PlayerPrefs_Access != null;
+
+    private static int Access(Operation op, string key, ref ulong number, byte[]? buffer = null)
+    {
+        byte[] path = System.Text.Encoding.UTF8.GetBytes(GetPath() + "\0");
+        byte[] name = System.Text.Encoding.UTF8.GetBytes(key);
+        fixed (byte* p = path, k = name, text = buffer)
+        fixed (ulong* bits = &number)
+        {
+            int result = Interop.NativeCallbacks.Bindings.PlayerPrefs_Access(p, (int)op, k, name.Length, bits, text, buffer?.Length ?? 0);
+            if (result < -1) throw new IOException("Could not access player preferences.");
+            return result;
+        }
+    }
+
+    private static int Access(Operation op, string key = "")
+    {
+        ulong unused = 0;
+        return Access(op, key, ref unused);
+    }
 
     public static void SetInt(string key, long value) => Set(key, new Entry(ValueKind.Int, value, 0, null));
     public static void SetFloat(string key, double value) => Set(key, new Entry(ValueKind.Float, 0, value, null));
@@ -47,12 +69,14 @@ public static class PlayerPrefs
     public static bool HasKey(string key)
     {
         ValidateKey(key);
+        if (UseNative) return Access(Operation.HasKey, key) == 1;
         lock (s_Lock) return Load().ContainsKey(key);
     }
 
     public static void DeleteKey(string key)
     {
         ValidateKey(key);
+        if (UseNative) { Access(Operation.DeleteKey, key); return; }
         lock (s_Lock)
         {
             if (Load().Remove(key)) s_Dirty = true;
@@ -61,6 +85,7 @@ public static class PlayerPrefs
 
     public static void DeleteAll()
     {
+        if (UseNative) { Access(Operation.DeleteAll); return; }
         lock (s_Lock)
         {
             Load().Clear();
@@ -71,6 +96,7 @@ public static class PlayerPrefs
     /// <summary>Writes pending changes to disk now. Safe to call often; does nothing when nothing changed.</summary>
     public static void Save()
     {
+        if (UseNative) { Access(Operation.Save); return; }
         lock (s_Lock)
         {
             if (!s_Dirty || s_Values == null) return;
@@ -114,6 +140,13 @@ public static class PlayerPrefs
     private static void Set(string key, Entry entry)
     {
         ValidateKey(key);
+        if (UseNative)
+        {
+            ulong number = entry.Kind == ValueKind.Int ? unchecked((ulong)entry.Int) : BitConverter.DoubleToUInt64Bits(entry.Float);
+            byte[]? text = entry.Text == null ? null : System.Text.Encoding.UTF8.GetBytes(entry.Text);
+            Access((Operation)((int)Operation.SetInt + (int)entry.Kind), key, ref number, text);
+            return;
+        }
         lock (s_Lock)
         {
             Load()[key] = entry;
@@ -124,6 +157,20 @@ public static class PlayerPrefs
     private static bool TryGet(string key, ValueKind kind, out Entry entry)
     {
         ValidateKey(key);
+        if (UseNative)
+        {
+            ulong bits = 0;
+            int result = Access((Operation)kind, key, ref bits);
+            byte[]? buffer = null;
+            while (kind == ValueKind.String && result > (buffer?.Length ?? 0))
+            {
+                buffer = new byte[result];
+                result = Access(Operation.GetString, key, ref bits, buffer);
+            }
+            entry = result < 0 ? default : new Entry(kind, unchecked((long)bits), BitConverter.UInt64BitsToDouble(bits),
+                kind == ValueKind.String ? System.Text.Encoding.UTF8.GetString(buffer ?? Array.Empty<byte>(), 0, result) : null);
+            return result >= 0;
+        }
         lock (s_Lock)
         {
             return Load().TryGetValue(key, out entry) && entry.Kind == kind;

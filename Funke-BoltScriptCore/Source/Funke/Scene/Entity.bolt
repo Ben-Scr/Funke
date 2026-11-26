@@ -1,0 +1,386 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+class FkNativeLayout<T> {
+public:
+    static ulong Token;
+    static string BuiltInName() {
+        string type = Type.Name<T>();
+        if (type == "Funke.Native.NativeTransform2D") return "Transform 2D";
+        if (type == "Funke.Native.NativeSpriteRenderer") return "Sprite Renderer";
+        return "";
+    }
+    static ulong GetToken() {
+        if (Token==0ul) {
+            string name = BuiltInName();
+            FunkeText.Put(name.Length != 0 ? name : Type.Name<T>());
+            Token = FkNativeStructId((ulong)sizeof(T), name.Length != 0 ? 2ul : 1ul);
+        }
+        return Token;
+    }
+}
+
+class FkComponentNames {
+private:
+    static System.Collections.Generic.Dictionary<string,string> fullNames;
+    static System.Collections.Generic.Dictionary<string,string> shortNames;
+public:
+    static void Register<T>(string nativeName) {
+        string full = Type.Name<T>();
+        fullNames[full] = nativeName;
+        int dot = full.LastIndexOf(".");
+        string shortName = dot < 0 ? full : full.Substring(dot + 1);
+        if (!shortNames.ContainsKey(shortName) || shortNames.GetRef(shortName) == full)
+            shortNames[shortName] = full;
+        else
+            shortNames[shortName] = "";
+    }
+    static string Resolve(string name) {
+        if (fullNames.ContainsKey(name)) return fullNames.GetRef(name);
+        if (shortNames.ContainsKey(name)) {
+            string full = shortNames.GetRef(name);
+            if (full.Length != 0) return fullNames.GetRef(full);
+        }
+        return name;
+    }
+}
+
+class FkRegisteredComponent<T> {
+public:
+    static string Name;
+    static bool Access(ulong id, ulong slot) {
+        byte[] name = FkSceneAccess.CString(Name);
+        return FkSceneAccess.Call(slot, id, FkNativeSlot.Pointer(&name[0])) != 0ul;
+    }
+}
+
+// Script instances have module-local storage. Resolve the attachment each time so a
+// reference can survive an entity being destroyed or the script module reloading.
+public class EntityScriptRef {
+private:
+    ulong owner;
+    string identity;
+public:
+    static EntityScriptRef? FkFind(ulong id, string name) {
+        if (id == 0ul || name.Trim().Length == 0) return null;
+        FunkeText.Put(name);
+        ulong length = FkScriptReference(id, 1ul);
+        if (length == 0ul) return null;
+        EntityScriptRef result;
+        result.owner = id;
+        result.identity = FunkeText.Read(length);
+        return result;
+    }
+    Funke.Entity Entity => FunkeApiTypes.MakeEntity(owner);
+    bool IsValid { get { FunkeText.Put(identity); return FkScriptReference(owner, 2ul) != 0ul; } }
+    string Name { get { FunkeText.Put(identity); return FunkeText.Read(FkScriptReference(owner, 2ul)); } }
+}
+
+public class NamedComponentRef {
+private:
+    ulong owner;
+    string nativeName;
+public:
+    EntityScriptRef? Script;
+    Funke.Entity Entity => FunkeApiTypes.MakeEntity(owner);
+    bool IsValid {
+        get {
+            if (Script != null) return Script.Value.IsValid;
+            byte[] bytes = FkSceneAccess.CString(nativeName);
+            return FkSceneAccess.Call(FkNativeSlot.Entity_HasComponent, owner, FkNativeSlot.Pointer(&bytes[0])) != 0ul;
+        }
+    }
+    T? As<T>() {
+        if (Script != null) return null;
+        string typeName = Type.Name<T>();
+        string component = FkRegisteredComponent<T>.Name;
+        if (component.Length == 0) {
+            int dot = typeName.LastIndexOf(".");
+            component = (dot < 0 ? typeName : typeName.Substring(dot + 1)) + "Component";
+        }
+        byte[] expected = FkSceneAccess.CString(component);
+        byte[] actual = FkSceneAccess.CString(nativeName);
+        ulong key = FkSceneAccess.Call(FkNativeSlot.Component_GetTypeId, FkNativeSlot.Pointer(&expected[0]));
+        if (key == 0ul || key != FkSceneAccess.Call(FkNativeSlot.Component_GetTypeId, FkNativeSlot.Pointer(&actual[0]))) return null;
+        return Entity.GetComponent<T>();
+    }
+    static NamedComponentRef? FkFind(ulong id, string name) {
+        if (id == 0ul || name.Trim().Length == 0) return null;
+        NamedComponentRef result;
+        result.owner = id;
+        result.nativeName = FkComponentNames.Resolve(name);
+        if (result.IsValid) return result;
+        int dot = name.LastIndexOf(".");
+        result.nativeName = (dot < 0 ? name : name.Substring(dot + 1)) + "Component";
+        if (result.IsValid) return result;
+        result.Script = EntityScriptRef.FkFind(id, name);
+        if (result.Script == null) return null;
+        return result;
+    }
+}
+
+public class Entity {
+    public EntityRef ToCommandBufferRef(){if(ID==0ul)throw System.InvalidOperationException("Invalid entity.");EntityRef result;result.Live=ID;return result;}
+private:
+    ulong asset = 0ul;
+public:
+    ulong ID;
+    Entity(ulong id = 0ul) : ID(id) { Transform2D.ID = id; Transform3D.ID = id; }
+    string Name { get { return FunkeText.Read(FkNameComponent_GetNameBuffer(ID, 0ul)); } set { FkNameComponent_SetName(ID, FunkeText.Put(value)); } }
+    [Inline]
+    static Entity Create() { return Entity(FkCreateUnnamedEntity(0ul, 0ul)); }
+    static Entity Create(string name) {
+        if (name.ByteLength == 0) return Create();
+        return Entity(FkEntity_Create(FunkeText.Put(name), 0ul));
+    }
+    static Entity Create(Entity source) { return Instantiate(source); }
+    static Entity Create(string name, Entity? parent) {
+        Entity result = Create(name);
+        if (result.ID != 0ul) { result.AddComponent<Funke.Transform2D>(); result.SetParent(parent, false); }
+        return result;
+    }
+    static Entity Create(string name, Vector3 position, float rotation = 0.0f, Entity? parent = null) {
+        Entity result = Create(name);
+        if (result.ID != 0ul) {
+            result.AddComponent<Funke.Transform2D>();
+            result.Transform2D.Position = Vector2(position.X, position.Y);
+            FkTransform2D_SetRotation(result.ID, (ulong)Reinterpret<uint>(rotation));
+            if (parent != null) result.SetParent(parent, false);
+        }
+        return result;
+    }
+    static Entity FromID(ulong id) { return Entity(id); }
+    bool Equals(Entity? other) { return other != null && this == other.Value; }
+    int GetHashCode() {
+        ulong hash = ID ^ asset;
+        return Reinterpret<int>((uint)((hash ^ (hash >> 32)) & 4294967295ul));
+    }
+    PhysicsLayer Layer {
+        get {
+            if (asset != 0ul) return PhysicsLayer.None;
+            return PhysicsLayer.FromMask(FkSceneAccess.Call(FkNativeSlot.Entity_GetLayer, ID));
+        }
+        set {
+            if (asset != 0ul) throw InvalidOperationException("Set Layer on a scene entity or prefab instance.");
+            FkSceneAccess.Call(FkNativeSlot.Entity_SetLayer, ID, value.Mask);
+        }
+    }
+    Entity[] GetChildren() {
+        int count = ChildCount;
+        if (asset != 0ul || count <= 0) return new Entity[0];
+        ulong[] ids = new ulong[count];
+        int actual = (int)FkSceneAccess.Call(FkNativeSlot.Entity_GetChildren, ID, FkNativeSlot.Pointer(&ids[0]), (ulong)count);
+        System.Collections.Generic.List<Entity> result;
+        for (int i = 0; i < actual && i < count; ++i)
+            if (ids[i] != 0ul) result.Add(Entity(ids[i]));
+        return result.ToArray();
+    }
+    static void RegisterNativeComponent<T>(string nativeName) {
+        if (nativeName.Trim().Length == 0) throw ArgumentException("A native component name is required.");
+        FkComponentNames.Register<T>(nativeName);
+        FkRegisteredComponent<T>.Name = nativeName;
+    }
+    bool TryGetHandle<T>(ComponentHandle<T>& handle) {
+        handle = default;
+        if (asset != 0ul || ID == 0ul) return false;
+        string type = Type.Name<T>();
+        string builtIn = FkNativeLayout<T>.BuiltInName();
+        if (builtIn.Length != 0) return handle.FkCapture(ID, builtIn);
+        if (handle.FkCapture(ID, "bolt:" + type)) return true;
+        return handle.FkCapture(ID, "type:" + type);
+    }
+    ComponentHandle<T> GetHandle<T>() {
+        ComponentHandle<T> handle;
+        if (!TryGetHandle<T>(handle)) throw InvalidOperationException("Component is unavailable for checked access.");
+        return handle;
+    }
+    private static bool All(bool... values) {
+        for (bool value : values) if (!value) return false;
+        return true;
+    }
+    bool HasComponents<T...>() { return All(HasComponent<T>()...); }
+    private bool AddWrapper<T>() { return AddComponent<T>() != null; }
+    private void IgnoreAdded(bool... added) {}
+    static Entity CreateWith<T...>(string? name = null) {
+        Entity result = name != null ? Create(name.Value) : Create();
+        if (result.ID != 0ul) result.IgnoreAdded(result.AddWrapper<T>()...);
+        return result;
+    }
+    static Entity CreateWithNative<T...>(string? name = null) {
+        Entity result = name != null ? Create(name.Value) : Create();
+        if (result.ID != 0ul) result.IgnoreAdded(result.AddNativeComponent<T>()...);
+        return result;
+    }
+    static Entity? FromId(ulong id) { if (id == 0ul) return null; return Entity(id); }
+    static Entity? FindByName(string name) { return FromId(FkEntity_FindByName(FunkeText.Put(name), 0ul)); }
+    Entity? Parent => FromId(FkEntity_GetParent(ID, 0ul));
+    Entity? Child => GetChildAt(0);
+    Entity? GetChildAt(int index) {
+        if (index < 0) return null;
+        return FromId(FkEntity_GetChildAt(ID, (ulong)index));
+    }
+    ulong NativeId<T>() {
+        string builtIn = FkNativeLayout<T>.BuiltInName();
+        if (builtIn.Length != 0) {
+            FunkeText.Put(builtIn);
+            return FkNativeStructId((ulong)sizeof(T), 0ul);
+        }
+        FunkeText.Put("bolt:"+Type.Name<T>());
+        ulong id=FkNativeStructId((ulong)sizeof(T),0ul);
+        if(id!=0ul)return id;
+        FunkeText.Put("type:"+Type.Name<T>());
+        return FkNativeStructId((ulong)sizeof(T),0ul);
+    }
+    bool AddNativeComponent<T>() { ulong id=NativeId<T>(); return id!=0ul && FkNativeAdd(ID,id)!=0ul; }
+    bool HasNativeComponent<T>() { ulong id=NativeId<T>(); return id!=0ul && FkNativeHas(ID,id)!=0ul; }
+    bool RemoveNativeComponent<T>() { ulong id=NativeId<T>(); return id!=0ul && FkNativeRemove(ID,id)!=0ul; }
+    T* GetNativeComponent<T>() { return (T*)FkNativeStructAddress(ID,FkNativeLayout<T>.GetToken()*2ul); }
+    ReadOnlyComponentRef<T> GetNativeComponentReadOnly<T>() { T* value=(T*)FkNativeStructAddress(ID,FkNativeLayout<T>.GetToken()*2ul+1ul);return ReadOnlyComponentRef<T>(value); }
+    T& GetRefOrThrow<T>() {
+        T* value=GetNativeComponent<T>();
+        if(value==null) throw System.InvalidOperationException("Entity has no component "+Type.Name<T>());
+        return *value;
+    }
+    Funke.Native.NativeTransform2D& TransformRef { get { return GetRefOrThrow<Funke.Native.NativeTransform2D>(); } }
+    Funke.Native.NativeTransform2D TransformRefReadOnly {
+        get {
+            var p = (Funke.Native.NativeTransform2D*)FkNativeStructAddress(ID, FkNativeLayout<Funke.Native.NativeTransform2D>.GetToken() * 2ul + 1ul);
+            if (p == null) throw InvalidOperationException("Entity has no Transform 2D component.");
+            return *p;
+        }
+    }
+    static Entity Invalid => Entity(0ul);
+    ulong FkKind() { return 4ul; }
+    bool FkPrefabAsset() {return asset!=0ul;}
+    void FkSetGuid(ulong guid) { asset = guid; }
+    static Entity FromPrefabGUID(ulong guid) { Entity e; e.asset = guid; return e; }
+    bool IsValid => asset != 0ul || FkEntity_IsValid(ID, 0ul) != 0ul;
+    implicit bool() { return asset == 0ul ? FkEntity_IsValid(ID, 0ul) != 0ul : FkSceneAccess.Call(FkNativeSlot.Asset_IsValid, asset) != 0ul; }
+    EntityOrigin Origin => asset != 0ul ? EntityOrigin.Prefab : (EntityOrigin)FkEntity_GetOrigin(ID,0ul);
+    bool IsSceneEntity => Origin == EntityOrigin.Scene;
+    bool IsPrefabInstance => Origin == EntityOrigin.Prefab;
+    bool IsRuntime => Origin == EntityOrigin.Runtime;
+    static bool operator ==(Entity a, Entity b) { return a.ID == b.ID && a.asset == b.asset; }
+    static bool operator !=(Entity a, Entity b) { return !(a == b); }
+    bool SetParent(Entity? parent, bool worldPositionStays = true) {
+        ulong target = 0ul;
+        if (parent != null) target = parent.Value.ID;
+        FkWriteExtra(worldPositionStays ? 1ul : 0ul, 0ul);
+        return FkEntity_SetParent(ID, target) != 0ul;
+    }
+    void Destroy() { if (ID != 0ul) FkEntity_Destroy(ID, 0ul); }
+    void Destroy(float delay) { if (ID != 0ul) FkEntity_DestroyDelayed(ID, (ulong)Reinterpret<uint>(delay)); }
+    static void Destroy(Entity e) { e.Destroy(); }
+    static void Destroy(Entity e, float delay) { e.Destroy(delay); }
+    private static Entity CloneEntity(Entity source) {
+        if (source.ID == 0ul && source.asset == 0ul) return Invalid;
+        return Entity(source.asset != 0ul ? FkEntity_InstantiatePrefab(source.asset, 0ul) : FkEntity_Clone(source.ID, 0ul));
+    }
+    static Entity Instantiate(Entity source, Vector3 position, float rotation, Entity? parent = null) {
+        Entity result = CloneEntity(source);
+        if (result.ID != 0ul) {
+            if (parent != null) result.SetParent(parent, false);
+            result.Transform2D.Position = Vector2(position.X, position.Y);
+            result.Transform2D.Rotation = rotation;
+            FkEntity_CreateScriptInstances(result.ID, 0ul);
+        }
+        return result;
+    }
+    static Entity Instantiate(Entity source, Vector3 position) {
+        Entity result = CloneEntity(source);
+        if (result.ID != 0ul) {
+            result.Transform2D.Position = Vector2(position.X, position.Y);
+            FkEntity_CreateScriptInstances(result.ID, 0ul);
+        }
+        return result;
+    }
+    static Entity Instantiate(Entity source, float rotation) {
+        Entity result = CloneEntity(source);
+        if (result.ID != 0ul) {
+            result.Transform2D.Rotation = rotation;
+            FkEntity_CreateScriptInstances(result.ID, 0ul);
+        }
+        return result;
+    }
+    static Entity Instantiate(Entity source, Entity? parent = null) {
+        Entity result = CloneEntity(source);
+        ulong id = result.ID;
+        if (id != 0ul) {
+            if (parent != null) result.SetParent(parent, false);
+            FkEntity_CreateScriptInstances(id, 0ul);
+        }
+        return result;
+    }
+    static Entity Create2D(string name = "", Vector2 localPosition = Vector2(), float localRotationDegrees = 0.0f, Entity? parent = null) { return Spawn(null, name, false, Vector3(localPosition.X, localPosition.Y, 0.0f), Vector3(0.0f, 0.0f, localRotationDegrees), parent); }
+    static Entity Instantiate2D(Entity source, Vector2 localPosition = Vector2(), float localRotationDegrees = 0.0f, Entity? parent = null) { return Spawn(source, "", false, Vector3(localPosition.X, localPosition.Y, 0.0f), Vector3(0.0f, 0.0f, localRotationDegrees), parent); }
+    static Entity Create3D(string name = "", Vector3 localPosition = Vector3(), Vector3 localRotationDegrees = Vector3(), Entity? parent = null) { return Spawn(null, name, true, localPosition, localRotationDegrees, parent); }
+    static Entity Instantiate3D(Entity source, Vector3 localPosition = Vector3(), Vector3 localRotationDegrees = Vector3(), Entity? parent = null) { return Spawn(source, "", true, localPosition, localRotationDegrees, parent); }
+    private static Entity Spawn(Entity? source, string name, bool threeD, Vector3 position, Vector3 rotation, Entity? parent) {
+        if (parent != null && parent.Value.ID == 0ul) throw ArgumentException("A spawn parent must be a live entity");
+        Entity result;
+        if (source == null) result = Create(name);
+        else result = CloneEntity(source.Value);
+        if (result.ID == 0ul) return Invalid;
+        if (source == null) {
+            if (threeD) {
+                if (result.HasComponent<Funke.Transform2D>()) result.RemoveComponent<Funke.Transform2D>();
+                if (!result.HasComponent<Funke.Transform3D>()) result.AddComponent<Funke.Transform3D>();
+            } else {
+                if (result.HasComponent<Funke.Transform3D>()) result.RemoveComponent<Funke.Transform3D>();
+                if (!result.HasComponent<Funke.Transform2D>()) result.AddComponent<Funke.Transform2D>();
+            }
+        }
+        if (!(threeD ? result.HasComponent<Funke.Transform3D>() : result.HasComponent<Funke.Transform2D>()) || !result.SetParent(parent, false)) {
+            result.Destroy();
+            throw InvalidOperationException("Missing transform or invalid spawn parent");
+        }
+        if (threeD) {
+            result.Transform3D.LocalPosition = position;
+            result.Transform3D.Rotation = rotation;
+        } else {
+            result.Transform2D.LocalPosition = Vector2(position.X, position.Y);
+            result.Transform2D.LocalRotation = rotation.Z;
+        }
+        FkEntity_CreateScriptInstances(result.ID, 0ul);
+        return result;
+    }
+    bool IsEnabled { get { return ID != 0ul && FkEntity_GetIsEnabled(ID, 0ul) != 0ul; } set { if (ID != 0ul) FkEntity_SetIsEnabled(ID, value ? 1ul : 0ul); } }
+    bool IsStatic { get { return (FkEntity_GetIsStatic(ID, 0ul) != 0ul); } set { FkEntity_SetIsStatic(ID, (value ? 1ul : 0ul)); } }
+    bool IsEnabledInHierarchy => (FkEntity_GetIsEnabledInHierarchy(ID, 0ul) != 0ul);
+    int ChildCount => (int)(FkEntity_GetChildCount(ID, 0ul));
+    ulong SceneGUID => FkEntity_GetSceneGUID(ID, 0ul);
+    ulong PrefabGUID => asset != 0ul ? asset : FkEntity_GetPrefabGUID(ID, 0ul);
+    ulong RuntimeID => FkEntity_GetRuntimeID(ID, 0ul);
+    Transform2D Transform2D;
+    Transform3D Transform3D;
+    bool HasComponent<T>() {
+        if (FkRegisteredComponent<T>.Name.Length != 0) return FkRegisteredComponent<T>.Access(ID, FkNativeSlot.Entity_HasComponent);
+        T component;
+        return component.FkHas(ID);
+    }
+    EntityScriptRef? GetScript(string name) { return asset == 0ul ? EntityScriptRef.FkFind(ID, name) : null; }
+    NamedComponentRef? GetComponent(string name) { return asset == 0ul ? NamedComponentRef.FkFind(ID, name) : null; }
+    T? GetComponent<T>() {
+        T component;
+        if (!HasComponent<T>()) return null;
+        component.ID = ID;
+        return component;
+    }
+    bool TryGetComponent<T>(T?& component) { component = GetComponent<T>(); return component != null; }
+    T? AddComponent<T>() {
+        T component;
+        bool added = FkRegisteredComponent<T>.Name.Length != 0
+            ? FkRegisteredComponent<T>.Access(ID, FkNativeSlot.Entity_AddComponent) : component.FkAdd(ID);
+        if (!added && !HasComponent<T>()) return null;
+        component.ID = ID;
+        return component;
+    }
+    bool RemoveComponent<T>() {
+        if (FkRegisteredComponent<T>.Name.Length != 0) return FkRegisteredComponent<T>.Access(ID, FkNativeSlot.Entity_RemoveComponent);
+        T component;
+        return component.FkRemove(ID);
+    }
+}

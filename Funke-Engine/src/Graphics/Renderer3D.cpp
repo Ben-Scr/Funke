@@ -3,6 +3,7 @@
 #include "Graphics/Renderer3D.hpp"
 
 #include "Components/General/Transform3DComponent.hpp"
+#include "Components/General/HierarchyComponent.hpp"
 #include "Components/Graphics/Camera3DComponent.hpp"
 #include "Components/Graphics/DirectionalLightComponent.hpp"
 #include "Components/Graphics/MeshRendererComponent.hpp"
@@ -35,6 +36,7 @@
 #include "Graphics/Texture2D.hpp"
 #include "Graphics/TextureManager.hpp"
 #include "Graphics/TextureSampling.hpp"
+#include "Jobs/ParallelFor.hpp"
 #include "Profiling/Profiler.hpp"
 #include "Profiling/GpuTimer.hpp"
 #include "Scene/Scene.hpp"
@@ -52,6 +54,9 @@
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
+#include <bit>
+#include <deque>
+#include "Graphics/ImageProcessing.hpp"
 #include <limits>
 #include <optional>
 #include <unordered_map>
@@ -197,7 +202,7 @@ namespace Funke {
 
 		// Vertex streams of the "mesh" WGSL and custom mesh shaders: MeshVertex in slot 0, MeshInstance in slot 1.
 		struct MeshVertexStreams {
-			wgpu::VertexAttribute VertexAttributes[3] = {};
+			wgpu::VertexAttribute VertexAttributes[4] = {};
 			wgpu::VertexAttribute InstanceAttributes[k_InstanceVec4Count] = {};
 			wgpu::VertexBufferLayout Buffers[2] = {};
 
@@ -205,12 +210,13 @@ namespace Funke {
 				SetAttribute(VertexAttributes[0], wgpu::VertexFormat::Float32x3, offsetof(MeshVertex, Position), 0);
 				SetAttribute(VertexAttributes[1], wgpu::VertexFormat::Float32x3, offsetof(MeshVertex, Normal), 1);
 				SetAttribute(VertexAttributes[2], wgpu::VertexFormat::Float32x2, offsetof(MeshVertex, UV), 2);
+				SetAttribute(VertexAttributes[3], wgpu::VertexFormat::Float32x4, offsetof(MeshVertex, Tangent), 14);
 				for (uint32_t i = 0; i < k_InstanceVec4Count; ++i) {
 					SetAttribute(InstanceAttributes[i], wgpu::VertexFormat::Float32x4, static_cast<uint64_t>(i) * 16u, 3u + i);
 				}
 				Buffers[0].arrayStride = sizeof(MeshVertex);
 				Buffers[0].stepMode = wgpu::VertexStepMode::Vertex;
-				Buffers[0].attributeCount = 3;
+				Buffers[0].attributeCount = 4;
 				Buffers[0].attributes = VertexAttributes;
 				Buffers[1].arrayStride = sizeof(MeshInstance);
 				Buffers[1].stepMode = wgpu::VertexStepMode::Instance;
@@ -501,6 +507,7 @@ namespace Funke {
 			wgpu::Buffer Vertices;
 			wgpu::Buffer Indices;
 			uint32_t IndexCount = 0;
+			uint32_t FirstIndex = 0;
 			uint32_t VertexCount = 0;  // for the Tris/Verts statistics
 			// LineList edges, built on the first wireframe draw.
 			wgpu::Buffer WireIndices;
@@ -518,6 +525,7 @@ namespace Funke {
 			uint32_t IndexCount = 0;
 			uint32_t InstanceCount = 0;
 			uint32_t FirstInstance = 0;
+			uint32_t FirstIndex = 0;
 			bool operator==(const BundleDraw&) const = default;
 		};
 
@@ -535,7 +543,7 @@ namespace Funke {
 			void Group(uint32_t slot, WGPUBindGroup value) const { wgpuRenderPassEncoderSetBindGroup(Handle, slot, value, 0, nullptr); }
 			void Vertex(uint32_t slot, WGPUBuffer value) const { wgpuRenderPassEncoderSetVertexBuffer(Handle, slot, value, 0, WGPU_WHOLE_SIZE); }
 			void Index(WGPUBuffer value) const { wgpuRenderPassEncoderSetIndexBuffer(Handle, value, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE); }
-			void Draw(const BundleDraw& value) const { wgpuRenderPassEncoderDrawIndexed(Handle, value.IndexCount, value.InstanceCount, 0, 0, value.FirstInstance); }
+			void Draw(const BundleDraw& value) const { wgpuRenderPassEncoderDrawIndexed(Handle, value.IndexCount, value.InstanceCount, value.FirstIndex, 0, value.FirstInstance); }
 		};
 
 		struct RecordedDrawEncoder {
@@ -544,7 +552,7 @@ namespace Funke {
 			void Group(uint32_t slot, WGPUBindGroup value) const { wgpuRenderBundleEncoderSetBindGroup(Handle, slot, value, 0, nullptr); }
 			void Vertex(uint32_t slot, WGPUBuffer value) const { wgpuRenderBundleEncoderSetVertexBuffer(Handle, slot, value, 0, WGPU_WHOLE_SIZE); }
 			void Index(WGPUBuffer value) const { wgpuRenderBundleEncoderSetIndexBuffer(Handle, value, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE); }
-			void Draw(const BundleDraw& value) const { wgpuRenderBundleEncoderDrawIndexed(Handle, value.IndexCount, value.InstanceCount, 0, 0, value.FirstInstance); }
+			void Draw(const BundleDraw& value) const { wgpuRenderBundleEncoderDrawIndexed(Handle, value.IndexCount, value.InstanceCount, value.FirstIndex, 0, value.FirstInstance); }
 		};
 
 		template<class Encoder>
@@ -693,12 +701,39 @@ namespace Funke {
 			const MeshAsset* Asset = nullptr;
 			SkinnedEntry* Entry = nullptr;
 		};
+		struct PoseScratchData {
+			std::vector<glm::mat4> Nodes;
+			std::vector<NodePose> Current;
+			std::vector<NodePose> Previous;
+		};
+		struct PoseWork {
+			SkinnedEntry* Entry;
+			const MeshAsset* Asset;
+			uint64_t Model;
+			SkeletalPoseRequest Pose;
+		};
+		struct SkinnedCandidate {
+			EntityHandle Entity;
+			const SkinnedMeshRendererComponent* Renderer;
+			const MeshAsset* Asset;
+			SkinnedEntry* Entry;
+		};
+		struct PreparedTransform {
+			EntityHandle Entity;
+			glm::mat4 World;
+			glm::mat3 Normal;
+		};
 
 		struct CachedMaterialGroup {
 			wgpu::BindGroup Group;
-			wgpu::TextureView View;
+			std::chrono::steady_clock::time_point LastUse{};
 		};
-
+		struct MaterialUniforms { glm::vec4 Params; glm::vec4 Flags; };
+		struct ImportedTextures {
+			uint32_t Revision = 0;
+			std::vector<std::unique_ptr<Texture2D>> Values;
+			std::chrono::steady_clock::time_point LastUse{};
+		};
 		struct TextureEntry {
 			TextureHandle Handle;
 			std::chrono::steady_clock::time_point LastAttempt{};
@@ -778,9 +813,10 @@ namespace Funke {
 		std::array<glm::vec3, k_MeshTypeCount> MeshBoundsMax{};
 		std::unordered_map<uint64_t, CustomMeshEntry> CustomMeshes;
 		std::unordered_map<SkinnedKey, SkinnedEntry, SkinnedKeyHash> SkinnedMeshes;
-		std::vector<glm::mat4> PoseNodes;
-		std::vector<NodePose> PoseScratch;
-		std::vector<NodePose> PreviousPoseScratch;
+		std::vector<PoseScratchData> PoseScratch;
+		std::vector<PoseWork> PendingPoses;
+		std::vector<SkinnedCandidate> SkinnedCandidates;
+		std::vector<PreparedTransform> PreparedTransforms;
 		std::vector<SkinnedWork> FrameSkinning;
 		std::vector<SkinningCompute::Vertex> SkinSourceUpload;
 		wgpu::BindGroupLayout SkinLayout;
@@ -797,7 +833,11 @@ namespace Funke {
 		std::unordered_map<uint64_t, wgpu::RenderPipeline> LinePipelines;
 		std::unordered_map<uint64_t, wgpu::RenderPipeline> WirePipelines;
 		wgpu::RenderPipeline ShadowPipeline;
-		std::unordered_map<uint64_t, CachedMaterialGroup> MaterialGroups;
+		std::map<std::array<uint64_t, 14>, CachedMaterialGroup> MaterialGroups;
+		std::unordered_map<uint64_t, ImportedTextures> ModelTextures;
+		struct SubmeshBuffers { MeshBuffers Buffers; const MeshBuffers* Source; };
+		std::deque<SubmeshBuffers> FrameSubmeshes;
+		std::map<std::pair<size_t, uint32_t>, size_t> FrameSubmeshSlots;
 
 		CustomMaterialBindings CustomBindings;
 		std::vector<FrameCustom> FrameCustoms;
@@ -838,7 +878,8 @@ namespace Funke {
 		uint64_t ParticleSubmitSerial = UINT64_MAX;
 		uint64_t LineSubmitSerial = UINT64_MAX;
 		std::vector<MeshInstance> InstanceUpload;
-		std::vector<TextureHandle> FrameTextures;
+		struct StandardBinding { wgpu::BindGroup Group; bool DoubleSided = false; };
+		std::vector<StandardBinding> FrameTextures;
 		FrameLookup<uint32_t> FrameTextureSlots;
 		LightUniforms LightUpload{};
 
@@ -917,39 +958,69 @@ namespace Funke {
 			MaterialGroups.clear();
 		}
 
-		wgpu::BindGroup GetMaterialBindGroup(wgpu::Device device, TextureHandle handle) {
-			Texture2D* texture = TextureManager::GetTexture(handle);
-			if (!texture || !texture->IsValid()) return nullptr;
-			const auto lookup = WebGPUBackend::LookupTexture2D(texture->GetHandle());
-			if (!lookup.Valid || !lookup.View) return nullptr;
-			const Filter filter = texture->GetFilter();
-			const uint64_t samplerIndex = filter == Filter::Point ? 1u
-				: filter == Filter::Trilinear || filter == Filter::Anisotropic ? 2u : 0u;
-			const uint64_t key = (texture->GetHandle() << 2) | samplerIndex;
-
-			if (auto it = MaterialGroups.find(key); it != MaterialGroups.end()) {
-				if (it->second.View.Get() == lookup.View.Get()) return it->second.Group;
-				MaterialGroups.erase(it);
+		const std::vector<std::unique_ptr<Texture2D>>& ResolveModelTextures(uint64_t guid, const MeshAsset& asset) {
+			auto& cached = ModelTextures[guid];
+			cached.LastUse = std::chrono::steady_clock::now();
+			if (cached.Revision != asset.Revision) {
+				// Cached groups and bundles own texture views too: retire all owners on a model reload.
+				MaterialGroups.clear(); ShadowDrawBundle.Reset(); ColorDrawBundle.Reset();
+				cached.Values.clear();
+				cached.Values.resize(asset.Textures.size());
+				for (size_t i = 0; i < asset.Textures.size(); ++i) {
+					const auto& source = asset.Textures[i];
+					if (!source.Image) continue;
+					auto texture = std::make_unique<Texture2D>();
+					texture->SetSampler(source.Filtering, source.WrapU, source.WrapV);
+					if (texture->LoadFromImage(*source.Image, "glTF:" + std::to_string(guid) + ":" + std::to_string(i), true, false, false))
+						cached.Values[i] = std::move(texture);
+				}
+				cached.Revision = asset.Revision;
 			}
+			return cached.Values;
+		}
 
-			wgpu::BindGroupEntry entries[2] = {};
-			entries[0].binding = 0;
-			entries[0].textureView = lookup.View;
-			entries[1].binding = 1;
-			entries[1].sampler = samplerIndex == 1 ? PointRepeatSampler
-				: samplerIndex == 2 ? AnisotropicRepeatSampler : LinearRepeatSampler;
-
+		wgpu::BindGroup GetMaterialBindGroup(wgpu::Device device, const std::array<uint64_t, 5>& textures, const Material& material) {
+			auto* white = TextureManager::GetTexture(TextureManager::GetDefaultTexture(DefaultTexture::Pixel));
+			if (!white) return nullptr;
+			std::array<WebGPUBackend::TextureLookup, 5> lookups;
+			std::array<uint64_t, 14> key{};
+			bool normalAvailable = false;
+			wgpu::BindGroupEntry entries[11] = {};
+			for (size_t i = 0; i < textures.size(); ++i) {
+				lookups[i] = WebGPUBackend::LookupTexture2D(textures[i]);
+				if (i == 1) normalAvailable = lookups[i].Valid;
+				if (!lookups[i].Valid) lookups[i] = WebGPUBackend::LookupTexture2D(white->GetHandle());
+				if (!lookups[i].Valid) return nullptr;
+				const auto sampler = lookups[i].SceneSampler ? lookups[i].SceneSampler : lookups[i].Sampler;
+				key[i * 2] = reinterpret_cast<uintptr_t>(lookups[i].View.Get());
+				key[i * 2 + 1] = reinterpret_cast<uintptr_t>(sampler.Get());
+				entries[i * 2].binding = static_cast<uint32_t>(i * 2);
+				entries[i * 2].textureView = lookups[i].View;
+				entries[i * 2 + 1].binding = static_cast<uint32_t>(i * 2 + 1);
+				entries[i * 2 + 1].sampler = sampler;
+			}
+			const MaterialUniforms uniforms{
+				{ material.AlphaCutoff, normalAvailable ? material.NormalScale : 0.0f, material.OcclusionStrength, 0.0f },
+				{ material.LinearColorFactors ? 1.0f : 0.0f, material.DoubleSided ? 1.0f : 0.0f, 0.0f, 0.0f } };
+			key[10] = std::bit_cast<uint32_t>(uniforms.Params.x);
+			key[11] = std::bit_cast<uint32_t>(uniforms.Params.y);
+			key[12] = std::bit_cast<uint32_t>(uniforms.Params.z);
+			key[13] = (material.LinearColorFactors ? 1u : 0u) | (material.DoubleSided ? 2u : 0u);
+			const auto now = std::chrono::steady_clock::now();
+			if (auto it = MaterialGroups.find(key); it != MaterialGroups.end()) {
+				it->second.LastUse = now;
+				return it->second.Group;
+			}
+			auto buffer = CreateBufferWithData(device, wgpu::BufferUsage::Uniform, &uniforms, sizeof(uniforms), "renderer3d-material-options");
+			entries[10].binding = 10; entries[10].buffer = buffer; entries[10].size = sizeof(uniforms);
 			wgpu::BindGroupDescriptor desc{};
-			desc.layout = MaterialLayout;
-			desc.entryCount = 2;
-			desc.entries = entries;
+			desc.layout = MaterialLayout; desc.entryCount = 11; desc.entries = entries;
 			desc.label = "renderer3d-material-bg";
-			wgpu::BindGroup group = device.CreateBindGroup(&desc);
-			if (group) MaterialGroups.emplace(key, CachedMaterialGroup{ group, lookup.View });
+			auto group = device.CreateBindGroup(&desc);
+			if (group) MaterialGroups.emplace(key, CachedMaterialGroup{ group, now });
 			return group;
 		}
 
-		// GPU copy of a mesh asset, re-uploaded when MeshLibrary reloaded it; nullptr when the upload failed.
 		const MeshBuffers* ResolveCustomMesh(wgpu::Device device, uint64_t guid, const MeshAsset& asset, bool wireframe) {
 			CustomMeshEntry& entry = CustomMeshes[guid];
 			entry.LastUsed = std::chrono::steady_clock::now();
@@ -1002,22 +1073,43 @@ namespace Funke {
 			const SkinnedMeshData& data = *asset.Skin;
 			const SkeletalPoseRequest pose = SkinnedMeshAnimationSystem::GetDrawnPose(renderer, data);
 			if (!entry.PoseValid || entry.Model != renderer.Model || entry.Revision != asset.Revision || !(entry.Pose == pose)) {
-				FUNKE_PROFILE_SCOPE("Renderer3D.SkinningPose");
-				SkeletalAnimation::EvaluatePose(data, pose, PoseNodes, PoseScratch, PreviousPoseScratch);
-				SkeletalAnimation::ComputeJointMatrices(data, PoseNodes, entry.Joints);
-				entry.Cullable = SkeletalAnimation::PosedBounds(data, entry.Joints, entry.BoundsMin, entry.BoundsMax);
-				if (!entry.Cullable) {
-					entry.BoundsMin = asset.BoundsMin;
-					entry.BoundsMax = asset.BoundsMax;
-				}
-				entry.Model = renderer.Model;
-				entry.Revision = asset.Revision;
-				entry.Pose = pose;
-				entry.PoseValid = true;
-				entry.VerticesDirty = true;
+				PendingPoses.push_back({ &entry, &asset, renderer.Model, pose });
 			}
 			entry.Buffers.VertexCount = static_cast<uint32_t>(data.BindVertices.size());
 			return entry;
+		}
+
+		void EvaluatePendingPoses() {
+			if (PendingPoses.empty()) return;
+			const bool parallel = PendingPoses.size() >= 64 && JobSystem::CanParallelize(ParallelWorkload::SkeletalPoses);
+			const size_t grain = parallel ? 32 : PendingPoses.size();
+			const size_t chunks = (PendingPoses.size() + grain - 1) / grain;
+			if (PoseScratch.size() < chunks) PoseScratch.resize(chunks);
+			auto evaluate = [&](size_t chunk) {
+				auto& scratch = PoseScratch[chunk];
+				const size_t end = std::min((chunk + 1) * grain, PendingPoses.size());
+				for (size_t i = chunk * grain; i < end; ++i) {
+					const auto& work = PendingPoses[i];
+					auto& entry = *work.Entry;
+					const auto& asset = *work.Asset;
+					const auto& data = *asset.Skin;
+					FUNKE_PROFILE_SCOPE("Renderer3D.SkinningPose");
+					SkeletalAnimation::EvaluatePose(data, work.Pose, scratch.Nodes, scratch.Current, scratch.Previous);
+					SkeletalAnimation::ComputeJointMatrices(data, scratch.Nodes, entry.Joints);
+					entry.Cullable = SkeletalAnimation::PosedBounds(data, entry.Joints, entry.BoundsMin, entry.BoundsMax);
+					if (!entry.Cullable) {
+						entry.BoundsMin = asset.BoundsMin;
+						entry.BoundsMax = asset.BoundsMax;
+					}
+					entry.Model = work.Model;
+					entry.Revision = asset.Revision;
+					entry.Pose = work.Pose;
+					entry.PoseValid = true;
+					entry.VerticesDirty = true;
+				}
+			};
+			if (parallel) ParallelFor(0, chunks, evaluate, 1);
+			else evaluate(0);
 		}
 
 		bool EnsureSkinPipeline(wgpu::Device device) {
@@ -1158,8 +1250,8 @@ namespace Funke {
 		}
 
 		// Transparent: straight-alpha blending, depth tested but not written so later transparent surfaces still show.
-		wgpu::RenderPipeline GetMeshPipeline(wgpu::Device device, wgpu::TextureFormat colorFormat, uint32_t sampleCount, bool transparent) {
-			const uint64_t key = ScenePipelineKey(colorFormat, sampleCount, transparent ? 1u : 0u);
+		wgpu::RenderPipeline GetMeshPipeline(wgpu::Device device, wgpu::TextureFormat colorFormat, uint32_t sampleCount, bool transparent, bool doubleSided = false) {
+			const uint64_t key = ScenePipelineKey(colorFormat, sampleCount, (transparent ? 1u : 0u) | (doubleSided ? 2u : 0u));
 			if (auto it = MeshPipelines.find(key); it != MeshPipelines.end()) {
 				return it->second;
 			}
@@ -1201,7 +1293,7 @@ namespace Funke {
 			desc.fragment = &fragment;
 			desc.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
 			desc.primitive.frontFace = wgpu::FrontFace::CCW;
-			desc.primitive.cullMode = wgpu::CullMode::Back;
+			desc.primitive.cullMode = doubleSided ? wgpu::CullMode::None : wgpu::CullMode::Back;
 			desc.depthStencil = &depth;
 			desc.multisample.count = sampleCount;
 			desc.multisample.mask = 0xFFFFFFFF;
@@ -1447,22 +1539,7 @@ namespace Funke {
 		wgpu::RenderPipeline GetShadowPipeline(wgpu::Device device) {
 			if (ShadowPipeline) return ShadowPipeline;
 
-			wgpu::VertexAttribute vertexAttribute{};
-			SetAttribute(vertexAttribute, wgpu::VertexFormat::Float32x3, offsetof(MeshVertex, Position), 0);
-			wgpu::VertexAttribute instanceAttributes[4] = {};
-			for (uint32_t i = 0; i < 4; ++i) {
-				SetAttribute(instanceAttributes[i], wgpu::VertexFormat::Float32x4, static_cast<uint64_t>(i) * 16u, 1u + i);
-			}
-
-			wgpu::VertexBufferLayout buffers[2] = {};
-			buffers[0].arrayStride = sizeof(MeshVertex);
-			buffers[0].stepMode = wgpu::VertexStepMode::Vertex;
-			buffers[0].attributeCount = 1;
-			buffers[0].attributes = &vertexAttribute;
-			buffers[1].arrayStride = sizeof(MeshInstance);
-			buffers[1].stepMode = wgpu::VertexStepMode::Instance;
-			buffers[1].attributeCount = 4;
-			buffers[1].attributes = instanceAttributes;
+			const MeshVertexStreams streams;
 
 			wgpu::DepthStencilState depth{};
 			depth.format = k_ShadowFormat;
@@ -1476,7 +1553,10 @@ namespace Funke {
 			desc.vertex.module = ShadowModule;
 			desc.vertex.entryPoint = "vs_main";
 			desc.vertex.bufferCount = 2;
-			desc.vertex.buffers = buffers;
+			desc.vertex.buffers = streams.Buffers;
+			wgpu::FragmentState fragment{};
+			fragment.module = ShadowModule; fragment.entryPoint = "fs_main";
+			desc.fragment = &fragment;
 			desc.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
 			// Planes are single-sided; culling either face would drop them from the map.
 			desc.primitive.cullMode = wgpu::CullMode::None;
@@ -1752,15 +1832,18 @@ namespace Funke {
 			gpu.FrameLayout = CreateLayout(device, entries, 4, "renderer3d-frame-bgl");
 		}
 		{
-			wgpu::BindGroupLayoutEntry entries[2] = {};
-			entries[0].binding = 0;
-			entries[0].visibility = wgpu::ShaderStage::Fragment;
-			entries[0].texture.sampleType = wgpu::TextureSampleType::Float;
-			entries[0].texture.viewDimension = wgpu::TextureViewDimension::e2D;
-			entries[1].binding = 1;
-			entries[1].visibility = wgpu::ShaderStage::Fragment;
-			entries[1].sampler.type = wgpu::SamplerBindingType::Filtering;
-			gpu.MaterialLayout = CreateLayout(device, entries, 2, "renderer3d-material-bgl");
+			wgpu::BindGroupLayoutEntry entries[11] = {};
+			for (uint32_t i = 0; i < 5; ++i) {
+				entries[i * 2].binding = i * 2;
+				entries[i * 2].visibility = wgpu::ShaderStage::Fragment;
+				entries[i * 2].texture.sampleType = wgpu::TextureSampleType::Float;
+				entries[i * 2].texture.viewDimension = wgpu::TextureViewDimension::e2D;
+				entries[i * 2 + 1].binding = i * 2 + 1;
+				entries[i * 2 + 1].visibility = wgpu::ShaderStage::Fragment;
+				entries[i * 2 + 1].sampler.type = wgpu::SamplerBindingType::Filtering;
+			}
+			entries[10] = UniformEntry(10, sizeof(GpuState::MaterialUniforms), wgpu::ShaderStage::Fragment);
+			gpu.MaterialLayout = CreateLayout(device, entries, 11, "renderer3d-material-bgl");
 		}
 		const wgpu::BindGroupLayoutEntry skyEntry = UniformEntry(0, sizeof(SkyUniforms), wgpu::ShaderStage::Vertex | wgpu::ShaderStage::Fragment);
 		const wgpu::BindGroupLayoutEntry shadowEntry = UniformEntry(0, sizeof(glm::mat4), wgpu::ShaderStage::Vertex);
@@ -1774,7 +1857,8 @@ namespace Funke {
 		const wgpu::BindGroupLayout meshLayouts[2] = { gpu.FrameLayout, gpu.MaterialLayout };
 		gpu.MeshPipelineLayout = CreatePipelineLayout(device, meshLayouts, 2, "renderer3d-mesh-layout");
 		gpu.SkyPipelineLayout = CreatePipelineLayout(device, &gpu.SkyLayout, 1, "renderer3d-sky-layout");
-		gpu.ShadowPipelineLayout = CreatePipelineLayout(device, &gpu.ShadowLayout, 1, "renderer3d-shadow-layout");
+		const wgpu::BindGroupLayout shadowLayouts[] = { gpu.ShadowLayout, gpu.MaterialLayout };
+		gpu.ShadowPipelineLayout = CreatePipelineLayout(device, shadowLayouts, 2, "renderer3d-shadow-layout");
 		gpu.LinePipelineLayout = CreatePipelineLayout(device, &gpu.LineLayout, 1, "renderer3d-line-layout");
 		gpu.WirePipelineLayout = CreatePipelineLayout(device, &gpu.FrameLayout, 1, "renderer3d-wire-layout");
 
@@ -1900,8 +1984,14 @@ namespace Funke {
 		GpuState& gpu = *m_Gpu;
 		gpu.FrameMeshes.clear();
 		gpu.FrameSkinning.clear();
+		gpu.FrameTextures.clear();
+		gpu.FrameSubmeshes.clear();
+		gpu.FrameSubmeshSlots.clear();
 		const auto now = std::chrono::steady_clock::now();
 		const size_t before = gpu.CustomMeshes.size() + gpu.SkinnedMeshes.size();
+		const size_t removedMaterials = std::erase_if(gpu.MaterialGroups, [&](const auto& value) { return now - value.second.LastUse >= maxIdle; });
+		const size_t removedTextures = std::erase_if(gpu.ModelTextures, [&](const auto& value) { return now - value.second.LastUse >= maxIdle; });
+		if (removedTextures) gpu.MaterialGroups.clear();
 		for (auto it = gpu.SkinnedMeshes.begin(); it != gpu.SkinnedMeshes.end();) {
 			auto& entry = it->second;
 			const bool used = std::exchange(entry.UsedSincePurge, false);
@@ -1917,7 +2007,7 @@ namespace Funke {
 			else ++it;
 		}
 		const size_t removed = before - gpu.CustomMeshes.size() - gpu.SkinnedMeshes.size();
-		if (removed != 0) {
+		if (removed != 0 || removedMaterials != 0 || removedTextures != 0) {
 			gpu.ShadowDrawBundle.Reset();
 			gpu.ColorDrawBundle.Reset();
 		}
@@ -2326,12 +2416,12 @@ namespace Funke {
 		for (const auto& primitive : gpu.Meshes) gpu.FrameMeshes.push_back(&primitive);
 		bool anyCaster = false;
 		bool hadCandidates = false;
-		const TextureHandle whiteTexture = TextureManager::GetDefaultTexture(DefaultTexture::Pixel);
-		auto textureSlot = [&](TextureHandle handle) {
-			if (!TextureManager::IsValid(handle)) handle = whiteTexture;
-			const uint64_t key = (static_cast<uint64_t>(handle.index) << 32) | handle.generation;
+		gpu.FrameSubmeshes.clear();
+		gpu.FrameSubmeshSlots.clear();
+		auto textureSlot = [&](wgpu::BindGroup group, bool doubleSided) {
+			const uint64_t key = reinterpret_cast<uintptr_t>(group.Get());
 			auto [it, inserted] = gpu.FrameTextureSlots.emplace(key, static_cast<uint32_t>(gpu.FrameTextures.size()));
-			if (inserted) gpu.FrameTextures.push_back(handle);
+			if (inserted) gpu.FrameTextures.push_back({ group, doubleSided });
 			return it->second;
 		};
 
@@ -2352,16 +2442,48 @@ namespace Funke {
             world[3] -= glm::dvec4(origin, 0.0);
             return glm::mat4(world);
         };
+		const auto* hierarchy = registry.storage<HierarchyComponent>();
+		bool parallelTransforms = JobSystem::CanParallelize(ParallelWorkload::Rendering3D) && (meshes.size_hint() >= 32768
+			|| (meshes.size_hint() >= 8192 && hierarchy && hierarchy->size() >= 8192));
+		if (parallelTransforms) {
+			gpu.PreparedTransforms.resize(meshes.size_hint());
+			size_t count = 0;
+			size_t parented = 0;
+			for (EntityHandle entity : meshes) {
+				gpu.PreparedTransforms[count++].Entity = entity;
+				if (hierarchy && hierarchy->contains(entity) && hierarchy->get(entity).Parent != entt::null) ++parented;
+			}
+			gpu.PreparedTransforms.resize(count);
+			parallelTransforms = count >= 32768 || parented >= 8192;
+			if (parallelTransforms) ParallelFor(0, count, [&](size_t i) {
+				auto& item = gpu.PreparedTransforms[i];
+				item.World = relativeWorld(item.Entity);
+				item.Normal = glm::transpose(glm::inverse(glm::mat3(item.World)));
+			}, 512);
+		}
+		gpu.SkinnedCandidates.clear();
+		gpu.PendingPoses.clear();
+		const auto now = std::chrono::steady_clock::now();
+		for (EntityHandle entity : skinned) {
+			const auto& renderer = skinned.get<const SkinnedMeshRendererComponent>(entity);
+			const MeshAsset* asset = MeshLibrary::Get(renderer.Model);
+			if (!asset) continue;
+			auto* entry = asset->Skin ? &gpu.ResolveSkinnedPose({ &scene, static_cast<uint32_t>(entity) }, renderer, *asset, now) : nullptr;
+			gpu.SkinnedCandidates.push_back({ entity, &renderer, asset, entry });
+		}
+		// Cache insertion and asset resolution finish before workers touch individual pose entries.
+		gpu.EvaluatePendingPoses();
         static const Material k_FallbackMaterial;
 
 		auto submit = [&](const glm::vec3& localMin, const glm::vec3& localMax, const glm::mat4& world,
-			uint64_t materialGuid, const Color& color, bool lit, bool castShadows, bool cullable, auto&& resolveMesh) {
+			uint64_t materialGuid, const Color& color, bool lit, bool castShadows, bool cullable, auto&& resolveMesh, const ImportedMeshMaterial* imported = nullptr, const MeshAsset* model = nullptr, uint64_t modelGuid = 0, const glm::mat3* normal = nullptr) {
 			anyCaster |= castShadows;
 			hadCandidates = true;
-			auto [memo, firstUse] = gpu.FrameMaterials.try_emplace(materialGuid);
+			const Material* selectedMaterial = imported ? &imported->Surface : MaterialLibrary::Get(materialGuid);
+			auto [memo, firstUse] = gpu.FrameMaterials.try_emplace(reinterpret_cast<uintptr_t>(selectedMaterial ? selectedMaterial : &k_FallbackMaterial));
 			auto& prepared = memo->second;
 			if (firstUse) {
-				prepared.Value = MaterialLibrary::Get(materialGuid);
+				prepared.Value = selectedMaterial;
 				const Material* material = prepared.Value ? prepared.Value : &k_FallbackMaterial;
 				// A user shader replaces the standard one; its color input is the renderer's Color alone.
 				prepared.Program = material->Shader != 0 && m_ViewOptions.Lighting && m_ViewOptions.AllowsShader(material->Shader) && gpu.CustomBindings.IsInitialized()
@@ -2373,9 +2495,9 @@ namespace Funke {
 				}
 				else {
 					prepared.Color = ToVec4(material->BaseColor);
-					prepared.Emissive = glm::vec4(Lighting3D::SrgbToLinear(material->EmissiveColor) * std::max(material->EmissiveIntensity, 0.0f),
+					prepared.Emissive = glm::vec4((material->LinearColorFactors ? glm::vec3(ToVec4(material->EmissiveColor)) : Lighting3D::SrgbToLinear(material->EmissiveColor)) * std::max(material->EmissiveIntensity, 0.0f),
 						material->Fog ? 1.0f : 0.0f);
-					prepared.Surface = { material->Metallic, material->Roughness, material->Lit ? 1.0f : 0.0f, prepared.Transparent ? 1.0f : 0.0f };
+					prepared.Surface = { material->Metallic, material->Roughness, material->Lit ? 1.0f : 0.0f, static_cast<float>(material->Surface) };
 					prepared.UvTransform = { material->Tiling.x, material->Tiling.y, material->Offset.x, material->Offset.y };
 				}
 			}
@@ -2402,14 +2524,33 @@ namespace Funke {
 					prepared.Custom = static_cast<uint32_t>(gpu.FrameCustoms.size()) + 1;
 					gpu.FrameCustoms.push_back({ materialGuid, material, program, nullptr, nullptr });
 				}
-				else prepared.TextureSlot = textureSlot(gpu.ResolveMaterialTexture(material->BaseColorTexture));
+				else {
+					std::array<uint64_t, 5> textures{};
+					if (imported && model) {
+						const auto& images = gpu.ResolveModelTextures(modelGuid, *model);
+						for (size_t i = 0; i < textures.size(); ++i) {
+							const int32_t image = imported->Textures[i];
+							if (image >= 0 && static_cast<size_t>(image) < images.size() && images[image]) textures[i] = images[image]->GetHandle();
+						}
+					}
+					else {
+						const uint64_t ids[] = { material->BaseColorTexture, material->NormalTexture, material->MetallicRoughnessTexture, material->EmissiveTexture, material->OcclusionTexture };
+						for (size_t i = 0; i < textures.size(); ++i) {
+							if (ids[i] == 0) continue;
+							auto* texture = TextureManager::GetTexture(gpu.ResolveMaterialTexture(ids[i]));
+							if (texture && texture->IsValid()) textures[i] = texture->GetHandle();
+						}
+					}
+					prepared.TextureSlot = textureSlot(gpu.GetMaterialBindGroup(device, textures, *material), material->DoubleSided);
+				}
 				prepared.ResourcesResolved = true;
 			}
 			MeshInstance instance{};
 			for (int i = 0; i < 4; ++i) instance.Model[i] = world[i];
-			const glm::mat3 normalMatrix = glm::transpose(glm::inverse(glm::mat3(world)));
+			const glm::mat3 normalMatrix = normal ? *normal : glm::transpose(glm::inverse(glm::mat3(world)));
 			for (int i = 0; i < 3; ++i) instance.Normal[i] = glm::vec4(normalMatrix[i], 0.0f);
-			instance.Color = prepared.Color * ToVec4(color);
+			instance.Color = prepared.Color * (prepared.Value && prepared.Value->LinearColorFactors
+				? glm::vec4(Lighting3D::SrgbToLinear(color), color.a) : ToVec4(color));
 			instance.Emissive = prepared.Emissive;
 			instance.Surface = prepared.Surface;
 			instance.UvTransform = prepared.UvTransform;
@@ -2426,7 +2567,39 @@ namespace Funke {
 			anyCaster |= visibility.CastsShadow;
 		};
 
+		auto submitParts = [&](const glm::vec3& localMin, const glm::vec3& localMax, const glm::mat4& world,
+			uint64_t material, const Color& color, bool lit, bool shadows, bool cullable,
+			const MeshAsset* asset, uint64_t modelGuid, const ModelMaterialOverrides& overrides, auto&& resolve, const glm::mat3* normal = nullptr) {
+			if (!asset || asset->Submeshes.empty() || material != 0 || wireframe) {
+				submit(localMin, localMax, world, material, color, lit, shadows, cullable, resolve, nullptr, nullptr, 0, normal);
+				return;
+			}
+			std::optional<size_t> base;
+			for (const auto& range : asset->Submeshes) {
+				if (range.MaterialIndex >= asset->Materials.size()) continue;
+				const uint64_t overrideGuid = overrides.Get(modelGuid, asset->Materials[range.MaterialIndex].Key);
+				submit(localMin, localMax, world, overrideGuid, color, lit, shadows, cullable, [&]() -> std::optional<size_t> {
+					if (!base) base = resolve();
+					if (!base) return std::nullopt;
+					const auto key = std::make_pair(*base, range.FirstIndex);
+					if (auto found = gpu.FrameSubmeshSlots.find(key); found != gpu.FrameSubmeshSlots.end()) return found->second;
+					const auto* source = gpu.FrameMeshes[*base];
+					auto& entry = gpu.FrameSubmeshes.emplace_back(GpuState::SubmeshBuffers{ *source, source });
+					entry.Buffers.FirstIndex = range.FirstIndex;
+					entry.Buffers.IndexCount = range.IndexCount;
+					const size_t slot = gpu.FrameMeshes.size();
+					gpu.FrameMeshes.push_back(&entry.Buffers);
+					gpu.FrameSkinning.resize(gpu.FrameMeshes.size());
+					gpu.FrameSkinning[slot] = gpu.FrameSkinning[*base];
+					gpu.FrameSubmeshSlots.emplace(key, slot);
+					return slot;
+				}, overrideGuid == 0 ? &asset->Materials[range.MaterialIndex] : nullptr, asset, modelGuid, normal);
+			}
+		};
+
+		size_t transformIndex = 0;
 		for (EntityHandle entity : meshes) {
+			const size_t preparedIndex = transformIndex++;
 			const auto& renderer = meshes.get<const MeshRendererComponent>(entity);
 			size_t meshIndex = static_cast<size_t>(renderer.Mesh);
 			glm::vec3 localMin(0.0f);
@@ -2445,31 +2618,29 @@ namespace Funke {
 				localMin = gpu.MeshBoundsMin[meshIndex];
 				localMax = gpu.MeshBoundsMax[meshIndex];
 			}
-			submit(localMin, localMax, relativeWorld(entity), renderer.Material, renderer.Color, renderer.Lit,
-				renderer.CastShadows, true, [&]() -> std::optional<size_t> {
+			const glm::mat4 world = parallelTransforms ? gpu.PreparedTransforms[preparedIndex].World : relativeWorld(entity);
+			submitParts(localMin, localMax, world, renderer.Material, renderer.Color, renderer.Lit,
+				renderer.CastShadows, true, asset, renderer.CustomMesh, renderer.MaterialOverrides, [&]() -> std::optional<size_t> {
 					return asset ? customMeshSlot(renderer.CustomMesh, *asset) : std::optional<size_t>(meshIndex);
-				});
+				}, parallelTransforms ? &gpu.PreparedTransforms[preparedIndex].Normal : nullptr);
 		}
 
-		const auto now = std::chrono::steady_clock::now();
-		for (EntityHandle entity : skinned) {
-			const auto& renderer = skinned.get<const SkinnedMeshRendererComponent>(entity);
-			const MeshAsset* asset = MeshLibrary::Get(renderer.Model);
-			if (!asset) continue;
-			GpuState::SkinnedEntry* skinnedEntry = nullptr;
+		for (const auto& candidate : gpu.SkinnedCandidates) {
+			const EntityHandle entity = candidate.Entity;
+			const auto& renderer = *candidate.Renderer;
+			const MeshAsset* asset = candidate.Asset;
+			GpuState::SkinnedEntry* skinnedEntry = candidate.Entry;
 			glm::vec3 localMin = asset->BoundsMin;
 			glm::vec3 localMax = asset->BoundsMax;
 			bool cullable = true;
-			if (asset->Skin) {
-				const GpuState::SkinnedKey key{ &scene, static_cast<uint32_t>(entity) };
-				auto& entry = gpu.ResolveSkinnedPose(key, renderer, *asset, now);
-				skinnedEntry = &entry;
+			if (skinnedEntry) {
+				const auto& entry = *skinnedEntry;
 				localMin = entry.BoundsMin;
 				localMax = entry.BoundsMax;
 				cullable = entry.Cullable;
 			}
-			submit(localMin, localMax, relativeWorld(entity),
-				renderer.Material, renderer.Color, renderer.Lit, renderer.CastShadows, cullable, [&]() -> std::optional<size_t> {
+			submitParts(localMin, localMax, relativeWorld(entity),
+				renderer.Material, renderer.Color, renderer.Lit, renderer.CastShadows, cullable, asset, renderer.Model, renderer.MaterialOverrides, [&]() -> std::optional<size_t> {
 					const auto shared = customMeshSlot(renderer.Model, *asset);
 					if (!shared || !skinnedEntry) return shared;
 					const auto& sharedBuffers = *gpu.FrameMeshes[*shared];
@@ -2642,6 +2813,8 @@ namespace Funke {
 			}
 		}
 
+		for (auto& range : gpu.FrameSubmeshes) range.Buffers.Vertices = range.Source->Vertices;
+
 		if (environment.FogEnabled && m_ViewOptions.Fog) {
 			frame.FogColor = glm::vec4(Lighting3D::SrgbToLinear(environment.FogColor), 1.0f);
 			frame.FogParams = glm::vec4(environment.FogStart, std::max(environment.FogEnd, environment.FogStart + 0.01f), 0.0f, 0.0f);
@@ -2669,6 +2842,7 @@ namespace Funke {
 			GpuPassTrace passTrace(encoder, shadowPassDesc);
 			wgpu::RenderPassEncoder shadowPass = encoder.BeginRenderPass(&shadowPassDesc);
 			wgpu::RenderPipeline standardShadow = gpu.GetShadowPipeline(device);
+			const auto fallbackShadowGroup = gpu.GetMaterialBindGroup(device, {}, k_FallbackMaterial);
 			gpu.ShadowBundleDraws.clear();
 			gpu.ShadowBundleDraws.reserve(gpu.DrawItems.size());
 			// Custom slot whose fn vertex moves the shadow, or 0 for the standard shadow pipeline.
@@ -2680,9 +2854,12 @@ namespace Funke {
 				const size_t mesh = KeyMesh(gpu.DrawItems[begin].Key);
 				const bool casts = KeyCastsShadow(gpu.DrawItems[begin].Key);
 				const uint32_t slot = shadowSlot(gpu.DrawItems[begin]);
+				const uint32_t materialSlot = KeyTextureSlot(gpu.DrawItems[begin].Key);
 				size_t end = begin + 1;
 				while (end < gpu.DrawItems.size() && KeyMesh(gpu.DrawItems[end].Key) == mesh
-					&& KeyCastsShadow(gpu.DrawItems[end].Key) == casts && shadowSlot(gpu.DrawItems[end]) == slot) {
+					&& KeyCastsShadow(gpu.DrawItems[end].Key) == casts && shadowSlot(gpu.DrawItems[end]) == slot
+					&& KeyTextureSlot(gpu.DrawItems[end].Key) == materialSlot
+					&& (gpu.DrawItems[end].Custom == 0) == (gpu.DrawItems[begin].Custom == 0)) {
 					++end;
 				}
 				const auto& buffers = *gpu.FrameMeshes[mesh];
@@ -2690,9 +2867,9 @@ namespace Funke {
 					gpu.ShadowBundleDraws.push_back({
 						slot != 0 ? gpu.FrameCustoms[slot - 1].ShadowPipeline.Get() : standardShadow.Get(),
 						slot != 0 ? gpu.CustomShadowFrameGroup.Get() : gpu.ShadowBindGroup.Get(),
-						slot != 0 ? gpu.FrameCustoms[slot - 1].Group.Get() : nullptr,
+						slot != 0 ? gpu.FrameCustoms[slot - 1].Group.Get() : (gpu.DrawItems[begin].Custom != 0 ? fallbackShadowGroup.Get() : gpu.FrameTextures[materialSlot].Group.Get()),
 						buffers.Vertices.Get(), buffers.Indices.Get(), buffers.IndexCount,
-						static_cast<uint32_t>(end - begin), static_cast<uint32_t>(begin) });
+						static_cast<uint32_t>(end - begin), static_cast<uint32_t>(begin), buffers.FirstIndex });
 					++m_DrawCalls;
 					m_GeometryTotals.AddShadowMesh(buffers.IndexCount, static_cast<uint32_t>(end - begin));
 				}
@@ -2784,15 +2961,15 @@ namespace Funke {
 					materialGroup = frameCustom.Group;
 				}
 				else {
-					materialGroup = gpu.GetMaterialBindGroup(device, gpu.FrameTextures[slot]);
-					if (!materialGroup) materialGroup = gpu.GetMaterialBindGroup(device, whiteTexture);
+					materialGroup = gpu.FrameTextures[slot].Group;
+					if (gpu.FrameTextures[slot].DoubleSided) itemPipeline = gpu.GetMeshPipeline(device, target.ColorFormat, target.SampleCount, begin >= transparentBegin, true);
 				}
 				const auto& buffers = *gpu.FrameMeshes[mesh];
 				if (itemPipeline && materialGroup && buffers.Vertices && buffers.Indices) {
 					auto& commands = begin >= transparentBegin ? gpu.TransparentDirectDraws : gpu.ColorBundleDraws;
 					commands.push_back({ itemPipeline.Get(), frameGroup.Get(), materialGroup.Get(),
 						buffers.Vertices.Get(), buffers.Indices.Get(), buffers.IndexCount,
-						static_cast<uint32_t>(end - begin), static_cast<uint32_t>(begin) });
+						static_cast<uint32_t>(end - begin), static_cast<uint32_t>(begin), buffers.FirstIndex });
 					++m_DrawCalls;
 					m_GeometryTotals.AddMesh(buffers.IndexCount, buffers.VertexCount, static_cast<uint32_t>(end - begin));
 				}
@@ -2933,10 +3110,13 @@ namespace Funke {
 		pass.SetBindGroup(0, gpu.ParticleBindGroup);
 		pass.SetVertexBuffer(0, gpu.ParticleInstanceBuffer);
 		wgpu::RenderPipeline boundPipeline;
+		static const Material k_ParticleMaterial{};
 		for (const ParticleBatch& batch : gpu.ParticleBatches) {
 			wgpu::RenderPipeline pipeline = gpu.GetParticlePipeline(device, target.ColorFormat, target.SampleCount, batch.Blend);
-			wgpu::BindGroup textureGroup = TextureManager::IsValid(batch.Texture) ? gpu.GetMaterialBindGroup(device, batch.Texture) : nullptr;
-			if (!textureGroup) textureGroup = gpu.GetMaterialBindGroup(device, whiteTexture);
+			std::array<uint64_t, 5> textures{};
+			if (const auto* texture = TextureManager::GetTexture(batch.Texture); texture && texture->IsValid())
+				textures[0] = texture->GetHandle();
+			wgpu::BindGroup textureGroup = gpu.GetMaterialBindGroup(device, textures, k_ParticleMaterial);
 			if (!pipeline || !textureGroup) continue;
 			if (pipeline.Get() != boundPipeline.Get()) {
 				pass.SetPipeline(pipeline);

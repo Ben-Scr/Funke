@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "type": "ItemDefinition",
+  "fields": {
+    "Id": "copperore",
+    "DisplayName": "Copper ore",
+    "Icon": "3799167722807270014",
+    "SpriteName": "copper_deposit",
+    "StackSize": "100"
+  }
+}

@@ -1,0 +1,13 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public class QueryEnumerator<T> {
+public:
+    T[] Items;
+    int Index = -1;
+    bool MoveNext() { Index++; return Index < Items.Length; }
+    T Current => Items[Index];
+}

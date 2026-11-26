@@ -1,0 +1,18 @@
+import Funke
+import Funke.Components
+namespace Gameplay;
+public struct MotionData : IComponent {
+    public byte Mode;
+    public int Count;
+    public double Distance;
+}
+
+public struct SamplePoint {
+    public Vector3 Position;
+    public uint Sequence;
+}
+
+public struct PathSample : IComponent {
+    public byte Valid;
+    public SamplePoint Point;
+}

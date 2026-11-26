@@ -1,0 +1,28 @@
+import Funke
+import Funke.Coroutines
+import System.Threading.Tasks
+public class CoroutineBehaviour : EntityScript {
+    public int Counter;
+    public override void OnStart() { RunCoroutine(Sequence); }
+    private bool Ready() { return Counter >= 32; }
+    private async Task<void> Child(int amount) {
+        await WaitForNextFrame();
+        Counter += amount;
+    }
+    private async Task<void> Sequence() {
+        int local = 4;
+        Counter = local;
+        for (int i = 0; i < 2; i++) {
+            await WaitForFrames(2);
+            Counter += local;
+        }
+        await WaitForFixedUpdate();
+        Counter += 5;
+        await new WaitForSeconds(0.5f);
+        Counter += 8;
+        await Child(7);
+        await WaitUntil(Ready);
+        Counter += 3;
+    }
+}
+

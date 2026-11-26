@@ -1,5 +1,6 @@
 #pragma once
 #include "Core/ApplicationConfig.hpp"
+#include "Core/ThreadingSettings.hpp"
 #include "Core/Export.hpp"
 #include "Core/Layer.hpp"
 #include "Core/LayerStack.hpp"
@@ -124,6 +125,7 @@ namespace Funke {
 
 		GraphicsSettings GetRequestedGraphicsSettings() const noexcept { return m_RequestedGraphicsSettings; }
 		GraphicsSettings GetEffectiveGraphicsSettings() const noexcept { return m_EffectiveGraphicsSettings; }
+		ThreadingSettings GetEffectiveThreadingSettings() const noexcept { return m_ThreadingSettings; }
 		GraphicsApplyStatus ApplyGraphicsSettings(const GraphicsSettings& settings);
 		GraphicsApplyStatus ResetGraphicsSettingsToDefaults();
 
@@ -292,6 +294,7 @@ namespace Funke {
 		Input m_Input;
 		Time m_Time;
 		ApplicationConfig m_Configuration;
+		ThreadingSettings m_ThreadingSettings{};
 		GraphicsSettings m_DefaultGraphicsSettings{};
 		GraphicsSettings m_RequestedGraphicsSettings{};
 		GraphicsSettings m_EffectiveGraphicsSettings{};

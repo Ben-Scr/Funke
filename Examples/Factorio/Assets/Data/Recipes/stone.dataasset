@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "type": "RecipeDefinition",
+  "fields": {
+    "Id": "stone",
+    "Result": "8868858783520673027",
+    "Amount": "20",
+    "Seconds": "0",
+    "CreativeOnly": "true",
+    "Ingredients": ""
+  }
+}

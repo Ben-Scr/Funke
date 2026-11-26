@@ -31,12 +31,26 @@ class BuildEvidenceTests(unittest.TestCase):
             result = evidence.build(self.args)
         self.assertTrue(result["passed"], result)
         self.assertEqual(check.call_count, 2)
+
         self.assertIn("Python", result["buildToolchain"]["python"])
         self.assertEqual(len(result["buildLogSha256"]), 64)
         args = argparse.Namespace(platform="android", apk=self.artifact, output=self.root / "runtime",
             build_evidence=self.args.output / "build-evidence.json", expected_commit="a" * 40)
         bound = smoke.build_provenance(args, smoke.artifact_identity(args))
         self.assertEqual(bound["sourceCommit"], "a" * 40)
+
+    def test_platform_request_selects_the_real_builder_and_checks_roots(self):
+        request = self.root / "request.json"
+        data = {"protocol": 1, "engineRoot": str(self.source), "outputDir": str(self.artifact.parent)}
+        request.write_text(json.dumps(data))
+        for name, package in (("web", "Web"), ("ios", "iOS"), ("android", "Android")):
+            command = evidence.platform_command(name, self.source, request, self.artifact)
+            self.assertEqual(command[1:], [str(self.source / f"platforms/Funke.Platform.{package}/Builder/build.py"),
+                                           "build", "--request", str(request.resolve())])
+        for field, value in (("protocol", 0), ("engineRoot", str(self.root)), ("outputDir", str(self.source))):
+            request.write_text(json.dumps(data | {field: value}))
+            with self.assertRaises(ValueError):
+                evidence.platform_command("web", self.source, request, self.artifact)
 
     def test_failed_command_retains_log_but_never_passes(self):
         self.args.command = [sys.executable, "-c", "print('compile error'); raise SystemExit(7)"]
@@ -45,6 +59,38 @@ class BuildEvidenceTests(unittest.TestCase):
         self.assertFalse(result["passed"])
         self.assertNotIn("artifactSha256", result)
         self.assertIn("compile error", (self.args.output / "build.log").read_text())
+
+    def test_builder_protocol_preserves_unicode_artifact_path(self):
+        self.args.artifact = self.artifact.with_name("世界.apk")
+        request = self.root / "request.json"
+        request.write_text(json.dumps({"protocol": 1, "engineRoot": str(self.source),
+                                       "outputDir": str(self.artifact.parent)}))
+        self.args.builder_request = request
+        builder = self.source / "platforms/Funke.Platform.Android/Builder/build.py"
+        builder.parent.mkdir(parents=True)
+        builder.write_text(
+            "import json, sys\n"
+            "from pathlib import Path\n"
+            "request = json.loads(Path(sys.argv[-1]).read_text())\n"
+            "artifact = Path(request['outputDir']) / '世界.apk'\n"
+            "artifact.parent.mkdir()\n"
+            "artifact.write_bytes(b'fixture')\n"
+            "print(json.dumps(dict(event='result', ok=True, artifact=str(artifact)), ensure_ascii=False))\n",
+            encoding="utf-8")
+        with patch.object(evidence, "source_identity"), patch.dict("os.environ", {"PYTHONIOENCODING": "ascii"}):
+            result = evidence.build(self.args)
+        self.assertTrue(result["passed"], result)
+
+    def test_builder_result_must_finish_with_the_requested_artifact(self):
+        path = self.root / "events.jsonl"
+        result = {"event": "result", "ok": True, "artifact": str(self.artifact)}
+        path.write_text(json.dumps(result))
+        evidence.verify_builder_result(path, self.artifact)
+        for events in ([], [result | {"ok": False}], [result | {"artifact": str(self.root)}],
+                       [result, {"event": "progress", "value": 0}]):
+            path.write_text("\n".join(map(json.dumps, events)))
+            with self.assertRaises(ValueError):
+                evidence.verify_builder_result(path, self.artifact)
 
     def test_success_without_export_is_not_a_build_pass(self):
         self.args.command = [sys.executable, "-c", "pass"]

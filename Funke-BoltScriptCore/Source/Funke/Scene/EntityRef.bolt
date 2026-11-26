@@ -1,0 +1,14 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public struct EntityRef {
+    public ulong Buffer,Ticket,Live;
+    public uint Index => (uint)(Ticket & 4294967295ul);
+    public ulong ID => Live;
+    public Funke.Entity Entity => FunkeApiTypes.MakeEntity(Live);
+    public bool IsSceneEntity => Live != 0ul;
+    public bool IsCommandBufferEntity => Live == 0ul;
+}

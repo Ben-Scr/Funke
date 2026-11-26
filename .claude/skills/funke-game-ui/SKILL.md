@@ -1,6 +1,6 @@
 ---
 name: funke-game-ui
-description: "Design and implement Funke game UI: integrate HUDs, menus and shops with the game's visual language; turn gameplay state into readable visual feedback; build widgets, layout and C# event wiring. Use when game UI looks foreign, generic or text-heavy, or when working on RectTransform, Image, Button, Slider, Toggle, InputField, Dropdown, ScrollRect, Interactable, UIPointer, safe areas or UI layout groups. Also covers the UIComponents.cs and UIPointer.cs contracts and UIEventSystem implementation. Script lifecycle goes to funke-game-scripting, inspector fields to funke-inspector-ruleset, asset production to funke-game-art. This is game UI, not the Funke Editor or Launcher skin."
+description: "Design and wire Funke game HUDs, menus and widgets using RectTransform, layout groups, pointer events and C# controls."
 ---
 
 # Funke Game UI
@@ -125,33 +125,29 @@ For exact members beyond these, read `UIComponents.cs` — it's the authority an
 
 ## Wiring UI from a script
 
-The usual pattern: an `EntityScript` on (or near) the UI element gets the component and subscribes in `OnStart`. **Unsubscribe in `OnDestroy`** to avoid dangling handlers across hot reloads / scene reloads.
+UI events fire in Play mode. Attach this script to the resume button and cache the widget so teardown removes the handler from the same instance. For a widget on another entity, use an Inspector reference.
 
 ```csharp
 using Funke;
 using Funke.UI;
 
-public class PauseMenu : EntityScript
+public class ResumeOnClick : EntityScript
 {
-    private Button? m_Resume;
-    private Slider? m_Volume;
+    private Button? m_Button;
 
     public override void OnStart()
     {
-        m_Resume = Entity.FindByName("ResumeButton")?.GetComponent<Button>();
-        m_Volume = Entity.FindByName("VolumeSlider")?.GetComponent<Slider>();
-
-        if (m_Resume != null) m_Resume.Clicked += OnResume;
-        if (m_Volume != null) m_Volume.ValueChanged += OnVolumeChanged;
+        m_Button = GetComponent<Button>();
+        if (m_Button != null)
+            m_Button.Clicked += Resume;
     }
 
-    private void OnResume(Button _)        => Time.TimeScale = 1f;   // unpause
-    private void OnVolumeChanged(float v)  => Log.Info($"Volume = {v}");
+    private void Resume(Button _) => Time.TimeScale = 1f;
 
     public override void OnDestroy()
     {
-        if (m_Resume != null) m_Resume.Clicked -= OnResume;
-        if (m_Volume != null) m_Volume.ValueChanged -= OnVolumeChanged;
+        if (m_Button != null)
+            m_Button.Clicked -= Resume;
     }
 }
 ```
@@ -160,31 +156,18 @@ Polling instead of events is fine for simple cases: `if (button.WasClicked) …`
 
 ## Pointer queries: `UIPointer` (static)
 
-To know what the mouse is over (only enabled `Interactable` entities are tracked):
-
-```csharp
-Entity? hovered = UIPointer.HoveredEntity;                 // front-most interactable under the pointer, or null
-if (UIPointer.TryGetHoveredEntity(out Entity? e)) { … }
-```
-Useful for "is the cursor over UI?" gating so world clicks don't fire through the HUD.
+Only enabled `Interactable` entities participate in hit testing. Before handling a world click, check `UIPointer.HoveredEntity == null`. Use `TryGetHoveredEntity(out Entity? e)` when you need the frontmost target.
 
 ## Recipes
 
 - **Pause menu:** a UI scene loaded additively (`SceneManager.LoadScene("Pause", LoadSceneMode.Additive)`); set `Time.TimeScale = 0` to freeze gameplay while the menu's own `OnUpdate` still runs on unscaled time.
 - **HUD that tracks resolution:** anchor each element to a screen corner via `RectTransform.AnchorMin/Max`; subscribe to `Window.Resized` only if you need manual relayout.
 - **Settings screen:** `Slider.ValueChanged` → apply audio/graphics; persist with a `GlobalSystem` or Data Asset (`funke-assets-and-content`).
-- **Don't click through UI:** before handling a world click, check `UIPointer.HoveredEntity == null`.
 - **Modal popup (settings, pause, confirm):** root entity (disabled until opened) → a full-screen dim `Image` with an `Interactable` (`interactable: true`, `focusable: false`) and an explicit oversized `SizeDelta` → the panel and its widgets above it. Only `Interactable` entities hit-test, so a dim layer without one lets clicks fall through to the menu buttons behind it. Show the cursor while a popup is open and hide it again during gameplay (`Cursor` API, `funke-game-scripting`).
-- **Translated UI:** one `Assets/Localization/<code>.json` per language (`{"meta": {"code": "de", "displayName": "Deutsch"}, "strings": {"menu.play": "Spielen"}}`; `en` is the fallback). Static labels get a `LocalizedText` component (`Key`) next to their `TextRenderer` and update on every switch; Button labels, Dropdown `Options` and InputField placeholders are set from code with `Localization.Get(key)` and refreshed in a `Localization.LanguageChanged` handler. A language picker lists `Localization.AvailableLanguages` and calls `Localization.SetLanguage(code)`, which also remembers the choice for the next start. Fonts render ASCII + Latin-1 only.
+- **Translated UI.** Put each locale in `Assets/Localization/<code>.json` (`en` is the fallback). Static `LocalizedText` labels refresh automatically. For button labels, dropdown options and placeholders, call `Localization.Get(key)` again on `LanguageChanged`. Populate the picker from `AvailableLanguages`. `SetLanguage(code)` saves the choice. Verify translated text against the shipped fonts.
 - **Slider fill inside a rounded frame:** the engine sizes `Fill` to the slider's own rect. Make the slider rect the *inner* track (inset from the artwork) and draw the background/frame as larger children, or the square fill pokes out at the ends.
 
 ## Pitfalls
 
 - **Lists of buttons in a `ScrollRect` scroll by touch:** a press on a row button (anything but a Slider, Scrollbar, InputField or nested ScrollRect) becomes a scroll drag after ~14 units of movement and its click is cancelled, so phone lists can be built from plain `Button` rows. For long lists, author a fixed pool of rows and recycle them from the content offset (`Content` RectTransform `AnchoredPosition.Y`).
-- **Always unsubscribe** event handlers in `OnDestroy` — handlers attached to widgets survive longer than you expect across scene/hot reloads.
-- **UI events only fire in Play mode** (like all scripts).
-- **`Interactable` must be enabled** for a widget to receive pointer events and to appear in `UIPointer`. An `Image` alone never blocks the pointer.
-- **Missing `using Funke.UI;`** is the usual cause of "type `Slider`/`Toggle`/`Button` not found" compile errors.
-- **Layout collapsed / everything in one spot:** a parent with stretch anchors and `SizeDelta (0,0)`. Give it an explicit size (see Layout).
-- UI elements need a `RectTransform`, not a world `Transform2D`; mixing them up means layout/anchoring won't work.
 - For inspector-exposed UI references on your scripts (e.g. `public Button? ResumeButton;`), see `funke-inspector-ruleset`.

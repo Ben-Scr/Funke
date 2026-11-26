@@ -4,13 +4,14 @@ Open **Project Settings > Physics** to configure gravity, layer names and the la
 
 ## Default gravity
 
-**Default Gravity** contains separate vectors for 2D (X, Y) and 3D (X, Y, Z), in world units per second squared. A zero vector disables gravity; positive, negative and sideways gravity are supported.
+**Default Gravity** contains separate rows for 2D and 3D, with explicitly labelled X/Y and X/Y/Z drag fields, in world units per second squared. Labels stay visible above the controls in narrow panels. A zero vector disables gravity; positive, negative and sideways gravity are supported.
 
 The defaults for existing projects remain `(0, -9.8)` in 2D and `(0, -9.81, 0)` in 3D. Values are saved in `project.json`, initialize newly created physics worlds, and are restored at each editor Play session. Editing them in project settings also updates existing worlds and wakes bodies. Script assignments to `Physics2D.Gravity` or `Physics3D.Gravity` override the current world for that run without changing the saved project defaults.
 
 ## Names and collision matrix
 
-- The first 16 slots are shown initially: `Default` and `Layer 1` through `Layer 15`. Rename them, for example to `Player`, `Enemy`, `World`, or `Pickup`.
+- New projects and projects without saved layer settings start with six visible slots: `Default` (0), `UI` (1), `Player` (2), `Enemy` (3), `World` (4), and `Pickup` (5). `Default` is built in at index `0` (mask `1`), always present, and cannot be renamed or removed. Names at indices 1–63 can be edited.
+- Saved layer indices, collision masks and visible counts are preserved, including older 16-layer configurations. Loading restores index `0` to `Default` even if the saved name was changed or omitted; other slots cannot use the reserved name `Default`. The supported visible count is 1–64; loading no longer expands smaller lists to 16.
 - **Add Layer** exposes another stable slot, up to 64. Existing 64-bit masks retain all their bits.
 - Names are unique and case-sensitive. They are trimmed and limited to 63 UTF-8 bytes; empty names, line breaks, tabs, null bytes and ImGui's `##` marker are rejected.
 - Renaming keeps the index and all entity/prefab masks unchanged. Update scripts that look up the old name.
@@ -22,7 +23,7 @@ The matrix governs physical interactions. Query masks independently select which
 
 ## C# quick start
 
-Create the `Player`, `Enemy` and `World` names in settings, then:
+The default `Player`, `Enemy` and `World` names can be used directly (add or rename them first in projects with older saved names):
 
 ```csharp
 using Funke;

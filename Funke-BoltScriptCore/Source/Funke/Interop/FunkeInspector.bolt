@@ -1,0 +1,23 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public static class FunkeInspector {
+public:
+    static ulong ReferenceId(string text, string kind) {
+        int split = text.IndexOf(':');
+        if (kind.Length != 0 && (split < 0 || text.Substring(split + 1) != kind)) return 0ul;
+        string number = split < 0 ? text : text.Substring(0, split);
+        ulong id;
+        if (!ulong.TryParse(number, id)) return 0ul;
+        return id;
+    }
+    static string? Read(ulong field) {
+        ulong size = FkFieldRead(field,0ul);
+        if (size == 0ul) return null;
+        return FunkeText.Read(size-1ul);
+    }
+    static void Write(ulong field, string value) { FkFieldWrite(field, FunkeText.Put(value)); }
+}

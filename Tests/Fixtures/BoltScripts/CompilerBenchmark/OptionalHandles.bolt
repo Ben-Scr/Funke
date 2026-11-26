@@ -1,0 +1,46 @@
+import Bolt.Runtime
+
+class ComponentHandle {
+public:
+    ulong Id;
+}
+
+class EntityHandle {
+public:
+    ulong Id;
+    ComponentHandle Transform;
+}
+
+static class Program {
+public:
+    void Copy(EntityHandle?& destination, const EntityHandle?& source) {
+        destination = source;
+    }
+
+    void Main() {
+        const int count = 10000;
+        for (int round = 0; round < 8; round++) {
+            EntityHandle[] handles = new EntityHandle[count];
+            EntityHandle?[] source = new EntityHandle?[count];
+            EntityHandle?[] destination = new EntityHandle?[count];
+            for (int i = 0; i < count; i++) {
+                handles[i].Id = (ulong)(i + 1);
+                handles[i].Transform.Id = handles[i].Id;
+                if (i % 2 == 0) source[i] = handles[i];
+            }
+
+            long start = Clock.MonotonicTicks();
+            for (int i = 0; i < count; i++) Copy(destination[i], source[i]);
+            long copyTicks = Clock.MonotonicTicks() - start;
+
+            ulong checksum = 0ul;
+            for (int i = 0; i < count; i++)
+                if (destination[i] != null) checksum += destination[i].Value.Transform.Id;
+
+            start = Clock.MonotonicTicks();
+            handles = new EntityHandle[0];
+            long releaseTicks = Clock.MonotonicTicks() - start;
+            Print(copyTicks + "," + releaseTicks + "," + checksum + "," + handles.Length);
+        }
+    }
+}

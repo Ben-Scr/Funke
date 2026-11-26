@@ -10,13 +10,27 @@ import os
 from pathlib import Path
 import platform
 import subprocess
+import sys
 import time
 import uuid
 
-from standalone_sdk_test import atomic_write_json, kill_tree, wait_for_editor_ready
+from standalone_sdk_test import EditorExited, atomic_write_json, kill_tree, wait_for_editor_ready
 
 
-def verify(cli: Path, editor_exe: Path, root: Path, timeout: int) -> dict:
+def wait_for_discovery(editor, discovery: Path, deadline: float) -> float:
+    while True:
+        code = editor.poll()
+        if code is not None:
+            raise RuntimeError(f"Setup editor pid {editor.pid} exited with {code} before discovery")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError(f"Setup editor pid {editor.pid} timed out waiting for discovery")
+        if discovery.is_file():
+            return remaining
+        time.sleep(min(0.1, remaining))
+
+
+def verify(cli: Path, editor_exe: Path, root: Path, timeout: int, probe_startup: bool = False) -> dict:
     root.mkdir(parents=True, exist_ok=False)
     logs = root / "logs"
     logs.mkdir()
@@ -93,15 +107,15 @@ def verify(cli: Path, editor_exe: Path, root: Path, timeout: int) -> dict:
         test("package-and-compile-preflight", preflight)
         report["package"] = {"name": "AgentFixture.Constants", "version": "1.0.0", "source": "local-offline"}
         with (logs / "setup-editor.log").open("wb") as log:
-            editor = subprocess.Popen([editor_exe, f"--project={project}", "--background", "--mute", f"--prefs-profile=test-{root.name}"],
+            launch = [editor_exe, f"--project={project}", "--background", "--mute", f"--prefs-profile=test-{root.name}"]
+            if probe_startup:
+                # exec preserves the PID used by discovery; the delay consumes the normal startup budget.
+                launch = ["/bin/sh", "-c", 'sleep 2 && exec "$@"', "delayed-editor", *launch]
+            until = time.monotonic() + timeout
+            editor = subprocess.Popen(launch,
                 cwd=root, env=env, stdout=log, stderr=subprocess.STDOUT,
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
             discovery = root / "setup-user-data/Funke/EditorBridge" / f"{editor.pid}.json"
-            until = time.monotonic() + timeout
-            while not discovery.exists():
-                if editor.poll() is not None or time.monotonic() > until:
-                    raise RuntimeError("Setup editor failed to start")
-                time.sleep(0.1)
 
             def bridge(command, *args, expected=0):
                 return run(command, [cli, "editor", command, *map(str, args), "--pid", str(editor.pid),
@@ -114,10 +128,12 @@ def verify(cli: Path, editor_exe: Path, root: Path, timeout: int) -> dict:
                 return report["steps"][-1]["exitCode"], value
 
             report["editorReadiness"] = {"pid": editor.pid, "status": "waiting"}
-            ready = wait_for_editor_ready(editor, query_status, max(0.0, until - time.monotonic()))
+            ready = wait_for_editor_ready(editor, query_status, wait_for_discovery(editor, discovery, until))
             report["editorReadiness"].update(status="ready", frame=ready.get("frame"), state=ready["state"])
             atomic_write_json(report_path, report)
-            bridge("recompile")
+            compiled = bridge("recompile")
+            if compiled.get("succeeded") is not True:
+                raise RuntimeError(f"Setup editor recompile failed: {compiled}")
             scene = bridge("scenes")["scenes"][0]
             schema = bridge("schema", "--component", "Transform2D")
             atomic_write_json(root / "transform-schema.json", schema)
@@ -167,7 +183,20 @@ def verify(cli: Path, editor_exe: Path, root: Path, timeout: int) -> dict:
                                  "--component", "script:type:AgentLoop", "--property", "Unsupported", expected=1)
             assert unsupported["code"] == "unsupported_field_type"
             bridge("save-scene")
-            kill_tree(editor)
+            if probe_startup:
+                def terminate_during_status(budget):
+                    status = query_status(budget)
+                    kill_tree(editor)
+                    return status
+
+                try:
+                    wait_for_editor_ready(editor, terminate_during_status, timeout)
+                except EditorExited:
+                    report["editorReadiness"]["terminatedEditorDetected"] = True
+                else:
+                    raise RuntimeError("Readiness accepted the terminated setup editor")
+            else:
+                kill_tree(editor)
             editor = None
 
         project_hash = hashlib.sha256((project / "project.json").read_bytes()).hexdigest()
@@ -219,11 +248,15 @@ def main():
     parser.add_argument("--editor", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--timeout", type=int, default=120)
+    parser.add_argument("--probe-linux-startup", action="store_true",
+                        help="Delay the real editor launch and check readiness after process termination.")
     args = parser.parse_args()
     if args.timeout <= 0:
         parser.error("timeout must be positive")
+    if args.probe_linux_startup and sys.platform != "linux":
+        parser.error("--probe-linux-startup requires Linux")
     root = args.output.resolve() / ("agent-" + uuid.uuid4().hex[:12])
-    result = verify(args.cli.resolve(), args.editor.resolve(), root, args.timeout)
+    result = verify(args.cli.resolve(), args.editor.resolve(), root, args.timeout, args.probe_linux_startup)
     print(json.dumps({"status": result["status"], "report": str(root / "report.json"), "error": result.get("error")}))
     return 0 if result["status"] == "passed" else 1
 

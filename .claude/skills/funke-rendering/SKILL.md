@@ -1,6 +1,6 @@
 ---
 name: funke-rendering
-description: Use when working on Funke's rendering pipeline or anything that touches the GPU — Renderer2D/RenderSceneWithVP (collect, sort, batch, Instance44, InstanceContributor, sorting layers, draw calls), the WebGPU/Dawn backend (RenderApi, WebGPUBackend, D3D12/Vulkan/Metal selection; no OpenGL backend), WGSL shaders, ShaderManager, pipelines, bind groups, Framebuffer/FBO render targets, the editor Game/Editor View, TextureManager/Texture2D and samplers, GizmoRenderer2D, Camera2DComponent and letterboxing, PostProcessing2DComponent/PostProcessor (bloom, vignette, FXAA), GraphicsSettings/RenderSettings/RenderScale, GuiRenderer, TextRenderer/FontManager, WebGPU validation errors, or work in Funke-Engine/src/Graphics/, Gui/GuiRenderer.* and Funke-Editor/src/Systems/ImGuiEditorLayerViewport*.cpp. Explains the frame flow (incl. Renderer3D compose-over), the texture/shader/font managers, and how to add a renderable, pass or post effect without breaking Dawn's rules.
+description: "Change or debug Funke rendering internals, including Renderer2D/3D composition, WebGPU/Dawn, WGSL, render targets, editor viewports and post-processing."
 ---
 
 # Funke Rendering
@@ -12,7 +12,7 @@ description: Use when working on Funke's rendering pipeline or anything that tou
 - **Layers:**
   - `Graphics/RenderApi.hpp` — backend-neutral static facade: `Init/Shutdown/Present`, `Clear(ClearFlags)`, `SetClearColor`, `SetViewport`, `SetScissor`, `BindFramebuffer`/`BindDefaultFramebuffer`, `SetPolygonMode`, `SetBlendMode`, `SetColorMask`, `GetGraphicsApi`… Enums in `RenderApiTypes.hpp` (must never include backend headers). Editor code uses only this — no backend calls in `Funke-Editor`.
   - `Graphics/Backend/WebGPUBackend.hpp` — internal device/queue/encoder/pass plumbing for engine resource TUs. Implemented in `WebGPUApi.cpp` plus the resource `.cpp`s (`Texture2D.cpp`, `Framebuffer.cpp`, `Shader.cpp`, `Text/Font.cpp`); the header's mentions of `*_WebGPU.cpp` files are stale.
-  - Renderers owned by `Application`: `Renderer2D` (sprites, particles, world text; implements `IRenderer`; `Application::GetRenderer2D()`), `Renderer3D` (3D module only; `GetRenderer3D()`), `GuiRenderer` (`Funke-Engine/src/Gui/`, UI), `GizmoRenderer2D` (debug shapes). Toggled by `ApplicationConfig::EnableRenderer2D / EnableGuiRenderer / EnableGizmoRenderer / EnableTextureManager / EnableShaderManager`; `EnableWindow=false` (headless) disables all graphics.
+  - Renderers owned by `Application`: `Renderer2D` (sprites, particles, world text; implements `IRenderer`; `Application::GetRenderer2D()`), `Renderer3D` (3D module only; `GetRenderer3D()`), `GuiRenderer` (`Funke-Engine/src/Gui/`, UI), `GizmoRenderer2D` (debug shapes). Toggled by `ApplicationConfig::EnableSceneRendering / EnableGuiRenderer / EnableGizmoRenderer / EnableTextureManager / EnableShaderManager`; `EnableWindow=false` (headless) disables all graphics.
 - **Dead stubs — don't extend them:** `SpriteShaderProgram`, `QuadMesh` (all no-ops), `Renderer2D::RenderScene`, `RenderScenes`, `CollectAndRenderInstances` (empty). The real sprite GPU resources are `Funke::WebGPUSpriteResources` in `Graphics/SpriteResources.{hpp,cpp}`.
 
 ## Init order (`Application::Initialize`)
@@ -145,18 +145,7 @@ A class, not a POD: `GetMain()` (active scene's first camera without `DisabledTa
 
 ## Adding a new renderable
 
-1. **Quads (sprites, tiles, custom component visuals)** — prefer a contributor; no Renderer2D edits:
-   ```cpp
-   uint32_t token = Renderer2D::RegisterInstanceContributor(
-       [](const Scene& scene, const AABB& view, std::vector<Instance44>& out) {
-           for (auto e : scene.GetRegistry().view<const Transform2DComponent, const MyComponent>(entt::exclude<DisabledTag>)) {
-               // build AABB, skip if !AABB::Intersects(view, box)
-               out.emplace_back(pos, scale, rotationRadians, color, texture, sortingOrder, sortingLayer);
-           }
-       });
-   // on shutdown: Renderer2D::UnregisterInstanceContributor(token);
-   ```
-   Contributors run for every `RenderSceneWithVP` call — Editor View, Game View and runtime — so they get sorting, batching, post-processing and culling for free. Use `view`, not an owning `group`. For engine built-ins you may instead extend `CollectSpriteInstances` in `Renderer2D.cpp`.
+1. For quads, register a `Renderer2D::RegisterInstanceContributor` callback taking `(const Scene&, const AABB& view, std::vector<Instance44>& out)`. Query with an EnTT view excluding `DisabledTag`, cull against the supplied AABB and append visible instances. The regular sprite path then sorts, batches and post-processes them in Editor View, Game View and runtime. Save the token for `UnregisterInstanceContributor` on shutdown. Engine built-ins can extend `CollectSpriteInstances` directly.
 2. **Non-quad geometry / a custom pass** — own pipeline + pass that obeys every rule below; model it on `GizmoRenderer2D` or `PostProcessor`.
 3. Register the component (`funke-add-component`), its inspector fields (`funke-inspector-ruleset`), and textures held outside components via `TextureManager::AddReferenceProvider`.
 
@@ -172,4 +161,4 @@ A class, not a POD: `GetMain()` (active scene's first camera without `DisabledTa
 - `MapAsync` (readbacks, GPU timers) only after `Present` (`Renderer2D::OnAfterPresent`).
 - Release every Dawn object in an explicit `Shutdown()` before `RenderApi::Shutdown` (Renderer2D order: GpuTimer → FBOs → PostProcessor). Dawn objects left in statics until DLL unload abort in the D3D12 driver.
 - `RenderApi` state is global; restore polygon mode / color mask / framebuffer after you change them.
-- Dawn errors are logged as `[WebGPUApi] WebGPU [Validation|OutOfMemory|Internal]: ...` or `Device lost (...)`; start there (`funke-debug`). GPU timing: `funke-add-profiler`.
+- For device or validation errors, inspect the `WebGPUApi` tag. See [debugging](../funke-debug/SKILL.md) for the log and [profiling](../funke-add-profiler/SKILL.md) for GPU timings.

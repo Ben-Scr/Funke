@@ -27,6 +27,7 @@ PREVIEW_DIR = ROOT / "tmp"
 SIZES = (16, 32, 64, 128)
 FILE_SIZES = (16, 32, 64, 128, 256)
 CUSTOM_FILE_ICONS = {
+    "file_bolt",
     "file_anim", "file_audio", "file_bin", "file_cpp", "file_cs", "file_dataasset",
     "file_fallback", "file_font", "file_header", "file_json", "file_material", "file_model", "file_prefab", "file_scene",
     "file_shader", "file_txt", "file_xml", "file_markdown", "folder_zip",
@@ -44,6 +45,7 @@ CUSTOM_MONOCHROME_GLYPHS = {"rotation"} | {
     if asset["group"] == "General"
 }
 FILE_256_NAMES = {
+    "file_bolt",
     "file_anim", "file_audio", "file_bin", "file_cpp", "file_cs", "file_dataasset",
     "file_fallback", "file_font", "file_header", "file_json", "file_material", "file_model", "file_scene", "file_shader",
     "file_txt", "file_xml", "file_markdown", "folder_zip",
@@ -63,6 +65,7 @@ PREFAB = "#5DA9E9"
 PREFAB_MISSING = "#F0B000"
 STATUS = {"info": "#3890F0", "success": "#58C080", "warning": "#F0B000", "error": "#E03830"}
 FILE_COLORS = {
+    "file_bolt": "#84898F",
     "file_cs": PHYSICS, "file_cpp": "#3E80BA", "file_header": "#3E80BA",
     "file_shader": "#8A86E8", "file_anim": ANIMATION,
     "file_audio": AUDIO, "file_prefab": PREFAB, "file_scene": "#3E80BA",
@@ -79,12 +82,12 @@ GLYPHS = [
     "minus", "move", "pause", "pen", "pin", "play", "plus", "post_processing",
     "redo", "reset", "rotation", "save", "scale", "search", "settings", "settings_gear",
     "step_forward", "stop", "undo", "zoom_in", "zoom_out", "open_folder",
-    "monitor", "image", "flag", "hammer", "systems", "physics", "templates",
+    "monitor", "image", "flag", "hammer", "systems", "multithreading", "physics", "templates", "bold", "italic",
 ]
 COMPONENTS = [
     "animator", "audio_source", "camera", "collider_box_2d", "collider_box_3d", "collider_capsule_3d",
     "collider_circle_2d", "collider_mesh_3d", "collider_polygon_2d", "collider_sphere_3d", "light_point",
-    "light_spot", "light_sun", "particles", "prefab", "prefab_missing", "rigidbody_2d", "rigidbody_3d", "script",
+    "light_spot", "light_sun", "particles", "prefab", "prefab_missing", "rigidbody_2d", "rigidbody_3d", "script", "script_cpp", "script_bolt",
 ]
 STATUSES = ["info", "success", "warning", "error"]
 FILES = list(FILE_COLORS) + ["folder_zip"]
@@ -161,6 +164,14 @@ def glyph(c: Canvas, name: str):
         c.rect((3, 4, 21, 16), q, radius=2)
         c.line([(12, 16), (12, 20)], q)
         c.line([(8, 20), (16, 20)], q)
+    elif name == "bold":
+        c.line([(7, 4), (7, 20)], WHITE, 3)
+        c.line([(7, 4), (13, 4), (16, 5), (17, 7), (17, 9), (15, 11), (13, 12), (7, 12)], WHITE, 3)
+        c.line([(13, 12), (16, 13), (18, 15), (18, 17), (16, 19), (13, 20), (7, 20)], WHITE, 3)
+    elif name == "italic":
+        c.line([(11, 4), (19, 4)], WHITE)
+        c.line([(15, 4), (9, 20)], WHITE, 2.5)
+        c.line([(5, 20), (13, 20)], WHITE)
     elif name == "image":
         c.rect((3, 4, 21, 20), q, radius=2)
         c.circle((8, 9), 1.3, q, fill=q)
@@ -177,6 +188,15 @@ def glyph(c: Canvas, name: str):
         c.rect((9, 3, 15, 9), q, radius=1)
         c.rect((3, 15, 9, 21), q, radius=1)
         c.rect((15, 15, 21, 21), q, radius=1)
+    elif name == "multithreading":
+        color = "#FFFFFF"
+        c.line([(2, 12), (6, 12)], color, 1.5)
+        c.line([(18, 12), (22, 12)], color, 1.5)
+        c.line([(6, 5), (6, 19)], color, 1.5)
+        c.line([(18, 5), (18, 19)], color, 1.5)
+        for y in (5, 12, 19):
+            c.line([(6, y), (18, y)], color, 1.5)
+            c.circle((12, y), 1.8, color, fill=color)
     elif name == "physics":
         c.circle((8, 7), 4, q)
         c.line([(17, 4), (17, 16)], q)
@@ -379,6 +399,21 @@ def is_custom(name: str, family: str):
 
 
 def render(name: str, family: str, size: int):
+    if family == "component" and name == "script_bolt":
+        c = Canvas(size)
+        c.fill_poly([(14,1),(4,14),(10,14),(8,23),(21,9),(14,9)], "#805020")
+        c.fill_poly([(14,1),(4,13),(11,13),(9,21),(20,9),(13,9)], "#F3B842")
+        c.fill_poly([(14,1),(4,13),(11,11)], "#FFE395")
+        return c.finish()
+    if family == "component" and name == "script_cpp":
+        image = render("script", family, size)
+        pixels = []
+        for red, green, blue, alpha in image.getdata():
+            if green > max(red, blue):
+                green, blue = round(blue + (green - blue) * 0.42), green
+            pixels.append((red, green, blue, alpha))
+        image.putdata(pixels)
+        return image
     if is_custom(name, family):
         root = FILE_ICONS if family == "file" else GENERAL
         path = root / name / f"{name}_{size}.png"

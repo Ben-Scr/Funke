@@ -1,0 +1,41 @@
+{
+  "fixedStep": 60,
+  "steps": [
+    {
+      "at": ".5s",
+      "command": "factory.test"
+    },
+    {
+      "at": "1s",
+      "screenshot": "connected-factory"
+    },
+    {
+      "at": "1.2s",
+      "key": "E"
+    },
+    {
+      "at": "1.6s",
+      "screenshot": "creative-inventory"
+    },
+    {
+      "at": "2s",
+      "command": "factory.assert inventory"
+    },
+    {
+      "at": "2.2s",
+      "key": "Escape"
+    },
+    {
+      "at": "2.5s",
+      "key": "Escape"
+    },
+    {
+      "at": "2.8s",
+      "command": "factory.assert paused"
+    },
+    {
+      "at": "3s",
+      "quit": true
+    }
+  ]
+}

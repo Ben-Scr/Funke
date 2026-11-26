@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Core/Export.hpp"
+#include "Core/Base.hpp"
 #include "Components/ComponentUtils.hpp"
 #if FUNKE_WITH_2D
 #include "Components/General/Transform2DComponent.hpp"
@@ -50,6 +51,10 @@ namespace Funke {
 		}
 
 		EntityHandle GetEntityHandle() const { return m_Entity; }
+		Entity GetEntity() const {
+			if (!m_Scene) FNK_THROW(FunkeErrorCode::InvalidHandle, "Cannot get entity from unbound script");
+			return m_Scene->GetEntity(m_Entity);
+		}
 		Scene* GetScene() const { return m_Scene; }
 		entt::registry* GetRegistry() const { return m_Scene ? &m_Scene->GetRegistry() : nullptr; }
 
@@ -69,57 +74,137 @@ namespace Funke {
 		}
 
 		template<typename TComponent, typename... Args>
-			requires (!std::is_empty_v<TComponent>)
+			requires (!std::is_empty_v<TComponent> && !std::is_base_of_v<NativeScript, TComponent>)
 		TComponent& AddComponent(Args&&... args) {
 			entt::registry& registry = RequireValidRegistry("Cannot add component to invalid entity");
 			return ComponentUtils::AddComponent<TComponent>(registry, m_Entity, std::forward<Args>(args)...);
 		}
 
 		template<typename TTag>
-			requires std::is_empty_v<TTag>
-		void AddComponent() {
+			requires (std::is_empty_v<TTag> && !std::is_base_of_v<NativeScript, TTag>)
+		FNK_FORCE_INLINE void AddComponent() {
 			entt::registry& registry = RequireValidRegistry("Cannot add tag component to invalid entity");
 			ComponentUtils::AddComponent<TTag>(registry, m_Entity);
 		}
 
+		template<typename TComponent, typename... Args>
+			requires (!std::is_empty_v<TComponent> && !std::is_base_of_v<NativeScript, TComponent>)
+		TComponent& GetOrAddComponent(Args&&... args) {
+			if (auto* component = TryGetComponent<TComponent>()) return *component;
+			return AddComponent<TComponent>(std::forward<Args>(args)...);
+		}
+
+		template<typename TTag>
+			requires (std::is_empty_v<TTag> && !std::is_base_of_v<NativeScript, TTag>)
+		FNK_FORCE_INLINE void GetOrAddComponent() {
+			if (!HasComponent<TTag>()) AddComponent<TTag>();
+		}
+
 		template<typename TComponent>
-		bool HasComponent() const {
+			requires (!std::is_base_of_v<NativeScript, TComponent>)
+		FNK_FORCE_INLINE bool HasComponent() const {
 			entt::registry* registry = GetRegistry();
 			return registry && m_Entity != entt::null && registry->valid(m_Entity)
 				&& ComponentUtils::HasComponent<TComponent>(*registry, m_Entity);
 		}
 
 		template<typename TComponent>
+			requires (!std::is_base_of_v<NativeScript, TComponent>)
 		TComponent& GetComponent() {
 			entt::registry& registry = RequireValidRegistry("Cannot get component from invalid entity");
 			return ComponentUtils::GetComponent<TComponent>(registry, m_Entity);
 		}
 
 		template<typename TComponent>
+			requires (!std::is_base_of_v<NativeScript, TComponent>)
 		const TComponent& GetComponent() const {
 			const entt::registry& registry = RequireValidRegistry("Cannot get component from invalid entity");
 			return ComponentUtils::GetComponent<TComponent>(registry, m_Entity);
 		}
 
 		template<typename TComponent>
-		bool TryGetComponent(TComponent*& out) {
+			requires (!std::is_empty_v<TComponent> && !std::is_base_of_v<NativeScript, TComponent>)
+		TComponent* TryGetComponent() {
 			entt::registry* registry = GetRegistry();
-			if (!registry || m_Entity == entt::null || !registry->valid(m_Entity)) {
-				out = nullptr;
-				return false;
-			}
+			if (!registry || m_Entity == entt::null) return nullptr;
+			return ComponentUtils::TryGetComponent<TComponent>(*registry, m_Entity);
+		}
 
-			out = ComponentUtils::TryGetComponent<TComponent>(*registry, m_Entity);
+		template<typename TComponent>
+			requires (!std::is_empty_v<TComponent> && !std::is_base_of_v<NativeScript, TComponent>)
+		const TComponent* TryGetComponent() const {
+			const entt::registry* registry = GetRegistry();
+			if (!registry || m_Entity == entt::null) return nullptr;
+			return ComponentUtils::TryGetComponent<TComponent>(*registry, m_Entity);
+		}
+
+		template<typename TComponent>
+			requires (!std::is_empty_v<TComponent>)
+		bool TryGetComponent(TComponent*& out) {
+			out = TryGetComponent<TComponent>();
 			return out != nullptr;
 		}
 
 		template<typename TComponent>
+			requires (!std::is_empty_v<TComponent>)
+		bool TryGetComponent(const TComponent*& out) const {
+			out = TryGetComponent<TComponent>();
+			return out != nullptr;
+		}
+
+		template<typename TComponent>
+			requires (!std::is_base_of_v<NativeScript, TComponent>)
 		void RemoveComponent() {
 			entt::registry* registry = GetRegistry();
 			if (!registry || m_Entity == entt::null || !registry->valid(m_Entity)) {
 				return;
 			}
 			ComponentUtils::RemoveComponent<TComponent>(*registry, m_Entity);
+		}
+
+		template<typename TScript>
+			requires std::is_base_of_v<NativeScript, TScript>
+		FNK_FORCE_INLINE TScript* AddComponent() {
+			return EntityScriptOps::AddScriptToEntity<TScript>(m_Scene, m_Entity);
+		}
+
+		template<typename TScript>
+			requires std::is_base_of_v<NativeScript, TScript>
+		FNK_FORCE_INLINE TScript* GetOrAddComponent() {
+			if (auto* script = GetComponent<TScript>()) return script;
+			return AddComponent<TScript>();
+		}
+
+		template<typename TScript>
+			requires std::is_base_of_v<NativeScript, TScript>
+		bool HasComponent() const {
+			return EntityScriptOps::HasScriptOnEntity<TScript>(m_Scene, m_Entity);
+		}
+
+		template<typename TScript>
+			requires std::is_base_of_v<NativeScript, TScript>
+		FNK_FORCE_INLINE TScript* GetComponent() {
+			return EntityScriptOps::GetScriptOnEntity<TScript>(m_Scene, m_Entity);
+		}
+
+		template<typename TScript>
+			requires std::is_base_of_v<NativeScript, TScript>
+		FNK_FORCE_INLINE const TScript* GetComponent() const {
+			return EntityScriptOps::GetScriptOnEntity<TScript>(m_Scene, m_Entity);
+		}
+
+		template<typename TScript>
+			requires std::is_base_of_v<NativeScript, TScript>
+		FNK_FORCE_INLINE TScript* TryGetComponent() { return GetComponent<TScript>(); }
+
+		template<typename TScript>
+			requires std::is_base_of_v<NativeScript, TScript>
+		FNK_FORCE_INLINE const TScript* TryGetComponent() const { return GetComponent<TScript>(); }
+
+		template<typename TScript>
+			requires std::is_base_of_v<NativeScript, TScript>
+		void RemoveComponent() {
+			(void)EntityScriptOps::RemoveScriptFromEntity<TScript>(m_Scene, m_Entity);
 		}
 
 	private:

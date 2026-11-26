@@ -95,6 +95,6 @@ python -m unittest scripts.ci.test_physics_modules scripts.ci.test_sdk_manifest 
 - **PM-24:** Development SDK staging and native consumption passed. A newly built Dist installer/release bundle with this module contract was not produced or installed. Existing Dist payloads copied during staging are not fresh release verification. Default full-runtime packaging and documented fallback remain supported; native reduced SDK/runtime compatibility is not newly promised.
 - **PM-26:** A matching before/after performance comparison remains open as described above. No implementation change to simulation parameters or optimization is justified by the present capture alone.
 
-Track remaining work in `.agents/backlogs/Physik/Module.md`, the relocated successor of `Funke_Physik_Module_Backlog.md`. Completed implementation detail lives in the documentation linked above, rather than a duplicate historical task list.
+Track [platform and release acceptance (PM-24)](../../Funke_Agenten_Backlog.md#task-pm-24) and the [matched performance comparison (PM-26)](../../Funke_Agenten_Backlog.md#task-pm-26) in the engine backlog. The later [desktop CI run](../Editor/Testing.md#verified-desktop-ci-run) passed the representative Linux and macOS module jobs at its recorded commit.
 
 Active time was not tracked separately from tool execution, so no per-ticket duration is claimed. Capture/build timestamps remain in the local evidence. The next acceptance step is PM-24 on the appropriate platform/release hosts, or PM-26 once a matching performance reference is frozen.

@@ -39,6 +39,7 @@ namespace Funke {
 		friend class Transform2DComponent;
 		friend class TransformHierarchySystem;
 		friend class SceneSerializer;
+        friend struct SceneMaterializationTestAccess;
 
 	public:
 		Scene(const Scene&) = delete;
@@ -101,6 +102,10 @@ namespace Funke {
 
 		// IMPORTANT: does NOT populate identity components — caller must call SetEntityMetaData on each handle.
 		void CreateEntitiesBulk(std::size_t n, std::span<EntityHandle> out);
+		void CreateRuntimePoints(std::span<uint64_t> ids);
+		int TranslateRuntimePoints(std::span<const uint64_t> ids, float dx, float dy);
+		int ReadRuntimePoints(std::span<const uint64_t> ids, float* xy) const;
+		int DestroyRuntimePoints(std::span<const uint64_t> ids);
 
 		void ReserveForLoadRuntime(std::size_t entityCount,
 			std::span<const std::pair<uint32_t, std::size_t>> perTypeCounts);
@@ -128,6 +133,7 @@ namespace Funke {
 		void PrepareParallelEcbDestroy(EntityHandle entity);
 		void PrepareParallelEcbDestroy(std::span<const EntityHandle> entities);
 		void FinalizeParallelEcbDestroy(EntityHandle entity);
+		void FinalizeParallelEcbDestroy(std::span<const EntityHandle> entities);
 
 		void MarkAllDirtyOnce();
 
@@ -349,8 +355,6 @@ namespace Funke {
 
 		void MarkTransformDirty(EntityHandle entity);
 		std::vector<EntityHandle> ConsumeDirtyTransformEntities();
-		// Exchanges with caller-owned scratch so repeated propagation retains both buffers' capacity.
-		void ConsumeDirtyTransformEntities(std::vector<EntityHandle>& destination);
 		bool HasDirtyTransforms() const { return m_TransformHierarchyDirty; }
 		// True when a blanket (non-entity-specific) dirty mark is pending: every root
 		// transform must be re-derived, not just the entities in the dirty list.

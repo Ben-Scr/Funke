@@ -42,6 +42,35 @@ namespace {
 	};
 }
 
+TEST_CASE("Bolt IComponent declarations appear as native components in script discovery") {
+	ScopedTempDir dir;
+	const auto assets = dir.Root / "Assets";
+	std::filesystem::create_directories(assets);
+	auto path = dir.Write("Assets/Movement.bolt",
+		"namespace Game; public struct Move : Funke.Components.IComponent { public float Speed; } "
+		"public struct Target : IComponent { public int Value; }");
+	struct RestoreProject {
+		std::unique_ptr<FunkeProject> Previous;
+		~RestoreProject() { ProjectManager::SetCurrentProject(std::move(Previous)); }
+	} restore;
+	if (auto* current = ProjectManager::GetCurrentProject()) restore.Previous = std::make_unique<FunkeProject>(*current);
+	auto project = std::make_unique<FunkeProject>();
+	project->Name = "BoltDiscovery";
+	project->RootDirectory = Path::ToUtf8(dir.Root);
+	project->AssetsDirectory = Path::ToUtf8(assets);
+	ProjectManager::SetCurrentProject(std::move(project));
+	REQUIRE(AssetRegistry::GetGUID(Path::ToUtf8(path)) != 0);
+	std::vector<ScriptEntry> entries;
+	CollectScriptFile(path, entries);
+	REQUIRE(entries.size() == 2);
+	CHECK(entries[0].ClassName == "bolt:Game.Move");
+	CHECK(entries[1].ClassName == "bolt:Game.Target");
+	for (const auto& entry : entries) {
+		CHECK(entry.IsNativeComponent);
+		CHECK(entry.Type == ScriptType::Bolt);
+	}
+}
+
 TEST_CASE("EditorScriptDiscovery::ToLowerCopy lowercases without touching non-letters") {
 	CHECK(ToLowerCopy("HeLLo_World.CS") == "hello_world.cs");
 	CHECK(ToLowerCopy("") == "");

@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "type": "MachineDefinition",
+  "fields": {
+    "Id": "assembler",
+    "DisplayName": "Assembler",
+    "Description": "Turns two iron plates into a gear. Inserters load and unload it.",
+    "Kind": "3",
+    "CycleSeconds": "2.5",
+    "Prefab": "prefab:7115919159399034875",
+    "Icon": "3799167722807270014",
+    "SpriteName": "assembler",
+    "BuildingItem": "2463213064408685797",
+    "ConnectionTexture": "0",
+    "Recipes": "\n1274477486267244053"
+  }
+}

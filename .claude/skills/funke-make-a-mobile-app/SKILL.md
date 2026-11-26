@@ -1,13 +1,11 @@
 ---
 name: funke-make-a-mobile-app
-description: Use when building a MOBILE APP (not a game) with the Funke engine — an Android/iOS phone app of screens, lists, tabs, forms and settings. Triggers on "make a music player / notes app / to-do app in Funke", "build an Android app", "add a settings page / tab bar / bottom sheet", "the list doesn't scroll on the phone", "UI too small on the sides", "install the APK on my phone", "the app crashes on the phone". Covers the workflow (generated JSON scene → C# scripts → APK → device test), the architecture that works (one scene, Router with tabs/pages/overlays, pooled virtual lists), portrait layout (width-driven scale, safe area), polish (rounded and 9-sliced images, icons, cover art), platform features (permissions, background audio, keyboard, back button) and device profiling with scripts/device.py. Ships ui_gen.py, C# UI templates and an example app. Games use funke-make-a-game; widgets funke-game-ui; C# API funke-game-scripting; UI art funke-game-art.
+description: "Build a non-game phone app with Funke. Covers screens, navigation, virtual lists, safe areas, platform services and on-device testing."
 ---
 
 # Making a Mobile App with Funke
 
-Funke is a 2D/3D engine with core ECS UI (RectTransform + Image/TextRenderer/Button/ScrollRect/InputField…) and C# scripting for phone apps. This skill covers scene generation, navigation, lists and device verification.
-
-**You build the app like `funke-make-a-game` builds a game: write the scene as JSON with a generator script, keep C# for behaviour, verify by running.** Never hand-place hundreds of UI entities in the Editor.
+Generate the UI as an editable JSON scene, implement behavior in C# and test navigation and layout at phone dimensions.
 
 ## Workflow
 
@@ -18,11 +16,11 @@ Funke is a 2D/3D engine with core ECS UI (RectTransform + Image/TextRenderer/But
    - `Scripts/Example/Notes.cs` only as reference; it is the example app's logic.
 3. **Fonts**: put OFL fonts in `Assets/Fonts/` and set `ui.FONT_REGULAR` / `ui.FONT_BOLD = ui.meta("Fonts/…")` in the generator. Choose available font files or obtain them from their official distribution; verify the licence and ship it with the font. Do not depend on a font path from an unrelated local checkout. Bold weights matter for modern app looks.
 4. **Write the generator** (`Tools/gen_scene.py`): theme colours → `ui.camera` → `ui.root_canvas` (Router + app scripts) → one `ui.page` per tab/page → `ui.tab_bar` → overlays (`action_sheet`, `input_dialog`, `toast`) → `s.save()` → `ui.mobile_project_settings(scene, android_options)`. Run it after every layout change; GUIDs and entity uuids are stable.
-5. **Scripts**: one small script per page/overlay, data in plain static classes or services (see Architecture).
+5. Implement page and overlay behavior with the Router and services described below.
 6. **Compile**: `dotnet build <Name>.csproj -c Release`. The project compiles against `<project>/Packages/Funke-ScriptCore/`, which the editor, the runtime and every `funke` command refresh (dll + pdb) from the engine build when they load the project. After changing engine C# APIs, rebuild ScriptCore and load the project once (e.g. `funke info`) before a plain `dotnet build`.
-7. **Desktop check**: `scripts\dev\Run.ps1 -App Runtime -Project <dir> -Seconds 4 -Shots 1` (portrait 540×1000 window). Add `[DevCommand]` test hooks (for example `ui.open settings`) and use `-Exec` or an input script to reach screens; pass fixture paths through explicit test configuration. With the project open in an editor, `funke editor play --size 1080x2400` lays the app out for a phone screen; then `funke editor screenshot shot.png`, `funke editor tap 540 1800 --px`, `funke editor drag 0.5 0.7 0.5 0.3` (scrolls lists), `funke editor key Esc` (back) — no rebuild, no window focus (*Editor > Editor Bridge*).
+7. **Desktop check.** Run `scripts\dev\Run.ps1 -App Runtime -Project <dir> -Seconds 4 -Shots 1`, or use `funke editor play --size 1080x2400` in an open editor. Drive navigation with fixture inputs, `[DevCommand]` hooks or the Editor Bridge's `tap`, `drag` and `key Esc`. Inspect a screenshot of the target screen. [Runtime verification](../funke-build-engine/references/runtime-verification.md).
 8. **APK**: `funke.exe build --platform Android --release` from the project folder (needs the `Funke.Platform.Android` package and an SDK/NDK; output `Builds/Android/<Name>.apk`). On failure rerun with `--verbose`; the real compiler error is in the `Build log:` file it names.
-9. **Device**: `python <skill>/scripts/device.py install|launch|shot|tap|mem|log|crash|heap …` (see Device testing). Use the device when the user's request authorizes it; otherwise ask before installing or interacting with their phone.
+9. For authorized phone testing, follow the device commands below.
 
 ## Project settings (done by `mobile_project_settings`)
 
@@ -82,7 +80,7 @@ Funke is a 2D/3D engine with core ECS UI (RectTransform + Image/TextRenderer/But
 | Notification / lock-screen / headset controls (music apps) | `MediaSession.SetNowPlaying(title, artist, album, length, coverRgba, w, h)` on track change, `SetPlaybackState(playing, position)` on play/pause/seek, drain `MediaSession.TryGetCommand` every frame. Keep `Audio.PlayInBackground` on while a track is loaded (also paused), or the notification's play button can't reach a backgrounded app. Decode the cover on a worker (`TagReader`-style bytes → `Texture.DecodeImage(…, 512, …)`). |
 | Persist settings / data | `PlayerPrefs` (small values), `SaveData.Save/TryLoad(slot, obj)` (JSON, atomic). Caches you rebuild yourself (e.g. a scanned library) as files in `Application.PersistentDataPath`. |
 | Text input | `InputField`; focusing it opens the soft keyboard, tapping anywhere else closes it; `SubmittedThisFrame` for Enter. Long-press selects a word and shows Android's Cut/Copy/Paste/Select-all toolbar (engine-side, nothing to wire). |
-| Back button | Arrives as `KeyCode.Escape`; route through `Router.Back()`. |
+| Back button | Route `KeyCode.Escape` through the page Router. |
 
 ## Device testing (`scripts/device.py`)
 
@@ -104,14 +102,13 @@ python device.py heap <pkg> <unstripped libmain.so>   # heapprofd: live native a
 
 ## Pitfalls seen in practice
 
-- **UI narrower than the screen on phones** → `Fit` scale and/or safe-area side insets. Use width matching; the engine's Android activity reports only bars and cutouts as insets (gesture zones are not obstructions).
+- If the UI is too narrow after width matching, inspect safe-area insets. Android reports bars and cutouts as insets and excludes gesture zones.
 - **App killed after ~20 s on Mali GPUs** → driver leak under Vulkan dynamic rendering; the engine disables it on Android. If a similar climb shows up, profile with `heap` before guessing.
 - **Desktop screenshots show someone else's app** → other sessions share `bin-int\_agent\run\`; check the window title in the PNG.
 - **Manual platform-define checks need isolated intermediates.** `-o` changes only the output directory; it still shares `obj/`. Prefer the active build profile, or use a temporary project with its own `obj/` and `bin/` when checking Android-only code.
 - **New `.cs` file in `Funke-ScriptCore` silently missing from the DLL** → the csproj lists sources explicitly (`<Compile Include=…>`); add the file there.
-- **Engine C# API added but the project doesn't see it** → rebuild ScriptCore, then load the project in the editor or any `funke` command so `Packages/Funke-ScriptCore` is refreshed; "interop mismatch" in the log means engine and ScriptCore were built from different binding layouts — rebuild both.
-- **Android-only compile errors** (e.g. `std::from_chars` for floats is deleted in the NDK's libc++) only appear in the APK build's log file.
-- Fonts render missing glyphs (CJK, emoji) as boxes; fine for titles from user files, but don't use such glyphs in UI strings.
+- An interop mismatch means the engine and ScriptCore use different binding layouts. Rebuild both before refreshing the project's assembly.
+- Test device text with the actual shipped fonts, including representative titles from user files. See [font coverage](../../../Github-Docs/Documentation/Assets/Assets.md#font-coverage).
 
 ## Related skills
 

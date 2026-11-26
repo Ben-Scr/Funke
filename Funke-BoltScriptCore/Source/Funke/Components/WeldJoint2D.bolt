@@ -1,0 +1,15 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public class WeldJoint2D : Joint2D {
+public:
+    [ReadOnly] public override ulong FkShapeKind() { return 2ul; }
+    protected override ulong FkType() { return 47ul; }
+    float LinearHertz { get { return Reinterpret<float>((uint)FkGetWeldJoint2D_LinearHertz(ID, 0ul)); } set { FkSetWeldJoint2D_LinearHertz(ID, (ulong)Reinterpret<uint>(value)); } }
+    float AngularHertz { get { return Reinterpret<float>((uint)FkGetWeldJoint2D_AngularHertz(ID, 0ul)); } set { FkSetWeldJoint2D_AngularHertz(ID, (ulong)Reinterpret<uint>(value)); } }
+    float LinearDampingRatio { get { return Reinterpret<float>((uint)FkGetWeldJoint2D_LinearDampingRatio(ID, 0ul)); } set { FkSetWeldJoint2D_LinearDampingRatio(ID, (ulong)Reinterpret<uint>(value)); } }
+    float AngularDampingRatio { get { return Reinterpret<float>((uint)FkGetWeldJoint2D_AngularDampingRatio(ID, 0ul)); } set { FkSetWeldJoint2D_AngularDampingRatio(ID, (ulong)Reinterpret<uint>(value)); } }
+}

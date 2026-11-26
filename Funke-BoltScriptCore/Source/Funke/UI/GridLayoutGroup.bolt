@@ -1,0 +1,19 @@
+import Funke
+namespace Funke.UI;
+
+public class GridLayoutGroup : Component {
+public:
+    protected override ulong FkType() { return 15ul; }
+    float PaddingLeft { get { return Reinterpret<float>((uint)FkGridLayoutGroup_GetPaddingLeft(ID, 0ul)); } set { FkGridLayoutGroup_SetPaddingLeft(ID, (ulong)Reinterpret<uint>(value)); } }
+    float PaddingRight { get { return Reinterpret<float>((uint)FkGridLayoutGroup_GetPaddingRight(ID, 0ul)); } set { FkGridLayoutGroup_SetPaddingRight(ID, (ulong)Reinterpret<uint>(value)); } }
+    float PaddingTop { get { return Reinterpret<float>((uint)FkGridLayoutGroup_GetPaddingTop(ID, 0ul)); } set { FkGridLayoutGroup_SetPaddingTop(ID, (ulong)Reinterpret<uint>(value)); } }
+    float PaddingBottom { get { return Reinterpret<float>((uint)FkGridLayoutGroup_GetPaddingBottom(ID, 0ul)); } set { FkGridLayoutGroup_SetPaddingBottom(ID, (ulong)Reinterpret<uint>(value)); } }
+    GridLayoutStartCorner StartCorner { get { return (GridLayoutStartCorner)FkGridLayoutGroup_GetStartCorner(ID, 0ul); } set { FkGridLayoutGroup_SetStartCorner(ID, (ulong)value); } }
+    GridLayoutStartAxis StartAxis { get { return (GridLayoutStartAxis)FkGridLayoutGroup_GetStartAxis(ID, 0ul); } set { FkGridLayoutGroup_SetStartAxis(ID, (ulong)value); } }
+    UIAlignment ChildAlignment { get { return (UIAlignment)FkGridLayoutGroup_GetChildAlignment(ID, 0ul); } set { FkGridLayoutGroup_SetChildAlignment(ID, (ulong)value); } }
+    GridLayoutConstraint Constraint { get { return (GridLayoutConstraint)FkGridLayoutGroup_GetConstraint(ID, 0ul); } set { FkGridLayoutGroup_SetConstraint(ID, (ulong)value); } }
+    int ConstraintCount { get { return Reinterpret<int>((uint)(FkGridLayoutGroup_GetConstraintCount(ID, 0ul) & 4294967295ul)); } set { FkGridLayoutGroup_SetConstraintCount(ID, (ulong)Reinterpret<uint>(value)); } }
+    bool Reverse { get { return (FkGridLayoutGroup_GetReverse(ID, 0ul) != 0ul); } set { FkGridLayoutGroup_SetReverse(ID, (value ? 1ul : 0ul)); } }
+    Vector2 CellSize { get { return Vector2.FromBits(FkGridLayoutGroup_GetCellSize(ID, 0ul)); } set { FkGridLayoutGroup_SetCellSize(ID, value.Bits()); } }
+    Vector2 Spacing { get { return Vector2.FromBits(FkGridLayoutGroup_GetSpacing(ID, 0ul)); } set { FkGridLayoutGroup_SetSpacing(ID, value.Bits()); } }
+}

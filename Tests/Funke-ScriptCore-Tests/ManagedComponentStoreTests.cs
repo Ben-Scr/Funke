@@ -431,13 +431,13 @@ public unsafe class ManagedComponentStoreTests
             Entity alias = Entity.FromID(1);
             Component old = entity.Transform2D!;
             Assert.Same(old, alias.Transform2D);
-            Assert.Same(old, alias.Transform);
+            Assert.Same(old, alias.Transform2D);
             SpriteRenderer sprite = entity.GetComponent<SpriteRenderer>()!;
 
             s_Components.Remove((1, k_TransformType));
             delegate* unmanaged<ulong, uint, void> notifyRemoved = &ScriptInstanceManager.NotifyComponentRemoved;
             notifyRemoved(1, k_TransformType);
-            Assert.Null(alias.Transform);
+            Assert.Null(alias.Transform2D);
             s_Components.Add((1, k_TransformType));
 
             Component replacement = alias.Transform2D!;
@@ -445,7 +445,7 @@ public unsafe class ManagedComponentStoreTests
             Assert.Same(Entity.Invalid, old.Entity);
             Assert.Same(replacement, entity.Transform2D);
             Assert.Same(replacement, Entity.FromID(1).GetComponent<Transform2D>());
-            Assert.Same(replacement, entity.Transform);
+            Assert.Same(replacement, entity.Transform2D);
             Assert.Same(sprite, alias.GetComponent<SpriteRenderer>());
             Assert.Same(entity, sprite.Entity);
         });

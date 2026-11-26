@@ -1,0 +1,12 @@
+{
+  "name": "Windows",
+  "platform": "Windows",
+  "renderBackend": "Direct3D12",
+  "configuration": "Release",
+  "showRuntimeStats": false,
+  "showRuntimeLogs": false,
+  "bundleDotNetRuntime": true,
+  "bundleAssets": false,
+  "compressAssetBundles": false,
+  "assetBundleCompression": "LZ4"
+}

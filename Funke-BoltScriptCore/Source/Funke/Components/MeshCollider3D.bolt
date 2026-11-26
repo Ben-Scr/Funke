@@ -1,0 +1,22 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public class MeshCollider3D : Collider3D {
+public:
+    [ReadOnly] public override ulong FkShapeKind() { return 3ul; }
+    protected override ulong FkType() { return 22ul; }
+    Funke.Mesh? CustomMesh {
+        get { return Funke.Mesh.FromAssetUUID(FkMeshCollider3D_GetCustomMesh(ID, 0ul)); }
+        set {
+            ulong guid = 0ul;
+            if (value != null) guid = value.Value.UUID;
+            FkMeshCollider3D_SetCustomMesh(ID, guid);
+        }
+    }
+    bool UseMeshRenderer { get { return Reinterpret<float>((uint)FkGetMeshCollider3D_UseMeshRenderer(ID, 0ul)) != 0.0f; } set { FkSetMeshCollider3D_UseMeshRenderer(ID, (ulong)Reinterpret<uint>((value ? 1.0f : 0.0f))); } }
+    PrimitiveMesh Mesh { get { return (PrimitiveMesh)(int)Reinterpret<float>((uint)FkGetMeshCollider3D_Mesh(ID, 0ul)); } set { FkSetMeshCollider3D_Mesh(ID, (ulong)Reinterpret<uint>((float)(int)value)); } }
+    bool Convex { get { return Reinterpret<float>((uint)FkGetMeshCollider3D_Convex(ID, 0ul)) != 0.0f; } set { FkSetMeshCollider3D_Convex(ID, (ulong)Reinterpret<uint>((value ? 1.0f : 0.0f))); } }
+}

@@ -1,0 +1,18 @@
+import System
+import System.Threading
+import System.Threading.Tasks
+namespace Funke.Jobs;
+
+public static class JobSystem {
+public:
+    bool IsInitialized => true;
+    int WorkerCount => (int)FkWorkerCount(0ul,0ul);
+    int WorkerIndex => (int)FkWorkerIndex(0ul,0ul)-1;
+    bool IsCallerWorker => WorkerIndex>=0;
+    int GetWorkerCount() {return WorkerCount;}
+    int GetWorkerIndex() {return WorkerIndex;}
+    bool IsCallerWorkerThread(){return IsCallerWorker;}
+    void Shutdown() {}
+    void Configure(int workerCount=-1){FkWorkerConfigure((ulong)(long)workerCount,0ul);}
+    void Initialize(JobSystemSpec spec=default){Configure(spec.WorkerCount==0?-1:spec.WorkerCount);}
+}

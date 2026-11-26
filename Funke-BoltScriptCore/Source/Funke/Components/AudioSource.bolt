@@ -1,0 +1,27 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public class AudioSource : Component {
+public:
+    protected override ulong FkType() { return 2ul; }
+    float Volume { get { return Reinterpret<float>((uint)FkAudioSource_GetVolume(ID, 0ul)); } set { FkAudioSource_SetVolume(ID, (ulong)Reinterpret<uint>(value)); } }
+    float Pitch { get { return Reinterpret<float>((uint)FkAudioSource_GetPitch(ID, 0ul)); } set { FkAudioSource_SetPitch(ID, (ulong)Reinterpret<uint>(value)); } }
+    bool Loop { get { return (FkAudioSource_GetLoop(ID, 0ul) != 0ul); } set { FkAudioSource_SetLoop(ID, (value ? 1ul : 0ul)); } }
+    bool IsPlaying => (FkAudioSource_IsPlaying(ID, 0ul) != 0ul);
+    bool IsPaused => (FkAudioSource_IsPaused(ID, 0ul) != 0ul);
+    void Play() { FkAudioSource_Play(ID, 0ul); }
+    void Pause() { FkAudioSource_Pause(ID, 0ul); }
+    void Stop() { FkAudioSource_Stop(ID, 0ul); }
+    void Resume() { FkAudioSource_Resume(ID, 0ul); }
+    Funke.Audio? Audio { get { return Funke.Audio.FromAssetUUID(FkAudioSource_GetAudio(ID, 0ul)); } set { ulong guid = 0ul; if (value != null) guid = value.Value.UUID; FkAudioSource_SetAudio(ID, guid); } }
+    bool Spatial { get { return Reinterpret<float>((uint)FkGetAudioSource_Spatial(ID, 0ul)) != 0.0f; } set { FkSetAudioSource_Spatial(ID, (ulong)Reinterpret<uint>((value ? 1.0f : 0.0f))); } }
+    float MinDistance { get { return Reinterpret<float>((uint)FkGetAudioSource_MinDistance(ID, 0ul)); } set { FkSetAudioSource_MinDistance(ID, (ulong)Reinterpret<uint>(value)); } }
+    float MaxDistance { get { return Reinterpret<float>((uint)FkGetAudioSource_MaxDistance(ID, 0ul)); } set { FkSetAudioSource_MaxDistance(ID, (ulong)Reinterpret<uint>(value)); } }
+    AudioRolloff Rolloff { get { return (AudioRolloff)(int)Reinterpret<float>((uint)FkGetAudioSource_Rolloff(ID, 0ul)); } set { FkSetAudioSource_Rolloff(ID, (ulong)Reinterpret<uint>((float)(int)value)); } }
+    float Panning { get { return Reinterpret<float>((uint)FkGetAudioSource_Panning(ID, 0ul)); } set { FkSetAudioSource_Panning(ID, (ulong)Reinterpret<uint>(value)); } }
+    float DopplerLevel { get { return Reinterpret<float>((uint)FkGetAudioSource_DopplerLevel(ID, 0ul)); } set { FkSetAudioSource_DopplerLevel(ID, (ulong)Reinterpret<uint>(value)); } }
+    bool Hrtf { get { return Reinterpret<float>((uint)FkGetAudioSource_Hrtf(ID, 0ul)) != 0.0f; } set { FkSetAudioSource_Hrtf(ID, (ulong)Reinterpret<uint>((value ? 1.0f : 0.0f))); } }
+}

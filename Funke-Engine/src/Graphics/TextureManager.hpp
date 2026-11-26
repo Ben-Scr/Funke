@@ -32,6 +32,8 @@ namespace Funke {
             // Main thread only; publishes worker-decoded RGBA pixels into the shared texture cache.
             static TextureHandle LoadTextureFromImage(const std::string& path, const ImageData& image,
                 Filter filter = Filter::Point, Wrap u = Wrap::Clamp, Wrap v = Wrap::Clamp);
+            // Takes ownership only after every row and mip has been submitted. Existing valid entries win.
+            static TextureHandle PublishUploadedTexture(const std::string& path, Texture2D&& texture);
             // Meta import block Filter/Wrap wins over caller-supplied defaults when present.
             static TextureHandle LoadTextureByUUID(uint64_t assetId, Filter filter = Filter::Point, Wrap u = Wrap::Clamp, Wrap v = Wrap::Clamp);
 

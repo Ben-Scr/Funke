@@ -1,0 +1,27 @@
+import System
+namespace Funke;
+
+public static class RuntimePoints2D {
+public:
+    static int Create(ulong[]& ids) {
+        if (ids.Length == 0) return 0;
+        return FkService.RuntimePoints_Create(&ids[0], ids.Length);
+    }
+    static int Translate(ulong[]& ids, float dx, float dy) {
+        if (ids.Length == 0) return 0;
+        return FkService.RuntimePoints_Translate(&ids[0], ids.Length, dx, dy);
+    }
+    static int ReadPositions(ulong[]& ids, float[]& xy) {
+        if (xy.Length / 2 < ids.Length) throw ArgumentException("Expected two floats per ID.");
+        if (ids.Length == 0) return 0;
+        return FkService.RuntimePoints_Read(&ids[0], ids.Length, &xy[0]);
+    }
+    static int CountAlive(ulong[]& ids) {
+        if (ids.Length == 0) return 0;
+        return FkService.RuntimePoints_Read(&ids[0], ids.Length, null);
+    }
+    static int Destroy(ulong[]& ids) {
+        if (ids.Length == 0) return 0;
+        return FkService.RuntimePoints_Destroy(&ids[0], ids.Length);
+    }
+}

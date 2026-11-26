@@ -1,0 +1,100 @@
+import System
+import Math
+namespace Funke;
+
+public struct Vector2 {
+public:
+    float X;
+    float Y;
+    static Vector2 Zero => Vector2(0.0f, 0.0f);
+    static Vector2 One => Vector2(1.0f, 1.0f);
+    static Vector2 Right => Vector2(1.0f, 0.0f);
+    static Vector2 Left => Vector2(-1.0f, 0.0f);
+    static Vector2 Up => Vector2(0.0f, 1.0f);
+    static Vector2 Down => Vector2(0.0f, -1.0f);
+    Vector2(float scalar = 0.0f) { X = scalar; Y = scalar; }
+    Vector2(float x, float y) { X = x; Y = y; }
+    Vector2(Vector3 v) { X = v.X; Y = v.Y; }
+    float Length() { return Mathf.Sqrt(X * X + Y * Y); }
+    float LengthSquared() { return X * X + Y * Y; }
+    Vector2 Normalized() {
+        float len = Length();
+        return len > Mathf.Epsilon ? Vector2(X / len, Y / len) : Zero;
+    }
+    void Normalize() {
+        float len = Length();
+        if (len > Mathf.Epsilon) { X /= len; Y /= len; }
+    }
+    static float Dot(Vector2 a, Vector2 b) { return a.X * b.X + a.Y * b.Y; }
+    static float Distance(Vector2 a, Vector2 b) { return (a - b).Length(); }
+    static Vector2 SmoothDamp(Vector2 current, Vector2 target, Vector2& velocity, float smoothTime,
+        float deltaTime) {
+        return SmoothDamp(current, target, velocity, smoothTime, deltaTime, Mathf.Infinity);
+    }
+    static Vector2 SmoothDamp(Vector2 current, Vector2 target, Vector2& velocity, float smoothTime,
+        float deltaTime, float maxSpeed) {
+        Vector3 v = Vector3(velocity);
+        Vector2 result = Vector3.SmoothDamp(Vector3(current), Vector3(target), v, smoothTime, deltaTime, maxSpeed).XY;
+        velocity = v.XY;
+        return result;
+    }
+    static Vector2 Lerp(Vector2 a, Vector2 b, float t) {
+        t = Mathf.Clamp01(t);
+        return Vector2(a.X + (b.X - a.X) * t, a.Y + (b.Y - a.Y) * t);
+    }
+    static Vector2 MoveTowards(Vector2 current, Vector2 target, float maxDelta) {
+        Vector2 diff = target - current;
+        float dist = diff.Length();
+        if (dist <= maxDelta || dist < Mathf.Epsilon) return target;
+        return current + diff / dist * maxDelta;
+    }
+    static Vector2 Reflect(Vector2 direction, Vector2 normal) {
+        float dot = Dot(direction, normal);
+        return direction - 2.0f * dot * normal;
+    }
+    static Vector2 Perpendicular(Vector2 v) { return Vector2(-v.Y, v.X); }
+    static float Angle(Vector2 from, Vector2 to) {
+        float denom = Mathf.Sqrt(from.LengthSquared() * to.LengthSquared());
+        if (denom < Mathf.Epsilon) return 0.0f;
+        float dot = Mathf.Clamp(Dot(from, to) / denom, -1.0f, 1.0f);
+        return Mathf.Acos(dot) * Mathf.Rad2Deg;
+    }
+    void Clamp(Vector2 min, Vector2 max) {
+        X = Mathf.Clamp(X, min.X, max.X);
+        Y = Mathf.Clamp(Y, min.Y, max.Y);
+    }
+    static Vector2 operator +(Vector2 a, Vector2 b) { return Vector2(a.X + b.X, a.Y + b.Y); }
+    static Vector2 operator -(Vector2 a, Vector2 b) { return Vector2(a.X - b.X, a.Y - b.Y); }
+    static Vector2 operator *(Vector2 a, Vector2 b) { return Vector2(a.X * b.X, a.Y * b.Y); }
+    static Vector2 operator /(Vector2 a, Vector2 b) { return Vector2(a.X / b.X, a.Y / b.Y); }
+    static Vector2 operator *(Vector2 v, float s) { return Vector2(v.X * s, v.Y * s); }
+    static Vector2 operator *(float s, Vector2 v) { return Vector2(s * v.X, s * v.Y); }
+    static Vector2 operator /(Vector2 v, float s) { return Vector2(v.X / s, v.Y / s); }
+    static Vector2 operator -(Vector2 v) { return Vector2(-v.X, -v.Y); }
+    static bool operator ==(Vector2 a, Vector2 b) { return a.Equals(b); }
+    static bool operator !=(Vector2 a, Vector2 b) { return !a.Equals(b); }
+    bool Equals(Vector2 other) { return X == other.X && Y == other.Y; }
+    ulong Bits() { return (ulong)Reinterpret<uint>(X) | ((ulong)Reinterpret<uint>(Y) << 32); }
+    static Vector2 FromBits(ulong xy) { return Vector2(Reinterpret<float>((uint)(xy & 4294967295ul)), Reinterpret<float>((uint)(xy >> 32))); }
+    implicit Vector3() { return Vector3(X, Y, 0f); }
+    implicit Vector4() { return Vector4(X, Y, 0f, 0f); }
+    explicit Vector2Int() { return Vector2Int((int)X, (int)Y); }
+    explicit Vector3Int() { return Vector3Int((int)X, (int)Y, 0); }
+    explicit Vector4Int() { return Vector4Int((int)X, (int)Y, 0, 0); }
+    int GetHashCode() {
+        int hash = -2128831035;
+        hash = FkNumberFormat.Hash(hash, X);
+        hash = FkNumberFormat.Hash(hash, Y);
+        return hash;
+    }
+    string ToString() { return ToString(""); }
+    string ToString(string format) {
+        return "Vector2(" + FkNumberFormat.Number(X,format) + ", " + FkNumberFormat.Number(Y,format) + ")";
+    }
+    bool TryFormat(System.Span<char> destination, int& charsWritten, string format = "") {
+        return FkNumberFormat.Write(destination, charsWritten, ToString(format));
+    }
+    bool TryFormat(System.Span<char> destination, int& charsWritten, System.ReadOnlySpan<char> format) {
+        return TryFormat(destination, charsWritten, FkNumberFormat.ReadFormat(format));
+    }
+}

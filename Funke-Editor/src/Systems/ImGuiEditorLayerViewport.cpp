@@ -2284,6 +2284,11 @@ namespace Funke {
 	}
 
 	void ImGuiEditorLayer::RenderEditorView(Scene& scene) {
+		if (m_AssetPreview3D.IsOpen()) {
+			m_IsEditorViewHovered = m_IsEditorViewFocused = false;
+			m_AssetPreview3D.Render();
+			return;
+		}
 		// NoScrollbar/NoScrollWithMouse: InvisibleButton overlays set off-panel cursor positions that extend CursorMaxPos and trigger a spurious scrollbar.
 		// Zero padding: the viewport image fills the panel edge to edge; the toolbars float over it as pills.
 		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));

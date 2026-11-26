@@ -18,6 +18,7 @@
 #include "Scene/SceneManager.hpp"
 #include "Scripting/ScriptComponent.hpp"
 #include "Scripting/ScriptEngine.hpp"
+#include "Scripting/StructFieldBytes.hpp"
 #include "Systems/AnimatorSystem.hpp"
 #if FUNKE_WITH_3D
 #include "Graphics/SkeletalAnimation.hpp"
@@ -868,3 +869,62 @@ TEST_CASE("Animator Texture tracks switch between slices of one sprite sheet") {
 	AnimationClipLibrary::Invalidate(k_ClipGuid);
 }
 #endif
+
+TEST_CASE("Animation targets reject an obsolete component registry generation") {
+    auto scene = Scene::CreateDetachedScene("AnimationGeneration");
+    Entity root = scene->CreateEntity("Root");
+    AnimationTrack track;
+    track.Component = "Transform2D";
+    track.Property = "Position.x";
+    AnimationTargetSet targets;
+    int channel = -1;
+    std::string error;
+    const int target = targets.Resolve(*scene, root, track, channel, error);
+    REQUIRE(target >= 0);
+    PropertyValue value;
+    REQUIRE(targets.Read(*scene, target, value));
+    // Retained editor values must reject stale metadata just like runtime bindings.
+    AnimationTarget stale = targets.GetTargets()[target];
+    --stale.RegistryGeneration;
+    AnimationTargetSet retained;
+    const int old = retained.Add(stale);
+    CHECK(retained.GetType(old) == PropertyType::None);
+    CHECK(retained.GetRotation(old) == RotationProperty::None);
+    CHECK_FALSE(retained.Read(*scene, old, value));
+    CHECK_FALSE(retained.Write(*scene, old, value));
+}
+
+TEST_CASE("Dynamic IComponent animation writes ECS bytes and rejects removed storage") {
+    auto scene = Scene::CreateDetachedScene("Dynamic animation");
+    Entity entity = scene->CreateEmptyEntity();
+    auto& registry = SceneManager::GetComponentRegistryOrBuiltIn();
+    const uint32_t id = registry.RegisterDynamic("Animated", "type:Animated", "Test", ComponentCategory::Component, 8, 4);
+    REQUIRE(id != 0);
+    struct Cleanup { ComponentRegistry& Registry; ~Cleanup() { Registry.UnregisterAllDynamic(); } } cleanup{registry};
+    registry.SetDynamicProperties(id, BuildDynamicFieldProperties(id, 8,
+        R"([{"name":"Motion","type":"vector2","offset":0,"size":8},{"name":"Ignored","type":"string","offset":0,"size":8}])"));
+    const auto* info = registry.GetByTypeId(id);
+    REQUIRE(info);
+    REQUIRE(info->properties.size() == 1);
+    info->add(entity);
+    AnimationTargetSet targets;
+    AnimationTrack track;
+    track.Component = "type:Animated";
+    track.Property = "Motion.x";
+    int channel = -1; std::string error;
+    const int target = targets.Resolve(*scene, entity, track, channel, error);
+    REQUIRE_MESSAGE(target >= 0, error);
+    CHECK(channel == 0);
+    auto value = PropertyValue::FromString(PropertyType::Vec2, "12,34");
+    REQUIRE(targets.Write(*scene, target, value));
+    const auto* bytes = static_cast<const uint8_t*>(info->getRaw(entity));
+    REQUIRE(bytes);
+    CHECK(ReadStructField(bytes, 8, {"vector2", 0, 8}).value() == "12,34");
+    info->remove(entity);
+    CHECK_FALSE(targets.Write(*scene, target, value));
+    info->add(entity);
+    REQUIRE(targets.Write(*scene, target, value));
+    registry.UnregisterAllDynamic();
+    CHECK_FALSE(targets.Write(*scene, target, value));
+    CHECK(targets.GetType(target) == PropertyType::None);
+}

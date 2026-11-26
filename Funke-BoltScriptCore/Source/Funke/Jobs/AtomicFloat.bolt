@@ -1,0 +1,22 @@
+import System
+import System.Threading
+import System.Threading.Tasks
+namespace Funke.Jobs;
+
+public class AtomicFloat {
+    private: System.Threading.Atomic<uint> bits;
+    static uint Encode(float v) { return Reinterpret<uint>(v); }
+    static float Decode(uint v) { return Reinterpret<float>(v); }
+    public: AtomicFloat() {}
+    AtomicFloat(float initialValue) { Store(initialValue); }
+    float Value {get { return Load(); } set { Store(value); } }
+    float Load() {return Decode(bits.Load());}
+    void Store(float v) {bits.Store(Encode(v));}
+    float Exchange(float v) {return Decode(bits.Exchange(Encode(v)));}
+    float CompareExchange(float v,float comparand) { uint old=Encode(comparand); bits.CompareExchange(old,Encode(v));return Decode(old); }
+    float Add(float operand) { uint old=bits.Load(); while(true) { float current=Decode(old); float next=current + operand; if(bits.CompareExchange(old,Encode(next))) return next; }return Decode(old); }
+    float FetchMin(float operand) { uint old=bits.Load(); while(true) { float current=Decode(old); float next=operand < current ? operand : current; if(bits.CompareExchange(old,Encode(next))) return current; }return Decode(old); }
+    float FetchMax(float operand) { uint old=bits.Load(); while(true) { float current=Decode(old); float next=operand > current ? operand : current; if(bits.CompareExchange(old,Encode(next))) return current; }return Decode(old); }
+    float Sub(float operand) {return Add(-operand);}
+    string ToString() { return (string)Load(); }
+}

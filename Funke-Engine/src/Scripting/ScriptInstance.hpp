@@ -30,7 +30,7 @@ namespace Funke {
 		void SetClassName(const std::string& name) { m_ClassName = name; }
 
 		void Bind(EntityHandle entity) { m_Entity = entity; m_IsBound = true; }
-		void Unbind() { m_Entity = entt::null; m_IsBound = false; m_HasStarted = false; m_HasEnabled = false; m_GCHandle = 0; m_NativePtr = nullptr; m_CallbackMask = k_CallbackMaskUnknown; }
+		void Unbind() { m_Entity = entt::null; m_IsBound = false; m_HasStarted = false; m_HasEnabled = false; m_GCHandle = 0; m_BoltState = 0; m_NativePtr = nullptr; m_CallbackMask = k_CallbackMaskUnknown; }
 		bool IsBound() const { return m_IsBound; }
 		EntityHandle GetEntity() const { return m_Entity; }
 
@@ -55,6 +55,9 @@ namespace Funke {
 		void SetNativePtr(NativeScript* ptr) { m_NativePtr = ptr; m_Type = ScriptType::Native; }
 		bool HasNativeInstance() const { return m_NativePtr != nullptr; }
 
+		uint64_t GetBoltState() const { return m_BoltState; }
+		void SetBoltState(uint64_t value) { m_BoltState = value; }
+
 		bool HasAnyInstance() const { return HasManagedInstance() || HasNativeInstance(); }
 		ScriptType GetType() const { return m_Type; }
 		void SetType(ScriptType type) { m_Type = type; }
@@ -68,6 +71,7 @@ namespace Funke {
 		ScriptType m_Type = ScriptType::Unknown;
 		uint32_t m_GCHandle = 0;
 		uint32_t m_CallbackMask = k_CallbackMaskUnknown;
+		uint64_t m_BoltState = 0;
 		NativeScript* m_NativePtr = nullptr;
 	};
 

@@ -8,9 +8,46 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import time
+
+
+def emit_snippet_fixture(project: Path) -> None:
+    snippets = json.loads((project / ".vscode/funke-cpp.code-snippets").read_text(encoding="utf-8-sig"))
+    used = set()
+
+    def expand(name, values=None):
+        used.add(name)
+        values = {0: "", **(values or {})}
+        snippet = snippets[name]
+        if snippet["scope"] != "cpp":
+            raise RuntimeError(f"Unexpected snippet scope: {name}")
+        source = "\n".join(snippet["body"])
+
+        def placeholder(match):
+            index = int(match[1])
+            default = match[2] if match[2] is not None else match[3].split(",")[0]
+            return values.setdefault(index, default)
+
+        source = re.sub(r"\$\{(\d+)(?::([^}]+)|\|([^}]+)\|)\}", placeholder, source)
+        return re.sub(r"\$(\d+)", lambda match: values[int(match[1])], source)
+
+    source = expand("Funke C++ script", {1: "SnippetPlayer"})
+    source += "\nclass SnippetUse : public NativeScript {\npublic:\n"
+    source += expand("Funke lifecycle callback", {1: "Start"})
+    source += "\nvoid Examples() {\n"
+    for name in ("Funke optional component or script", "Funke get or add component", "Funke retained component handle"):
+        source += expand(name) + "\n"
+    source += expand("Funke get or add native script", {2: "SnippetPlayer"}) + "\n}\n};\n"
+    source += "class SnippetFields : public NativeScript {\npublic:\nfloat Speed = 5.0f;\n"
+    source += expand("Funke Inspector fields", {1: "SnippetFields", 3: "SavedSpeed"}) + "\n};\n"
+    source += "class SnippetSingleField : public NativeScript {\npublic:\nfloat Speed = 5.0f;\nFNK_NATIVE_FIELDS(\n"
+    source += expand("Funke Inspector field descriptor", {1: "SnippetSingleField", 3: "SavedSpeed"}) + "\n)\n};\n"
+    if used != snippets.keys():
+        raise RuntimeError(f"Unverified snippets: {snippets.keys() - used}")
+    (project / "Assets/Snippets.cpp").write_text(source, encoding="utf-8")
 
 
 def main() -> None:
@@ -45,6 +82,7 @@ def main() -> None:
         project.mkdir(exist_ok=True)
         env = {**os.environ, "FUNKE_NATIVE_TEST_PROJECT": str(project)}
         run([exe, "--test-case=Native scripting convenience emits real project fixtures", "--no-skip"], mode + "-generate", env)
+        emit_snippet_fixture(project)
         if mode == "baseline":
             includes = "#include <Scripting/NativeScript.hpp>\n#include <Core/Input.hpp>\n#include <Scene/SceneManager.hpp>"
             for source in (project / "Assets").glob("*.cpp"):
@@ -119,7 +157,7 @@ def main() -> None:
     (matrix / "CMakeLists.txt").write_text("\n".join(cmake), encoding="utf-8")
     run([args.cmake, "-S", matrix, "-B", matrix / "build", "-G", args.generator], "matrix-configure")
     run([args.cmake, "--build", matrix / "build", "--config", args.config], "matrix-build")
-    results["metadata"] = {"config": args.config, "generator": args.generator, "script_translation_units": 4,
+    results["metadata"] = {"config": args.config, "generator": args.generator, "script_translation_units": 5,
                            "repetitions": 1, "sdk": str(sdk), "fresh_output_required_for_clean_timings": True}
     (output / "results.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
     print(json.dumps(results, indent=2))

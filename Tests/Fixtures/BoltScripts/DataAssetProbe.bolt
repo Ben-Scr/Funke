@@ -1,0 +1,9 @@
+import Funke
+
+[CreateDataAsset("Tests/Bolt settings")]
+public class DataAssetProbe : DataAsset {
+    public int Count = 4;
+    public string Label = "initial";
+    public override void OnValidate() { if (Count > 8) Count = 8; }
+}
+

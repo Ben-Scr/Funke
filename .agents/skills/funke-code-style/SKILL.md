@@ -1,6 +1,6 @@
 ---
 name: funke-code-style
-description: Use when writing or reviewing C++ code in the Funke engine, or when naming/style/structure decisions come up. Triggers on "code style", "naming conventions", "should this be m_/s_/k_/g_", "FNK_ macros", "FUNKE_ macros", "FUNKE_API", "dllexport", "LNK2019 from the editor", "PCH", "pch.hpp", "EditorPch.hpp", "include order", "FUNKE_WITH_RENDER", "FUNKE_WITH_2D", "FNK_PLATFORM_WINDOWS / ANDROID / WEB", "FNK_ASSERT vs FNK_THROW", "error handling", "unique_ptr vs Scope", or any time you're authoring new files in `Funke-Engine/`, `Funke-Editor/`, `Funke-Runtime/`, `Funke-Launcher/`, `Funke-EditorRuntime/` or a package's native layer. Encodes the engine's conventions — PascalCase methods, `m_/s_/k_/g_/t_` prefixes, the FNK_ vs FUNKE_ macro families, header + PCH rules per project, the DLL export boundary, module/platform gates, and assert/throw/log error-handling rules. Comment rules live in `funke-comment-style`, not here.
+description: "Apply Funke engine C++ conventions for naming, includes, PCHs, DLL exports, module gates, assertions and error handling."
 ---
 
 # Funke C++ Code Style
@@ -34,17 +34,7 @@ Getters `Get*()` / `Is*()` / `Has*()`, setters `Set*()`. No `get_`/`set_`. Dawn'
 
 ## Files, headers, PCH
 
-```cpp
-#pragma once                       // always; no include guards
-#include "Core/Export.hpp"         // whenever the header uses FUNKE_API
-#include "Graphics/TextureHandle.hpp"
-#include <glm/glm.hpp>
-#include <vector>
-
-namespace Funke {
-	class FUNKE_API Thing { ... };
-} // namespace Funke
-```
+Start headers with `#pragma once`. Include `Core/Export.hpp` when declaring exported symbols.
 
 - Engine include paths are relative to `Funke-Engine/src`, quoted: `"Graphics/Renderer2D.hpp"`.
 - `.cpp` include order: PCH line (if the project needs one) → own header → engine headers → third-party (`<webgpu/webgpu_cpp.h>`, `<glm/...>`, `<imgui.h>`) → std.
@@ -84,25 +74,7 @@ Engine feature modules `Funke.2D` / `Funke.3D` are a second, finer layer: `FUNKE
 
 ## Class layout
 
-```cpp
-class FUNKE_API MyThing {
-public:
-	MyThing();
-	~MyThing();
-	MyThing(const MyThing&) = delete;              // GPU/backend owners are move-only
-	MyThing& operator=(const MyThing&) = delete;
-
-	void Initialize();
-	bool IsInitialized() const { return m_IsInitialized; }
-	static void Helper();
-
-private:
-	void Internal();
-
-	bool m_IsInitialized = false;                  // members last, with default initializers
-	friend class Renderer2D;
-};
-```
+Put public construction and methods first, then private methods and default-initialized data members. GPU and backend owners delete copying and manage resources through RAII.
 
 Static-only managers (`TextureManager`, `ShaderManager`, `RenderApi`, `Profiler`) use `static` methods + `s_` state, and either `= delete` the constructor or keep it private.
 
@@ -112,15 +84,14 @@ Mostly plain `struct FUNKE_API XComponent` with public PascalCase fields and def
 
 ## Error handling
 
-- **Asserts are live in every configuration.** `FNK_ASSERT` / `FNK_CORE_ASSERT` / `FNK_VERIFY` / `FNK_CORE_VERIFY` (`Core/Assert.hpp`) all call `ReportAssertionFailure`: Debug and Release log, trigger `FNK_DEBUG_BREAK` (`__debugbreak()` on Windows, `raise(SIGTRAP)` elsewhere), then call `std::terminate()` if execution resumes; Dist logs and **continues**. So code after an assert must not crash if the condition is false in a shipped build.
-- Signature: `FNK_ASSERT(cond, "message")` or `FNK_ASSERT(cond, FunkeErrorCode::X, "message")`. The message is a plain string, **not** a format string — use `fmt::format(...)` for values. Codes: `Core/FunkeErrorCode.hpp` (`InvalidArgument`, `NotInitialized`, `AlreadyInitialized`, `FileNotFound`, `InvalidHandle`, `OutOfRange`, `OutOfBounds`, `Overflow`, `NullReference`, `LoadFailed`, `InvalidValue`, `Undefined`).
+- Assertions and verification run in every configuration. Debug and Release break and terminate on resume. Dist logs and continues, so the next statement must still be safe. Pass a plain message, optionally with a `FunkeErrorCode` from `Core/FunkeErrorCode.hpp`. Use `fmt::format` for values.
 - **Exceptions:** `FNK_THROW(code, msg)` throws `FunkeException` (`Core/Exceptions.hpp`). Used for API misuse, e.g. `Scene::GetComponent<T>` throws on an invalid entity or a missing component (use `HasComponent` / `TryGetComponent` when absence is normal). Application loops wrap layer and renderer calls in `FUNKE_TRY_CATCH_LOG(stmt)`.
 - **Never let a C++ exception reach CoreCLR.** Native script bindings are registered through `FNK_GUARDED_BINDING(fn)` (`Scripting/ScriptBindingGuard.hpp`), a noexcept thunk that logs and returns `R{}`.
 - **Recoverable problems:** log (`FNK_CORE_WARN_TAG`) and early-return. Early return beats nesting.
 
 ## Logging
 
-fmt-style, compile-time checked (`fmt::format_string`): `FNK_CORE_WARN_TAG("Renderer2D", "No pipeline for format {}", fmt)`. A runtime `std::string` can only be passed as the sole message argument (non-template overload); never build messages with `+` and then add format args. `FNK_CORE_*` → stdout + log file only; `FNK_*` (client) → also the editor Console. Levels: `TRACE/INFO/WARN/ERROR/FATAL`. Full table and where output lands: `funke-debug`.
+Use a subsystem tag and a compile-time format string, e.g. `FNK_CORE_WARN_TAG("Renderer2D", "No pipeline for format {}", fmt)`. Pass a runtime string as the sole message argument. See [debugging](../funke-debug/SKILL.md) for logger families, levels and sinks.
 
 ## Resource management
 

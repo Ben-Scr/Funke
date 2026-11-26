@@ -1,0 +1,27 @@
+import System
+import System.Threading
+import System.Threading.Tasks
+namespace Funke.Jobs;
+
+public struct JobHandle {
+private:
+    Task<void> completion;
+    bool valid;
+    ulong native;
+public:
+    JobHandle() {}
+    JobHandle(Task<void> task) { completion = task; valid = true; }
+    JobHandle(Task<void> task,ulong handle) { completion=task; native=handle; valid=true; }
+    bool IsValid => valid;
+    bool IsComplete => !valid || completion.IsCompleted;
+    bool IsCompleted => IsComplete;
+    bool IsFaulted => valid && completion.IsFaulted;
+    bool IsCanceled => valid && completion.IsCanceled;
+    void Complete() { if (native!=0ul) FkWaitJob(native,0ul); if (valid) completion.Wait(); }
+    System.Exception? Exception {
+        get { if(!IsFaulted)return null;try {Complete();} catch(System.Exception& error){return error;} return null; }
+    }
+    JobHandle ObserveFaults() {if(valid)Funke.ManagedTasks.ObserveRoutine(completion);return this;}
+    JobAwaiter GetAwaiter(){JobAwaiter awaiter;awaiter.Task=AsTask();return awaiter;}
+    Task<void> AsTask() { if (valid) return completion; return Task<void>.CompletedTask; }
+}

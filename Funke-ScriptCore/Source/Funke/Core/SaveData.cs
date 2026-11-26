@@ -165,14 +165,24 @@ internal static class AtomicFile
         string? directory = Path.GetDirectoryName(path);
         if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
 
-        string temp = path + ".tmp";
-        using (var stream = new FileStream(temp, FileMode.Create, FileAccess.Write, FileShare.None))
-        using (var writer = new StreamWriter(stream))
+        string temp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
         {
-            writer.Write(contents);
-            writer.Flush();
-            stream.Flush(flushToDisk: true);
+            using (var stream = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            using (var writer = new StreamWriter(stream))
+            {
+                writer.Write(contents);
+                writer.Flush();
+                stream.Flush(flushToDisk: true);
+            }
+            File.Move(temp, path, overwrite: true);
         }
-        File.Move(temp, path, overwrite: true);
+        finally
+        {
+            // Only our private staging file; preserve the publication error if cleanup also fails.
+            try { File.Delete(temp); }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+        }
     }
 }

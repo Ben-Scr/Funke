@@ -1,0 +1,24 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public class PrismaticJoint2D : Joint2D {
+public:
+    [ReadOnly] public override ulong FkShapeKind() { return 1ul; }
+    protected override ulong FkType() { return 30ul; }
+    Vector2 Axis { get { return Vector2.FromBits(FkGetPrismaticJoint2D_Axis(ID, 0ul)); } set { FkSetPrismaticJoint2D_Axis(ID, value.Bits()); } }
+    bool EnableLimit { get { return Reinterpret<float>((uint)FkGetPrismaticJoint2D_EnableLimit(ID, 0ul)) != 0.0f; } set { FkSetPrismaticJoint2D_EnableLimit(ID, (ulong)Reinterpret<uint>((value ? 1.0f : 0.0f))); } }
+    float LowerTranslation { get { return Reinterpret<float>((uint)FkGetPrismaticJoint2D_LowerTranslation(ID, 0ul)); } set { FkSetPrismaticJoint2D_LowerTranslation(ID, (ulong)Reinterpret<uint>(value)); } }
+    float UpperTranslation { get { return Reinterpret<float>((uint)FkGetPrismaticJoint2D_UpperTranslation(ID, 0ul)); } set { FkSetPrismaticJoint2D_UpperTranslation(ID, (ulong)Reinterpret<uint>(value)); } }
+    bool EnableMotor { get { return Reinterpret<float>((uint)FkGetPrismaticJoint2D_EnableMotor(ID, 0ul)) != 0.0f; } set { FkSetPrismaticJoint2D_EnableMotor(ID, (ulong)Reinterpret<uint>((value ? 1.0f : 0.0f))); } }
+    float MotorSpeed { get { return Reinterpret<float>((uint)FkGetPrismaticJoint2D_MotorSpeed(ID, 0ul)); } set { FkSetPrismaticJoint2D_MotorSpeed(ID, (ulong)Reinterpret<uint>(value)); } }
+    float MaxMotorForce { get { return Reinterpret<float>((uint)FkGetPrismaticJoint2D_MaxMotorForce(ID, 0ul)); } set { FkSetPrismaticJoint2D_MaxMotorForce(ID, (ulong)Reinterpret<uint>(value)); } }
+    bool EnableSpring { get { return Reinterpret<float>((uint)FkGetPrismaticJoint2D_EnableSpring(ID, 0ul)) != 0.0f; } set { FkSetPrismaticJoint2D_EnableSpring(ID, (ulong)Reinterpret<uint>((value ? 1.0f : 0.0f))); } }
+    float SpringHertz { get { return Reinterpret<float>((uint)FkGetPrismaticJoint2D_SpringHertz(ID, 0ul)); } set { FkSetPrismaticJoint2D_SpringHertz(ID, (ulong)Reinterpret<uint>(value)); } }
+    float SpringDampingRatio { get { return Reinterpret<float>((uint)FkGetPrismaticJoint2D_SpringDampingRatio(ID, 0ul)); } set { FkSetPrismaticJoint2D_SpringDampingRatio(ID, (ulong)Reinterpret<uint>(value)); } }
+    float JointTranslation => Reinterpret<float>((uint)FkGetPrismaticJoint2D_JointTranslation(ID, 0ul));
+    float JointSpeed => Reinterpret<float>((uint)FkGetPrismaticJoint2D_JointSpeed(ID, 0ul));
+    float MotorForce => Reinterpret<float>((uint)FkGetPrismaticJoint2D_MotorForce(ID, 0ul));
+}

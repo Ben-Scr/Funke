@@ -1,0 +1,441 @@
+diff --git a/include/bolt/native/ABI.hpp b/include/bolt/native/ABI.hpp
+--- a/include/bolt/native/ABI.hpp
++++ b/include/bolt/native/ABI.hpp
+@@ -16,6 +16,9 @@
+ #define BOLT_NATIVE_EXPORT __attribute__((visibility("default")))
+ #endif
+ 
++// A persistent JIT context starts with an exclusive instruction counter. Clear
++// this flag before publishing any worker that may debit its parent's budget.
++inline constexpr std::uint32_t BR_PRIVATE_STEPS = 256u;
+ struct BrContext {
+     std::int32_t failed;
+     std::uint32_t flags;
+diff --git a/src/native/ABI.cpp b/src/native/ABI.cpp
+--- a/src/native/ABI.cpp
++++ b/src/native/ABI.cpp
+@@ -541,13 +541,13 @@
+     if(!c)std::terminate();
+     auto& state=impl(c);auto old=ExceptionRecord{std::move(state.error),std::move(state.error_type),std::move(state.pending_exception)};
+     const auto failed=c->failed;const auto flags=c->flags,limit=c->max_depth;
+-    c->failed=0;c->flags=0;c->max_depth=0;
++    c->failed=0;c->flags=flags & BR_PRIVATE_STEPS;c->max_depth=0;
+     auto* previous=active_worker_context;active_worker_context=c;
+     type->destructor(c,p);
+     active_worker_context=previous;
+     if(c->failed){try{if(state.error)write_diagnostic(bolt::format_diagnostic(*state.error));write_diagnostic("Bolt: exception escaped a destructor; terminating.\n");}catch(...){}std::terminate();}
+     state.error=std::move(old.diagnostic);state.error_type=std::move(old.type_name);state.pending_exception=std::move(old.payload);
+-    c->failed=failed;c->flags=flags;c->max_depth=limit;
++    c->failed=failed;c->flags=(flags & ~BR_PRIVATE_STEPS) | (c->flags & BR_PRIVATE_STEPS);c->max_depth=limit;
+ }
+ bool completed_as(BrType* ready,BrType* type)noexcept {for(auto* t=ready;t;t=t->base)if(t==type)return true;return false;}
+ void drop_class(BrType* t,void* p,BrType* ready)noexcept {
+@@ -1068,6 +1068,7 @@
+         captures.reserve(count);
+         for(std::size_t i=0;i<count;++i)captures.emplace_back(types[i],values[i]);
+         auto& owner=allocation_owner(impl(c));
++        c->flags &= ~BR_PRIVATE_STEPS;
+         const auto flags=c->flags,depth=c->max_depth;
+         const auto input=impl(c).input;const auto stream=impl(c).output;
+         // Join completed threads and release their results outside the registry lock.
+@@ -1180,6 +1181,7 @@
+         local.type_owner=&allocation_owner(impl(c));
+         local.input=impl(c).input;
+         local.output=impl(c).output;
++        c->flags &= ~BR_PRIVATE_STEPS;
+         child->flags=c->flags;
+         out=new HostedJob{Box(type,value),reinterpret_cast<void(*)(BrContext*,void*)>(function),std::move(child)};
+     });
+@@ -1204,6 +1206,7 @@
+     checked(c,site,[&]{
+         auto capture=std::make_shared<Box>(job_type,job);
+         auto input=impl(c).input;auto stream=impl(c).output;auto* owner=impl(c).type_owner?impl(c).type_owner:&impl(c);
++        c->flags &= ~BR_PRIVATE_STEPS;
+         auto worker=bolt::system::Worker::Launch([capture,job_type,function,input,stream,owner]{
+             auto* child=br_create(0,4096);if(!child)throw std::bad_alloc();impl(child).input=input;impl(child).output=stream;impl(child).type_owner=owner;
+             auto* previous=active_worker_context;active_worker_context=child;
+diff --git a/src/native/IR.cpp b/src/native/IR.cpp
+--- a/src/native/IR.cpp
++++ b/src/native/IR.cpp
+@@ -1,4 +1,5 @@
+ #include <bolt/native/IR.hpp>
++#include <bolt/native/ABI.hpp>
+ #include <unordered_map>
+ #include <algorithm>
+ #include <bit>
+@@ -188,6 +189,98 @@
+         }
+         o<<")\n";
+     }
++    const bool budgets = release && m.instrument_budget;
++    if (budgets) {
++        static_assert(offsetof(BrContext, failed)==0 && offsetof(BrContext, flags)==4 &&
++                      offsetof(BrContext, steps)==8 && offsetof(BrContext, depth)==16 &&
++                      offsetof(BrContext, max_depth)==20 && BR_PRIVATE_STEPS==256);
++        auto imports=[&](std::string_view n) {
++            return std::any_of(m.externals.begin(),m.externals.end(),[&](const External& e){return e.name==n;});
++        };
++        if (imports("br_tick")) o << R"ir(
++define internal void @bolt.budget.tick(ptr %c, ptr %site) alwaysinline {
++entry:
++  %null = icmp eq ptr %c, null
++  br i1 %null, label %done, label %test
++test:
++  %f = load i32, ptr %c
++  %fp = getelementptr i8, ptr %c, i64 4
++  %flags = load i32, ptr %fp
++  %enabled = and i32 %flags, 1
++  %ok = icmp eq i32 %f, 0
++  %limited = icmp ne i32 %enabled, 0
++  %active = and i1 %ok, %limited
++  br i1 %active, label %owner, label %done
++owner:
++  %private = and i32 %flags, 256
++  %exclusive = icmp ne i32 %private, 0
++  br i1 %exclusive, label %check, label %slow
++check:
++  %sp = getelementptr i8, ptr %c, i64 8
++  %remaining = load i64, ptr %sp
++  %empty = icmp eq i64 %remaining, 0
++  br i1 %empty, label %slow, label %debit
++debit:
++  %next = sub nuw i64 %remaining, 1
++  store i64 %next, ptr %sp
++  br label %done
++slow:
++  call void @br_tick(ptr %c, ptr %site)
++  br label %done
++done:
++  ret void
++}
++)ir";
++        if (imports("br_enter")) o << R"ir(
++define internal i32 @bolt.budget.enter(ptr %c, ptr %site) alwaysinline {
++entry:
++  %null = icmp eq ptr %c, null
++  br i1 %null, label %skip, label %test
++test:
++  %f = load i32, ptr %c
++  %ok = icmp eq i32 %f, 0
++  br i1 %ok, label %check, label %skip
++check:
++  %dp = getelementptr i8, ptr %c, i64 16
++  %lp = getelementptr i8, ptr %c, i64 20
++  %depth = load i32, ptr %dp
++  %limit = load i32, ptr %lp
++  %bounded = icmp ne i32 %limit, 0
++  %atlimit = icmp uge i32 %depth, %limit
++  %full = and i1 %bounded, %atlimit
++  br i1 %full, label %slow, label %advance
++advance:
++  %next = add i32 %depth, 1
++  store i32 %next, ptr %dp
++  ret i32 1
++slow:
++  %result = call i32 @br_enter(ptr %c, ptr %site)
++  ret i32 %result
++skip:
++  ret i32 0
++}
++)ir";
++        if (imports("br_leave")) o << R"ir(
++define internal void @bolt.budget.leave(ptr %c, i32 %entered) alwaysinline {
++entry:
++  %valid = icmp ne ptr %c, null
++  %active = icmp ne i32 %entered, 0
++  %check = and i1 %active, %valid
++  br i1 %check, label %test, label %done
++test:
++  %dp = getelementptr i8, ptr %c, i64 16
++  %depth = load i32, ptr %dp
++  %empty = icmp eq i32 %depth, 0
++  br i1 %empty, label %done, label %leave
++leave:
++  %previous = sub nuw i32 %depth, 1
++  store i32 %previous, ptr %dp
++  br label %done
++done:
++  ret void
++}
++)ir";
++    }
+     std::set<std::string> intrinsic_declarations;
+     std::set<std::string> memory_wrappers;
+     const bool direct_libc = triple.find("linux") != std::string::npos ||
+@@ -297,7 +390,7 @@
+                             emit("store i"+std::to_string(bytes*8)+" 0, ptr "+ptr+", align 1");
+                             pos+=bytes;
+                         }
+-                    } else if (windows_freestanding) {
++                    } else if (windows_freestanding || budgets) {
+                         emit("call void @llvm.memset.inline.p0.i64(ptr " + a(0) + ", i8 0, i64 " +
+                              std::to_string(i.immediate) + ", i1 false)");
+                         intrinsic_declarations.insert("declare void @llvm.memset.inline.p0.i64(ptr, i8, i64 immarg, i1 immarg)");
+@@ -335,6 +428,9 @@
+                 case Op::Cast:emit(dest+i.text+" "+typed(i.args[0])+" to "+name(ty));break;
+                 case Op::Call:case Op::CallIndirect:{
+                     auto callee = i.op == Op::Call ? sym(i.text) : a(0);
++                    if (budgets && i.op == Op::Call &&
++                        (i.text=="br_tick" || i.text=="br_enter" || i.text=="br_leave"))
++                        callee="@bolt.budget."+i.text.substr(3);
+                     if (i.op == Op::Call && !memory_wrappers.empty() && memory_wrappers.contains(i.text))
+                         callee = "@bolt.memory." + i.text.substr(10);
+                     const External* c_abi=nullptr;
+diff --git a/src/native/Jit.cpp b/src/native/Jit.cpp
+--- a/src/native/Jit.cpp
++++ b/src/native/Jit.cpp
+@@ -126,6 +126,7 @@
+         const bool first = !session;
+         auto* context=session ? session : br_create(options.execution.max_steps,static_cast<std::uint32_t>(options.execution.max_call_depth));
+         if(!context)throw std::runtime_error("could not allocate a JIT execution context");
++        if (persistent && first) context->flags |= BR_PRIVATE_STEPS;
+         if (persistent) session = context;
+         std::atomic_ref(context->steps).store(options.execution.max_steps,std::memory_order_relaxed);
+         try {
+diff --git a/src/native/lowering/Calls.cpp b/src/native/lowering/Calls.cpp
+--- a/src/native/lowering/Calls.cpp
++++ b/src/native/lowering/Calls.cpp
+@@ -292,7 +292,35 @@
+         }
+     }
+     auto ty=lower.result_type(m);Reg result=0;
+-    if(dispatch&&m.is_virtual&&!m.is_constructor&&!c.is_struct){auto fnptr=call("br_dispatch",Type::Ptr,{context,site(),dispatch_object,integer(Type::I32,static_cast<std::uint64_t>(lower.dispatch_slot(m.id)))});passed.insert(passed.begin(),fnptr);result=instruction(Op::CallIndirect,ty,std::move(passed));check();}
++    if(dispatch && m.is_virtual && !m.is_constructor && !c.is_struct) {
++        const bool specialize=lower.options.optimize_loops && lower.module.instrument_budget &&
++            !c.is_interface && !c.is_abstract && !m.is_abstract && m.body && m.analyzed;
++        Label indirect=0, done=0;
++        Reg saved=0;
++        if(specialize) {
++            const auto inspect=block(), direct=block();
++            indirect=block(); done=block();
++            if(ty!=Type::Void) saved=alloc(width(ty),false);
++            branch(cmp("ne",dispatch_object,null()),inspect,indirect);
++            current=inspect;
++            branch(cmp("eq",load(Type::Ptr,dispatch_object),type(c.name)),direct,indirect);
++            current=direct;
++            const auto value=call(method_symbol(c,m),ty,passed,true,false);
++            if(saved) store(saved,value);
++            jump(done);
++            current=indirect;
++        }
++        auto fnptr=call("br_dispatch",Type::Ptr,{context,site(),dispatch_object,integer(Type::I32,lower.dispatch_slot(m.id))});
++        passed.insert(passed.begin(),fnptr);
++        result=instruction(Op::CallIndirect,ty,std::move(passed));
++        check();
++        if(specialize) {
++            if(saved) store(saved,result);
++            jump(done);
++            current=done;
++            if(saved) result=load(ty,saved);
++        }
++    }
+     else result=call(method_symbol(c,m),ty,std::move(passed),true,false);
+     return {m.type,output?output:result};
+ }
+diff --git a/src/native/lowering/LoopOptimizations.cpp b/src/native/lowering/LoopOptimizations.cpp
+--- a/src/native/lowering/LoopOptimizations.cpp
++++ b/src/native/lowering/LoopOptimizations.cpp
+@@ -360,7 +360,141 @@
+ #include "../ScalarScan.inc"
+ #include "../ConditionalArrayUpdate.inc"
+ #include "../WideningSequenceSum.inc"
++// These loops cannot call user code or share their locals. Charge the exact
++// number of condition tests on exit, including a checked arithmetic failure.
++static bool scalar_loop_value(const Expr& e) {
++    if(!is_integer(e.type)) return false;
++    if(e.kind==K::Literal) return true;
++    if(e.kind==K::Name) return e.binding==B::Local && !is_reference(e.declared_type);
++    if(e.kind!=K::Binary || e.binding!=B::None || e.args.size()!=2) return false;
++    return scalar_loop_value(*e.args[0]) && scalar_loop_value(*e.args[1]);
++}
++static bool scalar_loop_body(const Stmt& s,std::size_t counter) {
++    if(s.kind==Stmt::Kind::Block)
++        return std::all_of(s.statements.begin(),s.statements.end(),[&](const auto& child){return scalar_loop_body(*child,counter);});
++    if(s.kind!=Stmt::Kind::Expression || !s.expression) return false;
++    const auto& e=*s.expression;
++    if(e.kind!=K::Assign || e.binding!=B::None || e.text!="=" || e.args.size()!=2) return false;
++    const auto& dest=*e.args[0];
++    return dest.kind==K::Name && scalar_loop_value(dest) && dest.local_id!=counter && scalar_loop_value(*e.args[1]);
++}
++// A constant mask or remainder bounds the value carried into the next
++// iteration. Prove each intermediate fits before selecting 32-bit operations.
++struct NarrowLoop {
++    const Expr& value;
++    const Expr& target;
++    std::uint64_t limit;
++
++    static std::optional<std::uint64_t> constant(const Expr& e) {
++        if(e.kind!=K::Literal || (e.type!="uint" && e.type!="ulong")) return {};
++        return std::get<std::uint64_t>(literal_value(e).data);
++    }
++    std::optional<std::uint64_t> maximum(const Expr& e) const {
++        if(e.type!=target.type) return {};
++        if(e.kind==K::Name && e.binding==B::Local && e.local_id==target.local_id) return limit;
++        if(auto n=constant(e); n && *n<=UINT32_MAX) return n;
++        if(e.kind!=K::Binary || e.binding!=B::None || e.args.size()!=2) return {};
++        auto left=maximum(*e.args[0]), right=maximum(*e.args[1]);
++        if(!left || !right) return {};
++        if(e.text=="+" && *left+*right<=UINT32_MAX) return *left+*right;
++        if(e.text=="*" && (*left)*(*right)<=UINT32_MAX) return (*left)*(*right);
++        if(e.text=="&") return std::min(*left,*right);
++        if(e.text=="%" && *right && constant(*e.args[1])) return std::min(*left,*right-1);
++        return {};
++    }
++    static std::optional<NarrowLoop> match(const Stmt& body) {
++        if(body.kind==Stmt::Kind::Block)
++            return body.statements.size()==1 ? match(*body.statements.front()) : std::nullopt;
++        const auto& assign=*body.expression; // scalar_loop_body has checked the assignment.
++        const auto& target=*assign.args[0];
++        const auto& rhs=*assign.args[1];
++        if(target.type!="ulong" || rhs.kind!=K::Binary || rhs.args.size()!=2 ||
++           (rhs.text!="%" && rhs.text!="&")) return {};
++        const auto bound=constant(*rhs.args[1]);
++        if(!bound || *bound>UINT32_MAX || (!*bound && rhs.text=="%")) return {};
++        NarrowLoop proof{rhs,target,*bound-(rhs.text=="%"?1u:0u)};
++        return proof.maximum(rhs) ? std::optional<NarrowLoop>{proof} : std::nullopt;
++    }
++    Reg evaluate(Builder& b,const Expr& e,Reg carried) const {
++        if(e.kind==K::Name) return carried;
++        if(auto n=constant(e)) return b.integer(Type::I32,*n);
++        const auto l=evaluate(b,*e.args[0],carried), r=evaluate(b,*e.args[1],carried);
++        const auto op=e.text=="+"?Op::Add:e.text=="*"?Op::Mul:e.text=="&"?Op::And:Op::URem;
++        return b.instruction(op,Type::I32,{l,r});
++    }
++    void emit(Builder& b,std::int64_t count,Label fallback) const {
++        const auto address=b.locals.at(target.local_id);
++        const auto initial=b.load(Type::I64,address);
++        const auto start=b.block(), body=b.block(), done=b.block();
++        b.branch(b.cmp("ule",initial,b.integer(Type::I64,limit)),start,fallback);
++        b.current=start;
++        const auto index=b.alloc(4,false), state=b.alloc(4,false);
++        b.store(index,b.integer(Type::I32,0));
++        b.store(state,b.cast(initial,Type::I32,"trunc"));
++        b.jump(body);
++        b.current=body;
++        b.store(state,evaluate(b,value,b.load(Type::I32,state)));
++        const auto next=b.instruction(Op::Add,Type::I32,{b.load(Type::I32,index),b.integer(Type::I32,1)},0,"nuw");
++        b.store(index,next);
++        b.branch(b.cmp("ult",next,b.integer(Type::I32,count)),body,done);
++        b.current=done;
++        b.store(address,b.cast(b.load(Type::I32,state),Type::I64,"zext"));
++    }
++};
++bool Builder::budgeted_scalar_loop(const Stmt& s) {
++    if(!s.init || s.init->kind!=Stmt::Kind::Variable || s.init->type!="int" || !s.init->expression ||
++       !s.increment || !s.condition || !s.body) return false;
++    const auto& first=*s.init->expression;
++    const auto& cond=*s.condition;
++    const auto& step=*s.increment;
++    const auto counter=s.init->local_id;
++    auto index=[&](const Expr& e){return e.kind==K::Name && e.binding==B::Local && e.local_id==counter;};
++    if(first.kind!=K::Literal || first.type!="int" || cond.kind!=K::Binary || cond.binding!=B::None ||
++       cond.text!="<" || cond.args.size()!=2 || !index(*cond.args[0]) || cond.args[1]->kind!=K::Literal ||
++       cond.args[1]->type!="int" || (step.kind!=K::Postfix && step.kind!=K::Unary) ||
++       step.text!="++" || step.binding!=B::None || step.args.size()!=1 || !index(*step.args[0])) return false;
++    const auto begin=literal_value(first).as_int(), end=literal_value(*cond.args[1]).as_int();
++    if(begin<0 || end-begin<8 || !scalar_loop_body(*s.body,counter)) return false;
++
++    const auto slow=block(), available=block(), fast=block(), done=block();
++    const auto flag=load(Type::I32,offset(context,offsetof(BrContext,flags)));
++    const auto mask=integer(Type::I32,BR_PRIVATE_STEPS|1u);
++    branch(cmp("eq",instruction(Op::And,Type::I32,{flag,mask}),mask),available,slow);
++    current=available;
++    const auto address=offset(context,offsetof(BrContext,steps));
++    const auto remaining=load(Type::I64,address);
++    const auto ticks=integer(Type::I64,end-begin+1);
++    branch(cmp("uge",remaining,ticks),fast,slow);
++
++    current=fast;
++    if(auto narrow=NarrowLoop::match(*s.body)) {
++        narrow->emit(*this,end-begin,slow);
++        store(address,instruction(Op::Sub,Type::I64,{remaining,ticks}));
++        jump(done);
++    } else {
++        const auto trapped=block();
++        const auto outer=failure;
++        failure=trapped;
++        ordinary_for(s,1,false,true);
++        failure=outer;
++        store(address,instruction(Op::Sub,Type::I64,{remaining,ticks}));
++        jump(done);
++        current=trapped;
++        const auto i=cast(load(Type::I32,locals.at(counter)),Type::I64,"zext");
++        const auto elapsed=instruction(Op::Sub,Type::I64,{i,integer(Type::I64,begin)});
++        const auto spent=instruction(Op::Add,Type::I64,{elapsed,integer(Type::I64,1)});
++        store(address,instruction(Op::Sub,Type::I64,{remaining,spent}));
++        jump(outer);
++    }
++
++    current=slow;
++    ordinary_for(s,1);
++    jump(done);
++    current=done;
++    return true;
++}
+ bool Builder::optimize_counted_loop(const Stmt& s) {
++    if(lower.options.optimize_loops && lower.module.instrument_budget) return budgeted_scalar_loop(s);
+     using S = Stmt::Kind;
+     if (!lower.options.optimize_loops || lower.module.instrument_budget ||
+         !s.init || s.init->kind != S::Variable || s.init->type != "int" ||
+diff --git a/src/native/lowering/Lowering.hpp b/src/native/lowering/Lowering.hpp
+--- a/src/native/lowering/Lowering.hpp
++++ b/src/native/lowering/Lowering.hpp
+@@ -163,7 +163,8 @@
+     std::unordered_set<const Expr*> affine_ops;
+     std::unordered_set<std::size_t> stack_ints;
+     bool reverse_append_loop(const Stmt&);
+-    void ordinary_for(const Stmt&, std::int32_t proven_stride = 0, bool keep_rolled = false);
++    bool budgeted_scalar_loop(const Stmt&);
++    void ordinary_for(const Stmt&, std::int32_t proven_stride = 0, bool keep_rolled = false, bool budget_reserved = false);
+     bool optimize_search(const Stmt&,const Stmt&);
+     struct TextView { Reg data, count; };
+     std::unordered_map<std::size_t, TextView> text_views;
+diff --git a/src/native/lowering/Statements.cpp b/src/native/lowering/Statements.cpp
+--- a/src/native/lowering/Statements.cpp
++++ b/src/native/lowering/Statements.cpp
+@@ -53,12 +53,13 @@
+     current=done;failure=outside;exit_actions.resize(actions);
+ }
+ 
+-void Builder::ordinary_for(const Stmt& s, std::int32_t proven_stride, bool keep_rolled) {
++void Builder::ordinary_for(const Stmt& s, std::int32_t proven_stride, bool keep_rolled, bool budget_reserved) {
+     const auto first = cleanup.size();
+     if (s.init) statement(*s.init);
+     const auto body_first = cleanup.size();
+     const auto cond = block(), body = block(), inc = block(), done = block();
+-    jump(cond); current = cond; tick();
++    jump(cond); current = cond;
++    if (!budget_reserved) tick();
+     if (s.condition) { const auto v = expression(*s.condition); branch(v.value,body,done); }
+     else jump(body);
+     current = body;
+diff --git a/tests/NativeTests.cpp b/tests/NativeTests.cpp
+--- a/tests/NativeTests.cpp
++++ b/tests/NativeTests.cpp
+@@ -656,6 +656,26 @@
+         output("counted-conditional-steps","int n=0; for(int i=0;i<100;i++){if(i<10)n++;else n--;} Print(n);","-80\n");
+         rejects("counted-step-at-limit",wrap("int n=2147483646; for(int i=0;i<4;i++){if(i<3)n++;else n--;} Print(n);"),"overflow");
+         rejects("counted-step-after-alias",wrap("int n=0; int& r=n; int v=(r=2147483647); for(int i=0;i<3;i++)n++; Print(n);"),"overflow");
++        test(prefix+"persistent-counted-loop-budget",[&] {
++            const auto compare=[&](const std::string& statements,std::size_t budget) {
++                const auto source="public static class Program { public: int Main(){"+statements+"} }";
++                auto p=compile_source(source,"loop.bolt",true);
++                auto result=[&](bool persistent) {
++                    auto options=mode;
++                    options.execution.max_steps=budget;
++                    NativeProgram image(p,options);
++                    try { return std::to_string(persistent?image.run_persistent():image.run()); }
++                    catch(const Error& e) { return std::string(e.what()); }
++                };
++                check(result(true)==result(false),"persistent loop result or diagnostic differs at budget "+std::to_string(budget));
++            };
++            const std::string loop="for(int i=3;i<28;i++) x=(x*7ul+13ul)%251ul; return (int)x;";
++            for(auto budget:{12u,26u,27u,28u,100u}) compare("ulong x=9ul;"+loop,budget);
++            compare("ulong x=9876543210ul;"+loop,100);
++            compare("ulong x=18446744073709551615ul;"+loop,100);
++            compare("ulong x=3ul;for(int i=0;i<21;i++) x=(x*33ul)&127ul;return (int)x;",30);
++            compare("int x=1;try {for(int i=0;i<40;i++) x=x*2;} catch {return x/1073741824;} return 0;",50);
++        });
+         test(prefix+"step-budget",[&]{auto opts=mode;opts.execution.max_steps=100;try{jit_program(wrap("while(true){}"),opts);}catch(const Error& e){check(std::string(e.what()).find("budget")!=std::string::npos,"wrong budget error");return;}throw std::runtime_error("step budget was ignored");});
+         test(prefix+"call-depth-budget",[&]{auto opts=mode;opts.execution.max_call_depth=12;try{jit_program("static class Program {public:int Recurse(){return Recurse();} void Main(){Recurse();}}",opts);}catch(const Error& e){check(std::string(e.what()).find("depth")!=std::string::npos,"wrong call-depth error");return;}throw std::runtime_error("call-depth budget was ignored");});
+         test(prefix+"source-diagnostic",[&]{auto opts=mode;auto source=std::string("static class Program {\npublic:\nvoid Main(){\nint zero=0;\nint result=1/zero;\n}\n}\n");try{NativeProgram executable(compile_source(source,"precise.bolt"),opts);executable.run();}catch(const Error& e){check(e.diagnostic.location.file=="precise.bolt"&&e.diagnostic.location.line==5&&!e.diagnostic.source_line.empty(),"missing original source line");return;}throw std::runtime_error("division did not fail");});

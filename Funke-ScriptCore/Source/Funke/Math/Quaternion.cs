@@ -13,6 +13,10 @@ public struct Quaternion : IEquatable<Quaternion>
 
     public static readonly Quaternion Identity = new(0, 0, 0, 1);
 
+    internal static bool IsValidRotation(Quaternion value) =>
+        float.IsFinite(value.X) && float.IsFinite(value.Y) && float.IsFinite(value.Z) && float.IsFinite(value.W)
+        && (value.X != 0 || value.Y != 0 || value.Z != 0 || value.W != 0);
+
     public Quaternion(float x, float y, float z, float w) { X = x; Y = y; Z = z; W = w; }
 
     public Quaternion Normalized()
@@ -28,7 +32,7 @@ public struct Quaternion : IEquatable<Quaternion>
     /// <summary>Angle in degrees; a zero or nonfinite axis/angle produces Identity.</summary>
     public static Quaternion AngleAxis(float degrees, Vector3 axis)
     {
-        if (!float.IsFinite(degrees) || !TryNormalize(axis, out axis)) return Identity;
+        if (!float.IsFinite(degrees) || !Vector3.TryNormalize(axis, out axis)) return Identity;
         float half = degrees * (MathF.PI / 360f);
         float sine = MathF.Sin(half);
         return new Quaternion(axis.X * sine, axis.Y * sine, axis.Z * sine, MathF.Cos(half)).Normalized();
@@ -67,12 +71,12 @@ public struct Quaternion : IEquatable<Quaternion>
     /// <summary>Aligns local -Z with forward; degenerate up chooses a perpendicular axis, invalid forward returns Identity.</summary>
     public static Quaternion LookRotation(Vector3 forward, Vector3 up)
     {
-        if (!TryNormalize(forward, out forward)) return Identity;
-        TryNormalize(up, out up);
+        if (!Vector3.TryNormalize(forward, out forward)) return Identity;
+        Vector3.TryNormalize(up, out up);
         Vector3 right = Vector3.Cross(forward, up);
         if (right.LengthSquared() < 1e-12f)
             right = Vector3.Cross(forward, MathF.Abs(forward.Y) < 0.999f ? Vector3.Up : Vector3.Right);
-        TryNormalize(right, out right);
+        Vector3.TryNormalize(right, out right);
         up = Vector3.Cross(right, forward);
         return FromNumerics(NumericsQuaternion.CreateFromRotationMatrix(new Matrix4x4(
             right.X, right.Y, right.Z, 0, up.X, up.Y, up.Z, 0,
@@ -111,12 +115,40 @@ public struct Quaternion : IEquatable<Quaternion>
 
     private NumericsQuaternion ToNumerics() => new(X, Y, Z, W);
     private static Quaternion FromNumerics(NumericsQuaternion q) => new(q.X, q.Y, q.Z, q.W);
-    private static bool TryNormalize(Vector3 input, out Vector3 result)
+    public static bool TryLookRotation(Vector3 forward, Vector3 up, out Quaternion rotation)
     {
-        double length = Math.Sqrt((double)input.X * input.X + (double)input.Y * input.Y + (double)input.Z * input.Z);
-        result = length > 0 && double.IsFinite(length)
-            ? new((float)(input.X / length), (float)(input.Y / length), (float)(input.Z / length)) : Vector3.Zero;
-        return length > 0 && double.IsFinite(length);
+        rotation = Identity;
+        if (!Vector3.TryNormalize(forward, out forward) || !Vector3.IsFinite(up)) return false;
+        rotation = LookRotation(forward, up);
+        return true;
     }
+
+    public static Quaternion FromToRotation(Vector3 from, Vector3 to)
+    {
+        if (!Vector3.TryNormalize(from, out from) || !Vector3.TryNormalize(to, out to)) return Identity;
+        Vector3 axis = Vector3.Cross(from, to);
+        float dot = Vector3.Dot(from, to);
+        if (Vector3.TryNormalize(axis, out Vector3 unit))
+            return AngleAxis(MathF.Atan2(axis.Length(), dot) * Mathf.Rad2Deg, unit);
+        if (dot >= 0) return Identity;
+        return AngleAxis(180, Vector3.Cross(from, MathF.Abs(from.Y) < 0.9f ? Vector3.Up : Vector3.Right));
+    }
+
+    public static float Angle(Quaternion from, Quaternion to)
+    {
+        Quaternion delta = Inverse(from) * to;
+        double length = Math.Sqrt((double)delta.X * delta.X + (double)delta.Y * delta.Y + (double)delta.Z * delta.Z);
+        return (float)(2 * Math.Atan2(length, Math.Abs(delta.W)) * Mathf.Rad2Deg);
+    }
+
+    public static Quaternion RotateTowards(Quaternion from, Quaternion to, float maxDegreesDelta)
+    {
+        if (!float.IsFinite(maxDegreesDelta) || maxDegreesDelta < 0) throw new ArgumentOutOfRangeException(nameof(maxDegreesDelta));
+        float angle = Angle(from, to);
+        return angle <= maxDegreesDelta ? to.Normalized() : Slerp(from, to, maxDegreesDelta / angle);
+    }
+
+    public static Quaternion Damp(Quaternion current, Quaternion target, float rate, float deltaTime) =>
+        Slerp(current, target, Mathf.DampingFactor(rate, deltaTime));
 }
 

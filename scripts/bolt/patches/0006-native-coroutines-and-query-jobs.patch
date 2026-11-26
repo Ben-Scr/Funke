@@ -1,0 +1,440 @@
+diff --git a/include/bolt/CompilerHost.h b/include/bolt/CompilerHost.h
+--- a/include/bolt/CompilerHost.h
++++ b/include/bolt/CompilerHost.h
+@@ -116,6 +116,10 @@
+ /* Optional ABI 1 extension. Keeps module statics and allocations alive across Main
+    calls. Each invocation has a fresh step budget. Replacing or releasing the
+    module ends its session. A failed session must be replaced before reuse. */
++/* Run one entry per host record. Advance prepares the next record under the module's execution
++   lock and must not reenter this module. Every entry receives a fresh instruction budget. */
++BOLT_HOST_API int bolt_module_run_persistent_batch(const BoltCompiledModule* module,int (*advance)(void*),
++    void* state,int32_t* exit_code,char* error,size_t capacity);
+ BOLT_HOST_API int bolt_compiler_run_persistent(BoltCompiler *compiler, int32_t *exit_code,
+     char *error, size_t capacity);
+ #ifdef __cplusplus
+diff --git a/include/bolt/native/ABI.hpp b/include/bolt/native/ABI.hpp
+--- a/include/bolt/native/ABI.hpp
++++ b/include/bolt/native/ABI.hpp
+@@ -18,6 +18,7 @@
+ 
+ // A persistent JIT context starts with an exclusive instruction counter. Clear
+ // this flag before publishing any worker that may debit its parent's budget.
++inline constexpr std::uint32_t BR_SMALL_BUDGET = 512u;
+ inline constexpr std::uint32_t BR_PRIVATE_STEPS = 256u;
+ struct BrContext {
+     std::int32_t failed;
+@@ -97,6 +98,7 @@
+ BOLT_NATIVE_EXPORT void br_task(BrContext*,const char*,std::int32_t operation,BrType* result,void* output,
+     void* self,BrType* argument,const void* value) noexcept;
+ BOLT_NATIVE_EXPORT void* br_worker_capture(BrContext*,const char*,BrType*,const void*,void*) noexcept;
++BOLT_NATIVE_EXPORT void* br_worker_repeat_entry() noexcept;
+ BOLT_NATIVE_EXPORT void* br_worker_entry() noexcept;
+ BOLT_NATIVE_EXPORT void br_worker_cancel(void*) noexcept;
+ BOLT_NATIVE_EXPORT void br_worker_start(BrContext*,const char*,BrType*,void*,BrType*,const void*,void*) noexcept;
+@@ -113,6 +115,7 @@
+ BOLT_NATIVE_EXPORT void br_process_exit(std::int32_t status) noexcept;
+ BOLT_NATIVE_EXPORT void br_fail(BrContext*,const char* site,const char* message) noexcept;
+ BOLT_NATIVE_EXPORT void br_frame(BrContext*,const char* site,const char* method) noexcept;
++BOLT_NATIVE_EXPORT std::int32_t br_try_reserve_steps(BrContext*,std::uint64_t count) noexcept;
+ BOLT_NATIVE_EXPORT void br_tick(BrContext*,const char* site) noexcept;
+ BOLT_NATIVE_EXPORT std::int32_t br_enter(BrContext*,const char* site) noexcept;
+ BOLT_NATIVE_EXPORT void br_leave(BrContext*,std::int32_t entered) noexcept;
+diff --git a/include/bolt/native/Jit.hpp b/include/bolt/native/Jit.hpp
+--- a/include/bolt/native/Jit.hpp
++++ b/include/bolt/native/Jit.hpp
+@@ -41,6 +41,7 @@
+     NativeProgram& operator=(const NativeProgram&)=delete;
+     int run();
+     int run_persistent();
++    int run_persistent_batch(int (*advance)(void*),void* state);
+ };
+ int jit_program(std::string_view,JitOptions = {});
+ int jit_statements(std::string_view,JitOptions = {});
+diff --git a/src/CompilerHost.cpp b/src/CompilerHost.cpp
+--- a/src/CompilerHost.cpp
++++ b/src/CompilerHost.cpp
+@@ -346,6 +346,14 @@
+ extern "C" int bolt_compiler_run(BoltCompiler *compiler, int32_t *exit_code, char *error, size_t capacity) {
+     return run_module(compiler, exit_code, error, capacity, false);
+ }
++extern "C" int bolt_module_run_persistent_batch(const BoltCompiledModule* module,int (*advance)(void*),
++        void* state,int32_t* exit_code,char* error,size_t capacity) {
++    return invoke(error,capacity,[&] {
++        if (!module || !module->image || !advance || !exit_code) throw std::invalid_argument("Missing batch execution argument");
++        *exit_code=module->image->run_persistent_batch(advance,state);
++        return BOLT_HOST_OK;
++    });
++}
+ extern "C" int bolt_compiler_run_persistent(BoltCompiler *compiler, int32_t *exit_code, char *error, size_t capacity) {
+     return run_module(compiler, exit_code, error, capacity, true);
+ }
+diff --git a/src/native/ABI.cpp b/src/native/ABI.cpp
+--- a/src/native/ABI.cpp
++++ b/src/native/ABI.cpp
+@@ -123,6 +123,7 @@
+ };
+ struct Context {
+     SnapshotStorage snapshot_storage;
++    std::array<std::atomic<BrContext*>,16> repeat_contexts{};
+     std::mutex task_mutex;
+     std::list<TaskWorker> tasks;
+     BrContext* execution=nullptr;
+@@ -1009,7 +1010,7 @@
+ }
+ #endif
+ 
+-BrContext* br_create(std::uint64_t steps,std::uint32_t depth)noexcept{try{auto c=std::make_unique<BrContext>();auto p=std::make_unique<Context>();c->failed=0;c->flags=steps?1u:0u;c->steps=steps;c->depth=0;c->max_depth=depth;p->execution=c.get();c->implementation=p.release();return c.release();}catch(...){return nullptr;}}
++BrContext* br_create(std::uint64_t steps,std::uint32_t depth)noexcept{try{auto c=std::make_unique<BrContext>();auto p=std::make_unique<Context>();c->failed=0;c->flags=steps?(steps<=INT64_MAX?BR_SMALL_BUDGET|1u:1u):0u;c->steps=steps;c->depth=0;c->max_depth=depth;p->execution=c.get();c->implementation=p.release();return c.release();}catch(...){return nullptr;}}
+ void br_destructor(BrContext* c,BrType* type,void* function,std::uint64_t marker)noexcept {checked(c,nullptr,[&]{const auto value=static_cast<std::size_t>(marker);if(value==std::numeric_limits<std::size_t>::max()){if(type->kind!=Struct)throw std::runtime_error("a marker-less destructor is only valid for structs");}else if(value>type->size||8>type->size-value)throw std::runtime_error("invalid destructor marker");type->marker=value;type->destructor=reinterpret_cast<void(*)(BrContext*,void*)>(function);});}
+ void br_new_failed(BrContext* c,BrType* type,void* p)noexcept {
+     if(!c||!p)return;drop(type,p);if(bolt::memory::owner_of(p))return;
+@@ -1200,6 +1201,54 @@
+     return nullptr;
+ }
+ static void* run_hosted_job(void* capture) noexcept {return finish_hosted_job(capture,true);}
++static std::int32_t repeat_hosted_job(void* seed) noexcept {
++    if (!seed) return 0;
++    const auto& job=*static_cast<const HostedJob*>(seed);
++    auto& parent=impl(job.context.get());
++    auto& pool=allocation_owner(parent).repeat_contexts;
++    thread_local const auto place=std::hash<std::thread::id>{}(std::this_thread::get_id());
++    auto& bucket=pool[place%pool.size()];
++    std::unique_ptr<BrContext,decltype(&br_destroy)> child(bucket.exchange(nullptr),br_destroy);
++    if (!child) child.reset(br_create(0,job.context->max_depth));
++    if (!child) return 0;
++    child->max_depth=job.context->max_depth;
++    auto* previous=active_worker_context;
++    try {
++        auto& local=impl(child.get());
++        local.type_owner=parent.type_owner;
++        local.input=parent.input;
++        local.output=parent.output;
++        child->flags=job.context->flags;
++        active_worker_context=child.get();
++        {
++            auto* type=job.capture.type;
++            alignas(std::max_align_t) std::byte buffer[256];
++            if (type && type->size<=sizeof(buffer)) {
++                std::memset(buffer,0,type->size);
++                struct Drop { BrType* type; void* data; ~Drop(){drop(type,data);} } guard{type,buffer};
++                clone(type,buffer,job.capture.data(),nullptr);
++                bolt::native_backend::detail::call_generated(job.body,child.get(),static_cast<void*>(buffer));
++            } else {
++                Box copy(type,job.capture.data());
++                bolt::native_backend::detail::call_generated(job.body,child.get(),copy.data());
++            }
++        }
++        const bool ok=!child->failed;
++        if (ok && !child->depth && !child->active_ranges && local.workers.empty() && !local.error &&
++            !local.pending_exception && local.caught.empty() && local.range_epochs.empty() &&
++            local.types.empty() && local.arguments.empty()) {
++            child.reset(bucket.exchange(child.release()));
++        }
++        child.reset();
++        active_worker_context=previous;
++        return ok;
++    } catch (...) {
++        child.reset();
++        active_worker_context=previous;
++        return 0;
++    }
++}
++void* br_worker_repeat_entry() noexcept {return reinterpret_cast<void*>(&repeat_hosted_job);}
+ void* br_worker_entry() noexcept {return reinterpret_cast<void*>(&run_hosted_job);}
+ void br_worker_cancel(void* capture) noexcept {finish_hosted_job(capture,false);}
+ void br_worker_start(BrContext* c,const char* site,BrType* result,void* output,BrType* job_type,const void* job,void* function)noexcept {
+@@ -1239,6 +1288,7 @@
+             drop(type,pointer);::operator delete(pointer);
+         }
+     }
++    for (auto& bucket:p->repeat_contexts) if (auto* child=bucket.exchange(nullptr)) br_destroy(child);
+     delete p;delete c;
+ }
+ std::int32_t br_finish(BrContext* c,std::int32_t status)noexcept{if(!c){write_diagnostic("Bolt: could not allocate a native execution context\n");return 1;}if(c->failed){try{if(impl(c).error)write_diagnostic(bolt::format_diagnostic(*impl(c).error));else write_diagnostic("Bolt: native execution failed\n");}catch(...){}status=1;}br_destroy(c);return status;}
+@@ -1247,8 +1297,33 @@
+ void br_frame(BrContext* c,const char* site,const char* method)noexcept{if(!c||!c->failed)return;try{auto& state=impl(c);auto at=location(site);auto name=method?method:"<native>";if(state.error)state.error->frames.push_back({at,name});
+     if(auto& payload=state.pending_exception){auto* root=payload->type;while(root->base)root=root->base;if(root->kind==LibraryValue)if(auto* ops=slot_ops(payload->data()))if(auto* error=ops->exception(library_data(payload->data())))error->AddFrame(at,name);}
+ }catch(...) {}}
++std::int32_t br_try_reserve_steps(BrContext* c,std::uint64_t count) noexcept {
++    if (!c || c->failed) return 0;
++    if (!(c->flags & 1)) return 1;
++    if (c->flags & BR_PRIVATE_STEPS) {
++        if (c->steps < count) return 0;
++        c->steps -= count;
++        return 1;
++    }
++    auto* owner=allocation_owner(impl(c)).execution;
++    std::atomic_ref<std::uint64_t> budget(owner->steps);
++    auto remaining=budget.load(std::memory_order_relaxed);
++    while (remaining >= count && (!(c->flags&BR_SMALL_BUDGET) || remaining<=INT64_MAX)) {
++        if (budget.compare_exchange_weak(remaining,remaining-count,std::memory_order_relaxed)) return 1;
++    }
++    return 0;
++}
+ void br_tick(BrContext* c,const char* site)noexcept{if(!c||c->failed||!(c->flags&1))return;auto* owner=allocation_owner(impl(c)).execution;
+-    std::atomic_ref<std::uint64_t> budget(owner->steps);auto remaining=budget.load(std::memory_order_relaxed);
++    std::atomic_ref<std::uint64_t> budget(owner->steps);
++    if (c->flags&BR_SMALL_BUDGET) {
++        const auto old=budget.fetch_sub(1,std::memory_order_relaxed);
++        if (old && old<=INT64_MAX) return;
++        auto debt=old-1;
++        while (debt>INT64_MAX && !budget.compare_exchange_weak(debt,0,std::memory_order_relaxed)) {}
++        failure(c,site,"runtime instruction budget exceeded");
++        return;
++    }
++    auto remaining=budget.load(std::memory_order_relaxed);
+     while(remaining&&!budget.compare_exchange_weak(remaining,remaining-1,std::memory_order_relaxed)){}
+     if(!remaining)failure(c,site,"runtime instruction budget exceeded");}
+ std::int32_t br_enter(BrContext* c,const char* site)noexcept {
+@@ -1583,7 +1658,7 @@
+ std::vector<native_backend::Symbol> symbols(){std::vector<native_backend::Symbol> s;
+ #define S(n) s.push_back({#n,reinterpret_cast<void*>(&n)})
+ S(br_string_data);S(br_string_at);
+-S(br_destructor);S(br_new_failed);S(br_workers_join);S(br_base);S(br_raise);S(br_exception_match);S(br_catch_begin);S(br_catch_end);S(br_rethrow);S(br_error_suspend);S(br_error_restore);S(br_reflected_type);S(br_reflected_field);S(br_reflected_method);S(br_serialization_method);S(br_reflection);S(br_tree_object);S(br_task_start);S(br_task);S(br_worker_capture);S(br_worker_entry);S(br_worker_cancel);S(br_worker_start);S(br_library_schema);S(br_process_arguments);S(br_arguments);S(br_range);S(br_range_next);S(br_abi_version);S(br_library);S(br_create);S(br_destroy);S(br_finish);S(br_process_exit);S(br_fail);S(br_frame);S(br_tick);S(br_enter);S(br_leave);S(br_type);S(br_field);S(br_elements);S(br_initializer);S(br_virtual);S(br_dispatch);S(br_box);S(br_unbox);S(br_formatter);S(br_value_contract);S(br_memory_copy);S(br_memory_move);S(br_memory_set);S(br_memory_compare);S(br_zero);S(br_drop);S(br_reset);S(br_copy);S(br_new);S(br_arena_create);S(br_arena_action);S(br_arena_stat);S(br_arena_new);S(br_delete);S(br_string);S(br_text);S(br_concat);S(br_compare);S(br_write);S(br_read);S(br_count);S(br_capacity);S(br_value_hash);S(br_cast);S(br_parse);S(br_try_parse);S(br_math);S(br_random);S(br_seed);S(br_array);S(br_array_shape);S(br_array_length);S(br_array_index);S(br_index);S(br_key);S(br_buffer_append);S(br_collection);S(br_runtime);
++S(br_destructor);S(br_new_failed);S(br_workers_join);S(br_base);S(br_raise);S(br_exception_match);S(br_catch_begin);S(br_catch_end);S(br_rethrow);S(br_error_suspend);S(br_error_restore);S(br_reflected_type);S(br_reflected_field);S(br_reflected_method);S(br_serialization_method);S(br_reflection);S(br_tree_object);S(br_task_start);S(br_task);S(br_worker_capture);S(br_worker_entry);S(br_worker_repeat_entry);S(br_worker_cancel);S(br_worker_start);S(br_library_schema);S(br_process_arguments);S(br_arguments);S(br_range);S(br_range_next);S(br_abi_version);S(br_library);S(br_create);S(br_destroy);S(br_finish);S(br_process_exit);S(br_fail);S(br_frame);S(br_tick);S(br_try_reserve_steps);S(br_enter);S(br_leave);S(br_type);S(br_field);S(br_elements);S(br_initializer);S(br_virtual);S(br_dispatch);S(br_box);S(br_unbox);S(br_formatter);S(br_value_contract);S(br_memory_copy);S(br_memory_move);S(br_memory_set);S(br_memory_compare);S(br_zero);S(br_drop);S(br_reset);S(br_copy);S(br_new);S(br_arena_create);S(br_arena_action);S(br_arena_stat);S(br_arena_new);S(br_delete);S(br_string);S(br_text);S(br_concat);S(br_compare);S(br_write);S(br_read);S(br_count);S(br_capacity);S(br_value_hash);S(br_cast);S(br_parse);S(br_try_parse);S(br_math);S(br_random);S(br_seed);S(br_array);S(br_array_shape);S(br_array_length);S(br_array_index);S(br_index);S(br_key);S(br_buffer_append);S(br_collection);S(br_runtime);
+ #undef S
+ return s;}
+ } // namespace bolt::native_abi
+diff --git a/src/native/Capabilities.cpp b/src/native/Capabilities.cpp
+--- a/src/native/Capabilities.cpp
++++ b/src/native/Capabilities.cpp
+@@ -31,7 +31,7 @@
+ bool library_primitive_method(const bolt::Class& c,const Method& m){
+     if(!c.is_native||!c.token.at.file.starts_with("<bolt-stdlib>"))return false;
+     if(generic_base(c.native_cpp)=="bolt::platform::TaskState" || c.native_cpp=="bolt::platform::ExceptionState")return true;
+-    if(c.name=="Bolt.Runtime.ThreadCallback"&&c.native_cpp=="bolt::platform::ThreadCallback")return m.name=="Capture"||m.name=="Entry"||m.name=="Cancel";
++    if(c.name=="Bolt.Runtime.ThreadCallback"&&c.native_cpp=="bolt::platform::ThreadCallback")return m.name=="Capture"||m.name=="Entry"||m.name=="RepeatEntry"||m.name=="Cancel";
+     if(c.native_cpp=="bolt::library::Reflection")return true;
+     if(c.native_cpp=="bolt::platform::ValueTree" && (m.name=="FromObject" || m.name=="ToObject"))return true;
+     if(c.name=="Bolt.Runtime.MemoryOps" && c.native_cpp=="bolt::system::MemoryOps" && m.is_static &&
+diff --git a/src/native/Jit.cpp b/src/native/Jit.cpp
+--- a/src/native/Jit.cpp
++++ b/src/native/Jit.cpp
+@@ -116,7 +116,7 @@
+             br_destroy(session);
+         }
+     }
+-    int run(bool persistent){
++    int run(bool persistent,int (*advance)(void*)=nullptr,void* state=nullptr){
+ 
+         std::lock_guard lock(execution);
+         if(nesting>=options.execution.max_runtime_depth)throw Error(runtime_diagnostic({"<jit>",1,1},"runtime nesting limit exceeded"));
+@@ -135,7 +135,11 @@
+                 native_abi::arguments(context,options.arguments);
+                 call_generated(initialize,context);
+             }
+-            const int status=context->failed ? 0 : call_generated(entry,context);
++            int status=context->failed ? 0 : call_generated(entry,context);
++            while (advance && status==0 && !context->failed && advance(state)) {
++                std::atomic_ref(context->steps).store(options.execution.max_steps,std::memory_order_relaxed);
++                status=call_generated(entry,context);
++            }
+             if (!persistent) call_generated(finalize,context);
+             native_abi::rethrow(context);
+             if (!persistent) br_destroy(context);
+@@ -164,6 +168,7 @@
+ NativeProgram& NativeProgram::operator=(NativeProgram&&)noexcept=default;
+ int NativeProgram::run(){return impl_->run(false);}
+ int NativeProgram::run_persistent(){return impl_->run(true);}
++int NativeProgram::run_persistent_batch(int (*advance)(void*),void* state){return impl_->run(true,advance,state);}
+ int jit_program(std::string_view text,JitOptions o){auto pp=o.preprocessing;if(pp.configuration.empty())pp.configuration=o.release?"Release":"Debug";auto p=compile_source(text,"<runtime>",true,pp);NativeProgram executable(p,std::move(o));return executable.run();}
+ int jit_statements(std::string_view code,JitOptions o){
+     const std::string source="import Math\nimport Random\nimport Type\nimport System.Collections.Generic\nstatic class Program { public: void Main() {\n"+std::string(code)+"\n} }\n";
+diff --git a/src/native/lowering/Builder.cpp b/src/native/lowering/Builder.cpp
+--- a/src/native/lowering/Builder.cpp
++++ b/src/native/lowering/Builder.cpp
+@@ -44,10 +44,21 @@
+ }
+ Reg Builder::temp(const std::string& t, bool owned) {
+     const auto& layout = lower.layout(t);
+-    const auto slot = alloc(layout.size);
++    const bool conditional = owned && layout.aggregate && lower.options.optimize_loops && current!=0 &&
++                             !layout.plain_struct && !layout.padded_field_bytes;
++    const auto slot = alloc(layout.size,!conditional);
+     if (owned && layout.aggregate) {
+         Reg live = 0;
+-        if ((layout.kind == native_abi::Class || layout.kind == native_abi::Struct) &&
++        if (conditional) {
++            live=alloc(1);
++            const auto initialize=block(), ready=block();
++            branch(load(Type::I8,live),ready,initialize);
++            current=initialize;
++            instruction(Op::Zero,Type::Void,{slot},layout.size);
++            store(live,integer(Type::I8,1));
++            jump(ready);
++            current=ready;
++        } else if ((layout.kind == native_abi::Class || layout.kind == native_abi::Struct) &&
+             !layout.plain_struct && !layout.padded_field_bytes) {
+             // The shared exit also sees slots from untaken branches. Arm cleanup
+             // before initialization so a partially constructed value still unwinds.
+diff --git a/src/native/lowering/Calls.cpp b/src/native/lowering/Calls.cpp
+--- a/src/native/lowering/Calls.cpp
++++ b/src/native/lowering/Calls.cpp
+@@ -145,6 +145,7 @@
+         }
+         if(native_abi::library_primitive_method(c,m)){
+             if(c.native_cpp=="bolt::platform::ThreadCallback"){
++                if(m.name=="RepeatEntry")return {"void*",call("br_worker_repeat_entry",Type::Ptr,{},false)};
+                 if(m.name=="Entry")return {"void*",call("br_worker_entry",Type::Ptr,{},false)};
+                 if(m.name=="Cancel"){call("br_worker_cancel",Type::Void,{load(Type::Ptr,args.at(0).second)},false);return {"void",0};}
+             }
+diff --git a/src/native/lowering/LoopOptimizations.cpp b/src/native/lowering/LoopOptimizations.cpp
+--- a/src/native/lowering/LoopOptimizations.cpp
++++ b/src/native/lowering/LoopOptimizations.cpp
+@@ -422,12 +422,38 @@
+         const auto op=e.text=="+"?Op::Add:e.text=="*"?Op::Mul:e.text=="&"?Op::And:Op::URem;
+         return b.instruction(op,Type::I32,{l,r});
+     }
+-    void emit(Builder& b,std::int64_t count,Label fallback) const {
++    using Affine = std::pair<std::uint64_t,std::uint64_t>;
++    std::optional<Affine> affine(const Expr& e,std::uint64_t modulus) const {
++        if (e.kind==K::Name) return Affine{1,0};
++        if (auto n=constant(e)) return Affine{0,*n%modulus};
++        if (e.kind!=K::Binary || (e.text!="+" && e.text!="*")) return {};
++        auto a=affine(*e.args[0],modulus), b=affine(*e.args[1],modulus);
++        if (!a || !b) return {};
++        if (e.text=="+") return Affine{(a->first+b->first)%modulus,(a->second+b->second)%modulus};
++        if (a->first && b->first) return {};
++        return Affine{(a->first*b->second+b->first*a->second)%modulus,(a->second*b->second)%modulus};
++    }
++    void emit(Builder& b,std::int64_t count) const {
+         const auto address=b.locals.at(target.local_id);
+         const auto initial=b.load(Type::I64,address);
+-        const auto start=b.block(), body=b.block(), done=b.block();
+-        b.branch(b.cmp("ule",initial,b.integer(Type::I64,limit)),start,fallback);
+-        b.current=start;
++        if (value.text=="%") {
++            const auto modulus=limit+1;
++            if (auto power=affine(*value.args[0],modulus)) {
++                auto compose=[&](Affine outer,Affine inner) {
++                    return Affine{outer.first*inner.first%modulus,(outer.first*inner.second+outer.second)%modulus};
++                };
++                Affine all{1,0};
++                for (auto n=count;n;n>>=1) {
++                    if (n&1) all=compose(*power,all);
++                    *power=compose(*power,*power);
++                }
++                auto product=b.instruction(Op::Mul,Type::I64,{initial,b.integer(Type::I64,all.first)});
++                auto sum=b.instruction(Op::Add,Type::I64,{product,b.integer(Type::I64,all.second)});
++                b.store(address,b.instruction(Op::URem,Type::I64,{sum,b.integer(Type::I64,modulus)}));
++                return;
++            }
++        }
++        const auto body=b.block(), done=b.block();
+         const auto index=b.alloc(4,false), state=b.alloc(4,false);
+         b.store(index,b.integer(Type::I32,0));
+         b.store(state,b.cast(initial,Type::I32,"trunc"));
+@@ -456,22 +482,35 @@
+     const auto begin=literal_value(first).as_int(), end=literal_value(*cond.args[1]).as_int();
+     if(begin<0 || end-begin<8 || !scalar_loop_body(*s.body,counter)) return false;
+ 
+-    const auto slow=block(), available=block(), fast=block(), done=block();
++    const auto slow=block(), fast=block(), done=block();
+     const auto flag=load(Type::I32,offset(context,offsetof(BrContext,flags)));
++    const auto ticks=integer(Type::I64,end-begin+1);
++    if(auto narrow=NarrowLoop::match(*s.body)) {
++        const auto reserve=block();
++        const auto initial=load(Type::I64,locals.at(narrow->target.local_id));
++        branch(cmp("ule",initial,integer(Type::I64,narrow->limit)),reserve,slow);
++        current=reserve;
++        const auto reserved=call("br_try_reserve_steps",Type::I32,{context,ticks},false);
++        branch(cmp("ne",reserved,integer(Type::I32,0)),fast,slow);
++        current=fast;
++        narrow->emit(*this,end-begin);
++        jump(done);
++        current=slow;
++        ordinary_for(s,1);
++        jump(done);
++        current=done;
++        return true;
++    }
++    const auto available=block();
+     const auto mask=integer(Type::I32,BR_PRIVATE_STEPS|1u);
+     branch(cmp("eq",instruction(Op::And,Type::I32,{flag,mask}),mask),available,slow);
+     current=available;
+     const auto address=offset(context,offsetof(BrContext,steps));
+     const auto remaining=load(Type::I64,address);
+-    const auto ticks=integer(Type::I64,end-begin+1);
+     branch(cmp("uge",remaining,ticks),fast,slow);
+ 
+     current=fast;
+-    if(auto narrow=NarrowLoop::match(*s.body)) {
+-        narrow->emit(*this,end-begin,slow);
+-        store(address,instruction(Op::Sub,Type::I64,{remaining,ticks}));
+-        jump(done);
+-    } else {
++    {
+         const auto trapped=block();
+         const auto outer=failure;
+         failure=trapped;
+diff --git a/src/stdlib/Embedded.inc b/src/stdlib/Embedded.inc
+--- a/src/stdlib/Embedded.inc
++++ b/src/stdlib/Embedded.inc
+@@ -5509,6 +5509,8 @@
+ public:
+     static void* Capture<T>(const T& job);
+     static void* Entry<T>();
++    // Each invocation runs a copy. Keep the capture alive until every invocation returns.
++    static void* RepeatEntry<T>();
+     static void Cancel(void* capture);
+ }
+ )BOLT_LIB");
+diff --git a/stdlib/System/PlatformThreading.bolt b/stdlib/System/PlatformThreading.bolt
+--- a/stdlib/System/PlatformThreading.bolt
++++ b/stdlib/System/PlatformThreading.bolt
+@@ -32,5 +32,7 @@
+ public:
+     static void* Capture<T>(const T& job);
+     static void* Entry<T>();
++    // Each invocation runs a copy. Keep the capture alive until every invocation returns.
++    static void* RepeatEntry<T>();
+     static void Cancel(void* capture);
+ }
+diff --git a/tests/NativeTests.cpp b/tests/NativeTests.cpp
+--- a/tests/NativeTests.cpp
++++ b/tests/NativeTests.cpp
+@@ -35,6 +35,28 @@
+     // Keep the last completed case visible if native generated code crashes.
+     std::cout.setf(std::ios::unitbuf);
+     using namespace bolt;
++    test("repeat-callback-shares-exact-budget",[]{
++        auto c=std::unique_ptr<BrContext,decltype(&br_destroy)>(br_create(2003,64),br_destroy);
++        std::atomic<int> successes=0;
++        auto* counter=&successes;
++        auto* type=br_type(c.get(),"counter",native_abi::Pointer,sizeof(counter));
++        auto body=+[](BrContext* context,void* value) {
++            auto& used=**static_cast<std::atomic<int>**>(value);
++            while(br_try_reserve_steps(context,7)) used.fetch_add(7,std::memory_order_relaxed);
++            for(;;) {
++                br_tick(context,nullptr);
++                if(context->failed) return;
++                used.fetch_add(1,std::memory_order_relaxed);
++            }
++        };
++        void* seed=br_worker_capture(c.get(),nullptr,type,&counter,reinterpret_cast<void*>(body));
++        auto repeat=reinterpret_cast<int32_t(*)(void*)>(br_worker_repeat_entry());
++        std::vector<std::thread> threads;
++        for(int i=0;i<4;i++) threads.emplace_back([=]{repeat(seed);});
++        for(auto& thread:threads) thread.join();
++        br_worker_cancel(seed);
++        check(successes==2003 && c->steps==0,"parallel callbacks overspent or lost steps");
++    });
+     test("unicode-block-boundaries",[]{bolt::tests::verify_utf8_block_boundaries();});
+     test("bulk-memory-overlap-and-edges", [] {
+         for (const std::size_t n : {1, 64, 511, 512, 513, 767, 768, 769, 4097, 16383, 16384, 16385}) {
+@@ -676,6 +698,15 @@
+             compare("ulong x=3ul;for(int i=0;i<21;i++) x=(x*33ul)&127ul;return (int)x;",30);
+             compare("int x=1;try {for(int i=0;i<40;i++) x=x*2;} catch {return x/1073741824;} return 0;",50);
+         });
++        test(prefix+"persistent-batch-entry-budget",[&]{
++            auto module=compile_source("public static class Program {static int n;public:int Main(){int x=0;for(int i=0;i<10;i++)x++;n++;return n==5?x:0;}}","batch.bolt",true);
++            auto opts=mode;
++            opts.execution.max_steps=18;
++            NativeProgram image(module,opts);
++            int records=0;
++            auto advance=+[](void* state){return ++*static_cast<int*>(state)<9?1:0;};
++            check(image.run_persistent_batch(advance,&records)==10 && records==4,"incorrect batch budget or stopping position");
++        });
+         test(prefix+"step-budget",[&]{auto opts=mode;opts.execution.max_steps=100;try{jit_program(wrap("while(true){}"),opts);}catch(const Error& e){check(std::string(e.what()).find("budget")!=std::string::npos,"wrong budget error");return;}throw std::runtime_error("step budget was ignored");});
+         test(prefix+"call-depth-budget",[&]{auto opts=mode;opts.execution.max_call_depth=12;try{jit_program("static class Program {public:int Recurse(){return Recurse();} void Main(){Recurse();}}",opts);}catch(const Error& e){check(std::string(e.what()).find("depth")!=std::string::npos,"wrong call-depth error");return;}throw std::runtime_error("call-depth budget was ignored");});
+         test(prefix+"source-diagnostic",[&]{auto opts=mode;auto source=std::string("static class Program {\npublic:\nvoid Main(){\nint zero=0;\nint result=1/zero;\n}\n}\n");try{NativeProgram executable(compile_source(source,"precise.bolt"),opts);executable.run();}catch(const Error& e){check(e.diagnostic.location.file=="precise.bolt"&&e.diagnostic.location.line==5&&!e.diagnostic.source_line.empty(),"missing original source line");return;}throw std::runtime_error("division did not fail");});

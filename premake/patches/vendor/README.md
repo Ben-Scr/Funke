@@ -8,6 +8,16 @@ submodule commit, file path, blob ID, staged change, or untracked file.
 CI first runs the non-mutating `verify` mode against a fresh checkout and checks
 the applied blob IDs again after Premake generation.
 
+The Tracy patch enables rpmalloc's Windows FLS thread-exit callback. The pinned
+upstream build disables that callback with `BUILD_DYNAMIC_LINK=1` and supplies no
+replacement for application threads. Short-lived script/compiler/file-watcher
+threads consequently leave allocator heaps behind. Funke keeps Tracy.dll loaded
+for the process lifetime; finished-thread heaps can be orphaned and reused while
+outstanding allocations remain valid for later cross-thread frees. Other
+platforms keep the upstream configuration. This does not disable profiling or
+force .NET garbage collections. The regression cases are in
+`Tests/Funke-Engine-Tests/src/ProfilerThreadLifecycleTests.cpp`.
+
 The EnTT patch includes the configurable entity/version bit split, staged bulk
 storage operations for trusted parallel ECB adapters, and exact sole-listener
 inspection. Bulk storage bypasses lifecycle signals; callers certify the hooks

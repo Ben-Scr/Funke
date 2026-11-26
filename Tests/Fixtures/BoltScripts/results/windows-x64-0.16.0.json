@@ -1,0 +1,328 @@
+{
+  "version": "Bolt 0.16.0 (x86_64-pc-windows-msvc)",
+  "system": "Windows-11-10.0.26300-SP0",
+  "dotnet_sdk": "10.0.403",
+  "compiler": "BoltCompiler.dll",
+  "compiler_sha256": "cfcc1c1a15fa2f5ba392ad825db465c06a18a443b86f4a9e1ef5cdfa11064dd2",
+  "llvm": "LLVM-C.dll",
+  "llvm_sha256": "19ebfb8901720344d237068f3015b9d07fb3420c7767f9f2bd666b8654638b3e",
+  "runs": [
+    {
+      "round": 1,
+      "workload": "compile",
+      "profile": "cs",
+      "cold_ms": 1964.3138,
+      "edit_ms": 8.06,
+      "reload_ms": 34.4918
+    },
+    {
+      "round": 1,
+      "workload": "compile",
+      "profile": "fast",
+      "cold_ms": 384.1557,
+      "edit_ms": 317.3012,
+      "reload_ms": 317.5579
+    },
+    {
+      "round": 1,
+      "workload": "compile",
+      "profile": "llvm",
+      "cold_ms": 1209.4513,
+      "edit_ms": 1175.8281,
+      "reload_ms": 1175.993
+    },
+    {
+      "round": 1,
+      "workload": "move",
+      "profile": "fast",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 317.543,
+      "update_ms": 4.997419,
+      "startup_ms": 317.543
+    },
+    {
+      "round": 1,
+      "workload": "move",
+      "profile": "llvm",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 1163.6939,
+      "update_ms": 4.669556,
+      "startup_ms": 1163.6939
+    },
+    {
+      "round": 1,
+      "workload": "move",
+      "profile": "cs",
+      "core_ms": 61.4246,
+      "assembly_ms": 76.027,
+      "first_ms": 14.3507,
+      "update_ms": 0.331419,
+      "startup_ms": 151.80229999999997
+    },
+    {
+      "round": 1,
+      "workload": "compute",
+      "profile": "llvm",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 1130.6332,
+      "update_ms": 5.301419,
+      "startup_ms": 1130.6332
+    },
+    {
+      "round": 1,
+      "workload": "compute",
+      "profile": "cs",
+      "core_ms": 61.2279,
+      "assembly_ms": 67.9948,
+      "first_ms": 14.481,
+      "update_ms": 0.947562,
+      "startup_ms": 143.7037
+    },
+    {
+      "round": 1,
+      "workload": "compute",
+      "profile": "fast",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 323.3435,
+      "update_ms": 6.498756,
+      "startup_ms": 323.3435
+    },
+    {
+      "round": 2,
+      "workload": "compile",
+      "profile": "fast",
+      "cold_ms": 352.5261,
+      "edit_ms": 289.9809,
+      "reload_ms": 290.1345
+    },
+    {
+      "round": 2,
+      "workload": "compile",
+      "profile": "llvm",
+      "cold_ms": 1196.6525,
+      "edit_ms": 1160.2172,
+      "reload_ms": 1160.3744
+    },
+    {
+      "round": 2,
+      "workload": "compile",
+      "profile": "cs",
+      "cold_ms": 1767.8474,
+      "edit_ms": 7.3078,
+      "reload_ms": 32.0477
+    },
+    {
+      "round": 2,
+      "workload": "move",
+      "profile": "llvm",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 1331.6444,
+      "update_ms": 4.713619,
+      "startup_ms": 1331.6444
+    },
+    {
+      "round": 2,
+      "workload": "move",
+      "profile": "cs",
+      "core_ms": 64.0706,
+      "assembly_ms": 45.275,
+      "first_ms": 15.6238,
+      "update_ms": 0.342212,
+      "startup_ms": 124.9694
+    },
+    {
+      "round": 2,
+      "workload": "move",
+      "profile": "fast",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 338.0706,
+      "update_ms": 5.222894,
+      "startup_ms": 338.0706
+    },
+    {
+      "round": 2,
+      "workload": "compute",
+      "profile": "cs",
+      "core_ms": 66.2844,
+      "assembly_ms": 45.7329,
+      "first_ms": 15.6974,
+      "update_ms": 1.029131,
+      "startup_ms": 127.71470000000001
+    },
+    {
+      "round": 2,
+      "workload": "compute",
+      "profile": "fast",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 353.6372,
+      "update_ms": 7.01475,
+      "startup_ms": 353.6372
+    },
+    {
+      "round": 2,
+      "workload": "compute",
+      "profile": "llvm",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 1226.7686,
+      "update_ms": 5.687431,
+      "startup_ms": 1226.7686
+    },
+    {
+      "round": 3,
+      "workload": "compile",
+      "profile": "llvm",
+      "cold_ms": 1203.9194,
+      "edit_ms": 1172.85,
+      "reload_ms": 1173.0318
+    },
+    {
+      "round": 3,
+      "workload": "compile",
+      "profile": "cs",
+      "cold_ms": 1680.1523,
+      "edit_ms": 7.8393,
+      "reload_ms": 32.7922
+    },
+    {
+      "round": 3,
+      "workload": "compile",
+      "profile": "fast",
+      "cold_ms": 360.0402,
+      "edit_ms": 282.805,
+      "reload_ms": 282.9675
+    },
+    {
+      "round": 3,
+      "workload": "move",
+      "profile": "cs",
+      "core_ms": 66.099,
+      "assembly_ms": 46.6386,
+      "first_ms": 16.2418,
+      "update_ms": 0.358312,
+      "startup_ms": 128.9794
+    },
+    {
+      "round": 3,
+      "workload": "move",
+      "profile": "fast",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 327.4216,
+      "update_ms": 4.9975,
+      "startup_ms": 327.4216
+    },
+    {
+      "round": 3,
+      "workload": "move",
+      "profile": "llvm",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 1236.4091,
+      "update_ms": 4.8494,
+      "startup_ms": 1236.4091
+    },
+    {
+      "round": 3,
+      "workload": "compute",
+      "profile": "fast",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 328.8273,
+      "update_ms": 6.99585,
+      "startup_ms": 328.8273
+    },
+    {
+      "round": 3,
+      "workload": "compute",
+      "profile": "llvm",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 1178.7194,
+      "update_ms": 5.677313,
+      "startup_ms": 1178.7194
+    },
+    {
+      "round": 3,
+      "workload": "compute",
+      "profile": "cs",
+      "core_ms": 64.1277,
+      "assembly_ms": 45.8434,
+      "first_ms": 15.2746,
+      "update_ms": 0.962375,
+      "startup_ms": 125.2457
+    }
+  ],
+  "medians": {
+    "compile": {
+      "cs": {
+        "cold_ms": 1767.8474,
+        "edit_ms": 7.8393,
+        "reload_ms": 32.7922
+      },
+      "fast": {
+        "cold_ms": 360.0402,
+        "edit_ms": 289.9809,
+        "reload_ms": 290.1345
+      },
+      "llvm": {
+        "cold_ms": 1203.9194,
+        "edit_ms": 1172.85,
+        "reload_ms": 1173.0318
+      }
+    },
+    "move": {
+      "fast": {
+        "core_ms": 0.0,
+        "assembly_ms": 0.0,
+        "first_ms": 327.4216,
+        "update_ms": 4.9975,
+        "startup_ms": 327.4216
+      },
+      "llvm": {
+        "core_ms": 0.0,
+        "assembly_ms": 0.0,
+        "first_ms": 1236.4091,
+        "update_ms": 4.713619,
+        "startup_ms": 1236.4091
+      },
+      "cs": {
+        "core_ms": 64.0706,
+        "assembly_ms": 46.6386,
+        "first_ms": 15.6238,
+        "update_ms": 0.342212,
+        "startup_ms": 128.9794
+      }
+    },
+    "compute": {
+      "llvm": {
+        "core_ms": 0.0,
+        "assembly_ms": 0.0,
+        "first_ms": 1178.7194,
+        "update_ms": 5.677313,
+        "startup_ms": 1178.7194
+      },
+      "cs": {
+        "core_ms": 64.1277,
+        "assembly_ms": 45.8434,
+        "first_ms": 15.2746,
+        "update_ms": 0.962375,
+        "startup_ms": 127.71470000000001
+      },
+      "fast": {
+        "core_ms": 0.0,
+        "assembly_ms": 0.0,
+        "first_ms": 328.8273,
+        "update_ms": 6.99585,
+        "startup_ms": 328.8273
+      }
+    }
+  }
+}

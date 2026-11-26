@@ -70,10 +70,12 @@ namespace Funke {
 	void PreviewDecodeQueue::Enqueue(const std::shared_ptr<TexturePreview>& request, bool priority) {
 		std::lock_guard lock(m_Mutex);
 		std::erase_if(m_Pending, [](const auto& pending) { return pending.expired(); });
+#if FNK_PLATFORM_HAS_THREADS
 		if (!m_Worker.joinable()) {
 			m_Stop = false;
 			m_Worker = std::thread([this] { Run(); });
 		}
+#endif
 		if (priority) m_Pending.push_front(request);
 		else m_Pending.push_back(request);
 		m_Wake.notify_one();
@@ -81,6 +83,24 @@ namespace Funke {
 
 	bool PreviewDecodeQueue::Take(Result& result) {
 		std::lock_guard lock(m_Mutex);
+#if !FNK_PLATFORM_HAS_THREADS
+		// Decode at most one preview per frame on hosts without native workers.
+		while (!m_Pending.empty()) {
+			auto weak = m_Pending.front();
+			m_Pending.pop_front();
+			auto request = weak.lock();
+			if (!request) continue;
+			std::unique_ptr<ImageData> image;
+			int width = 0, height = 0;
+			try {
+				image = m_Decoder(request->Path);
+				if (image) { width = image->Width; height = image->Height; }
+				image = ReducePreview(std::move(image), request->Sampling, request->KeepPixels ? 0 : request->MaxDimension);
+			} catch (...) {}
+			result = {weak, std::move(image), width, height};
+			return true;
+		}
+#endif
 		if (!m_HasReady) return false;
 		result = std::move(m_Ready);
 		m_HasReady = false;

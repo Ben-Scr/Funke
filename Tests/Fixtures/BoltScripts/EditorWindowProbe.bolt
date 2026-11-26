@@ -1,0 +1,18 @@
+import Funke.Editor
+import System
+
+[EditorWindow("Bolt probe", "Tests/Bolt probe", 360, 240)]
+public class EditorWindowProbe : EditorWindow {
+private:
+    int draws;
+public:
+    override void OnOpen() { draws = 1; }
+    override void OnGUI() {
+        if (draws < 1) throw InvalidOperationException("Missing OnOpen");
+        draws++;
+    }
+    override void OnClose() {
+        if (draws != 3) throw InvalidOperationException("Window instance lost between draws");
+    }
+}
+

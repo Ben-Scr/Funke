@@ -792,3 +792,73 @@ TEST_CASE("Physics defaults: new 3D worlds use the saved project gravity") {
     PhysicsWorld3D nextScene;
     CHECK((nextScene.GetGravity() == project.PhysicsGravity3D));
 }
+
+TEST_CASE("Physics layers: raycasts skip excluded nearer bodies and observe membership changes") {
+    auto scene = Scene::CreateDetachedScene("Ray layer mask");
+    auto nearBody = CreateBox(*scene, {0, 0, 2});
+    nearBody.SetLayer(2);
+    auto farBody = CreateBox(*scene, {0, 0, 5});
+    farBody.SetLayer(4);
+    PhysicsWorld3D world;
+    Transform3DHierarchySystem::Propagate(*scene);
+    world.SyncFromScene(*scene, k_Dt);
+    RaycastHit3D hit;
+    REQUIRE(world.Raycast(Vec3(0), {0, 0, 1}, 10, hit, 4));
+    CHECK(hit.Entity == farBody.GetHandle());
+    CHECK_FALSE(world.Raycast(Vec3(0), {0, 0, 1}, 10, hit, 0));
+    nearBody.SetLayer(4);
+    world.SyncFromScene(*scene, k_Dt);
+    REQUIRE(world.Raycast(Vec3(0), {0, 0, 1}, 10, hit, 4));
+    CHECK(hit.Entity == nearBody.GetHandle());
+    nearBody.GetComponent<BoxCollider3DComponent>().IsTrigger = true;
+    world.SyncFromScene(*scene, k_Dt);
+    REQUIRE(world.Raycast(Vec3(0), {0, 0, 1}, 10, hit, 4));
+    CHECK(hit.Entity == farBody.GetHandle());
+    REQUIRE(world.Raycast(Vec3(0), {0, 0, 1}, 10, hit, 4, true));
+    CHECK(hit.Entity == nearBody.GetHandle());
+}
+
+TEST_CASE("Physics layers: masked sphere overlaps respect triggers and changed membership") {
+    auto scene = Scene::CreateDetachedScene("Overlap mask");
+    auto box = CreateBox(*scene, Vec3(0));
+    box.SetLayer(4);
+    PhysicsWorld3D world;
+    Transform3DHierarchySystem::Propagate(*scene);
+    world.SyncFromScene(*scene, k_Dt);
+    CHECK(world.CheckSphere(Vec3(0), 1, 4));
+    CHECK_FALSE(world.CheckSphere(Vec3(0), 1, 2));
+    CHECK_FALSE(world.CheckSphere(Vec3(4), 1, 4));
+    CHECK_FALSE(world.CheckSphere(Vec3(0), -1, 4));
+    box.GetComponent<BoxCollider3DComponent>().IsTrigger = true;
+    world.SyncFromScene(*scene, k_Dt);
+    CHECK_FALSE(world.CheckSphere(Vec3(0), 1, 4));
+    CHECK(world.CheckSphere(Vec3(0), 1, 4, true));
+    box.SetLayer(2);
+    world.SyncFromScene(*scene, k_Dt);
+    CHECK_FALSE(world.CheckSphere(Vec3(0), 1, 4, true));
+}
+
+TEST_CASE("Physics layers: compound queries use owner membership and return the child collider") {
+    auto scene = Scene::CreateDetachedScene("Compound query mask");
+    Entity owner = scene->CreateEmptyEntity();
+    owner.AddComponent<Transform3DComponent>();
+    owner.AddComponent<Rigidbody3DComponent>().GravityScale = 0;
+    owner.SetLayer(4);
+    auto child = CreateBox(*scene, {0, 0, 3});
+    child.SetLayer(2);
+    child.SetParent(owner);
+    PhysicsWorld3D world;
+    Transform3DHierarchySystem::Propagate(*scene);
+    world.SyncFromScene(*scene, k_Dt);
+    CHECK(world.GetBodyCount() == 1);
+    RaycastHit3D hit;
+    REQUIRE(world.Raycast(Vec3(0), {0, 0, 1}, 10, hit, 4));
+    CHECK(hit.Entity == child.GetHandle());
+    CHECK_FALSE(world.Raycast(Vec3(0), {0, 0, 1}, 10, hit, 2));
+    CHECK(world.CheckSphere({0, 0, 3}, 1, 4));
+    CHECK_FALSE(world.CheckSphere({0, 0, 3}, 1, 2));
+    owner.SetLayer(2);
+    world.SyncFromScene(*scene, k_Dt);
+    CHECK_FALSE(world.CheckSphere({0, 0, 3}, 1, 4));
+    CHECK(world.CheckSphere({0, 0, 3}, 1, 2));
+}

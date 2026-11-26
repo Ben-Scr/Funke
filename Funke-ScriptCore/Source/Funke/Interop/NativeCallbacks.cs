@@ -1269,6 +1269,45 @@ internal unsafe struct NativeBindingsStruct
     public delegate* unmanaged<byte*, int> PhysicsLayer_GetIndex;
     public delegate* unmanaged<ulong, ulong> Entity_GetLayer;
     public delegate* unmanaged<ulong, ulong, void> Entity_SetLayer;
+    public delegate* unmanaged<float, float, float, float, float, float, float, ulong, int, ulong*, float*, int, int> Physics3D_RaycastMasked;
+    public delegate* unmanaged<float, float, float, float, ulong, int, int> Physics3D_CheckSphere;
+    public delegate* unmanaged<byte*, ulong> Scene_BeginQueryBorrow;
+    public delegate* unmanaged<ulong, void> Scene_EndQueryBorrow;
+    public delegate* unmanaged<ulong, byte*, ulong*, int> Entity_CaptureComponent;
+    public delegate* unmanaged<ulong, byte*, ulong*, void*, int, int, int> Entity_TransferComponent;
+    public delegate* unmanaged<byte*, byte*, byte*, ulong> Scene_BeginJobQueryBorrow;
+    public delegate* unmanaged<ulong, void> Scene_EndJobQueryBorrow;
+    public delegate* unmanaged<ulong, int, int> MeshRenderer_GetMaterialSlotCount;
+    public delegate* unmanaged<ulong, int, int, byte*, int, int> MeshRenderer_GetMaterialSlotName;
+    public delegate* unmanaged<ulong, int, int, ulong> MeshRenderer_GetMaterialSlotOverride;
+    public delegate* unmanaged<ulong, int, int, ulong, int> MeshRenderer_SetMaterialSlotOverride;
+
+
+    public delegate* unmanaged<ulong, float*, float*, float*, void> Transform3D_GetRight;
+    public delegate* unmanaged<ulong, float*, float*, float*, void> Transform3D_GetUp;
+    public delegate* unmanaged<byte*, int, byte*, int, ulong*, byte*, int, int> PlayerPrefs_Access;
+
+    public delegate* unmanaged<ulong, ulong> CameraFollowRig_GetTarget;
+    public delegate* unmanaged<ulong, ulong, int> CameraFollowRig_SetTarget;
+    public delegate* unmanaged<ulong, float*, float*, float*, void> CameraFollowRig_GetOffset;
+    public delegate* unmanaged<ulong, float, float, float, void> CameraFollowRig_SetOffset;
+    public delegate* unmanaged<ulong, float> CameraFollowRig_GetDamping;
+    public delegate* unmanaged<ulong, float, void> CameraFollowRig_SetDamping;
+    public delegate* unmanaged<ulong, int> CameraFollowRig_GetOrbit;
+    public delegate* unmanaged<ulong, int, void> CameraFollowRig_SetOrbit;
+    public delegate* unmanaged<ulong, float> CameraFollowRig_GetYaw;
+    public delegate* unmanaged<ulong, float, void> CameraFollowRig_SetYaw;
+    public delegate* unmanaged<ulong, float> CameraFollowRig_GetPitch;
+    public delegate* unmanaged<ulong, float, void> CameraFollowRig_SetPitch;
+    public delegate* unmanaged<ulong, float> CameraFollowRig_GetDistance;
+    public delegate* unmanaged<ulong, float, void> CameraFollowRig_SetDistance;
+    public delegate* unmanaged<ulong, int> CameraFollowRig_GetLookAtTarget;
+    public delegate* unmanaged<ulong, int, void> CameraFollowRig_SetLookAtTarget;
+    public delegate* unmanaged<ulong, void> CameraFollowRig_Reset;
+    public delegate* unmanaged<ulong*, int, int> RuntimePoints_Create;
+    public delegate* unmanaged<ulong*, int, float, float, int> RuntimePoints_Translate;
+    public delegate* unmanaged<ulong*, int, float*, int> RuntimePoints_Read;
+    public delegate* unmanaged<ulong*, int, int> RuntimePoints_Destroy;
 
 }
 

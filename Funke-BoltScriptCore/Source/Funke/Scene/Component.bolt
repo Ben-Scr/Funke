@@ -1,0 +1,25 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public class Component {
+private:
+    System.Memory.Shared<Funke.Entity> owner;
+public:
+    Funke.Entity& Entity {
+        get {
+            if (!owner.HasValue) owner = System.Memory.Shared<Funke.Entity>.Create();
+            if (owner.Get().ID != ID) owner.Get() = FunkeApiTypes.MakeEntity(ID);
+            return owner.Get();
+        }
+    }
+
+    ulong ID;
+    virtual string FkQueryKey() { return (string)FkType(); }
+    virtual bool FkHas(ulong entity) { return FkHasComponent(entity, FkType()) != 0ul; }
+    virtual bool FkAdd(ulong entity) { return FkAddComponent(entity, FkType()) != 0ul; }
+    virtual bool FkRemove(ulong entity) { return FkRemoveComponent(entity, FkType()) != 0ul; }
+    protected virtual ulong FkType() { return 18446744073709551615ul; }
+}

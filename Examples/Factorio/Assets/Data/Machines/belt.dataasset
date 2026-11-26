@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "type": "MachineDefinition",
+  "fields": {
+    "Id": "belt",
+    "DisplayName": "Conveyor",
+    "Description": "Drag a connected route. R turns the output. Side inputs merge.",
+    "Kind": "1",
+    "CycleSeconds": "0.4",
+    "Prefab": "prefab:8043410325706802509",
+    "Icon": "3799167722807270014",
+    "SpriteName": "belt",
+    "BuildingItem": "4823978683378489478",
+    "ConnectionTexture": "488776266692817388",
+    "Recipes": ""
+  }
+}

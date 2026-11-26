@@ -1,0 +1,7 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public enum EntityCommandBufferPlaybackMode {Automatic=0, Sequential=1, Parallel=2}

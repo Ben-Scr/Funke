@@ -1,0 +1,18 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public static class Time {
+public:
+    static float DeltaTime => Reinterpret<float>((uint)(FkApplication_GetDeltaTime(0ul, 0ul)));
+    static float UnscaledDeltaTime => Reinterpret<float>((uint)(FkApplication_GetUnscaledDeltaTime(0ul, 0ul)));
+    static float FixedDeltaTime { get { return Reinterpret<float>((uint)(FkApplication_GetFixedDeltaTime(0ul, 0ul))); } set { FkApplication_SetFixedDeltaTime((ulong)Reinterpret<uint>(value), 0ul); } }
+    static float FixedUnscaledDeltaTime => Reinterpret<float>((uint)(FkApplication_GetFixedUnscaledDeltaTime(0ul, 0ul)));
+    static float ElapsedTime => Reinterpret<float>((uint)(FkApplication_GetElapsedTime(0ul, 0ul)));
+    static float TimeSinceStartup => Reinterpret<float>((uint)(FkTime_GetTimeSinceStartup(0ul, 0ul)));
+    static float RealtimeSinceStartup => Reinterpret<float>((uint)(FkTime_GetRealtimeSinceStartup(0ul, 0ul)));
+    static float TimeScale { get { return Reinterpret<float>((uint)(FkApplication_GetTimeScale(0ul, 0ul))); } set { FkApplication_SetTimeScale((ulong)Reinterpret<uint>(value), 0ul); } }
+    static int FrameCount => (int)(FkTime_GetFrameCount(0ul, 0ul));
+}

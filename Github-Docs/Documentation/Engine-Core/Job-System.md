@@ -2,6 +2,10 @@
 
 The **Job System** is Funke's tool for doing work on multiple CPU cores at once. Instead of running everything on the main thread, you hand off chunks of work as **jobs** and let a pool of worker threads run them in parallel.
 
+For the native particle, skeletal-pose and 3D preparation paths, see the [workload thresholds and before/after measurements](Parallel-Work-Measurements.md).
+
+Set worker counts and enable individual engine workloads in [Project Settings → Multithreading](Multithreading-Settings.md). The project configuration also controls the separate 3D physics worker pool.
+
 If you just want the short version: wrap independent work in a job, schedule it, and (optionally) wait for it to finish. Use it for heavy, parallel-friendly work like processing thousands of entities.
 
 ---

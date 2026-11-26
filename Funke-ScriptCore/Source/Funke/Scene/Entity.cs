@@ -7,6 +7,7 @@ using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Runtime.Loader;
 using System.Text.Json;
+using System.Threading;
 using Funke.Components;
 using Funke.Interop;
 
@@ -26,6 +27,28 @@ public class Entity : IEquatable<Entity>
     // Entity wrappers share component instances so UI subscriptions survive fresh Entity handles.
     private static readonly Dictionary<ulong, Dictionary<Type, Component>> s_ManagedComponentStore = new();
     private static ulong s_ManagedComponentStoreVersion;
+    private static int s_ComponentTypeVersion;
+
+    private sealed record NativeTypeCache(int Version, uint Id);
+
+    private static class ComponentType<T> where T : Component, new()
+    {
+        internal static readonly bool IsScript = typeof(EntityScript).IsAssignableFrom(typeof(T));
+        internal static NativeTypeCache? Cache;
+    }
+
+    private static uint GetNativeComponentTypeId<T>() where T : Component, new()
+    {
+        int version = Volatile.Read(ref s_ComponentTypeVersion);
+        NativeTypeCache? cached = Volatile.Read(ref ComponentType<T>.Cache);
+        if (cached != null && cached.Version == version)
+            return cached.Id;
+        uint id = GetNativeComponentTypeId(typeof(T));
+        // Missing IDs can become available without a managed registration callback.
+        if (id != 0)
+            Volatile.Write(ref ComponentType<T>.Cache, new NativeTypeCache(version, id));
+        return id;
+    }
 
     private Dictionary<Type, Component>? m_ComponentCache;
     private ulong m_ComponentCacheVersion;
@@ -50,6 +73,18 @@ public class Entity : IEquatable<Entity>
     }
 
     public readonly ulong ID;
+
+    /// <summary>Checked value access for keeping a component reference beyond an immediate expression.
+    /// Reacquire after a structural scene change; raw GetRef/QueryRef references cannot perform this validation.</summary>
+    public bool TryGetHandle<T>(out ComponentHandle<T> handle) where T : unmanaged, IComponent
+    {
+        handle = default;
+        return !IsPrefabAsset && ComponentHandle<T>.TryCreate(ID, out handle);
+    }
+
+    public ComponentHandle<T> GetHandle<T>() where T : unmanaged, IComponent
+        => TryGetHandle<T>(out var handle) ? handle : throw new InvalidOperationException("Component is unavailable for checked access.");
+
 
     /// <summary>The entity with this <see cref="ID"/>, e.g. a hit returned by a package's native query; Invalid for 0.</summary>
     public static Entity FromID(ulong id) => id != 0 ? new Entity(id) : Invalid;
@@ -94,9 +129,6 @@ public class Entity : IEquatable<Entity>
             throw new InvalidOperationException("ToCommandBufferRef requires a valid live scene entity.");
         return new EntityRef(ID);
     }
-
-    [Obsolete("Use Transform2D for explicit 2D access.")]
-    public Transform2D? Transform => Transform2D;
 
     /// <summary>Cached 2D component, or null when absent; never adds a transform.</summary>
     public Transform2D? Transform2D => GetComponent<Transform2D>();
@@ -216,6 +248,7 @@ public class Entity : IEquatable<Entity>
         { typeof(PostProcessing2D),      "Post Processing" },
         { typeof(Transform3D),           "Transform 3D" },
         { typeof(Camera3D),              "Camera 3D" },
+        { typeof(CameraFollowRig),       "Camera Follow Rig" },
         { typeof(MeshRenderer),          "Mesh Renderer" },
         { typeof(DirectionalLight),      "Directional Light" },
         { typeof(PointLight),            "Point Light" },
@@ -265,6 +298,7 @@ public class Entity : IEquatable<Entity>
                 NativeNames.Clear();
                 NativeTypeIds.Clear();
                 InitializedModules.Clear();
+                Interlocked.Increment(ref s_ComponentTypeVersion);
             }
         }
     }
@@ -442,6 +476,7 @@ public class Entity : IEquatable<Entity>
                     && !string.Equals(previousName, nativeName, StringComparison.Ordinal);
                 metadata.NativeNames[typeof(T)] = nativeName;
                 metadata.NativeTypeIds.TryRemove(typeof(T), out _);
+                Interlocked.Increment(ref s_ComponentTypeVersion);
             }
         }
         if (renamed)
@@ -571,6 +606,7 @@ public class Entity : IEquatable<Entity>
         s_ManagedComponentStoreVersion++;
         foreach (var entry in s_ComponentMetadata)
             entry.Value.NativeTypeIds.Clear();
+        Interlocked.Increment(ref s_ComponentTypeVersion);
     }
 
     bool TryResolveScriptSlot(Type type, out string slot)
@@ -622,10 +658,10 @@ public class Entity : IEquatable<Entity>
             return false;
 
         // Script branch (see AddComponent for the CS0111 rationale).
-        if (typeof(EntityScript).IsAssignableFrom(typeof(T)))
+        if (ComponentType<T>.IsScript)
             return TryResolveScriptSlot(typeof(T), out _);
 
-        uint nativeTypeId = GetNativeComponentTypeId(typeof(T));
+        uint nativeTypeId = GetNativeComponentTypeId<T>();
         return nativeTypeId != 0
             ? InternalCalls.Entity_HasComponentByTypeId(ID, nativeTypeId)
             : GetNativeName<T>() is string name && InternalCalls.Entity_HasComponent(ID, name);
@@ -675,7 +711,16 @@ public class Entity : IEquatable<Entity>
 
     public T? GetComponent<T>() where T : Component, new()
     {
-        return GetComponentByType(typeof(T)) as T;
+        if (IsPrefabAsset)
+            return null;
+        if (ComponentType<T>.IsScript)
+            return ScriptInstanceManager.GetScriptInstance(ID, typeof(T)) as T;
+        if (!HasComponent<T>())
+        {
+            InvalidateCachedComponent(typeof(T));
+            return null;
+        }
+        return (T)GetOrCreateComponentByType(typeof(T));
     }
 
     public bool TryGetComponent<T>([NotNullWhen(true)] out T? value) where T : Component, new()

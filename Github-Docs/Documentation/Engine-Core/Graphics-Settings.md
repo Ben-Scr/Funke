@@ -7,24 +7,26 @@ Graphics settings trade image quality for speed: render scale, post-processing, 
 The editor writes the settings to the `graphics` object in `project.json`. Keys you leave out use their default, so older projects keep working.
 
 ```json
-"graphics": {
-  "renderScale": 1.0,
-  "upscaleFilter": "Linear",
-  "postProcessingEnabled": true,
-  "postProcessingQuality": "High",
-  "particleQuality": "High",
-  "shadowQuality": "Medium",
-  "shadowDistance": 40.0,
-  "maxLights": 16,
-  "exposure": 1.0,
-  "toneMapping": "ACES",
-  "textureQuality": "Full",
-  "anisotropicFiltering": "X16",
-  "antiAliasing": "Off",
-  "antiAliasingQuality": "High",
-  "animationDistanceRate": false,
-  "animationHalfRateDistance": 20.0,
-  "animationQuarterRateDistance": 40.0
+{
+  "graphics": {
+    "renderScale": 1.0,
+    "upscaleFilter": "Linear",
+    "postProcessingEnabled": true,
+    "postProcessingQuality": "High",
+    "particleQuality": "High",
+    "shadowQuality": "Medium",
+    "shadowDistance": 40.0,
+    "maxLights": 16,
+    "exposure": 1.0,
+    "toneMapping": "ACES",
+    "textureQuality": "Full",
+    "anisotropicFiltering": "X16",
+    "antiAliasing": "Off",
+    "antiAliasingQuality": "High",
+    "animationDistanceRate": false,
+    "animationHalfRateDistance": 20.0,
+    "animationQuarterRateDistance": 40.0
+  }
 }
 ```
 

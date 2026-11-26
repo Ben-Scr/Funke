@@ -1,0 +1,72 @@
+import System
+import Math
+namespace Funke;
+
+public struct Vector4 {
+public:
+    float X;
+    float Y;
+    float Z;
+    float W;
+    static Vector4 Zero => Vector4(0.0f, 0.0f, 0.0f, 0.0f);
+    static Vector4 One => Vector4(1.0f, 1.0f, 1.0f, 1.0f);
+    Vector4(float scalar = 0.0f) { X = scalar; Y = scalar; Z = scalar; W = scalar; }
+    Vector4(float x, float y, float z, float w) { X = x; Y = y; Z = z; W = w; }
+    Vector4(Vector3 v, float w) { X = v.X; Y = v.Y; Z = v.Z; W = w; }
+    Vector4(Vector2 v, float z, float w) { X = v.X; Y = v.Y; Z = z; W = w; }
+    Vector2 XY => Vector2(X, Y);
+    Vector3 XYZ => Vector3(X, Y, Z);
+    float LengthSquared() { return X * X + Y * Y + Z * Z + W * W; }
+    static float Distance(Vector4 a, Vector4 b) { return (a-b).Length(); }
+    Vector4 Normalized() { float n = Length(); if (n <= Mathf.Epsilon) return Zero; return Vector4(X / n, Y / n, Z / n, W / n); }
+    float Length() { return Mathf.Sqrt(X * X + Y * Y + Z * Z + W * W); }
+    static float Dot(Vector4 a, Vector4 b) { return a.X * b.X + a.Y * b.Y + a.Z * b.Z + a.W * b.W; }
+    static Vector4 Lerp(Vector4 a, Vector4 b, float t) {
+        t = Mathf.Clamp01(t);
+        return Vector4(
+            a.X + (b.X - a.X) * t,
+            a.Y + (b.Y - a.Y) * t,
+            a.Z + (b.Z - a.Z) * t,
+            a.W + (b.W - a.W) * t
+        );
+    }
+    static Vector4 operator +(Vector4 a, Vector4 b) { return Vector4(a.X + b.X, a.Y + b.Y, a.Z + b.Z, a.W + b.W); }
+    static Vector4 operator -(Vector4 a, Vector4 b) { return Vector4(a.X - b.X, a.Y - b.Y, a.Z - b.Z, a.W - b.W); }
+    static Vector4 operator *(Vector4 v, float s) { return Vector4(v.X * s, v.Y * s, v.Z * s, v.W * s); }
+    static Vector4 operator *(float s, Vector4 v) { return Vector4(s * v.X, s * v.Y, s * v.Z, s * v.W); }
+    static Vector4 operator /(Vector4 v, float s) { return Vector4(v.X / s, v.Y / s, v.Z / s, v.W / s); }
+    static Vector4 operator -(Vector4 v) { return Vector4(-v.X, -v.Y, -v.Z, -v.W); }
+    static bool operator ==(Vector4 a, Vector4 b) { return a.Equals(b); }
+    static bool operator !=(Vector4 a, Vector4 b) { return !a.Equals(b); }
+    bool Equals(Vector4 other) { return X == other.X && Y == other.Y && Z == other.Z && W == other.W; }
+    ulong LowBits() { return Vector2(X, Y).Bits(); }
+    ulong HighBits() { return Vector2(Z, W).Bits(); }
+    static Vector4 FromParts(ulong low, ulong high) {
+        Vector2 a = Vector2.FromBits(low); Vector2 b = Vector2.FromBits(high);
+        return Vector4(a.X, a.Y, b.X, b.Y);
+    }
+    explicit Vector2() { return Vector2(X, Y); }
+    explicit Vector3() { return Vector3(X, Y, Z); }
+    explicit Color() { return Color(X, Y, Z, W); }
+    explicit Vector2Int() { return Vector2Int((int)X, (int)Y); }
+    explicit Vector3Int() { return Vector3Int((int)X, (int)Y, (int)Z); }
+    explicit Vector4Int() { return Vector4Int((int)X, (int)Y, (int)Z, (int)W); }
+    int GetHashCode() {
+        int hash = -2128831035;
+        hash = FkNumberFormat.Hash(hash, X);
+        hash = FkNumberFormat.Hash(hash, Y);
+        hash = FkNumberFormat.Hash(hash, Z);
+        hash = FkNumberFormat.Hash(hash, W);
+        return hash;
+    }
+    string ToString() { return ToString(""); }
+    string ToString(string format) {
+        return "Vector4(" + FkNumberFormat.Number(X,format) + ", " + FkNumberFormat.Number(Y,format) + ", " + FkNumberFormat.Number(Z,format) + ", " + FkNumberFormat.Number(W,format) + ")";
+    }
+    bool TryFormat(System.Span<char> destination, int& charsWritten, string format = "") {
+        return FkNumberFormat.Write(destination, charsWritten, ToString(format));
+    }
+    bool TryFormat(System.Span<char> destination, int& charsWritten, System.ReadOnlySpan<char> format) {
+        return TryFormat(destination, charsWritten, FkNumberFormat.ReadFormat(format));
+    }
+}

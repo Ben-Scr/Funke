@@ -118,8 +118,16 @@ python scripts/ci/build_export_evidence.py \
   --platform web --source-root /work/checkout --expected-commit "$COMMIT" \
   --artifact /work/export/MyGame/index.html --output /work/build-proof \
   --tool emcc=/sdk/emscripten/emcc --tool dotnet=/sdk/dotnet \
-  -- python platforms/Funke.Platform.Web/Builder/build.py build --request /work/request.json
+  --builder-request /work/request.json
 ```
+
+The request mode selects the production Web, Android or iOS builder from the
+verified checkout. Supply the platform's normal staged protocol-v1 request with
+the verified absolute engine root and an absolute output directory containing
+the expected artifact. Use the appropriate toolchain and artifact for that
+target (HTML entry, APK or app bundle). The wrapper records the builder's UTF-8
+protocol stream in `builder-events.jsonl` and requires a final successful
+result naming the expected artifact. Compiler diagnostics go to `build.log`.
 
 The receipt and `build.log` are created in `/work/build-proof`. Publish that
 folder as a separate artifact from the Web export. The wrapper trusts the CI
@@ -141,3 +149,21 @@ Recreate older Windows receipts with mixed-case filenames; the earlier
 Windows-specific ordering could differ from a Linux runtime check.
 
 A failed browser startup also saves `failure.png` when possible. Each invocation requires a new output directory, so a failed run cannot reuse a previous screenshot or result. Missing SDKs, devices or WebGPU support must remain explicitly unverified in release notes.
+
+## Local production-builder run on 20 November 2026
+
+The Android builder compiled the native engine and the SDL Java sources for a
+staged Development project, packaged the managed payload and produced
+`ReloadProbe.apk` (30,877,238 bytes, SHA-256
+`7113790ea44f23e1cc049ef2118847161b504d607b8c7fc487d0812e99664393`).
+Android Build Tools 36.0.0 verified its v2 and v3 signatures. The native SDL
+build skips the optional SDL Android JAR because the APK builder compiles
+those Java sources itself. ADB could not start its daemon on port 5037, so
+installation, launch and rendered output remain unverified.
+
+The Web builder compiled the native WebAssembly engine. Publishing the managed
+host stopped at MSB4216 when MSBuild could not start or connect to the x64
+`ComputeWasmBuildAssets` task host. No browser run was possible. The Windows
+host did not provide the macOS/Xcode toolchain for an iOS run. The local
+checkout also failed the Git source identity check for the ImGuizmo submodule,
+so these diagnostic runs have no clean-commit receipt.

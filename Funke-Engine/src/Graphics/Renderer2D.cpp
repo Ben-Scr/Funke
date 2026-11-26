@@ -570,7 +570,7 @@ namespace Funke {
 			const size_t candidateCount = g_DynamicCandidates.size();
 			const bool useParallel = candidateCount >= k_ParallelCollectMinCandidates
 				&& JobSystem::IsInitialized()
-				&& JobSystem::GetWorkerCount() > 1;
+				&& JobSystem::CanParallelize(ParallelWorkload::Rendering2D);
 
 			if (useParallel) {
 				for (auto& ws : g_WorkerScratch) {

@@ -40,6 +40,7 @@ namespace Funke::Detail {
 
 	Json::Value SerializeEntity(Scene& scene, EntityHandle entity);
 	Json::Value SerializeScriptFields(const ScriptComponent& scriptComponent);
+	void RemapWrittenScriptEntityReferences(Json::Value& fieldsByClass);
 
 	bool JsonEquivalent(const Json::Value& a, const Json::Value& b);
 	void BuildOverridePatch(

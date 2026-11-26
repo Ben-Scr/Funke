@@ -1,0 +1,6 @@
+import System
+import System.Threading
+import System.Threading.Tasks
+namespace Funke.Jobs;
+
+public enum EnableMode { IncludeDisabled=0, EnabledOnly=1, DisabledOnly=2 }

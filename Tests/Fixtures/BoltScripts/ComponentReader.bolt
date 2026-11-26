@@ -1,0 +1,11 @@
+import Funke
+public class ComponentReader : EntityScript {
+    public Health? Target;
+    public override void OnUpdate() {
+        if (Target != null) {
+            Health health = Target.Value;
+            health.Points += 5;
+            Transform2D.Position = Vector2((float)health.Points, 0.0f);
+        }
+    }
+}

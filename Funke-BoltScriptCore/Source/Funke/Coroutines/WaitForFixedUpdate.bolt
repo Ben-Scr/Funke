@@ -1,0 +1,11 @@
+import System
+import System.Threading
+import System.Threading.Tasks
+namespace Funke.Coroutines;
+
+public struct WaitForFixedUpdate {
+    private CancellationToken cancellation;
+    public WaitForFixedUpdate(System.Threading.CancellationToken token=default) {cancellation=token;}
+    public Task<void> AsTask(){return CoroutineContext.Wait(0,0.0f,true,null,cancellation);}
+    public CoroutineAwaiter GetAwaiter() { return CoroutineAwaiter(0,0.0f,true,null,cancellation); }
+}

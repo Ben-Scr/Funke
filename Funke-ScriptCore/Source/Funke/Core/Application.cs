@@ -168,8 +168,19 @@ public static class Application
     public static void Reload() => InternalCalls.Application_Reload();
     public static void Restart() => InternalCalls.Application_Restart();
 
-    private static string GetLocalApplicationDataPath()
+    internal static string GetLocalApplicationDataPath()
     {
+        // Match the desktop engine's explicit data root for portable and isolated test runs.
+        if (OperatingSystem.IsWindows() || OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
+        {
+            string? configured = Environment.GetEnvironmentVariable("FUNKE_USER_DATA_ROOT");
+            if (configured != null)
+            {
+                if (string.IsNullOrWhiteSpace(configured) || !Path.IsPathFullyQualified(configured))
+                    throw new ArgumentException("FUNKE_USER_DATA_ROOT must be a non-empty absolute path");
+                return Path.GetFullPath(configured);
+            }
+        }
         string path = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
         // The browser has no such folder; the Web host points $HOME at its IndexedDB-backed storage.
         if (string.IsNullOrEmpty(path)) path = Environment.GetEnvironmentVariable("HOME") ?? string.Empty;

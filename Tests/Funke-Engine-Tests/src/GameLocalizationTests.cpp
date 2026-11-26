@@ -2,6 +2,13 @@
 
 #include "Components/Graphics/TextRendererComponent.hpp"
 #include "Components/UI/LocalizedTextComponent.hpp"
+#include "Components/UI/LocalizedUIComponent.hpp"
+#include "Components/UI/DropdownComponent.hpp"
+#include "Components/UI/InputFieldComponent.hpp"
+#include "Gui/WidgetLocalization.hpp"
+#include "Gui/InputFieldEditing.hpp"
+#include "Scene/ComponentRegistry.hpp"
+#include "Scene/SceneManager.hpp"
 #include "Localization/GameLocalization.hpp"
 #include "Scene/Entity.hpp"
 #include "Scene/Scene.hpp"
@@ -17,6 +24,74 @@
 #include <vector>
 
 using namespace Funke;
+
+TEST_CASE("Localized UI bindings preserve literal options, selection and user input across language switches") {
+	const auto directory = std::filesystem::temp_directory_path() / ("FunkeWidgetLocalization_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+	std::filesystem::create_directories(directory);
+	struct Cleanup { std::filesystem::path Path; ~Cleanup() { GameLocalization::Unload(); std::error_code error; std::filesystem::remove_all(Path, error); } } cleanup{directory};
+	std::ofstream(directory / "en.json") << R"({"meta":{"code":"en","displayName":"English","fallback":"en","schemaVersion":1},"strings":{"play":"Play","prompt":"Your name","empty":""}})";
+	std::ofstream(directory / "de.json") << R"({"meta":{"code":"de","displayName":"Deutsch","fallback":"en","schemaVersion":1},"strings":{"play":"Spielen","prompt":"Dein Name","empty":""}})";
+	REQUIRE(GameLocalization::Load(directory));
+	auto scene = Scene::CreateDetachedScene("Mixed UI");
+	auto label = scene->CreateEntity("Button label");
+	label.AddComponent<TextRendererComponent>().Text = "Literal button";
+	label.AddComponent<LocalizedUIComponent>().LabelKey = "play";
+	auto dropdown = scene->CreateEntity("Dropdown");
+	auto dropdownLabel = scene->CreateEntity("Dropdown label");
+	dropdownLabel.AddComponent<TextRendererComponent>();
+	auto& dd = dropdown.AddComponent<DropdownComponent>();
+	dd.LabelEntity = dropdownLabel.GetHandle(); dd.Options = {"Literal A", "Literal B", "Literal C"}; dd.SelectedIndex = 1;
+	dropdown.AddComponent<LocalizedUIComponent>().OptionKeys = {"", "play", "missing"};
+	auto input = scene->CreateEntity("Input");
+	auto inputLabel = scene->CreateEntity("Input label");
+	inputLabel.AddComponent<TextRendererComponent>();
+	auto& field = input.AddComponent<InputFieldComponent>();
+	field.TextEntity = inputLabel.GetHandle(); field.PlaceholderText = "Literal placeholder";
+	input.AddComponent<LocalizedUIComponent>().PlaceholderKey = "prompt";
+	for (const auto& language : {"de", "en", "de"}) {
+		REQUIRE(GameLocalization::SetLanguage(language));
+		const auto overrides = WidgetLocalization::Collect(scene->GetRegistry(), true);
+		CHECK(overrides.at(label.GetHandle()) == GameLocalization::Get("play"));
+		CHECK(overrides.at(dropdownLabel.GetHandle()) == GameLocalization::Get("play"));
+		CHECK(overrides.at(inputLabel.GetHandle()) == GameLocalization::Get("prompt"));
+		CHECK(dd.SelectedIndex == 1);
+		CHECK(dd.Options[1] == "Literal B");
+		CHECK(WidgetLocalization::Option(scene->GetRegistry(), dropdown.GetHandle(), dd, 0, true) == "Literal A");
+		CHECK(WidgetLocalization::Option(scene->GetRegistry(), dropdown.GetHandle(), dd, 2, true) == "missing");
+		CHECK(WidgetLocalization::Option(scene->GetRegistry(), dropdown.GetHandle(), dd, 99, true).empty());
+	}
+	field.Text = "user input"; field.CaretBytePos = 4; field.SelectionAnchorBytePos = 1;
+	CHECK_FALSE(WidgetLocalization::Collect(scene->GetRegistry(), true).contains(inputLabel.GetHandle()));
+	CHECK(field.Text == "user input"); CHECK(field.CaretBytePos == 4); CHECK(field.SelectionAnchorBytePos == 1);
+	InputFieldEditing::InsertAtCaret(field, "X");
+	CHECK(field.Text == "uX input");
+	label.GetComponent<LocalizedUIComponent>().LabelKey = "empty";
+	CHECK(WidgetLocalization::Collect(scene->GetRegistry(), true).at(label.GetHandle()).empty());
+	label.GetComponent<LocalizedUIComponent>().LabelKey.clear();
+	CHECK_FALSE(WidgetLocalization::Collect(scene->GetRegistry(), true).contains(label.GetHandle()));
+	CHECK(label.GetComponent<TextRendererComponent>().Text == "Literal button");
+	CHECK(field.PlaceholderText == "Literal placeholder");
+	CHECK(WidgetLocalization::Collect(scene->GetRegistry(), false).empty());
+}
+
+TEST_CASE("Localized UI binding serialization remaps its label and retains empty option keys") {
+	auto& registry = SceneManager::GetComponentRegistryOrBuiltIn();
+	REQUIRE(registry.GetInfo<LocalizedUIComponent>() != nullptr);
+	auto scene = Scene::CreateDetachedScene("Localized UI serialization");
+	auto widget = scene->CreateEntity("Widget");
+	auto& binding = widget.AddComponent<LocalizedUIComponent>();
+	binding.LabelEntity = widget.GetHandle(); binding.LabelKey = "play"; binding.PlaceholderKey = "prompt";
+	binding.OptionKeys = {"first", "", "third"};
+	const auto serialized = SceneSerializer::SerializeEntityFull(*scene, widget.GetHandle());
+	const auto clone = SceneSerializer::DeserializeEntityFromValue(*scene, serialized);
+	REQUIRE(clone != entt::null);
+	REQUIRE(scene->HasComponent<LocalizedUIComponent>(clone));
+	const auto& copied = scene->GetComponent<LocalizedUIComponent>(clone);
+	CHECK(copied.LabelEntity == clone);
+	CHECK(copied.LabelKey == "play");
+	CHECK(copied.PlaceholderKey == "prompt");
+	CHECK(copied.OptionKeys == std::vector<std::string>{"first", "", "third"});
+}
 
 namespace {
 	// A temp Assets/Localization folder; leaves GameLocalization unloaded and without a provider afterwards.

@@ -1,0 +1,63 @@
+import System
+import System.Collections.Generic
+namespace Funke;
+
+public static class AndroidBridge {
+private:
+    static Dictionary<string, List<Action<string>>> handlers;
+public:
+    static bool IsAvailable => Engine.Platform == Platform.Android;
+    static string? Call(string javaClass, string method, string argument = "") {
+        string result;
+        if (!TryCall(javaClass, method, argument, result)) return null;
+        return result;
+    }
+    static bool TryCall(string javaClass, string method, string argument, string& result) {
+        if (javaClass.Length == 0 || method.Length == 0) throw ArgumentException("A Java class and method are required.");
+        byte[] c = FkService.CString(javaClass);
+        byte[] m = FkService.CString(method);
+        byte[] a = FkService.CString(argument);
+        ulong[] args = {FkNativeSlot.Pointer(&c[0]), FkNativeSlot.Pointer(&m[0]), FkNativeSlot.Pointer(&a[0])};
+        int size = Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.Java_Call, &args[0], null) & 4294967295ul));
+        result = "";
+        if (size < 0) return false;
+        if (size > 0) {
+            byte[] bytes = new byte[size];
+            ulong[] read = {FkNativeSlot.Pointer(&bytes[0]), (ulong)size};
+            int length = (int)FkNativeInvoke(FkNativeSlot.Java_ReadResult, &read[0], null);
+            result = FkService.ReadText(bytes, length);
+        }
+        return true;
+    }
+    static void Subscribe(string channel, Action<string> handler) {
+        if (channel.Length == 0) throw ArgumentException("A channel name is required.");
+        if (!handlers.ContainsKey(channel)) { List<Action<string>> empty; handlers.Add(channel, empty); }
+        handlers.GetRef(channel).Add(handler);
+    }
+    static bool Unsubscribe(string channel, Action<string> handler) {
+        if (!handlers.ContainsKey(channel)) return false;
+        List<Action<string>>& list = handlers.GetRef(channel);
+        for (int i = 0; i < list.Count; i++) {
+            if (list[i].InvocationId() == handler.InvocationId() && list[i].InvocationTarget() == handler.InvocationTarget()) {
+                list.RemoveAt(i);
+                if (list.Count == 0) handlers.Remove(channel);
+                return true;
+            }
+        }
+        return false;
+    }
+    static void Simulate(string channel, string message) {
+        FkAndroidSimulate(FunkeText.Put(channel + message), (ulong)channel.ByteLength);
+    }
+    static void FkDispatch() {
+        string channel = FunkeText.Read(FkEventText(1ul, 0ul));
+        string message = FunkeText.Read(FkEventText(0ul, 0ul));
+        if (!handlers.ContainsKey(channel)) return;
+        Action<string>[] snapshot = handlers.GetRef(channel).ToArray();
+        for (int i = 0; i < snapshot.Length; i++) {
+            try { snapshot[i].Invoke(message); }
+            catch (Exception& error) { Log.Error(error.Message); }
+        }
+    }
+}
+

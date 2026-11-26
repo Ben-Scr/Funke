@@ -53,8 +53,9 @@ namespace Funke {
                     });
                 info.add.SetNative<T>([](Entity e) { e.AddComponent<T>(); },
                     [](entt::registry& registry, EntityHandle entity) {
+                        if (registry.all_of<T>(entity)) return;
+                        ComponentAccess::BeforeMutation(registry);
                         auto& storage = registry.storage<T>();
-                        if (storage.contains(entity)) return;
                         if constexpr (!std::is_empty_v<T> && std::is_constructible_v<T, EntityHandle>) {
                             storage.emplace(entity, entity);
                         }
@@ -65,6 +66,7 @@ namespace Funke {
                     });
                 info.remove.SetNative<T>([](Entity e) { e.RemoveComponent<T>(); },
                     [](entt::registry& registry, EntityHandle entity) {
+                        if (registry.all_of<T>(entity)) ComponentAccess::BeforeMutation(registry);
                         registry.remove<T>(entity);
                     });
             }
@@ -119,6 +121,7 @@ namespace Funke {
                             }
                             T value;
                             std::memcpy(&value, bytes, sizeof(T));
+                            if (!r.all_of<T>(e)) ComponentAccess::BeforeMutation(r);
                             r.emplace_or_replace<T>(e, std::move(value));
                         }, sizeof(T));
                     }
@@ -127,6 +130,7 @@ namespace Funke {
                 if (info.defaultEmplace == nullptr) {
                     if constexpr (std::is_default_constructible_v<T>) {
                         info.defaultEmplace.SetNative<T>([](entt::registry& r, EntityHandle e) {
+                            if (!r.all_of<T>(e)) ComponentAccess::BeforeMutation(r);
                             r.storage<T>().push(e);
                         });
                     }
@@ -257,6 +261,8 @@ namespace Funke {
             uint32_t size,
             uint32_t alignment);
 
+        FUNKE_API void SetDynamicProperties(uint32_t typeId, std::vector<PropertyDescriptor> properties);
+
         // Dynamics live outside EnTT pools so on_destroy won't fire; call before m_Registry.destroy().
         FUNKE_API void ScrubEntity(const entt::registry& registry, EntityHandle e);
 
@@ -264,6 +270,7 @@ namespace Funke {
 
         // MUST be called before user assembly unloads so captured lambdas don't outlive storage.
         FUNKE_API void UnregisterAllDynamic();
+        FUNKE_API void UnregisterManagedDynamic();
 
         // Register<T> tags new entries with this owner while non-zero.
         void SetRegistrationOwner(uint32_t owner) noexcept { m_registrationOwner = owner; }
@@ -326,6 +333,7 @@ namespace Funke {
         FUNKE_API bool TypesConflict(std::type_index a, std::type_index b) const;
 
     private:
+        void UnregisterDynamic(bool managedOnly);
         FUNKE_API const ComponentInfo* PrepareRegistration(std::type_index id, ComponentInfo& info);
         FUNKE_API void FinishRegistration(std::type_index id, ComponentInfo&& info, const ComponentInfo* existing);
 

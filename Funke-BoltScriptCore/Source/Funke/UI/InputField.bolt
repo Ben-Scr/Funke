@@ -1,0 +1,64 @@
+import Funke
+namespace Funke.UI;
+
+public class InputField : Component {
+public:
+    protected override ulong FkType() { return 18ul; }
+    string Text { get { return FunkeText.Read(FkInputField_GetTextBuffer(ID, 0ul)); } set { FkInputField_SetText(ID, FunkeText.Put(value)); } }
+    string PlaceholderText { get { return FunkeText.Read(FkInputField_GetPlaceholderTextBuffer(ID, 0ul)); } set { FkInputField_SetPlaceholderText(ID, FunkeText.Put(value)); } }
+    bool IsFocused { get { return (FkInputField_GetIsFocused(ID, 0ul) != 0ul); } set { FkInputField_SetIsFocused(ID, (value ? 1ul : 0ul)); } }
+    int CharacterLimit { get { return Reinterpret<int>((uint)(FkInputField_GetCharacterLimit(ID, 0ul) & 4294967295ul)); } set { FkInputField_SetCharacterLimit(ID, (ulong)Reinterpret<uint>(value)); } }
+    bool Multiline { get { return (FkInputField_GetMultiline(ID, 0ul) != 0ul); } set { FkInputField_SetMultiline(ID, (value ? 1ul : 0ul)); } }
+    UITransitionMode TransitionMode { get { return (UITransitionMode)FkInputField_GetTransitionMode(ID, 0ul); } set { FkInputField_SetTransitionMode(ID, (ulong)value); } }
+    Vector4 NormalColor { get { return FunkeApiTypes.DecodeVector4(FkInputField_GetNormalColor(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkInputField_SetNormalColor(ID, value.LowBits()); } }
+    Vector4 HoveredColor { get { return FunkeApiTypes.DecodeVector4(FkInputField_GetHoveredColor(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkInputField_SetHoveredColor(ID, value.LowBits()); } }
+    Vector4 PressedColor { get { return FunkeApiTypes.DecodeVector4(FkInputField_GetPressedColor(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkInputField_SetPressedColor(ID, value.LowBits()); } }
+    Vector4 DisabledColor { get { return FunkeApiTypes.DecodeVector4(FkInputField_GetDisabledColor(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkInputField_SetDisabledColor(ID, value.LowBits()); } }
+    Vector4 FocusedColor { get { return FunkeApiTypes.DecodeVector4(FkInputField_GetFocusedColor(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkInputField_SetFocusedColor(ID, value.LowBits()); } }
+    bool SubmittedThisFrame => (FkInputField_GetSubmittedThisFrame(ID, 0ul) != 0ul);
+    Funke.Entity? TextEntity { get { return Funke.Entity.FromId(FkInputField_GetTextEntity(ID, 0ul)); } set { ulong id = 0ul; if (value != null) id = value.Value.ID; FkInputField_SetTextEntity(ID, id); } }
+    Funke.Entity? VerticalScrollbar { get { return Funke.Entity.FromId(FkInputField_GetVerticalScrollbarEntity(ID, 0ul)); } set { ulong id = 0ul; if (value != null) id = value.Value.ID; FkInputField_SetVerticalScrollbarEntity(ID, id); } }
+    Funke.Texture? NormalSprite { get { return Funke.Texture.FromAssetUUID(FkInputField_GetNormalSprite(ID, 0ul)); } set { ulong guid = 0ul; if (value != null) guid = value.Value.UUID; FkInputField_SetNormalSprite(ID, guid); } }
+    Funke.Texture? HoveredSprite { get { return Funke.Texture.FromAssetUUID(FkInputField_GetHoveredSprite(ID, 0ul)); } set { ulong guid = 0ul; if (value != null) guid = value.Value.UUID; FkInputField_SetHoveredSprite(ID, guid); } }
+    Funke.Texture? PressedSprite { get { return Funke.Texture.FromAssetUUID(FkInputField_GetPressedSprite(ID, 0ul)); } set { ulong guid = 0ul; if (value != null) guid = value.Value.UUID; FkInputField_SetPressedSprite(ID, guid); } }
+    Funke.Texture? DisabledSprite { get { return Funke.Texture.FromAssetUUID(FkInputField_GetDisabledSprite(ID, 0ul)); } set { ulong guid = 0ul; if (value != null) guid = value.Value.UUID; FkInputField_SetDisabledSprite(ID, guid); } }
+    Funke.Texture? FocusedSprite { get { return Funke.Texture.FromAssetUUID(FkInputField_GetFocusedSprite(ID, 0ul)); } set { ulong guid = 0ul; if (value != null) guid = value.Value.UUID; FkInputField_SetFocusedSprite(ID, guid); } }
+    void SetValue(string value, bool notifyEvent = true) {
+        string previous = Text;
+        Text = value;
+        Events.FkObserveText(value);
+        string applied = Text;
+        if (notifyEvent && applied != previous) Events.FkChanged(applied);
+    }
+    InputFieldEvents& Events { get { return FkUiStore<InputField, InputFieldEvents>.For(ID).Get(); } }
+    WidgetEvent<string> ValueChanged {
+        get {
+            Shared<InputFieldEvents> state = FkUiStore<InputField, InputFieldEvents>.For(ID);
+            WidgetEvent<string> signal;
+            signal.FkAdd = (Action<string> h) => { state.Get().ValueChanged += h; };
+            signal.FkRemove = (Action<string> h) => { state.Get().ValueChanged -= h; };
+            return signal;
+        }
+        set {}
+    }
+    WidgetEvent<InputField> Select {
+        get {
+            Shared<InputFieldEvents> state = FkUiStore<InputField, InputFieldEvents>.For(ID);
+            WidgetEvent<InputField> signal;
+            signal.FkAdd = (Action<InputField> h) => { state.Get().Select += h; };
+            signal.FkRemove = (Action<InputField> h) => { state.Get().Select -= h; };
+            return signal;
+        }
+        set {}
+    }
+    WidgetEvent<InputField> Deselect {
+        get {
+            Shared<InputFieldEvents> state = FkUiStore<InputField, InputFieldEvents>.For(ID);
+            WidgetEvent<InputField> signal;
+            signal.FkAdd = (Action<InputField> h) => { state.Get().Deselect += h; };
+            signal.FkRemove = (Action<InputField> h) => { state.Get().Deselect -= h; };
+            return signal;
+        }
+        set {}
+    }
+}

@@ -83,6 +83,9 @@ def build_sdl3(engine_root: Path, toolchain: CMakeToolchain, shared: bool) -> Pa
         "-DSDL_RENDER=OFF", "-DSDL_GPU=OFF",
         "-DCMAKE_POSITION_INDEPENDENT_CODE=ON",
     ]
+    if toolchain.key.startswith("Android/"):
+        # The APK builder compiles SDL's Java sources into classes.dex alongside the game's activity.
+        extra.append("-DSDL_ANDROID_JAR=OFF")
     out = _cmake_build(toolchain, engine_root, "sdl3", source, extra, [], True, _git_revision(source))
     return out / "install"
 

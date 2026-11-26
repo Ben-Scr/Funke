@@ -1,0 +1,17 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public class AnimatorController {
+private:
+    ulong guid;
+public:
+    ulong UUID => guid;
+    ulong FkKind() { return 13ul; }
+    void FkSetGuid(ulong value) { guid = value; }
+    static AnimatorController? FromAssetUUID(ulong guid) { if (guid == 0ul) return null; AnimatorController value; value.FkSetGuid(guid); return value; }
+    bool Equals(AnimatorController? other) { return other != null && UUID == other.Value.UUID; }
+    int GetHashCode() { return Reinterpret<int>((uint)((guid ^ (guid >> 32)) & 4294967295ul)); }
+}

@@ -1,0 +1,23 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public class RevoluteJoint2D : Joint2D {
+public:
+    [ReadOnly] public override ulong FkShapeKind() { return 0ul; }
+    protected override ulong FkType() { return 32ul; }
+    bool EnableLimit { get { return Reinterpret<float>((uint)FkGetRevoluteJoint2D_EnableLimit(ID, 0ul)) != 0.0f; } set { FkSetRevoluteJoint2D_EnableLimit(ID, (ulong)Reinterpret<uint>((value ? 1.0f : 0.0f))); } }
+    float LowerAngle { get { return Reinterpret<float>((uint)FkGetRevoluteJoint2D_LowerAngle(ID, 0ul)); } set { FkSetRevoluteJoint2D_LowerAngle(ID, (ulong)Reinterpret<uint>(value)); } }
+    float UpperAngle { get { return Reinterpret<float>((uint)FkGetRevoluteJoint2D_UpperAngle(ID, 0ul)); } set { FkSetRevoluteJoint2D_UpperAngle(ID, (ulong)Reinterpret<uint>(value)); } }
+    bool EnableMotor { get { return Reinterpret<float>((uint)FkGetRevoluteJoint2D_EnableMotor(ID, 0ul)) != 0.0f; } set { FkSetRevoluteJoint2D_EnableMotor(ID, (ulong)Reinterpret<uint>((value ? 1.0f : 0.0f))); } }
+    float MotorSpeed { get { return Reinterpret<float>((uint)FkGetRevoluteJoint2D_MotorSpeed(ID, 0ul)); } set { FkSetRevoluteJoint2D_MotorSpeed(ID, (ulong)Reinterpret<uint>(value)); } }
+    float MaxMotorTorque { get { return Reinterpret<float>((uint)FkGetRevoluteJoint2D_MaxMotorTorque(ID, 0ul)); } set { FkSetRevoluteJoint2D_MaxMotorTorque(ID, (ulong)Reinterpret<uint>(value)); } }
+    bool EnableSpring { get { return Reinterpret<float>((uint)FkGetRevoluteJoint2D_EnableSpring(ID, 0ul)) != 0.0f; } set { FkSetRevoluteJoint2D_EnableSpring(ID, (ulong)Reinterpret<uint>((value ? 1.0f : 0.0f))); } }
+    float SpringHertz { get { return Reinterpret<float>((uint)FkGetRevoluteJoint2D_SpringHertz(ID, 0ul)); } set { FkSetRevoluteJoint2D_SpringHertz(ID, (ulong)Reinterpret<uint>(value)); } }
+    float SpringDampingRatio { get { return Reinterpret<float>((uint)FkGetRevoluteJoint2D_SpringDampingRatio(ID, 0ul)); } set { FkSetRevoluteJoint2D_SpringDampingRatio(ID, (ulong)Reinterpret<uint>(value)); } }
+    float JointAngle => Reinterpret<float>((uint)FkGetRevoluteJoint2D_JointAngle(ID, 0ul));
+    float JointSpeed => Reinterpret<float>((uint)FkGetRevoluteJoint2D_JointSpeed(ID, 0ul));
+    float MotorTorque => Reinterpret<float>((uint)FkGetRevoluteJoint2D_MotorTorque(ID, 0ul));
+}

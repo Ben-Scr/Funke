@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "type": "MachineDefinition",
+  "fields": {
+    "Id": "furnace",
+    "DisplayName": "Furnace",
+    "Description": "Smelts iron or copper ore. Use inserters for automatic loading.",
+    "Kind": "2",
+    "CycleSeconds": "2",
+    "Prefab": "prefab:2317446656231173846",
+    "Icon": "3799167722807270014",
+    "SpriteName": "furnace",
+    "BuildingItem": "4811867560209642681",
+    "ConnectionTexture": "0",
+    "Recipes": "\n1555783884543139261\n5863356512865252936"
+  }
+}

@@ -1,0 +1,48 @@
+import System.Memory
+import System.Collections.Generic
+import Funke
+namespace Funke.UI;
+
+public static class FkUiStore<W, S> {
+private:
+    class Watch {
+    public:
+        ulong RuntimeID;
+        Shared<S> State;
+    }
+    static Dictionary<ulong, Dictionary<ulong, Watch>> scenes;
+public:
+    static Shared<S>& For(ulong id) {
+        ulong scene = FkUiScene(1ul, 0ul);
+        if (!scenes.ContainsKey(scene)) { Dictionary<ulong, Watch> empty; scenes.Add(scene, empty); }
+        Dictionary<ulong, Watch>& widgets = scenes.GetRef(scene);
+        Funke.Entity owner = FunkeApiTypes.MakeEntity(id);
+        ulong runtime = owner.RuntimeID;
+        if (!widgets.ContainsKey(id) || widgets.GetRef(id).RuntimeID != runtime) {
+            Watch fresh; fresh.RuntimeID = runtime; fresh.State = Shared<S>.Create();
+            widgets[id] = fresh;
+        }
+        return widgets.GetRef(id).State;
+    }
+    static void Tick() {
+        ulong scene = FkUiScene(0ul, 0ul);
+        if (!scenes.ContainsKey(scene)) return;
+        ulong[] snapshot = scenes.GetRef(scene).Keys;
+        for (int i = 0; i < snapshot.Length; i++) {
+            ulong id = snapshot[i];
+            Dictionary<ulong, Watch>& widgets = scenes.GetRef(scene);
+            if (!widgets.ContainsKey(id)) continue;
+            W widget;
+            Funke.Entity owner = FunkeApiTypes.MakeEntity(id);
+            if (!widget.FkHas(id) || widgets.GetRef(id).RuntimeID != owner.RuntimeID) {
+                widgets.Remove(id);
+                continue;
+            }
+            widget.ID = id;
+            Shared<S> state = widgets.GetRef(id).State;
+            state.Get().FkPoll(widget);
+        }
+        if (scenes.GetRef(scene).Count == 0) scenes.Remove(scene);
+    }
+}
+

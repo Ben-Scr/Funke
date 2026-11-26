@@ -1,0 +1,11 @@
+import Funke
+
+public class DataAssetReader : EntityScript {
+    public DataAssetProbe? Config;
+    public override void OnStart() {
+        if (Config == null) return;
+        DataAssetProbe data = Config.Value;
+        if (data.Count == 8) data.Label = "read in gameplay";
+    }
+}
+

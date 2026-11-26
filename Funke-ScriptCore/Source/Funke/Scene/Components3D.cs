@@ -59,7 +59,7 @@ public class Transform3D : Component
         set => LocalRotation = Quaternion.Inverse(ParentRotation()) * value;
     }
 
-    private Quaternion ParentRotation()
+    internal Quaternion ParentRotation()
     {
         RequireComponent<Transform3D>();
         Quaternion rotation = Quaternion.Identity;
@@ -74,6 +74,17 @@ public class Transform3D : Component
         return rotation;
     }
 
+    /// <summary>Sets both local pose fields on the engine thread. Retains authored scale.</summary>
+    public void SetLocalPose(Vector3 position, Quaternion rotation)
+    {
+        Vector3.ValidateFinite(position, nameof(position));
+        if (!Quaternion.IsValidRotation(rotation)) throw new System.ArgumentOutOfRangeException(nameof(rotation));
+        ulong id = RequireComponent<Transform3D>();
+        Vector3 degrees = rotation.EulerAngles;
+        InternalCalls.Transform3D_SetPosition(id, position);
+        InternalCalls.Transform3D_SetRotation(id, degrees);
+    }
+
     public Vector3 Scale
     {
         get => InternalCalls.Transform3D_GetScale(RequireComponent<Transform3D>());
@@ -85,9 +96,95 @@ public class Transform3D : Component
 
     /// <summary>World-space forward direction (local -Z).</summary>
     public Vector3 Forward => InternalCalls.Transform3D_GetForward(RequireComponent<Transform3D>());
+    public Vector3 Right => InternalCalls.Transform3D_GetRight(RequireComponent<Transform3D>());
+    public Vector3 Up => InternalCalls.Transform3D_GetUp(RequireComponent<Transform3D>());
 }
 
 // ── Camera3D ────────────────────────────────────────────────────────
+
+public sealed class CameraFollowRig : Component
+{
+    private ulong ComponentId => RequireComponent<CameraFollowRig>();
+
+    public Entity? Target
+    {
+        get
+        {
+            ulong target = InternalCalls.CameraFollowRig_GetTarget(ComponentId);
+            return target == 0 ? null : new Entity(target);
+        }
+        set
+        {
+            if (value?.IsPrefabAsset == true || !InternalCalls.CameraFollowRig_SetTarget(ComponentId, value?.ID ?? 0))
+                throw new ArgumentException("Target must be another live entity in the same scene.", nameof(value));
+        }
+    }
+
+    public Vector3 Offset
+    {
+        get => InternalCalls.CameraFollowRig_GetOffset(ComponentId);
+        set
+        {
+            if (!float.IsFinite(value.X) || !float.IsFinite(value.Y) || !float.IsFinite(value.Z))
+                throw new ArgumentOutOfRangeException(nameof(value));
+            InternalCalls.CameraFollowRig_SetOffset(ComponentId, value);
+        }
+    }
+
+    public float Damping
+    {
+        get => InternalCalls.CameraFollowRig_GetDamping(ComponentId);
+        set
+        {
+            if (!float.IsFinite(value) || value < 0) throw new ArgumentOutOfRangeException(nameof(value));
+            InternalCalls.CameraFollowRig_SetDamping(ComponentId, value);
+        }
+    }
+
+    public bool Orbit
+    {
+        get => InternalCalls.CameraFollowRig_GetOrbit(ComponentId);
+        set => InternalCalls.CameraFollowRig_SetOrbit(ComponentId, value);
+    }
+
+    public float Yaw
+    {
+        get => InternalCalls.CameraFollowRig_GetYaw(ComponentId);
+        set
+        {
+            if (!float.IsFinite(value)) throw new ArgumentOutOfRangeException(nameof(value));
+            InternalCalls.CameraFollowRig_SetYaw(ComponentId, value);
+        }
+    }
+
+    public float Pitch
+    {
+        get => InternalCalls.CameraFollowRig_GetPitch(ComponentId);
+        set
+        {
+            if (!float.IsFinite(value) || value < -89 || value > 89) throw new ArgumentOutOfRangeException(nameof(value));
+            InternalCalls.CameraFollowRig_SetPitch(ComponentId, value);
+        }
+    }
+
+    public float Distance
+    {
+        get => InternalCalls.CameraFollowRig_GetDistance(ComponentId);
+        set
+        {
+            if (!float.IsFinite(value) || value <= 0) throw new ArgumentOutOfRangeException(nameof(value));
+            InternalCalls.CameraFollowRig_SetDistance(ComponentId, value);
+        }
+    }
+
+    public bool LookAtTarget
+    {
+        get => InternalCalls.CameraFollowRig_GetLookAtTarget(ComponentId);
+        set => InternalCalls.CameraFollowRig_SetLookAtTarget(ComponentId, value);
+    }
+
+    public void Reset() => InternalCalls.CameraFollowRig_Reset(ComponentId);
+}
 
 public class Camera3D : Component
 {
@@ -116,6 +213,18 @@ public class Camera3D : Component
     {
         InternalCalls.Camera3D_ScreenPointToRay(RequireComponent<Camera3D>(), screenPoint, out Ray ray);
         return ray;
+    }
+
+    /// <summary>False when the camera cannot project the viewport point; pixels use a top-left origin.</summary>
+    public bool TryScreenPointToRay(Vector2 screenPoint, out Ray ray)
+    {
+        ray = default;
+        if (!float.IsFinite(screenPoint.X) || !float.IsFinite(screenPoint.Y)) return false;
+        if (!InternalCalls.Camera3D_ScreenPointToRay(RequireComponent<Camera3D>(), screenPoint, out Ray candidate)
+            || !Vector3.IsFinite(candidate.Origin) || !Vector3.IsFinite(candidate.Direction)
+            || candidate.Direction.LengthSquared() < 0.5f) return false;
+        ray = candidate;
+        return true;
     }
 
     /// <summary>
@@ -273,6 +382,31 @@ public class Camera3D : Component
 
 public class MeshRenderer : Component
 {
+    /// <summary>Imported material slots. Primitives and geometry-only OBJ files have zero slots.</summary>
+    public int MaterialSlotCount => InternalCalls.MeshRenderer_GetMaterialSlotCount(RequireComponent<MeshRenderer>(), 0);
+    public string GetMaterialSlotName(int slot)
+    {
+        CheckMaterialSlot(slot);
+        return InternalCalls.MeshRenderer_GetMaterialSlotName(RequireComponent<MeshRenderer>(), 0, slot);
+    }
+    /// <summary>The override for this slot; null inherits the imported material. A whole-model Material takes precedence.</summary>
+    public Material? GetMaterialOverride(int slot)
+    {
+        CheckMaterialSlot(slot);
+        return global::Funke.Material.FromAssetUUID(InternalCalls.MeshRenderer_GetMaterialSlotOverride(RequireComponent<MeshRenderer>(), 0, slot));
+    }
+    /// <summary>Overrides one imported material. Null restores it; unique material names preserve the assignment across reordering.</summary>
+    public void SetMaterialOverride(int slot, Material? material)
+    {
+        CheckMaterialSlot(slot);
+        if (!InternalCalls.MeshRenderer_SetMaterialSlotOverride(RequireComponent<MeshRenderer>(), 0, slot, material?.UUID ?? 0))
+            throw new InvalidOperationException("The model material slot is no longer available.");
+    }
+    private void CheckMaterialSlot(int slot)
+    {
+        if ((uint)slot >= (uint)MaterialSlotCount) throw new ArgumentOutOfRangeException(nameof(slot));
+    }
+
     /// <summary>Built-in primitive; only drawn while <see cref="CustomMesh"/> is null.</summary>
     public PrimitiveMesh Mesh
     {
@@ -287,7 +421,7 @@ public class MeshRenderer : Component
         set => InternalCalls.MeshRenderer_SetCustomMesh(RequireComponent<MeshRenderer>(), value?.UUID ?? 0);
     }
 
-    /// <summary>The .material asset; null draws a white default material tinted by Color.</summary>
+    /// <summary>Whole-model material override; null uses slot overrides/imported materials, or the default for meshes without imported materials.</summary>
     public Material? Material
     {
         get => Material.FromAssetUUID(InternalCalls.MeshRenderer_GetMaterial(RequireComponent<MeshRenderer>()));
@@ -323,6 +457,31 @@ public class MeshRenderer : Component
 /// </summary>
 public class SkinnedMeshRenderer : Component
 {
+    /// <summary>Imported material slots. Primitives and geometry-only OBJ files have zero slots.</summary>
+    public int MaterialSlotCount => InternalCalls.MeshRenderer_GetMaterialSlotCount(RequireComponent<SkinnedMeshRenderer>(), 1);
+    public string GetMaterialSlotName(int slot)
+    {
+        CheckMaterialSlot(slot);
+        return InternalCalls.MeshRenderer_GetMaterialSlotName(RequireComponent<SkinnedMeshRenderer>(), 1, slot);
+    }
+    /// <summary>The override for this slot; null inherits the imported material. A whole-model Material takes precedence.</summary>
+    public Material? GetMaterialOverride(int slot)
+    {
+        CheckMaterialSlot(slot);
+        return global::Funke.Material.FromAssetUUID(InternalCalls.MeshRenderer_GetMaterialSlotOverride(RequireComponent<SkinnedMeshRenderer>(), 1, slot));
+    }
+    /// <summary>Overrides one imported material. Null restores it; unique material names preserve the assignment across reordering.</summary>
+    public void SetMaterialOverride(int slot, Material? material)
+    {
+        CheckMaterialSlot(slot);
+        if (!InternalCalls.MeshRenderer_SetMaterialSlotOverride(RequireComponent<SkinnedMeshRenderer>(), 1, slot, material?.UUID ?? 0))
+            throw new InvalidOperationException("The model material slot is no longer available.");
+    }
+    private void CheckMaterialSlot(int slot)
+    {
+        if ((uint)slot >= (uint)MaterialSlotCount) throw new ArgumentOutOfRangeException(nameof(slot));
+    }
+
     /// <summary>The model asset (.gltf/.glb); a model without a skeleton draws static.</summary>
     public global::Funke.Mesh? Model
     {
@@ -330,7 +489,7 @@ public class SkinnedMeshRenderer : Component
         set => InternalCalls.SkinnedMeshRenderer_SetAsset(RequireComponent<SkinnedMeshRenderer>(), 0, value?.UUID ?? 0);
     }
 
-    /// <summary>The .material asset; null draws a white default material tinted by Color.</summary>
+    /// <summary>Whole-model material override; null uses slot overrides/imported materials, or the default for meshes without imported materials.</summary>
     public Material? Material
     {
         get => Material.FromAssetUUID(InternalCalls.SkinnedMeshRenderer_GetAsset(RequireComponent<SkinnedMeshRenderer>(), 1));

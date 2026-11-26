@@ -1,0 +1,18 @@
+import System
+namespace Funke.UI;
+
+public struct WidgetEvent<T> {
+public:
+    Action<Action<T>> FkAdd = (Action<T> handler) => {};
+    Action<Action<T>> FkRemove = (Action<T> handler) => {};
+    void Subscribe(Action<T> handler) { FkAdd.Invoke(handler); }
+    void Unsubscribe(Action<T> handler) { FkRemove.Invoke(handler); }
+    static WidgetEvent<T> operator +(WidgetEvent<T> signal, Action<T> handler) {
+        signal.Subscribe(handler);
+        return signal;
+    }
+    static WidgetEvent<T> operator -(WidgetEvent<T> signal, Action<T> handler) {
+        signal.Unsubscribe(handler);
+        return signal;
+    }
+}

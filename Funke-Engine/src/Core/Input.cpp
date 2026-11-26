@@ -238,6 +238,10 @@ namespace Funke {
         else entry->Data.Phase = TouchPhase::Ended;
     }
 
+    void TouchTracker::OnCancel(int64_t id) {
+        std::erase_if(m_Touches, [id](const Entry& entry) { return entry.Data.Id == id; });
+    }
+
     const Touch* TouchTracker::Get(int index) const {
         if (index < 0 || index >= static_cast<int>(m_Touches.size())) return nullptr;
         return &m_Touches[static_cast<size_t>(index)].Data;

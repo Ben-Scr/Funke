@@ -689,6 +689,43 @@ TEST_CASE("Material JSON falls back to defaults for missing keys and clamps rang
 	CHECK_FALSE(MaterialFromJson(Json::Parse(Json::Stringify(MaterialToJson(skyDome)))).Fog);
 }
 
+TEST_CASE("OBJ material runs and named slots survive reordered MTL files") {
+	TempDirectory fixture("FunkeObjMaterials_");
+	const auto path = Path::ToUtf8(fixture.Root / "model.obj");
+	const auto library = Path::ToUtf8(fixture.Root / "model library.mtl");
+	const std::string faces = "v 0 0 0\nv 1 0 0\nv 0 1 0\nusemtl Red\nf 1 2 3\nusemtl Blue\nf 1 2 3\nusemtl Red\nf 1 2 3\n";
+	std::vector<uint8_t> tga(21, 0);
+	tga[2] = 2; tga[12] = tga[14] = 1; tga[16] = 24; tga[20] = 255;
+	REQUIRE(File::WriteAllBytes(Path::ToUtf8(fixture.Root / "red pixel.tga"), tga));
+	const std::string red = "newmtl Red\nKd 1 0 0\nd 0.5\nNs 30\nmap_Kd red pixel.tga\n";
+	const std::string blue = "newmtl Blue\nKd 0 0 1\nKe 0 0 0.2\n";
+	REQUIRE(File::WriteAllText(path, "mtllib model library.mtl\n" + faces));
+	MeshAsset asset;
+	CHECK_FALSE(MeshLibrary::LoadAssetFromFile(path, asset));
+	for (const std::string& mtl : {red + blue, blue + red}) {
+		REQUIRE(File::WriteAllText(library, mtl));
+		REQUIRE(MeshLibrary::LoadAssetFromFile(path, asset));
+		REQUIRE(asset.Submeshes.size() == 3);
+		REQUIRE(asset.Materials.size() == 2);
+		REQUIRE(asset.Textures.size() == 1);
+		REQUIRE(asset.Textures.front().Image);
+		CHECK(asset.Textures.front().Image->Width == 1);
+		for (uint32_t i = 0; i < 3; ++i) {
+			const auto& range = asset.Submeshes[i];
+			CHECK(range.FirstIndex == i * 3);
+			CHECK(range.IndexCount == 3);
+			const auto& material = asset.Materials.at(range.MaterialIndex);
+			CHECK(material.Key == (i == 1 ? "name:Blue" : "name:Red"));
+			if (i != 1) {
+				CHECK(material.Surface.Roughness == doctest::Approx(0.25));
+				CHECK(material.Surface.Surface == MaterialSurface::Transparent);
+			}
+		}
+	}
+	REQUIRE(File::WriteAllText(library, red + "map_Kd ../outside.png\n" + blue));
+	CHECK_FALSE(MeshLibrary::LoadAssetFromFile(path, asset));
+}
+
 TEST_CASE("OBJ parser triangulates polygons, shares corners and flips V") {
 	const char* obj = R"(# quad in XY facing +Z
 o Quad

@@ -143,20 +143,10 @@ namespace Funke {
 	void RuntimeConsoleLayer::OnPreRender(Application&) {
 		if (!m_ImGuiAcquired || !RuntimeImGuiHost::IsInitialized()) return;
 		RuntimeImGuiHost::BeginFrame();
-		if (!DevConsole::IsEnabled()) return;
+		// Keep the game unobstructed until the console is opened through its shortcut or touch gesture.
+		if (!DevConsole::IsEnabled() || !DevConsole::IsOpen()) return;
 
 		const ImGuiViewport* viewport = ImGui::GetMainViewport();
-		if (!DevConsole::IsOpen()) {
-			const float margin = ImGui::GetStyle().WindowPadding.x;
-			ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + viewport->WorkSize.x - margin,
-				viewport->WorkPos.y + viewport->WorkSize.y - margin), ImGuiCond_Always, ImVec2(1.0f, 1.0f));
-			ImGui::SetNextWindowBgAlpha(0.80f);
-			constexpr ImGuiWindowFlags k_ControlFlags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize
-				| ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav;
-			if (ImGui::Begin("##FunkeDevControls", nullptr, k_ControlFlags)) DrawControls();
-			ImGui::End();
-			return;
-		}
 		const float height = std::max(ImGui::GetFrameHeight() * 8.0f, viewport->WorkSize.y * 0.4f);
 		ImGui::SetNextWindowPos(viewport->WorkPos);
 		ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x, height));

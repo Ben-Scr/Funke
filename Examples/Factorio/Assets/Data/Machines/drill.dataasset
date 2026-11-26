@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "type": "MachineDefinition",
+  "fields": {
+    "Id": "drill",
+    "DisplayName": "Mining drill",
+    "Description": "Extracts the resource under it. Outputs to a belt or an inserter.",
+    "Kind": "0",
+    "CycleSeconds": "1.5",
+    "Prefab": "prefab:7765077705459192479",
+    "Icon": "3799167722807270014",
+    "SpriteName": "drill",
+    "BuildingItem": "4803740367729287525",
+    "ConnectionTexture": "0",
+    "Recipes": ""
+  }
+}

@@ -1,0 +1,53 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public class TerrainRenderer2D : Component {
+public:
+    protected override ulong FkType() { return 42ul; }
+    int PointCount => (int)FkSceneAccess.Call(FkNativeSlot.TerrainRenderer2D_GetPoints, ID, 0ul, 0ul);
+    Vector2[] GetPoints() {
+        int count = PointCount;
+        Vector2[] points = new Vector2[count];
+        if (count > 0) FkSceneAccess.Call(FkNativeSlot.TerrainRenderer2D_GetPoints, ID, FkNativeSlot.Pointer(&points[0]), (ulong)count);
+        return points;
+    }
+    void SetPoints(System.ReadOnlySpan<Vector2> points) {
+        Vector2[] copy = points.ToArray();
+        ulong address = 0ul;
+        if (copy.Length > 0) address = FkNativeSlot.Pointer(&copy[0]);
+        FkSceneAccess.Call(FkNativeSlot.TerrainRenderer2D_SetPoints, ID, address, (ulong)copy.Length);
+    }
+    Color FillColor { get { return FunkeApiTypes.DecodeColor(FkGetTerrainRenderer2D_FillColor(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkSetTerrainRenderer2D_FillColor(ID, value.LowBits()); } }
+    Vector2 FillTileSize { get { return Vector2.FromBits(FkGetTerrainRenderer2D_FillTileSize(ID, 0ul)); } set { FkSetTerrainRenderer2D_FillTileSize(ID, value.Bits()); } }
+    TerrainFillMapping FillMapping { get { return (TerrainFillMapping)(int)Reinterpret<float>((uint)FkGetTerrainRenderer2D_FillMapping(ID, 0ul)); } set { FkSetTerrainRenderer2D_FillMapping(ID, (ulong)Reinterpret<uint>((float)(int)value)); } }
+    float FillDepth { get { return Reinterpret<float>((uint)FkGetTerrainRenderer2D_FillDepth(ID, 0ul)); } set { FkSetTerrainRenderer2D_FillDepth(ID, (ulong)Reinterpret<uint>(value)); } }
+    Color EdgeColor { get { return FunkeApiTypes.DecodeColor(FkGetTerrainRenderer2D_EdgeColor(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkSetTerrainRenderer2D_EdgeColor(ID, value.LowBits()); } }
+    float EdgeThickness { get { return Reinterpret<float>((uint)FkGetTerrainRenderer2D_EdgeThickness(ID, 0ul)); } set { FkSetTerrainRenderer2D_EdgeThickness(ID, (ulong)Reinterpret<uint>(value)); } }
+    float EdgeOffset { get { return Reinterpret<float>((uint)FkGetTerrainRenderer2D_EdgeOffset(ID, 0ul)); } set { FkSetTerrainRenderer2D_EdgeOffset(ID, (ulong)Reinterpret<uint>(value)); } }
+    float EdgeTileLength { get { return Reinterpret<float>((uint)FkGetTerrainRenderer2D_EdgeTileLength(ID, 0ul)); } set { FkSetTerrainRenderer2D_EdgeTileLength(ID, (ulong)Reinterpret<uint>(value)); } }
+    int SortingLayer { get { return (int)(int)Reinterpret<float>((uint)FkGetTerrainRenderer2D_SortingLayer(ID, 0ul)); } set { FkSetTerrainRenderer2D_SortingLayer(ID, (ulong)Reinterpret<uint>((float)(int)value)); } }
+    int SortingOrder { get { return (int)(int)Reinterpret<float>((uint)FkGetTerrainRenderer2D_SortingOrder(ID, 0ul)); } set { FkSetTerrainRenderer2D_SortingOrder(ID, (ulong)Reinterpret<uint>((float)(int)value)); } }
+    int EdgeSortingOrder { get { return (int)(int)Reinterpret<float>((uint)FkGetTerrainRenderer2D_EdgeSortingOrder(ID, 0ul)); } set { FkSetTerrainRenderer2D_EdgeSortingOrder(ID, (ulong)Reinterpret<uint>((float)(int)value)); } }
+    float EdgeTextureOffset { get { return Reinterpret<float>((uint)FkGetTerrainRenderer2D_EdgeTextureOffset(ID, 0ul)); } set { FkSetTerrainRenderer2D_EdgeTextureOffset(ID, (ulong)Reinterpret<uint>(value)); } }
+    Funke.Texture? FillTexture {
+        get { return Funke.Texture.FromAssetUUID(FkTerrainRenderer2D_GetTexture(ID, 0ul)); }
+        set {
+            ulong guid = 0ul;
+            if (value != null) guid = value.Value.UUID;
+            FkWriteExtra(0ul, 0ul);
+            FkTerrainRenderer2D_SetTexture(ID, guid);
+        }
+    }
+    Funke.Texture? EdgeTexture {
+        get { return Funke.Texture.FromAssetUUID(FkTerrainRenderer2D_GetTexture(ID, 1ul)); }
+        set {
+            ulong guid = 0ul;
+            if (value != null) guid = value.Value.UUID;
+            FkWriteExtra(1ul, 0ul);
+            FkTerrainRenderer2D_SetTexture(ID, guid);
+        }
+    }
+}

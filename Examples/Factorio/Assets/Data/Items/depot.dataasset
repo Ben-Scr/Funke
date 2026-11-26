@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "type": "ItemDefinition",
+  "fields": {
+    "Id": "depot",
+    "DisplayName": "Storage chest",
+    "Icon": "3799167722807270014",
+    "SpriteName": "crate",
+    "StackSize": "100"
+  }
+}

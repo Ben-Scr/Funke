@@ -1,0 +1,20 @@
+import System
+import System.Threading
+import System.Threading.Tasks
+namespace Funke.Jobs;
+
+public struct JobRandom {
+private:
+    uint state;
+public:
+    static JobRandom ForCurrentWorker(uint baseSeed,int frame) {
+        JobRandom rng;
+        rng.state=baseSeed^(uint)System.Threading.Thread.CurrentId^((uint)frame*2654435761u);
+        if(rng.state==0u)rng.state=1u;
+        return rng;
+    }
+    uint NextUInt(){uint x=state;x^=x<<13;x^=x>>17;x^=x<<5;state=x;return x;}
+    float NextFloat01(){return (float)(NextUInt()>>8)*(1.0f/16777216.0f);}
+    float NextFloat(float min,float max){return min+(max-min)*NextFloat01();}
+    int NextInt(int min,int max){if(max<=min)return min;return min+(int)(NextUInt()%(uint)((long)max-(long)min));}
+}

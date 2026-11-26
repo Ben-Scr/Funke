@@ -52,6 +52,7 @@ namespace Funke {
 		bool ReadOnly = false;
 
 		bool HideStepperButtons = false;
+		std::string ToggleButtonIcon;
 
 		// Vec*/IntVec* only: prefix each channel with an X/Y/Z/W axis label.
 		bool ShowAxisLabels = false;
@@ -132,6 +133,10 @@ namespace Funke {
 		}
 		PropertyMetadata& WithHideStepperButtons(bool hide = true) {
 			HideStepperButtons = hide;
+			return *this;
+		}
+		PropertyMetadata& WithToggleButtonIcon(std::string icon) {
+			ToggleButtonIcon = std::move(icon);
 			return *this;
 		}
 		PropertyMetadata& WithAxisLabels(bool show = true) {

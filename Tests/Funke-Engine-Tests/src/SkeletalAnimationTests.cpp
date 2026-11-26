@@ -314,10 +314,10 @@ TEST_CASE("Compute skinning preserves packed vertex attributes and selects a bou
 	CHECK(packed[1].Weights[2] == 0.5f);
 	CHECK(packed[1].UV[0] == 0.75f);
 	CHECK(packed[1].UV[1] == 0.125f);
-	CHECK(SkinningCompute::FitsLimits(64, 2, 5120, 8192, 1));
+	CHECK(SkinningCompute::FitsLimits(64, 2, 64 * sizeof(SkinningCompute::Vertex), 8192, 1));
 	CHECK_FALSE(SkinningCompute::FitsLimits(65, 2, 8192, 8192, 1));
-	CHECK_FALSE(SkinningCompute::FitsLimits(64, 2, 5119, 8192, 1));
-	CHECK_FALSE(SkinningCompute::FitsLimits(64, 2, 8192, 5119, 1));
+	CHECK_FALSE(SkinningCompute::FitsLimits(64, 2, 64 * sizeof(SkinningCompute::Vertex) - 1, 8192, 1));
+	CHECK_FALSE(SkinningCompute::FitsLimits(64, 2, 8192, 64 * sizeof(SkinningCompute::Vertex) - 1, 1));
 	CHECK_FALSE(SkinningCompute::FitsLimits(1, 129, 8192, 16384, 1));
 	CHECK_FALSE(SkinningCompute::FitsLimits(0, 2, 8192, 8192, 1));
 	CHECK_FALSE(SkinningCompute::FitsLimits(64, 0, 8192, 8192, 1));

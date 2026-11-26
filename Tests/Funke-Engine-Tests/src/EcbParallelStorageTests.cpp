@@ -217,6 +217,57 @@ TEST_CASE("ECB bulk storage removal matches sequential packed order across rando
 	CHECK(BulkPayload::Live.load() == 0);
 }
 
+TEST_CASE("ECB bulk removal reuses plans and matches every small removal order") {
+	REQUIRE(BulkPayload::Live.load() == 0);
+	entt::storage<BulkPayload>::bulk_remove_plan plan;
+	for (uint32_t count = 1; count <= 6; ++count) {
+		std::vector<entt::entity> order(count);
+		for (uint32_t index = 0; index < count; ++index) order[index] = static_cast<entt::entity>(index);
+		do {
+			for (size_t removed = 0; removed <= count; ++removed) {
+				entt::storage<BulkPayload> expected;
+				entt::storage<BulkPayload> actual;
+				for (uint32_t index = 0; index < count; ++index) {
+					const auto entity = static_cast<entt::entity>(index);
+					expected.emplace(entity, index);
+					actual.emplace(entity, index);
+				}
+				actual.prepare_bulk_remove(plan, order.begin(), order.begin() + removed);
+				for (size_t index = 0; index < removed; ++index) expected.remove(order[index]);
+				actual.bulk_remove(plan, SerialBulkExecutor{});
+				CheckEquivalent(actual, expected);
+			}
+		} while (std::next_permutation(order.begin(), order.end()));
+	}
+	CHECK(BulkPayload::Live.load() == 0);
+}
+
+TEST_CASE("ECB sparse bulk removal only visits relocated rows and destroyed payloads") {
+	REQUIRE(BulkPayload::Live.load() == 0);
+	{
+		entt::storage<BulkPayload> expected;
+		entt::storage<BulkPayload> actual;
+		for (uint32_t index = 0; index < 100000; ++index) {
+			const auto entity = static_cast<entt::entity>(index);
+			expected.emplace(entity, index);
+			actual.emplace(entity, index);
+		}
+		// Removed tail rows pass through the same prefix destinations before the final survivor.
+		const std::array removed{ static_cast<entt::entity>(4), static_cast<entt::entity>(99999),
+			static_cast<entt::entity>(0), static_cast<entt::entity>(99997), static_cast<entt::entity>(99998) };
+		size_t visits = 0;
+		auto execute = [&](size_t count, auto&& work) noexcept {
+			visits += count;
+			SerialBulkExecutor{}(count, work);
+		};
+		for (auto entity : removed) expected.remove(entity);
+		actual.bulk_remove(removed.begin(), removed.end(), execute);
+		CHECK(visits <= removed.size() * 2);
+		CheckEquivalent(actual, expected);
+	}
+	CHECK(BulkPayload::Live.load() == 0);
+}
+
 TEST_CASE("ECB bulk storage removal accepts aliased packed ranges and empty batches") {
 	REQUIRE(BulkPayload::Live.load() == 0);
 	{

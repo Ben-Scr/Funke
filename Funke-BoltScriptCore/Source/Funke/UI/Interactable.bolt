@@ -1,0 +1,86 @@
+import Funke
+namespace Funke.UI;
+
+public class Interactable : Component {
+public:
+    protected override ulong FkType() { return 19ul; }
+    bool IsInteractable { get { return (FkInteractable_GetInteractable(ID, 0ul) != 0ul); } set { FkInteractable_SetInteractable(ID, (value ? 1ul : 0ul)); } }
+    bool Focusable { get { return (FkInteractable_GetFocusable(ID, 0ul) != 0ul); } set { FkInteractable_SetFocusable(ID, (value ? 1ul : 0ul)); } }
+    bool IsFocused { get { return (FkInteractable_GetIsFocused(ID, 0ul) != 0ul); } set { FkInteractable_SetIsFocused(ID, (value ? 1ul : 0ul)); } }
+    bool IsHovered => (FkInteractable_GetIsHovered(ID, 0ul) != 0ul);
+    bool IsClicked => (FkInteractable_GetIsClicked(ID, 0ul) != 0ul);
+    bool IsPressed => (FkInteractable_GetIsPressed(ID, 0ul) != 0ul);
+    bool IsMouseDown => (FkInteractable_GetIsMouseDown(ID, 0ul) != 0ul);
+    bool IsMouseUp => (FkInteractable_GetIsMouseUp(ID, 0ul) != 0ul);
+    InteractableEvents& Events { get { return FkUiStore<Interactable, InteractableEvents>.For(ID).Get(); } }
+    WidgetEvent<Interactable> Hovered {
+        get {
+            Shared<InteractableEvents> state = FkUiStore<Interactable, InteractableEvents>.For(ID);
+            WidgetEvent<Interactable> signal;
+            signal.FkAdd = (Action<Interactable> h) => { state.Get().Hovered += h; };
+            signal.FkRemove = (Action<Interactable> h) => { state.Get().Hovered -= h; };
+            return signal;
+        }
+        set {}
+    }
+    WidgetEvent<Interactable> Pressed {
+        get {
+            Shared<InteractableEvents> state = FkUiStore<Interactable, InteractableEvents>.For(ID);
+            WidgetEvent<Interactable> signal;
+            signal.FkAdd = (Action<Interactable> h) => { state.Get().Pressed += h; };
+            signal.FkRemove = (Action<Interactable> h) => { state.Get().Pressed -= h; };
+            return signal;
+        }
+        set {}
+    }
+    WidgetEvent<Interactable> Clicked {
+        get {
+            Shared<InteractableEvents> state = FkUiStore<Interactable, InteractableEvents>.For(ID);
+            WidgetEvent<Interactable> signal;
+            signal.FkAdd = (Action<Interactable> h) => { state.Get().Clicked += h; };
+            signal.FkRemove = (Action<Interactable> h) => { state.Get().Clicked -= h; };
+            return signal;
+        }
+        set {}
+    }
+    WidgetEvent<Interactable> MouseDown {
+        get {
+            Shared<InteractableEvents> state = FkUiStore<Interactable, InteractableEvents>.For(ID);
+            WidgetEvent<Interactable> signal;
+            signal.FkAdd = (Action<Interactable> h) => { state.Get().MouseDown += h; };
+            signal.FkRemove = (Action<Interactable> h) => { state.Get().MouseDown -= h; };
+            return signal;
+        }
+        set {}
+    }
+    WidgetEvent<Interactable> MouseUp {
+        get {
+            Shared<InteractableEvents> state = FkUiStore<Interactable, InteractableEvents>.For(ID);
+            WidgetEvent<Interactable> signal;
+            signal.FkAdd = (Action<Interactable> h) => { state.Get().MouseUp += h; };
+            signal.FkRemove = (Action<Interactable> h) => { state.Get().MouseUp -= h; };
+            return signal;
+        }
+        set {}
+    }
+    WidgetEvent<Interactable> FocusEnter {
+        get {
+            Shared<InteractableEvents> state = FkUiStore<Interactable, InteractableEvents>.For(ID);
+            WidgetEvent<Interactable> signal;
+            signal.FkAdd = (Action<Interactable> h) => { state.Get().FocusEnter += h; };
+            signal.FkRemove = (Action<Interactable> h) => { state.Get().FocusEnter -= h; };
+            return signal;
+        }
+        set {}
+    }
+    WidgetEvent<Interactable> FocusExit {
+        get {
+            Shared<InteractableEvents> state = FkUiStore<Interactable, InteractableEvents>.For(ID);
+            WidgetEvent<Interactable> signal;
+            signal.FkAdd = (Action<Interactable> h) => { state.Get().FocusExit += h; };
+            signal.FkRemove = (Action<Interactable> h) => { state.Get().FocusExit -= h; };
+            return signal;
+        }
+        set {}
+    }
+}

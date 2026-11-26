@@ -1,4 +1,7 @@
 #include "pch.hpp"
+#include "Scripting/ScriptEngine.hpp"
+#include "Scripting/BoltScriptHost.hpp"
+#include "Scripting/ScriptComponent.hpp"
 #include "Inspector/ReferencePicker.hpp"
 
 #include "Assets/AssetRegistry.hpp"
@@ -323,11 +326,25 @@ namespace Funke::ReferencePicker {
 		return entries;
 	}
 
+	bool MatchesComponentTarget(Entity entity, const std::string& displayName) {
+		if (const ComponentInfo* info = FindComponentByDisplayName(displayName)) return info->has && info->has(entity);
+		if (!entity.HasComponent<ScriptComponent>()) return false;
+		if (displayName.starts_with("type:")) {
+			auto& scripts = entity.GetComponent<ScriptComponent>();
+			scripts.MigrateManagedIdentities(ScriptEngine::ResolveManagedTypeName);
+			return scripts.HasManagedComponent(displayName);
+		}
+		const auto identity = BoltScriptHost::ComponentIdentity(displayName);
+		return !identity.empty() && entity.GetComponent<ScriptComponent>().HasScript(identity,ScriptType::Bolt);
+	}
+
 	std::vector<Entry> CollectComponentTargets(const std::string& componentDisplayName) {
 		std::vector<Entry> entries;
 		entries.push_back({ k_NoneLabel, "", "(none)", "", "__none__" });
 		const ComponentInfo* info = FindComponentByDisplayName(componentDisplayName);
-		if (!info || !info->has) return entries;
+		const auto bolt = info ? std::string{} : BoltScriptHost::ComponentIdentity(componentDisplayName);
+		const bool managed = componentDisplayName.starts_with("type:");
+		if (bolt.empty() && !managed && (!info || !info->has)) return entries;
 
 		SceneManager::ForeachLoadedScene([&](const Scene& scene) {
 			const std::string scenePrefix =
@@ -339,7 +356,10 @@ namespace Funke::ReferencePicker {
 				if (entityId == 0) continue;
 
 				Entity entity = scene.GetEntity(handle);
-				if (!info->has(entity)) continue;
+				if (managed) {
+					if (!MatchesComponentTarget(entity, componentDisplayName)) continue;
+				} else if (info ? !info->has(entity) : (!entity.HasComponent<ScriptComponent>()
+					|| !entity.GetComponent<ScriptComponent>().HasScript(bolt, ScriptType::Bolt))) continue;
 
 				const std::string entityName = GetEntityName(scene, handle, entityId);
 				Entry entry;

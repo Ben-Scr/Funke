@@ -1,0 +1,135 @@
+import System
+import System.Collections.Generic
+namespace Funke.AI;
+
+public enum BehaviorResult { Running, Success, Failure }
+
+public struct BehaviorTransition {
+public:
+    string Node;
+    BehaviorResult Result;
+    BehaviorTransition(string node, BehaviorResult result) : Node(node), Result(result) {}
+}
+
+public class BehaviorNode<T> {
+private:
+    string name;
+    static BehaviorNode<T> Make(string label, int kind, BehaviorNode<T>[] children) {
+        if (label.Trim().Length == 0) throw System.ArgumentException("A node needs a name.");
+        BehaviorNode<T> node;
+        node.name = label;
+        node.FkKind = kind;
+        node.FkChildren = children;
+        return node;
+    }
+public:
+    string Name => name;
+    int FkKind;
+    BehaviorNode<T>[] FkChildren;
+    Func<T&, BehaviorResult>? FkTick;
+    System.Action<T&>? FkAbort;
+
+    static BehaviorNode<T> Action(string name, Func<T&, BehaviorResult> tick, System.Action<T&>? onAbort = null) {
+        BehaviorNode<T>[] empty;
+        BehaviorNode<T> node = Make(name, 0, empty);
+        node.FkTick = tick;
+        node.FkAbort = onAbort;
+        return node;
+    }
+    static BehaviorNode<T> Condition(string name, Func<T&, bool> test) {
+        return Action(name, (T& state) => { return test.Invoke(state) ? BehaviorResult.Success : BehaviorResult.Failure; });
+    }
+    static BehaviorNode<T> Sequence(string name, BehaviorNode<T>[] children) { return Make(name, 1, children); }
+    static BehaviorNode<T> Selector(string name, BehaviorNode<T>[] children) { return Make(name, 2, children); }
+    static BehaviorNode<T> Invert(string name, BehaviorNode<T> child) {
+        BehaviorNode<T>[] children = {child};
+        return Make(name, 3, children);
+    }
+}
+
+public class BehaviorTree<T> {
+private:
+    BehaviorNode<T> root;
+    List<BehaviorNode<T>> path;
+    List<int> indices;
+    BehaviorNode<T>? running;
+    Func<T&, bool>? guard;
+    BehaviorResult? pending, result;
+    BehaviorTransition? transition;
+    bool executing;
+    void Push(BehaviorNode<T> node) { path.Add(node); indices.Add(0); }
+    void Clear() {
+        var previous = running;
+        running = null;
+        path.Clear(); indices.Clear();
+        pending = null; result = null; transition = null;
+        if (previous != null && previous.Value.FkAbort != null) previous.Value.FkAbort.Value.Invoke(Blackboard);
+    }
+    void Finish(BehaviorNode<T> node, BehaviorResult value) {
+        int last = path.Count - 1;
+        path.RemoveAt(last);
+        indices.RemoveAt(last);
+        transition = BehaviorTransition(node.Name, value);
+        if (path.Count == 0) result = value;
+        else pending = value;
+    }
+public:
+    T Blackboard;
+    BehaviorResult? Result => result;
+    BehaviorTransition? LastTransition => transition;
+    int ActiveDepth => path.Count;
+    string ActiveNodeName(int depth) { return path[depth].Name; }
+    BehaviorTree(BehaviorNode<T> node, T blackboard, Func<T&, bool>? canRun = null) {
+        root = node;
+        Blackboard = blackboard;
+        guard = canRun;
+    }
+    void Reset() {
+        if (executing) throw System.InvalidOperationException("Cannot reset during evaluation.");
+        executing = true;
+        try { Clear(); } finally { executing = false; }
+    }
+    BehaviorResult Tick(int budget) {
+        if (budget <= 0) throw System.ArgumentOutOfRangeException("budget");
+        if (executing) throw System.InvalidOperationException("Cannot tick recursively.");
+        executing = true;
+        try {
+            if (guard != null && !guard.Value.Invoke(Blackboard)) { Clear(); result = BehaviorResult.Failure; }
+            if (result != null && result.Value != BehaviorResult.Running) return result.Value;
+            if (path.Count == 0) Push(root);
+            result = BehaviorResult.Running;
+            while (budget-- > 0 && path.Count > 0) {
+                int last = path.Count - 1;
+                BehaviorNode<T> node = path[last];
+                int next = indices[last];
+                if (node.FkKind == 0) {
+                    BehaviorResult value = node.FkTick.Value.Invoke(Blackboard);
+                    if (value == BehaviorResult.Running) {
+                        running = node; transition = BehaviorTransition(node.Name, value); break;
+                    }
+                    if (value != BehaviorResult.Success && value != BehaviorResult.Failure)
+                        throw System.InvalidOperationException("Invalid action result.");
+                    running = null; Finish(node, value); continue;
+                }
+                if (pending != null) {
+                    BehaviorResult child = pending.Value; pending = null;
+                    if (node.FkKind == 3) {
+                        Finish(node, child == BehaviorResult.Success ? BehaviorResult.Failure : BehaviorResult.Success);
+                        continue;
+                    }
+                    if ((node.FkKind == 1 && child == BehaviorResult.Failure) || (node.FkKind == 2 && child == BehaviorResult.Success)) {
+                        Finish(node, child); continue;
+                    }
+                }
+                if (next == node.FkChildren.Length)
+                    Finish(node, node.FkKind == 2 ? BehaviorResult.Failure : BehaviorResult.Success);
+                else { indices[last] = next + 1; Push(node.FkChildren[next]); }
+            }
+            return result.Value;
+        } catch (System.Exception error) {
+            Clear();
+            throw error;
+        } finally { executing = false; }
+    }
+}
+

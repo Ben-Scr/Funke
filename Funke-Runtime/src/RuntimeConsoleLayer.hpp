@@ -10,7 +10,8 @@ struct ImGuiInputTextCallbackData;
 
 namespace Funke {
 
-	// Dev console window of Debug/Development builds: a visible button, shortcut or three-finger tap opens it.
+	// Dev console window of Debug/Development builds: a shortcut or three-finger tap opens it.
+	// No controls are drawn while the console is closed.
 	// Commands come from DevConsole; keyboard defaults live in PlatformShortcuts.
 	class RuntimeConsoleLayer : public Layer {
 	public:

@@ -68,7 +68,7 @@ namespace Funke::BuiltInComponentRegistrationInternal {
 			desc.DisplayName = "Material";
 			desc.Type = PropertyType::AssetRef;
 			desc.Metadata.AssetKindFilter = AssetKind::Material;
-			desc.Metadata.Tooltip = "A .material asset. None uses a white default material tinted by Color.";
+			desc.Metadata.Tooltip = "A whole-model override. None uses slot overrides/imported materials, or the default material for primitives.";
 			desc.Get = [](const Entity& e) -> PropertyValue {
 				PropertyValue v;
 				v.Type = PropertyType::AssetRef;
@@ -123,7 +123,8 @@ namespace Funke::BuiltInComponentRegistrationInternal {
 			desc.Set = [](Entity& e, const PropertyValue& v) {
 				// Re-read on assignment so a file replaced moments ago is picked up.
 				MeshLibrary::Invalidate(v.UIntValue);
-				e.GetComponent<MeshRendererComponent>().CustomMesh = v.UIntValue;
+				auto& renderer = e.GetComponent<MeshRendererComponent>();
+				renderer.CustomMesh = v.UIntValue;
 			};
 			return desc;
 		}
@@ -295,6 +296,7 @@ namespace Funke::BuiltInComponentRegistrationInternal {
 			if (c.Material != 0) {
 				v.AddMember("material", Json::Value(std::to_string(c.Material)));
 			}
+			c.MaterialOverrides.Serialize(v);
 			v.AddMember("color", UIColorToJson(c.Color));
 			v.AddMember("lit", Json::Value(c.Lit));
 			v.AddMember("castShadows", Json::Value(c.CastShadows));
@@ -307,6 +309,7 @@ namespace Funke::BuiltInComponentRegistrationInternal {
 			c.CustomMesh = ReadGuid(v, "customMesh");
 			c.Color = ReadColor(v, "color", d.Color);
 			c.Material = ReadGuid(v, "material");
+			c.MaterialOverrides.Deserialize(v, c.CustomMesh);
 			c.Lit = ReadBool(v, "lit", d.Lit);
 			c.CastShadows = ReadBool(v, "castShadows", d.CastShadows);
 		};

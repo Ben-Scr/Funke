@@ -2,6 +2,7 @@
 
 #include "Core/Assert.hpp"
 #include "Core/Window.hpp"
+#include "Core/PlatformDetection.hpp"
 #include "Gui/ImGuiImplWebGPU.hpp"
 #include "Packages/PackageImGuiBridge.hpp"
 
@@ -49,8 +50,10 @@ namespace Funke::EditorRuntime::ImGuiContextSetup {
 		// ImGui's per-frame UpdatePlatformWindows traversal that the
 		// renderer side is ready to drive secondary viewports;
 		// imgui_impl_sdl3 sets PlatformHasViewports in its own Init.
+#if FNK_PLATFORM_DESKTOP
 		io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
 		io.BackendFlags |= ImGuiBackendFlags_RendererHasViewports;
+#endif
 		// Tell ImGui that secondary viewports have OS-provided decoration,
 		// so it should NOT draw its own titlebar/close-button on top of
 		// the native one (the chrome our engine asserts via
@@ -99,7 +102,9 @@ namespace Funke::EditorRuntime::ImGuiContextSetup {
 		// is up. RegisterMultiViewportHandlers binds Renderer_RenderWindow
 		// / SwapBuffers etc. to platform_io. imgui_impl_sdl3 registered its
 		// platform-side handlers in Init when ViewportsEnable is set.
+#if FNK_PLATFORM_DESKTOP
 		ImGuiImplWebGPU::RegisterMultiViewportHandlers();
+#endif
 	}
 
 	float CaptureDpiScale(SDL_Window* window) {

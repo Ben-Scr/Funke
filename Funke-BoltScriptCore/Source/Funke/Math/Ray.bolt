@@ -1,0 +1,35 @@
+import System
+import Math
+namespace Funke;
+
+public struct Ray {
+public:
+    Ray() {}
+    Ray(Vector3 origin, Vector3 direction) {
+        Origin = origin;
+        Direction = direction.LengthSquared() > 0.0f ? direction.Normalized() : Vector3(0.0f, 0.0f, -1f);
+    }
+    Vector3 Origin;
+    Vector3 Direction;
+    Vector3 GetPoint(float distance) { return Origin + Direction * distance; }
+    bool TryIntersectSphere(Vector3 center, float radius, float& distance) {
+        Vector3 unit;
+        distance = 0;
+        if (!Mathf.FkFinite(radius) || radius < 0) throw System.ArgumentOutOfRangeException("radius");
+        Vector3.FkValidateFinite(center, "center");
+        if (!Vector3.FkIsFinite(Origin) || !Vector3.TryNormalize(Direction, unit)) return false;
+        double x = (double)center.X - Origin.X, y = (double)center.Y - Origin.Y, z = (double)center.Z - Origin.Z;
+        double radiusSquared = (double)radius * radius;
+        if (x * x + y * y + z * z <= radiusSquared) return true;
+        double along = x * unit.X + y * unit.Y + z * unit.Z;
+        if (along < 0) return false;
+        double dx = x - along * unit.X, dy = y - along * unit.Y, dz = z - along * unit.Z;
+        double chordSquared = radiusSquared - (dx * dx + dy * dy + dz * dz);
+        if (chordSquared < 0) return false;
+        double hit = Math.Max<double>(0, along - Math.Sqrt<double>(chordSquared));
+        if (hit > 3.402823466e38f) return false;
+        distance = (float)hit;
+        return true;
+    }
+    string ToString() { return "Ray(origin " + Origin.ToString() + ", direction " + Direction.ToString() + ")"; }
+}

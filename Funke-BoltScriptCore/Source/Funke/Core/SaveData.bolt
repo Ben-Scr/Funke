@@ -1,0 +1,96 @@
+import System
+import System.Text.Json
+import Bolt.Runtime
+namespace Funke;
+
+public static class SaveData {
+private:
+    static long FileOp(int op, string slot, string data = "") {
+        FunkeText.Put(slot + data);
+        long result = Reinterpret<long>(FkSaveFile((ulong)op, (ulong)slot.ByteLength));
+        if (result == -2l) throw ArgumentException("Invalid save slot name.");
+        if (result == -3l) throw InvalidOperationException("Could not access save file.");
+        return result;
+    }
+    static void WriteVersion(string slot, string payload, int version) {
+        string envelope = "{\"$funkeSave\":1,\"schemaVersion\":" + (string)version + ",\"payload\":" + payload + "}";
+        FileOp(2, slot, envelope);
+    }
+    static bool HasEnvelope(ValueTree tree, int root) {
+        if (tree.Kind(root) != 7) return false;
+        string[] keys = tree.Keys(root);
+        for (int i = 0; i < keys.Length; i++) if (keys[i] == "$funkeSave") return true;
+        return false;
+    }
+    static int ReadVersion(ValueTree tree, int node) {
+        if (tree.Kind(node) == 2) return (int)tree.Integer(node);
+        if (tree.Kind(node) == 3) return (int)tree.Natural(node);
+        throw InvalidOperationException("Invalid save schema version.");
+    }
+public:
+    static void Save<T>(string slot, T value) { FileOp(2, slot, Json.Serialize<T>(value)); }
+    static bool TryLoad<T>(string slot, T?& value) {
+        value = null;
+        if (!Exists(slot)) return false;
+        try {
+            long size = FileOp(1, slot);
+            if (size < 0l) return false;
+            value = Json.Deserialize<T>(FunkeText.Read((ulong)size));
+            return value != null;
+        } catch (Exception& ex) { Log.Error(ex.Message); return false; }
+    }
+    static T Load<T>(string slot, T fallback) {
+        T? value;
+        if (TryLoad<T>(slot, value)) return value.Value;
+        return fallback;
+    }
+    static void SaveVersioned<T>(string slot, T value, int schemaVersion) {
+        if (schemaVersion < 0) throw ArgumentOutOfRangeException("schemaVersion");
+        WriteVersion(slot, Json.Serialize<T>(value), schemaVersion);
+    }
+    static bool TryLoadVersioned<T>(string slot, int currentVersion, T?& value, string?& error,
+            Func<int, ValueTree, ValueTree>? migrate = null, Func<T, bool>? validate = null,
+            int? unversionedVersion = null, bool persistMigration = false) {
+        if (currentVersion < 0 || (unversionedVersion != null && unversionedVersion.Value < 0))
+            throw ArgumentOutOfRangeException("schema version");
+        value = null;
+        error = null;
+        if (!Exists(slot)) return false;
+        try {
+            long size = FileOp(1, slot);
+            if (size < 0l) return false;
+            string raw = FunkeText.Read((ulong)size);
+            ValueTree tree = System.Text.Json.Internal.JsonText.Parse(raw.ToUtf8());
+            int root = tree.Root();
+            bool legacy = !HasEnvelope(tree, root);
+            int version = 0;
+            if (legacy) {
+                if (unversionedVersion == null) throw InvalidOperationException("An explicit version is required for unversioned saves.");
+                version = unversionedVersion.Value;
+            } else {
+                if (ReadVersion(tree, tree.Member(root, "$funkeSave")) != 1) throw InvalidOperationException("Unsupported save envelope version.");
+                version = ReadVersion(tree, tree.Member(root, "schemaVersion"));
+                tree.SetRoot(tree.Member(root, "payload"));
+            }
+            if (version < 0 || version > currentVersion) throw InvalidOperationException("Unsupported save schema version.");
+            bool changed = legacy || version != currentVersion;
+            while (version < currentVersion) {
+                if (migrate == null) throw InvalidOperationException("A save migration is required.");
+                tree = migrate.Value.Invoke(version, tree);
+                version++;
+            }
+            T candidate = Json.Deserialize<T>(string.FromUtf8(System.Text.Json.Internal.JsonText.Encode(tree)));
+            if (validate != null && !validate.Value.Invoke(candidate)) throw InvalidOperationException("Save validation failed.");
+            if (persistMigration && changed) WriteVersion(slot, string.FromUtf8(System.Text.Json.Internal.JsonText.Encode(tree)), currentVersion);
+            value = candidate;
+            return true;
+        } catch (Exception& ex) { error = ex.Message; return false; }
+    }
+    static bool Exists(string slot) { return FileOp(0, slot) == 1l; }
+    static void Delete(string slot) { FileOp(3, slot); }
+    static string[] GetSlots() {
+        long size = FileOp(4, "");
+        return Json.Deserialize<string[]>(FunkeText.Read((ulong)size));
+    }
+}
+

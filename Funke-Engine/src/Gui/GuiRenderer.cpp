@@ -1,4 +1,5 @@
 #include "pch.hpp"
+#include "Gui/WidgetLocalization.hpp"
 #include "Profiling/GpuTimer.hpp"
 #include "Profiling/Profiler.hpp"
 #include "Gui/GuiRenderer.hpp"
@@ -1054,7 +1055,7 @@ namespace Funke {
 				if (dropdownFont && dropdownFont->IsLoaded()) {
 					TextDrawCmd cmd;
 					cmd.FontPtr = dropdownFont;
-					cmd.Text = std::string_view(dd.Options[i]);
+					cmd.Text = WidgetLocalization::Option(registry, entity, dd, static_cast<size_t>(i), Application::GetIsPlaying());
 					cmd.X = rowBL.x + 8.0f * uniformScale;
 					cmd.Y = rowBL.y + rowSize.y * 0.5f - fontPx * 0.35f * uniformScale;
 					cmd.Scale = textScale;

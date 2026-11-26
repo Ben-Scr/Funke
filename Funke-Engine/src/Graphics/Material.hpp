@@ -20,9 +20,11 @@ namespace Funke {
 		Opaque = 0,
 		// Alpha blended with what is behind (BaseColor alpha * texture alpha * renderer Color alpha); drawn after
 		// opaque meshes, sorted back to front by object, without writing depth.
-		Transparent = 1
+		Transparent = 1,
+		// Binary alpha test in both the color and shadow passes; surviving pixels write depth.
+		Cutout = 2
 	};
-	inline constexpr int k_MaterialSurfaceCount = 2;
+	inline constexpr int k_MaterialSurfaceCount = 3;
 
 	// Value of a custom shader property. Texture properties keep the texture asset GUID (0 = the shader's default).
 	struct FUNKE_API MaterialPropertyValue {
@@ -39,6 +41,17 @@ namespace Funke {
 		Color BaseColor{ 1.0f, 1.0f, 1.0f, 1.0f };
 		// Texture asset GUID multiplied into BaseColor; 0 = none.
 		uint64_t BaseColorTexture = 0;
+		uint64_t NormalTexture = 0;
+		// glTF packing: green = roughness, blue = metallic; sampled as linear data.
+		uint64_t MetallicRoughnessTexture = 0;
+		uint64_t EmissiveTexture = 0;
+		uint64_t OcclusionTexture = 0;
+		float NormalScale = 1.0f;
+		float OcclusionStrength = 1.0f;
+		float AlphaCutoff = 0.5f;
+		bool DoubleSided = false;
+		// glTF factors are linear. Legacy authored Funke colors retain their sRGB interpretation.
+		bool LinearColorFactors = false;
 		float Metallic = 0.0f;
 		float Roughness = 0.5f;
 		Color EmissiveColor{ 0.0f, 0.0f, 0.0f, 1.0f };

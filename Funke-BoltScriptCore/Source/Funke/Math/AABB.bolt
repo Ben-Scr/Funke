@@ -1,0 +1,35 @@
+import System
+namespace Funke;
+
+public struct AABB {
+public:
+    Vector2 Min, Max;
+    AABB(Vector2 min, Vector2 max) : Min(min), Max(max) {}
+    static AABB FromCenterSize(Vector2 center, Vector2 size) {
+        Vector2 half = size * 0.5f;
+        return AABB(center - half, center + half);
+    }
+    Vector2 Center => (Min + Max) * 0.5f;
+    Vector2 Size => Max - Min;
+    Vector2 Extents => Size * 0.5f;
+    float Width => Max.X - Min.X;
+    float Height => Max.Y - Min.Y;
+    bool Contains(Vector2 point) {
+        return point.X >= Min.X && point.X <= Max.X && point.Y >= Min.Y && point.Y <= Max.Y;
+    }
+    bool Intersects(AABB other) {
+        return Min.X <= other.Max.X && Max.X >= other.Min.X && Min.Y <= other.Max.Y && Max.Y >= other.Min.Y;
+    }
+    bool Equals(AABB other) { return Min == other.Min && Max == other.Max; }
+    static bool operator ==(AABB a, AABB b) { return a.Equals(b); }
+    static bool operator !=(AABB a, AABB b) { return !a.Equals(b); }
+    int GetHashCode() {
+        int hash = -2128831035;
+        hash = FkNumberFormat.Hash(hash, Min.X);
+        hash = FkNumberFormat.Hash(hash, Min.Y);
+        hash = FkNumberFormat.Hash(hash, Max.X);
+        hash = FkNumberFormat.Hash(hash, Max.Y);
+        return hash;
+    }
+    string ToString() { return "AABB(Min: " + Min.ToString() + ", Max: " + Max.ToString() + ")"; }
+}

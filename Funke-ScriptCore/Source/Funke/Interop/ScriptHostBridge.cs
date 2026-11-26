@@ -133,13 +133,14 @@ internal unsafe struct ManagedCallbacksStruct
     public delegate* unmanaged<ulong*, int, void> NotifyEntitiesDestroyed;
     public delegate* unmanaged<ulong*, int, uint, void> NotifyComponentsRemoved;
     public delegate* unmanaged<ulong*, ulong*, int*, int, void> AssetLoadsCompleted;
+    public delegate* unmanaged<int, byte*, int, byte*, int, void> PlatformEvent;
 }
 
 /// <summary>Guards the native/managed function-pointer tables against layout drift before either is touched.</summary>
 internal static class InteropHandshake
 {
     // Bump together with k_ScriptInteropLayoutVersion (ScriptGlue.hpp) on any add/remove/reorder in either table.
-    internal const int LayoutVersion = 55;
+    internal const int LayoutVersion = 63;
 
     // Codes are mirrored in ScriptEngine::LoadCoreAssembly.
     internal const int Ok = 0;
@@ -379,6 +380,7 @@ internal static class ScriptHostBridge
             managedCallbacks->NotifyComponentRemoved = &ScriptInstanceManager.NotifyComponentRemoved;
             managedCallbacks->NotifyEntitiesDestroyed = &ScriptInstanceManager.NotifyEntitiesDestroyed;
             managedCallbacks->NotifyComponentsRemoved = &ScriptInstanceManager.NotifyComponentsRemoved;
+            managedCallbacks->PlatformEvent = &ScriptInstanceManager.PlatformEvent;
             managedCallbacks->AssetLoadsCompleted = &ScriptInstanceManager.AssetLoadsCompleted;
 
             ScriptInstanceManager.SetCoreAssembly(typeof(ScriptHostBridge).Assembly);

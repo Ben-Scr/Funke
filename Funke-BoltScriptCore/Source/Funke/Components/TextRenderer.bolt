@@ -1,0 +1,28 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public class TextRenderer : Component {
+public:
+    protected override ulong FkType() { return 43ul; }
+    bool Bold { get { return (FkTextRenderer_GetBold(ID, 0ul) != 0ul); } set { FkTextRenderer_SetBold(ID, (value ? 1ul : 0ul)); } }
+    bool Italic { get { return (FkTextRenderer_GetItalic(ID, 0ul) != 0ul); } set { FkTextRenderer_SetItalic(ID, (value ? 1ul : 0ul)); } }
+    bool RichText { get { return (FkTextRenderer_GetRichText(ID, 0ul) != 0ul); } set { FkTextRenderer_SetRichText(ID, (value ? 1ul : 0ul)); } }
+    string Text { get { return FunkeText.Read(FkTextRenderer_GetTextBuffer(ID, 0ul)); } set { FkTextRenderer_SetText(ID, FunkeText.Put(value)); } }
+    float FontSize { get { return Reinterpret<float>((uint)FkTextRenderer_GetFontSize(ID, 0ul)); } set { FkTextRenderer_SetFontSize(ID, (ulong)Reinterpret<uint>(value)); } }
+    float LetterSpacing { get { return Reinterpret<float>((uint)FkTextRenderer_GetLetterSpacing(ID, 0ul)); } set { FkTextRenderer_SetLetterSpacing(ID, (ulong)Reinterpret<uint>(value)); } }
+    float LineSpacing { get { return Reinterpret<float>((uint)FkTextRenderer_GetLineSpacing(ID, 0ul)); } set { FkTextRenderer_SetLineSpacing(ID, (ulong)Reinterpret<uint>(value)); } }
+    TextAlignment Alignment { get { return (TextAlignment)FkTextRenderer_GetHAlign(ID, 0ul); } set { FkTextRenderer_SetHAlign(ID, (ulong)value); } }
+    TextVerticalAlignment VerticalAlignment { get { return (TextVerticalAlignment)FkTextRenderer_GetVAlign(ID, 0ul); } set { FkTextRenderer_SetVAlign(ID, (ulong)value); } }
+    TextWrapMode WrapMode { get { return (TextWrapMode)FkTextRenderer_GetWrapMode(ID, 0ul); } set { FkTextRenderer_SetWrapMode(ID, (ulong)value); } }
+    int SortingOrder { get { return Reinterpret<int>((uint)(FkTextRenderer_GetSortingOrder(ID, 0ul) & 4294967295ul)); } set { FkTextRenderer_SetSortingOrder(ID, (ulong)Reinterpret<uint>(value)); } }
+    int SortingLayer { get { return Reinterpret<int>((uint)(FkTextRenderer_GetSortingLayer(ID, 0ul) & 4294967295ul)); } set { FkTextRenderer_SetSortingLayer(ID, (ulong)Reinterpret<uint>(value)); } }
+    Vector4 Color { get { return FunkeApiTypes.DecodeVector4(FkTextRenderer_GetColor(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkTextRenderer_SetColor(ID, value.LowBits()); } }
+    Funke.Font? Font { get { return Funke.Font.FromAssetUUID(FkTextRenderer_GetFont(ID, 0ul)); } set { ulong guid = 0ul; if (value != null) guid = value.Value.UUID; FkTextRenderer_SetFont(ID, guid); } }
+    float OutlineWidth { get { return Reinterpret<float>((uint)FkGetTextRenderer_OutlineWidth(ID, 0ul)); } set { FkSetTextRenderer_OutlineWidth(ID, (ulong)Reinterpret<uint>(value)); } }
+    Color OutlineColor { get { return FunkeApiTypes.DecodeColor(FkGetTextRenderer_OutlineColor(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkSetTextRenderer_OutlineColor(ID, value.LowBits()); } }
+    Vector2 ShadowOffset { get { return Vector2.FromBits(FkGetTextRenderer_ShadowOffset(ID, 0ul)); } set { FkSetTextRenderer_ShadowOffset(ID, value.Bits()); } }
+    Color ShadowColor { get { return FunkeApiTypes.DecodeColor(FkGetTextRenderer_ShadowColor(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkSetTextRenderer_ShadowColor(ID, value.LowBits()); } }
+}

@@ -39,6 +39,7 @@
 #if FUNKE_WITH_3D
 #include "Components/General/Transform3DComponent.hpp"
 #include "Components/Graphics/Camera3DComponent.hpp"
+#include "Components/Graphics/CameraFollowRigComponent.hpp"
 #include "Components/Graphics/DirectionalLightComponent.hpp"
 #include "Components/Graphics/MeshRendererComponent.hpp"
 #include "Components/Graphics/ParticleSystem3DComponent.hpp"
@@ -323,6 +324,14 @@ namespace Funke {
 			};
 			registry.Register<ComponentOrderComponent>(info);
 		}
+
+#if FUNKE_WITH_3D
+		{
+			Internal::ModuleRegistrationScope module3D(registry, EngineModule::ThreeD);
+			Internal::RegisterCameraRig(registry);
+			DeclareDependency<CameraFollowRigComponent, Camera3DComponent>(registry);
+		}
+#endif
 
 		// ── Module conflicts ────────────────────────────────────────
 		// 2D and 3D components describe different worlds (Transform2D vs Transform3D, Box2D vs Jolt): one entity

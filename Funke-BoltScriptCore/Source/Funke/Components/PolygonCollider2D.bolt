@@ -1,0 +1,72 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public class PolygonCollider2D : Collider2D {
+public:
+    [ReadOnly] public override ulong FkShapeKind() { return 2ul; }
+    protected override ulong FkType() { return 28ul; }
+    Vector2 Center { get { return Vector2.FromBits(FkPolygonCollider2D_GetCenter(ID, 0ul)); } set { FkPolygonCollider2D_SetCenter(ID, value.Bits()); } }
+    Vector2 Size { get { return Vector2.FromBits(FkPolygonCollider2D_GetSize(ID, 0ul)); } set { FkPolygonCollider2D_SetSize(ID, value.Bits()); } }
+    int VertexCount => Reinterpret<int>((uint)(FkPolygonCollider2D_GetVertexCount(ID, 0ul) & 4294967295ul));
+    int PathCount => Reinterpret<int>((uint)(FkPolygonCollider2D_GetPathCount(ID, 0ul) & 4294967295ul));
+    bool Enabled { set { FkPolygonCollider2D_SetEnabled(ID, (value ? 1ul : 0ul)); } }
+    void SetSides(int sides) { FkPolygonCollider2D_SetSides(ID, (ulong)Reinterpret<uint>(sides)); }
+    static const int MinVertices = 3;
+    static const int MaxVertices = 8;
+    static const int MaxPathPoints = 16384;
+    void SetPoints(Vector2[] points) { SetPoints(System.ReadOnlySpan<Vector2>(points)); }
+    void SetPoints(System.ReadOnlySpan<Vector2> points) {
+        if (points.Length < MinVertices || points.Length > MaxPathPoints) {
+            Log.Error("PolygonCollider2D.SetPoints requires 3..16384 points.");
+            return;
+        }
+        FkPolygonRequest req;
+        req.Operation = 0;
+        req.Count = points.Length;
+        Vector2[] owned = points.ToArray();
+        FkPolygonPoints(ID, &req, (void*)&owned[0]);
+    }
+    Vector2[] GetPath(int index) {
+        FkPolygonRequest req;
+        req.Operation = 1;
+        req.Index = index;
+        int count = (int)FkPolygonPoints(ID, &req, null);
+        Vector2[] result = new Vector2[count];
+        if (count > 0) {
+            req.Count = count;
+            FkPolygonPoints(ID, &req, (void*)&result[0]);
+        }
+        return result;
+    }
+    void SetPaths(Vector2[][] paths) {
+        int total = 0;
+        int[] counts = new int[paths.Length];
+        for (int i = 0; i < paths.Length; i++) {
+            counts[i] = paths[i].Length;
+            total += counts[i];
+        }
+        Vector2[] points = new Vector2[total];
+        int offset = 0;
+        for (int i = 0; i < paths.Length; i++)
+            for (int j = 0; j < counts[i]; j++) points[offset++] = paths[i][j];
+        FkPolygonRequest req;
+        req.Operation = 2;
+        req.Count = total;
+        req.Paths = paths.Length;
+        if (paths.Length > 0) req.Counts = &counts[0];
+        void* data = null;
+        if (total > 0) data = &points[0];
+        FkPolygonPoints(ID, &req, data);
+    }
+    int GetWorldPoints(Vector2[]& destination) { return GetWorldPoints(System.Span<Vector2>(destination)); }
+    int GetWorldPoints(System.Span<Vector2> destination) {
+        if (destination.Length == 0) return 0;
+        FkPolygonRequest req;
+        req.Operation = 3;
+        req.Count = destination.Length < MaxVertices ? destination.Length : MaxVertices;
+        return (int)FkPolygonPoints(ID, &req, (void*)&destination[0]);
+    }
+}

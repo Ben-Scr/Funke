@@ -9,7 +9,10 @@
 
 #include <chrono>
 #include <cstring>
+#include <cstdlib>
 #include <filesystem>
+#include <fstream>
+#include <iomanip>
 #include <memory>
 #include <string>
 #include <thread>
@@ -62,6 +65,64 @@ namespace {
 		}
 		~AsyncAudioScope() { AudioManager::Shutdown(); }
 	};
+}
+
+TEST_CASE("Async asset release and cancellation preserve only live observers") {
+	AsyncAssetScope assets;
+	const auto first = AssetLoader::LoadAsync(assets.Guid);
+	const auto cancelled = AssetLoader::LoadAsync(assets.Guid);
+	const auto survivor = AssetLoader::LoadAsync(assets.Guid);
+	AssetLoader::Release(first);
+	AssetLoader::Release(first);
+	CHECK(AssetLoader::Cancel(cancelled));
+	CHECK_FALSE(AssetLoader::Cancel(cancelled));
+	REQUIRE(assets.Await(survivor).Succeeded());
+	CHECK(AssetLoader::GetResult(cancelled).Status == AssetLoadStatus::Cancelled);
+	AssetLoader::Release(cancelled);
+	AssetLoader::Release(survivor);
+	MeshLibrary::Clear();
+	const auto abandoned = AssetLoader::LoadAsync(assets.Guid);
+	AssetLoader::Release(abandoned);
+	AssetLoader::Pump();
+	CHECK(MeshLibrary::FindLoaded(assets.Guid) == nullptr);
+	const auto decoding = AssetLoader::LoadAsync(assets.Guid);
+	AssetLoader::Pump(0.0, 0);
+	AssetLoader::Release(decoding);
+	AssetLoader::Pump();
+	CHECK(MeshLibrary::FindLoaded(assets.Guid) == nullptr);
+	const auto retry = AssetLoader::LoadAsync(assets.Guid);
+	REQUIRE(assets.Await(retry).Succeeded());
+}
+
+TEST_CASE("Async asset pending queue benchmark (opt-in)") {
+	const char* output = std::getenv("FUNKE_ASSET_QUEUE_BENCH_OUTPUT");
+	if (!output || !*output) return;
+	std::ofstream csv(output);
+	REQUIRE(csv.is_open());
+	csv << "requests,sample,pump_ms\n" << std::setprecision(9);
+	for (int count : { 1, 32, 256 }) {
+		AsyncAssetScope assets;
+		std::vector<uint64_t> requests;
+		for (int index = 0; index < count; ++index) {
+			const auto path = (assets.Root / (std::to_string(index) + ".obj")).string();
+			REQUIRE(File::WriteAllText(path, k_TriangleObj));
+			const uint64_t guid = assets.Guid + index + 1;
+			AssetRegistry::RegisterBuiltInAsset(path, guid, AssetKind::Mesh);
+			requests.push_back(AssetLoader::LoadAsync(guid));
+			REQUIRE(requests.back() != 0);
+		}
+		AssetLoader::Pump(0.0, 0);
+		for (int sample = -5; sample < 31; ++sample) {
+			const auto begin = std::chrono::steady_clock::now();
+			for (int iteration = 0; iteration < 200; ++iteration) AssetLoader::Pump(0.0, 0);
+			const auto end = std::chrono::steady_clock::now();
+			for (uint64_t request : requests)
+				REQUIRE(AssetLoader::GetResult(request).Status == AssetLoadStatus::Pending);
+			if (sample >= 0) csv << count << ',' << sample << ','
+				<< std::chrono::duration<double, std::milli>(end - begin).count() / 200.0 << '\n';
+		}
+		for (uint64_t request : requests) REQUIRE(assets.Await(request).Succeeded());
+	}
 }
 
 TEST_CASE("Async asset loading publishes decoded meshes only when pumped") {

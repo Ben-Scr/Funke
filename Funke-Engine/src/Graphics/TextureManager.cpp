@@ -230,6 +230,41 @@ namespace Funke {
 		return TextureHandle{ idx, slot.Generation };
 	}
 
+	TextureHandle TextureManager::PublishUploadedTexture(const std::string& path, Texture2D&& texture) {
+		if (!s_IsInitialized || path.empty() || !texture.IsUploadComplete()) return {};
+		const auto filter = texture.GetFilter();
+		const auto u = texture.GetWrapU(), v = texture.GetWrapV();
+		const auto existing = FindTextureByPath(path, filter, u, v);
+		if (IsValid(existing)) return existing;
+		uint16_t idx;
+		if (!s_FreeIndices.empty()) {
+			idx = s_FreeIndices.front();
+			s_FreeIndices.pop();
+		}
+		else {
+			// TextureHandle::index is uint16_t — refuse rather than truncate and corrupt a live slot.
+			if (s_Textures.size() >= 0xFFFFu) {
+				FNK_CORE_ERROR_TAG("TextureManager", "Texture slot capacity exceeded (>= 65535); cannot load '{}'", path);
+				return TextureHandle{};
+			}
+			idx = static_cast<uint16_t>(s_Textures.size());
+			s_Textures.emplace_back();
+		}
+		TextureEntry& slot = s_Textures[idx];
+		texture.m_SourcePath = path;
+		slot.Texture = std::move(texture);
+		slot.Name = path;
+		slot.SamplerFilter = filter;
+		slot.WrapU = u;
+		slot.WrapV = v;
+		slot.IsValid = true;
+		g_PathIndex[HashLookupKey(path, filter, u, v)] =
+			static_cast<std::uint32_t>(idx) + 1u;
+		EnsureCanonicalKeyCapacity(s_Textures.size());
+		g_CanonicalKeys[idx] = CanonicalPathKey(path);
+		return TextureHandle{ idx, slot.Generation };
+	}
+
 	TextureHandle TextureManager::LoadTextureByUUID(uint64_t assetId,
 		Filter filter, Wrap u, Wrap v)
 	{
@@ -703,7 +738,7 @@ namespace Funke {
 		static constexpr const char* k_DefaultPaths[9] = {
 			"Textures/Default/Square.png",            // Square
 			"Textures/Default/Pixel.png",             // Pixel
-			"Textures/Default/circle.png",            // Circle
+			"Textures/Default/Circle.png",            // Circle (case-sensitive on Web/Linux)
 			"Textures/Default/Capsule.png",           // Capsule
 			"Textures/Default/IsometricDiamond.png",  // IsometricDiamond
 			"Textures/Default/HexagonFlatTop.png",    // HexagonFlatTop

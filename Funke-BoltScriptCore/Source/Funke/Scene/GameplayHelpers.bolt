@@ -1,0 +1,138 @@
+import Math
+import System
+namespace Funke;
+
+public static class RectTransformUtility {
+public:
+    static Vector2 GetMouseLocalPoint(Funke.UI.RectTransform targetParent) {
+        return ScreenPointToLocalPointInRectangle(targetParent, Input.MousePosition);
+    }
+    static Vector2 ScreenPointToLocalPointInRectangle(Funke.UI.RectTransform targetParent, Vector2 screenPoint) {
+        return Vector2(screenPoint.X - 960.0f, 540.0f - screenPoint.Y) - targetParent.AnchoredPosition;
+    }
+}
+
+public class CameraFollow3D {
+private:
+    Vector3 position;
+    bool initialized;
+public:
+    Vector3 Offset = Vector3(0.0f, 2.0f, 5.0f);
+    float Damping = 8.0f;
+    Vector3 Position => position;
+    bool IsInitialized => initialized;
+    void Reset() { initialized = false; }
+    Vector3 Step(Vector3 targetPosition, float deltaTime) {
+        if (!Vector3.FkIsFinite(targetPosition) || !Vector3.FkIsFinite(Offset) ||
+            !Mathf.FkFinite(deltaTime) || deltaTime < 0.0f || !Mathf.FkFinite(Damping) || Damping < 0.0f)
+            throw ArgumentOutOfRangeException("Invalid camera follow target, damping or frame time.");
+        Vector3 desired = targetPosition + Offset;
+        if (!Vector3.FkIsFinite(desired)) throw ArgumentOutOfRangeException("targetPosition");
+        if (!initialized) {
+            position = desired;
+            initialized = true;
+        } else if (deltaTime > 0.0f) {
+            double blend = Damping == 0.0f ? 1.0 : 1.0 - Math.Exp<double>(-(double)Damping * (double)deltaTime);
+            position = Vector3((float)((double)position.X * (1.0 - blend) + (double)desired.X * blend),
+                               (float)((double)position.Y * (1.0 - blend) + (double)desired.Y * blend),
+                               (float)((double)position.Z * (1.0 - blend) + (double)desired.Z * blend));
+        }
+        return position;
+    }
+    Vector3 StepOrbit(Vector3 targetPosition, float yaw, float pitch, float distance, float deltaTime) {
+        if (!Mathf.FkFinite(yaw) || !Mathf.FkFinite(pitch) || !Mathf.FkFinite(distance) || distance <= 0.0f ||
+            !Vector3.FkIsFinite(targetPosition) || !Mathf.FkFinite(Damping) || Damping < 0.0f || !Mathf.FkFinite(deltaTime) || deltaTime < 0.0f)
+            throw ArgumentOutOfRangeException("Invalid orbit target, angles, distance or frame time.");
+        Offset = Quaternion.Euler(Mathf.Clamp(pitch, -89.0f, 89.0f), yaw - (yaw < 0.0f ? Mathf.Ceil(yaw / 360.0f) : Mathf.Floor(yaw / 360.0f)) * 360.0f, 0.0f) * (Vector3.Back * distance);
+        return Step(targetPosition, deltaTime);
+    }
+    Quaternion LookAt(Vector3 targetPosition) {
+        if (!Vector3.FkIsFinite(targetPosition)) throw ArgumentOutOfRangeException("targetPosition");
+        return Quaternion.LookRotation(targetPosition - position, Vector3.Up);
+    }
+}
+
+public class CameraFollow2D {
+private:
+    CameraFollow3D follow;
+public:
+    Vector2 Offset;
+    float Damping { get { return follow.Damping; } set { follow.Damping = value; } }
+    Vector2 Position => follow.Position.XY;
+    bool IsInitialized => follow.IsInitialized;
+    void Reset() { follow.Reset(); }
+    Vector2 Step(Vector2 targetPosition, float deltaTime) {
+        follow.Offset = Vector3(Offset.X, Offset.Y, 0.0f);
+        return follow.Step(Vector3(targetPosition.X, targetPosition.Y, 0.0f), deltaTime).XY;
+    }
+}
+
+public static class CameraUtility {
+public:
+    static Vector2 GetWorldMousePosition2D() {
+        Camera2D? camera = Camera2D.Main;
+        if (camera == null) throw InvalidOperationException("Main 2D camera is unavailable.");
+        return GetWorldMousePosition2D(camera.Value);
+    }
+    static Vector2 GetWorldMousePosition2D(Camera2D camera) { return camera.ScreenToWorld(Input.MousePosition); }
+    static Ray GetMouseRay3D() {
+        Camera3D? camera = Camera3D.Main;
+        if (camera == null) throw InvalidOperationException("Main 3D camera is unavailable.");
+        return GetMouseRay3D(camera.Value);
+    }
+    static Ray GetMouseRay3D(Camera3D camera) { 
+        Ray ray;
+        if (!camera.TryScreenPointToRay(Input.MousePosition, ray)) throw InvalidOperationException("Camera cannot project the mouse position.");
+        return ray;
+    }
+    static bool TryScreenPointToWorld3D(Camera3D? camera, Vector2 screenPoint, Plane plane, Vector3& point) {
+        point = default;
+        if (camera == null) return false;
+        Ray ray;
+        float distance = 0.0f;
+        if (!camera.Value.TryScreenPointToRay(screenPoint, ray) || !plane.TryRaycast(ray, distance)) return false;
+        Vector3 candidate = ray.GetPoint(distance);
+        if (!Vector3.FkIsFinite(candidate)) return false;
+        point = candidate;
+        return true;
+    }
+    static bool TryGetMouseWorldPosition3D(Camera3D? camera, Plane plane, Vector3& point) {
+        return TryScreenPointToWorld3D(camera, Input.MousePosition, plane, point);
+    }
+    static bool TryGetMouseWorldPosition3D(Plane plane, Vector3& point) { return TryGetMouseWorldPosition3D(Camera3D.Main, plane, point); }
+    static bool TryPickMouse3D(Camera3D? camera, Funke.Physics.RaycastHit3D& hit, float maxDistance = 1000.0f, PhysicsLayer? layers = null, bool includeTriggers = false) {
+        hit = default;
+        if (camera == null) return false;
+        Ray ray;
+        if (!camera.Value.TryScreenPointToRay(Input.MousePosition, ray)) return false;
+        PhysicsLayer mask = layers != null ? layers.Value : PhysicsLayer.All;
+        return Funke.Physics.Physics3D.Raycast(ray, hit, mask, maxDistance, includeTriggers);
+    }
+    static bool TryPickMouse3D(Funke.Physics.RaycastHit3D& hit, float maxDistance = 1000.0f, PhysicsLayer? layers = null, bool includeTriggers = false) {
+        return TryPickMouse3D(Camera3D.Main, hit, maxDistance, layers, includeTriggers);
+    }
+    static Vector3 GetWorldMousePosition3D(Camera3D camera) {
+        Funke.Physics.RaycastHit3D hit;
+        if (!TryPickMouse3D(camera, hit)) throw InvalidOperationException("No 3D collider under the mouse.");
+        return hit.Point;
+    }
+    static Vector3 GetWorldMousePosition3D() {
+        Funke.Physics.RaycastHit3D hit;
+        if (!TryPickMouse3D(hit)) throw InvalidOperationException("No main camera or 3D collider under the mouse.");
+        return hit.Point;
+    }
+}
+
+
+public static class EntityPicker {
+public:
+    static bool TryPickEntity(Vector2 worldPoint, Entity?& entity) {
+        ulong id = 0ul;
+        entity = null;
+        if (FkSceneAccess.Call(FkNativeSlot.EntityPicker_TryPickEntity, (ulong)Reinterpret<uint>(worldPoint.X),
+            (ulong)Reinterpret<uint>(worldPoint.Y), FkNativeSlot.Pointer(&id)) == 0ul) return false;
+        entity = Entity.FromId(id);
+        return entity != null;
+    }
+    static Entity? PickEntity(Vector2 worldPoint) { Entity? found; TryPickEntity(worldPoint, found); return found; }
+}

@@ -148,6 +148,14 @@ namespace Funke {
 				const float length = glm::length(n);
 				n = length > 1e-12f ? n / length : glm::vec3(0.0f, 1.0f, 0.0f);
 				MeshVertex& out = outVertices[v];
+				glm::vec3 tangent = linear * glm::vec3(source.Tangent[0], source.Tangent[1], source.Tangent[2]);
+				tangent -= n * glm::dot(n, tangent);
+				const float tangentLength = glm::length(tangent);
+				tangent = tangentLength > 1e-12f ? tangent / tangentLength : glm::vec3(0.0f);
+				out.Tangent[0] = tangent.x;
+				out.Tangent[1] = tangent.y;
+				out.Tangent[2] = tangent.z;
+				out.Tangent[3] = tangentLength > 1e-12f ? source.Tangent[3] * (determinant < 0.0f ? -1.0f : 1.0f) : 0.0f;
 				out.Position[0] = p.x;
 				out.Position[1] = p.y;
 				out.Position[2] = p.z;

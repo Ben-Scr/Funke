@@ -14,6 +14,10 @@ on:
         description: Only rerun Linux core validation
         type: boolean
         default: false
+      fail_linux_editor_probe:
+        description: Intentionally fail the Linux editor workflow to verify independent instrumentation jobs
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -519,9 +523,12 @@ jobs:
         shell: pwsh
         run: |
           $install = Join-Path $env:RUNNER_TEMP 'Funke Binary Installation'
-          python scripts/ci/editor_bridge_test.py --cli "$install/funke.exe" --editor "$install/Funke-Editor.exe" --output "$env:RUNNER_TEMP/agent-evidence"
+          $python = (Get-Command python).Source
+          $dotnetDir = Split-Path (Get-Command dotnet).Source
+          $env:PATH = "$dotnetDir;$env:SystemRoot/System32;$env:SystemRoot"
+          & $python scripts/ci/editor_bridge_test.py --cli "$install/funke.exe" --editor "$install/Funke-Editor.exe" --output "$env:RUNNER_TEMP/agent-evidence"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python scripts/ci/agent_workflow_test.py --cli "$install/funke.exe" --editor "$install/Funke-Editor.exe" --output "$env:RUNNER_TEMP/agent-evidence" --timeout 240
+          & $python scripts/ci/agent_workflow_test.py --cli "$install/funke.exe" --editor "$install/Funke-Editor.exe" --output "$env:RUNNER_TEMP/agent-evidence" --timeout 240
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Upload standalone verification evidence
@@ -814,8 +821,12 @@ jobs:
         id: agent
         if: ${{ !inputs.linux_core_only }}
         run: |
+          if [[ "${{ inputs.fail_linux_editor_probe }}" == "true" ]]; then
+            echo "::error::Intentional editor lane failure for the sanitizer independence check"
+            exit 1
+          fi
           xvfb-run -a python3 scripts/ci/editor_bridge_test.py --cli bin/Release-linux-x86_64/Funke-CLI/funke --editor bin/Release-linux-x86_64/Funke-Editor/Funke-Editor --output "$RUNNER_TEMP/agent-evidence"
-          xvfb-run -a python3 scripts/ci/agent_workflow_test.py --cli bin/Release-linux-x86_64/Funke-CLI/funke --editor bin/Release-linux-x86_64/Funke-Editor/Funke-Editor --output "$RUNNER_TEMP/agent-evidence" --timeout 240
+          xvfb-run -a python3 scripts/ci/agent_workflow_test.py --cli bin/Release-linux-x86_64/Funke-CLI/funke --editor bin/Release-linux-x86_64/Funke-Editor/Funke-Editor --output "$RUNNER_TEMP/agent-evidence" --timeout 240 --probe-linux-startup
 
       - name: Upload Linux Agent Evidence
         if: ${{ always() && !inputs.linux_core_only }}

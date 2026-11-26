@@ -5,7 +5,41 @@
 #include <cstdint>
 #include <string>
 
+// Include Windows after Json to exercise the GetObject macro collision seen by consumers.
+#ifdef FNK_PLATFORM_WINDOWS
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <Windows.h>
+#endif
+
+// These inline JSON consumers must also compile with the Windows macros active.
+#include "Assets/AssetRegistry.hpp"
+#include "Project/EngineSdk.hpp"
+
 using namespace Funke;
+
+TEST_CASE("Json::Value object members remain accessible after Windows headers") {
+	Json::Value object = Json::Value::MakeObject();
+	object.AddMember("name", Json::Value("before"));
+	auto& members = object.GetMembers();
+	REQUIRE(members.size() == 1);
+	members.front().second = Json::Value("after");
+	const Json::Value& readOnly = object;
+	REQUIRE(readOnly.GetMembers().size() == 1);
+	CHECK(readOnly.GetMembers().front().first == "name");
+	CHECK(readOnly.GetMembers().front().second.AsStringOr() == "after");
+	CHECK(object.FindMember("name")->AsStringOr() == "after");
+}
+
+TEST_CASE("Json::Value object member reads preserve non-object values") {
+	Json::Value number(42);
+	CHECK(number.GetMembers().empty());
+	const Json::Value& readOnly = number;
+	CHECK(readOnly.GetMembers().empty());
+	CHECK(number.IsNumber());
+	CHECK(number.AsIntOr(0) == 42);
+}
 
 // Scalar constructors set the right Type and the Is* predicates agree with it.
 TEST_CASE("Json::Value scalar constructors report the matching type") {

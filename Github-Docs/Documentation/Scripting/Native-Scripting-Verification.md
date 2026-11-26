@@ -2,6 +2,27 @@
 
 The [native scripting guide](Scripting.md#native-c-scripts) describes the public headers, script template, feature boundaries, Inspector fields, CMake integration and IDE setup. This page describes their verification and records the local results from 9 November 2026. Those results apply to the tested snapshots, not to later working-tree changes or unexecuted CI jobs.
 
+## Convenience API checks: 14 November 2026
+
+The `GetEntity`, pointer `TryGetComponent`, native-script access, `GetOrAddComponent` and snippet additions were checked on Windows x64, MSVC 2022, Release:
+
+| Check | Result |
+|---|---|
+| Engine component, field and scaffold cases | 15 tests, 240 assertions passed |
+| Editor template and Print cases | 2 tests, 12 assertions passed |
+| Real generated script DLLs | PCH off/on; each host run passed 21 assertions and executed 31 internal API checks per `Start`, across two load cycles |
+| Compiler failure and recovery | Both PCH modes kept the previous DLL loadable after an intentional error and loaded the repaired build |
+| Snippets | All eight generated VS Code snippets expanded and compiled in each script build; custom snippet files and unchanged timestamps were preserved |
+| Public headers | Thirty object translations across ten feature configurations, plus the disabled GPU-profiler link probe, passed |
+| Editor lifecycle and persistence | Play, source marker V1 → V2 reload, native-field inspection, save, process restart and reopening passed with authored `Step = 37` |
+| Desktop export | Actual Windows Development export with bundled .NET started, logged `CONVENIENCE_V2 step=37 ok=1`, and executed `OnDestroy` |
+
+`scripts/ci/native_convenience_codegen.py` builds two object targets from `Tests/Fixtures/NativeScripts/ConvenienceCodegen.cpp`, using `/O2 /Ob2`, without whole-program optimization. Thirteen representative helpers produce the same normalized instruction streams as explicit calls. Normalization drops comments, alignment padding and compiler-local label identities; it retains instructions, call targets and branches. The checked `GetEntity` reference shares the unbound-error diagnostic and spells out the successful scene lookup. Static assertions check the unchanged size and alignment of `NativeScript` against its previous storage layout. No vtable slots or instance fields were added. Targeted force-inlining prevents extra wrapper calls in the paths where MSVC initially retained them.
+
+These checks establish no added abstraction cost for the tested optimized paths. They are not wall-clock benchmarks or guarantees for Debug, other toolchains, arbitrary component types or all call-site contexts. Existing entity lifetime bookkeeping, native-script lookup, construction, logging and mutation validation retain their own costs.
+
+The engine dependency build encountered concurrent output locks and unrelated, in-progress `Renderer3D.cpp` compile errors. The focused Engine/Editor test binaries and CLI, Editor and Runtime were then built against the already successfully built engine; matching ScriptCore was deployed before the real-editor checks. The new project scaffolding and script APIs were exercised in the actual exporter and runtime. Local evidence is under `bin-int/_agent/native-convenience-package/`: `codegen/results.json`, `integration/results.json`, build logs, and `e2e/results.json`. The exported game is in `bin-int/_agent/nconv-export/`. These ignored files are local evidence, not checked-in CI artifacts. Existing earlier Windows/Linux results below remain separate; this addition was not run on Linux or macOS.
+
 ## SDK and generator checks
 
 Build the matching engine and Editor test target, then stage a complete SDK with the repository's normal packaging flow. Run:
@@ -20,7 +41,7 @@ The implementation uses existing integration points:
 |---|---|
 | Public headers | `Funke-Engine/src/Funke/Scripting.hpp`, `ScriptComponents.hpp` |
 | Script template | `Funke-Editor/src/Scripting/ScriptDiscovery.hpp::BuildNativeScriptSource` |
-| Generated CMake and optional PCH | `Funke-Engine/src/Project/FunkeProject.cpp::BuildNativeScriptCMakeModule` |
+| Generated CMake and optional PCH | `Funke-Engine/src/Project/FunkeProjectNative.cpp::BuildNativeScriptCMakeModule` |
 | SDK header staging | Recursive `scripts/CopyEngineSdk.py::stage_headers` |
 | Native Inspector label | `Funke-Editor/src/Scripting/ScriptComponentInspector.cpp` (`C++ Script`) |
 | Regression fixtures | `Tests/Funke-Editor-Tests/src/NativeScriptingConvenienceTests.cpp`, `Tests/Fixtures/NativeScripts/ConvenienceHeader.cpp`, `Tests/Funke-Engine-Tests/src/ProjectScaffoldTests.cpp` |
@@ -97,3 +118,7 @@ Paths below are repository-relative unless marked WSL. Files under `bin-int/_age
 | Original Linux workspace / initial header check | WSL `/home/benso/.cache/funke-native-validation/evidence/`; `bin-int/_agent/native-linux-headers/build.log` |
 
 No macOS execution or successful remote execution of the added SDK CI steps was recorded in this verification. The workflow contains Windows, Linux and macOS SDK steps; workflow presence is not a passing run. Other IDEs, reduced-module runtime variants, Debug/Dist full builds and a managed full-suite rerun were outside this local verification. Preserve these distinctions when recording later results.
+
+### Local SDK check on 26 November 2026
+
+The extended native_scripting_test.py passed with the staged Windows x64 development SDK and Release Editor test binary. Both PCH modes compiled all eight expanded snippets and passed DLL load, deliberate compile failure and recovery. The public-header matrix passed. The SDK reports repository commit 67e570bf with local changes. Evidence is under artifacts/k1-20261126-182906/ci-01/windows/. On Ubuntu WSL the older local generator at ed9552a2 emitted no .vscode/funke-cpp.code-snippets, so the extended run stopped before compilation. A matching Linux build and macOS run remain outstanding.

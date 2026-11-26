@@ -687,7 +687,8 @@ namespace Funke {
 	static void Funke_PolygonCollider2D_SetPaths(uint64_t entityID, const float* points, const int* counts, int pathCount)
 	{
 		GET_COMPONENT(PolygonCollider2DComponent, entityID, );
-		if (!points || !counts || pathCount <= 0) return;
+		if (pathCount == 0) { comp.SetPaths({}, *scene); return; }
+		if (!points || !counts || pathCount < 0) return;
 		std::vector<std::vector<Vec2>> paths;
 		paths.reserve(static_cast<size_t>(std::min(pathCount, PolygonCollider2DComponent::k_MaxPaths)));
 		size_t offset = 0;

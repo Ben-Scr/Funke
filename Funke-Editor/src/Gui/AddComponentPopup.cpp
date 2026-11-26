@@ -145,7 +145,7 @@ namespace Funke {
 
 		// The ScriptComponent list is the authored source of truth for managed components.
 		auto entityHasComponent = [&](const ComponentInfo& info, const Entity& e) -> bool {
-			if (info.isDynamic) {
+			if (info.isDynamic && !info.IsBoltStruct()) {
 				if (!e.HasComponent<ScriptComponent>()) return false;
 				const ScriptComponent& sc = e.GetComponent<ScriptComponent>();
 				return sc.HasScript(info.serializedName) || sc.HasManagedComponent(info.serializedName);
@@ -181,7 +181,7 @@ namespace Funke {
 		// through the script-attach path (DynamicComponentRegistrar has no drawInspector/properties).
 		std::unordered_map<std::string, const EditorScriptDiscovery::ScriptEntry*> nativeScriptByClassName;
 		for (const auto& scriptEntry : scriptEntries) {
-			if (!scriptEntry.IsNativeComponent) continue;
+			if (!scriptEntry.IsNativeComponent || scriptEntry.Type == ScriptType::Bolt) continue;
 			if (scriptEntry.ClassName.empty()) continue;
 			nativeScriptByClassName.emplace(scriptEntry.ClassName, &scriptEntry);
 		}
@@ -190,7 +190,7 @@ namespace Funke {
 			if (onBeforeChange) onBeforeChange();
 			bool added = false;
 			if (info.isDynamic) {
-				auto scriptIt = nativeScriptByClassName.find(info.displayName);
+				auto scriptIt = nativeScriptByClassName.find(info.serializedName);
 				if (scriptIt != nativeScriptByClassName.end() && scriptIt->second) {
 					const auto& scriptEntry = *scriptIt->second;
 					for (const Entity& e : entities) {
@@ -311,7 +311,7 @@ namespace Funke {
 
 				const std::string label = BuildScriptMenuLabel(scriptEntry);
 				const std::string id = EditorScriptDiscovery::EntryId(scriptEntry);
-				if (ImGuiUtils::IconMenuItemEllipsis(label, id.c_str(), "script", true, 260.0f)) {
+				if (ImGuiUtils::IconMenuItemEllipsis(label, id.c_str(), EditorScriptDiscovery::ScriptIconName(scriptEntry.Type), true, 260.0f)) {
 					bool added = false;
 					for (const Entity& e : entities) {
 						if (scriptEntry.IsManagedComponent) {
@@ -439,7 +439,7 @@ namespace Funke {
 						}
 						const std::string label = BuildScriptMenuLabel(scriptEntry);
 						const std::string path = scriptEntry.Path.string();
-						if (ImGuiUtils::IconMenuItemEllipsis(label, path.c_str(), "script", true, 260.0f)) {
+						if (ImGuiUtils::IconMenuItemEllipsis(label, path.c_str(), EditorScriptDiscovery::ScriptIconName(scriptEntry.Type), true, 260.0f)) {
 							bool added = false;
 							for (const Entity& e : entities) {
 								added |= AttachScriptToEntity(const_cast<Entity&>(e), scene, scriptEntry);
@@ -478,7 +478,7 @@ namespace Funke {
 						}
 						const std::string id = EditorScriptDiscovery::EntryId(*scriptEntry);
 						if (ImGuiUtils::IconMenuItemEllipsis(EditorScriptDiscovery::ShortClassName(scriptEntry->ClassName),
-							id.c_str(), "script", !presentOnAll, 260.0f) && !presentOnAll) {
+							id.c_str(), EditorScriptDiscovery::ScriptIconName(scriptEntry->Type), !presentOnAll, 260.0f) && !presentOnAll) {
 							bool added = false;
 							for (const Entity& e : entities) {
 								added |= scriptEntry->IsManagedComponent

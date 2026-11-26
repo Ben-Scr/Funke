@@ -2,6 +2,7 @@
 #include "Scripting/ScriptBindingModuleSlots.hpp"
 #include "Scripting/ScriptBindingGuard.hpp"
 #include "Scripting/ScriptGlue.hpp"
+#include "Scripting/ScriptTransform2D.hpp"
 
 #include "Assets/AssetRegistry.hpp"
 #include "Collections/Viewport.hpp"
@@ -88,24 +89,8 @@ namespace Funke {
 		auto& comp = scene->GetComponent<Type>(handle)
 	// ── Transform2D ─────────────────────────────────────────────────────
 
-	static const Transform2DComponent* GetParentTransform(Scene& scene, EntityHandle handle)
-	{
-		if (!scene.HasComponent<HierarchyComponent>(handle)) return nullptr;
-		const EntityHandle parent = scene.GetComponent<HierarchyComponent>(handle).Parent;
-		if (parent == entt::null || !scene.IsValid(parent) || !scene.HasComponent<Transform2DComponent>(parent)) {
-			return nullptr;
-		}
-		return &scene.GetComponent<Transform2DComponent>(parent);
-	}
-
-	static Vec2 WorldPositionToLocal(const Transform2DComponent* parent, const Vec2& worldPosition)
-	{
-		if (!parent) return worldPosition;
-		Vec2 local = Rotate(worldPosition - parent->Position, -parent->Rotation);
-		if (std::abs(parent->Scale.x) > 0.00001f) local.x /= parent->Scale.x;
-		if (std::abs(parent->Scale.y) > 0.00001f) local.y /= parent->Scale.y;
-		return local;
-	}
+	using ScriptTransform2D::GetParentTransform;
+	using ScriptTransform2D::WorldPositionToLocal;
 
 	static Vec2 WorldScaleToLocal(const Transform2DComponent* parent, const Vec2& worldScale)
 	{
@@ -184,10 +169,7 @@ namespace Funke {
 	static void Funke_Transform2D_SetPosition(uint64_t entityID, float x, float y)
 	{
 		GET_COMPONENT(Transform2DComponent, entityID, );
-		const Vec2 worldPosition{ x, y };
-		comp.LocalPosition = WorldPositionToLocal(GetParentTransform(*scene, handle), worldPosition);
-		comp.Position = worldPosition;
-		comp.MarkDirty();
+		ScriptTransform2D::SetWorldPosition(*scene, handle, comp, { x, y });
 	}
 
 	static float Funke_Transform2D_GetRotation(uint64_t entityID)

@@ -61,6 +61,9 @@ namespace Funke::Json {
 		uint64_t AsUInt64Or(uint64_t fallback) const;
 		std::string AsStringOr(std::string fallback = {}) const;
 
+		// Macro-safe object access when Windows headers redefine GetObject.
+		Object& GetMembers();
+		const Object& GetMembers() const;
 		Object& GetObject();
 		const Object& GetObject() const;
 		Array& GetArray();
@@ -104,6 +107,8 @@ namespace Funke::Json {
 	};
 
 	FUNKE_API bool TryParse(std::string_view text, Value& outValue, std::string* outError = nullptr);
+	// Authoring tools must not silently lose duplicate keys on save.
+	FUNKE_API bool TryParseUnique(std::string_view text, Value& outValue, std::string* outError = nullptr);
 	FUNKE_API Value Parse(std::string_view text, std::string* outError = nullptr);
 	FUNKE_API std::string EscapeString(std::string_view value);
 	FUNKE_API std::string Stringify(const Value& value, bool pretty = false, int indentSize = 2);

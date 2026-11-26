@@ -7,7 +7,7 @@ The editor exports games for the desktop platform it runs on: **Windows x64**, *
 Before exporting:
 
 1. Open **Project Settings** and set the executable name, company, version, window mode, icon, and splash screen.
-   Set **Launcher > Settings > Projects > Default company** to prefill the company for future projects; it remains editable per project.
+   To apply a company name automatically to future projects, set **Launcher > Settings > Projects > Default company**.
 2. Add every required scene to **Build Scenes** and choose a valid startup scene.
 3. Select a build profile for your desktop platform (new projects get `Windows`, `Linux` and `macOS` profiles).
 4. Use **Development** while testing and **Release** for distribution. **Debug** adds debug binaries and symbols for attaching a debugger. Build profiles can carry their own configuration, defines and test switches; see [Test Builds and Debug Tools](Testing.md).
@@ -29,6 +29,8 @@ From a source checkout the editor builds the export runtime incrementally (MSBui
 
 Desktop exports also compile native C++ scripts, when present, in `NativeScripts/build-export` and include the resulting library alongside the C# assemblies. Release exports use the Dist native configuration with the Release gameplay define. This requires a matching native SDK/source tree, CMake and a compatible C++ compiler. The desktop native-script library workflow is not supported by the mobile/Web exporters; native package layers have a separate static-link workflow.
 
+For projects with [Bolt scripts](../Scripting/Bolt.md#desktop-exports), the builder validates each retained `.bolt` source and stages the desktop compiler host and SDK notices with the player. Scene and prefab GUID references keep scripts through unused-asset pruning. For Web, Android and iOS, see the [AOT export requirements and verified limitations](../Scripting/Bolt.md#platform-package-exports).
+
 On Windows that runtime is compiled with the MSBuild of Visual Studio 2022 when it is installed, because the engine itself is built with it; otherwise Visual Studio 2026 with the MSVC v143 toolset is used. Set `FUNKE_MSBUILD` to the full path of an `MSBuild.exe` to choose one yourself.
 
 The build is fail-closed: invalid paths, missing scenes, incomplete scripting artifacts, package failures, and incomplete runtime payloads stop the export instead of publishing a partial folder. The completed directory is staged first and then moved into place.
@@ -39,7 +41,7 @@ List the packages your project uses in its `packages` array. The package resolve
 
 ## Which assets ship
 
-A build only contains the files from `Assets/` and the engine's `FunkeAssets/` that the game can reach:
+The exporter builds a list of files reachable from the game. When it can determine usage, the list includes the following roots and their dependencies.
 
 - The enabled **Build Scenes**, and everything they reference: textures, audio, fonts, prefabs, Data Assets and other scenes (by GUID, asset path or scene name). References inside those assets are followed too.
 - Paths in `project.json` (splash images, cursors).
@@ -48,11 +50,11 @@ A build only contains the files from `Assets/` and the engine's `FunkeAssets/` t
 - Everything in **`Assets/StreamingAssets/`**, unchanged.
 - The engine's default font, default shape textures, splash logo and localization files.
 
-`.cs` sources, scenes not in the build list, and assets nothing refers to are left out, along with their `.meta` files. The build log lists how many files were skipped and their total size.
+With a valid pruning plan, C# gameplay ships as compiled assemblies. An unlisted scene can still ship if another root references it. Unreachable assets and their `.meta` files are omitted. The build log records the skipped files and their total size.
 
 Built-in files always come from the engine you build with, so engine updates (a new splash logo, fixed default textures) reach older projects too. The project's own `FunkeAssets/` folder, a copy made when the project was created, only replaces an engine file when you changed that file in the project (it is newer than the engine's).
 
-Files your code finds through a computed path (`"Level" + i + ".json"`, a path from a config value) cannot be detected. Put them in `Assets/StreamingAssets/`. If the project cannot be scanned completely (unreadable file, missing build scene), the build logs a warning and ships all assets.
+Put files opened through a computed path in `Assets/StreamingAssets/` when the build cannot infer their use. If dependency analysis cannot prove which files are safe to omit, the exporter keeps them and logs the reason. Invalid retained scenes, prefabs or Data Assets still fail conversion. See [export validation and diagnostics](Build-Asset-Validation.md).
 
 ## Asset bundles
 

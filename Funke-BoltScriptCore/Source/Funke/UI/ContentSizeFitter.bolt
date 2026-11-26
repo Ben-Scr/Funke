@@ -1,0 +1,13 @@
+import Funke
+namespace Funke.UI;
+
+public class ContentSizeFitter : Component {
+public:
+    protected override ulong FkType() { return 12ul; }
+    bool HorizontalFit { get { return (FkContentSizeFitter_GetHorizontalFit(ID, 0ul) != 0ul); } set { FkContentSizeFitter_SetHorizontalFit(ID, (value ? 1ul : 0ul)); } }
+    bool VerticalFit { get { return (FkContentSizeFitter_GetVerticalFit(ID, 0ul) != 0ul); } set { FkContentSizeFitter_SetVerticalFit(ID, (value ? 1ul : 0ul)); } }
+    float PaddingLeft { get { return Reinterpret<float>((uint)FkContentSizeFitter_GetPaddingLeft(ID, 0ul)); } set { FkContentSizeFitter_SetPaddingLeft(ID, (ulong)Reinterpret<uint>(value)); } }
+    float PaddingRight { get { return Reinterpret<float>((uint)FkContentSizeFitter_GetPaddingRight(ID, 0ul)); } set { FkContentSizeFitter_SetPaddingRight(ID, (ulong)Reinterpret<uint>(value)); } }
+    float PaddingTop { get { return Reinterpret<float>((uint)FkContentSizeFitter_GetPaddingTop(ID, 0ul)); } set { FkContentSizeFitter_SetPaddingTop(ID, (ulong)Reinterpret<uint>(value)); } }
+    float PaddingBottom { get { return Reinterpret<float>((uint)FkContentSizeFitter_GetPaddingBottom(ID, 0ul)); } set { FkContentSizeFitter_SetPaddingBottom(ID, (ulong)Reinterpret<uint>(value)); } }
+}

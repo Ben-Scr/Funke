@@ -1,0 +1,26 @@
+import System
+import System.Threading
+import System.Threading.Tasks
+namespace Funke.Jobs;
+
+public class AtomicLong {
+    private: System.Threading.Atomic<long> bits;
+    static long Encode(long v) { return v; }
+    static long Decode(long v) { return v; }
+    public: AtomicLong() {}
+    AtomicLong(long initialValue) { Store(initialValue); }
+    long Value {get { return Load(); } set { Store(value); } }
+    long Load() {return Decode(bits.Load());}
+    void Store(long v) {bits.Store(Encode(v));}
+    long Exchange(long v) {return Decode(bits.Exchange(Encode(v)));}
+    long CompareExchange(long v,long comparand) { long old=Encode(comparand); bits.CompareExchange(old,Encode(v));return Decode(old); }
+    long Add(long operand) { long old=bits.Load(); while(true) { long current=Decode(old); long next=current + operand; if(bits.CompareExchange(old,Encode(next))) return next; }return Decode(old); }
+    long FetchMin(long operand) { long old=bits.Load(); while(true) { long current=Decode(old); long next=operand < current ? operand : current; if(bits.CompareExchange(old,Encode(next))) return current; }return Decode(old); }
+    long FetchMax(long operand) { long old=bits.Load(); while(true) { long current=Decode(old); long next=operand > current ? operand : current; if(bits.CompareExchange(old,Encode(next))) return current; }return Decode(old); }
+    long Or(long operand) { long old=bits.Load(); while(true) { long current=Decode(old); long next=current | operand; if(bits.CompareExchange(old,Encode(next))) return current; }return Decode(old); }
+    long And(long operand) { long old=bits.Load(); while(true) { long current=Decode(old); long next=current & operand; if(bits.CompareExchange(old,Encode(next))) return current; }return Decode(old); }
+    long Sub(long operand) {return Add(-operand);}
+    long Increment() {return Add(1);}
+    long Decrement() {return Add(-1);}
+    string ToString() { return (string)Load(); }
+}

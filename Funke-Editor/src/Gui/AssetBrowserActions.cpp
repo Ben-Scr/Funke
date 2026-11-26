@@ -1,201 +1,63 @@
-#include <pch.hpp>
-#include "Animation/AnimationClip.hpp"
-#include "Gui/ImGuiDialog.hpp"
-#include "Animation/AnimatorController.hpp"
 #include "Gui/AssetBrowser.hpp"
-
+#include "Gui/AssetBrowserInternal.hpp"
 #include "Assets/AssetRegistry.hpp"
-#include "Graphics/Material.hpp"
-#include "Scripting/DataAssetManager.hpp"
-#include "Core/Log.hpp"
-#include "Core/Platform.hpp"
-#include "Core/Platform/Win32BuildProgressWindow.hpp"
-#include "Editor/EditorPreferences.hpp"
-#include "Editor/ExternalEditor.hpp"
-#include "Gui/EditorUI.hpp"
-#include "Gui/ImGuiImplWebGPU.hpp"
-#include "Project/FunkeProject.hpp"
+#include "Components/General/NameComponent.hpp"
+#include "Gui/HierarchyDragData.hpp"
 #include "Project/ProjectManager.hpp"
-#include "Scene/Scene.hpp"
 #include "Scene/SceneManager.hpp"
-#include "Scripting/ScriptDiscovery.hpp"
-#include "Serialization/Directory.hpp"
-#include "Serialization/File.hpp"
-#include "Serialization/Json.hpp"
 #include "Serialization/Path.hpp"
 #include "Serialization/SceneSerializer.hpp"
-#include "Serialization/SceneSerializerShared.hpp"
-
 #include <imgui.h>
-
 #include <algorithm>
-#include <array>
-#include <atomic>
 #include <cctype>
-#include <chrono>
 #include <ctime>
-#include <cstdio>
 #include <filesystem>
-#include <fstream>
-#include <mutex>
-#include <thread>
-#include <stdexcept>
-#include <unordered_set>
-
-#ifdef FNK_PLATFORM_WINDOWS
-#include <windows.h>
-#include <shellapi.h>
-#endif
 
 namespace Funke {
+	using AssetBrowserInternal::MakeFolderTreeKey;
+	using AssetBrowserInternal::IsFolderTreeAncestor;
 
 	namespace {
-		bool IsCppIdentifierChar(char c) {
-			return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
-		}
-
-		// Renames a C++ identifier in source text: replaces only whole-identifier matches in
-		// code, leaving comments, string literals and char literals untouched. A plain
-		// substring replace would also rewrite EnemySpawner, m_EnemyCount and "Enemy died"
-		// when renaming Enemy -> Foe.
-		std::string RenameCppIdentifier(const std::string& source, const std::string& oldName, const std::string& newName) {
-			if (oldName.empty() || oldName == newName) {
-				return source;
-			}
-
-			std::string out;
-			out.reserve(source.size());
-			const std::size_t n = source.size();
-			std::size_t i = 0;
-			while (i < n) {
-				const char c = source[i];
-				const char next = i + 1 < n ? source[i + 1] : '\0';
-
-				if (c == '/' && next == '/') {
-					const std::size_t end = source.find('\n', i);
-					const std::size_t stop = end == std::string::npos ? n : end;
-					out.append(source, i, stop - i);
-					i = stop;
-					continue;
-				}
-				if (c == '/' && next == '*') {
-					const std::size_t end = source.find("*/", i + 2);
-					const std::size_t stop = end == std::string::npos ? n : end + 2;
-					out.append(source, i, stop - i);
-					i = stop;
-					continue;
-				}
-				if (c == '"' || c == '\'') {
-					std::size_t j = i + 1;
-					while (j < n && source[j] != c && source[j] != '\n') {
-						j += (source[j] == '\\' && j + 1 < n) ? 2 : 1;
-					}
-					const std::size_t stop = j < n ? j + 1 : n;
-					out.append(source, i, stop - i);
-					i = stop;
-					continue;
-				}
-				if (IsCppIdentifierChar(c) && (i == 0 || !IsCppIdentifierChar(source[i - 1]))) {
-					std::size_t j = i;
-					while (j < n && IsCppIdentifierChar(source[j])) ++j;
-					if (j - i == oldName.size() && source.compare(i, j - i, oldName) == 0) {
-						out += newName;
-					}
-					else {
-						out.append(source, i, j - i);
-					}
-					i = j;
-					continue;
-				}
-
-				out += c;
-				++i;
-			}
-			return out;
-		}
-	}
-
-#ifdef FNK_PLATFORM_WINDOWS
-	namespace {
-		// Tracked (not detached) so AssetBrowser::Shutdown can join them before global destructors run.
-		std::mutex s_ShellLaunchMutex;
-		std::vector<std::thread> s_ShellLaunchThreads;
-
-		void ReapFinishedShellThreads_Locked() {
-			s_ShellLaunchThreads.erase(
-				std::remove_if(s_ShellLaunchThreads.begin(), s_ShellLaunchThreads.end(),
-					[](std::thread& t) {
-						if (!t.joinable()) return true;
-						// A finished std::thread stays joinable until joined; test the OS handle and join it.
-						if (WaitForSingleObject(t.native_handle(), 0) != WAIT_OBJECT_0) return false;
-						t.join();
-						return true;
-					}),
-				s_ShellLaunchThreads.end());
-		}
-	}
-
-	void TrackShellLaunchThread(std::thread t) {
-		std::scoped_lock lock(s_ShellLaunchMutex);
-		ReapFinishedShellThreads_Locked();
-		s_ShellLaunchThreads.push_back(std::move(t));
-	}
-
-	void JoinAllShellLaunchThreads() {
-		std::vector<std::thread> drained;
+		std::string GetDuplicateBaseName(const std::string& stem)
 		{
-			std::scoped_lock lock(s_ShellLaunchMutex);
-			drained.swap(s_ShellLaunchThreads);
-		}
-		for (auto& t : drained) {
-			if (t.joinable()) t.join();
-		}
-	}
-#endif // FNK_PLATFORM_WINDOWS
-
-	namespace {
-		bool IsNativeScriptSourceExtension(std::string extension) {
-			std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char ch) {
-				return static_cast<char>(std::tolower(ch));
-			});
-			return extension == ".c" || extension == ".cc" || extension == ".cpp" || extension == ".cxx"
-				|| extension == ".h" || extension == ".hh" || extension == ".hpp" || extension == ".hxx"
-				|| extension == ".inl" || extension == ".ipp";
-		}
-
-		std::filesystem::path GetNativeSourceDirectory(bool ensureProjectFiles = false) {
-			if (FunkeProject* project = ProjectManager::GetCurrentProject()) {
-				if (ensureProjectFiles) {
-					project->EnsureNativeScriptProjectFiles();
+			if (stem.size() >= 4 && stem.back() == ')') {
+				const std::size_t open = stem.rfind(" (");
+				if (open != std::string::npos && open + 2 < stem.size() - 1) {
+					bool allDigits = true;
+					for (std::size_t i = open + 2; i < stem.size() - 1; ++i) {
+						if (!std::isdigit(static_cast<unsigned char>(stem[i]))) {
+							allDigits = false;
+							break;
+						}
+					}
+					if (allDigits) {
+						return stem.substr(0, open);
+					}
 				}
-				return project->NativeSourceDir;
 			}
 
-			return std::filesystem::path(Path::ExecutableDir()) / ".." / ".." / ".." / "Funke-NativeScripts" / "Source";
-		}
-
-		std::filesystem::path ResolveNativeScriptMirrorPath(const std::string& path, bool ensureProjectFiles = false) {
-			// Project C++ assets are compiled in place; only the legacy standalone sandbox uses mirrors.
-			if (ProjectManager::GetCurrentProject()) {
+			const auto stripSeparatorNumber = [&](char separator) -> std::string {
+				if (stem.size() < 3 || !std::isdigit(static_cast<unsigned char>(stem.back()))) {
+					return {};
+				}
+				std::size_t firstDigit = stem.size() - 1;
+				while (firstDigit > 0 && std::isdigit(static_cast<unsigned char>(stem[firstDigit - 1]))) {
+					--firstDigit;
+				}
+				if (firstDigit > 0 && stem[firstDigit - 1] == separator) {
+					return stem.substr(0, firstDigit - 1);
+				}
 				return {};
-			}
-			const std::filesystem::path sourcePath(path);
-			if (!IsNativeScriptSourceExtension(sourcePath.extension().string())) {
-				return {};
+			};
+
+			for (char separator : { ' ', '-', '_' }) {
+				std::string stripped = stripSeparatorNumber(separator);
+				if (!stripped.empty()) {
+					return stripped;
+				}
 			}
 
-			std::filesystem::path nativeSourceDir = GetNativeSourceDirectory(ensureProjectFiles);
-			if (nativeSourceDir.empty()) {
-				return {};
-			}
-
-			const std::filesystem::path mirrorPath = nativeSourceDir / sourcePath.filename();
-			std::error_code ec;
-			if (std::filesystem::equivalent(sourcePath, mirrorPath, ec)) {
-				return {};
-			}
-
-			return mirrorPath;
+			return stem;
 		}
 
 		FunkeProject::EditorEntityNameSuffixStyle GetAssetDuplicateSuffixStyle()
@@ -206,9 +68,12 @@ namespace Funke {
 			return FunkeProject::EditorEntityNameSuffixStyle::ParenthesizedNumber;
 		}
 
-		std::string FormatDuplicateAssetName(const std::string& baseName, int index)
+		std::string FormatDuplicateAssetName(
+			const std::string& baseName,
+			int index,
+			FunkeProject::EditorEntityNameSuffixStyle style)
 		{
-			switch (GetAssetDuplicateSuffixStyle()) {
+			switch (style) {
 			case FunkeProject::EditorEntityNameSuffixStyle::SpaceNumber:
 				return baseName + " " + std::to_string(index);
 			case FunkeProject::EditorEntityNameSuffixStyle::HyphenNumber:
@@ -221,218 +86,64 @@ namespace Funke {
 			}
 		}
 
-		std::string NormalizeSceneStem(std::string stem) {
-			std::transform(stem.begin(), stem.end(), stem.begin(), [](unsigned char c) {
-				return static_cast<char>(std::tolower(c));
-			});
-			return stem;
-		}
-
-		bool SceneStemExists(
-			const std::string& stem,
-			const std::filesystem::path& excludedPath = {},
-			bool* outScanFailed = nullptr) {
-			if (outScanFailed) *outScanFailed = false;
-			FunkeProject* project = ProjectManager::GetCurrentProject();
-			if (!project || project->AssetsDirectory.empty()) return false;
-
-			const std::string normalizedStem = NormalizeSceneStem(stem);
-			const std::filesystem::path normalizedExcluded = excludedPath.lexically_normal();
+		std::filesystem::path MakeUniqueAssetPath(
+			const std::filesystem::path& source,
+			const std::filesystem::path& destinationDirectory,
+			bool preserveOriginalNameWhenFree)
+		{
 			std::error_code ec;
-			if (!std::filesystem::exists(project->AssetsDirectory, ec) || ec) {
-				if (outScanFailed) *outScanFailed = true;
-				return true;
+			std::filesystem::path candidate = destinationDirectory / source.filename();
+			if (preserveOriginalNameWhenFree && !std::filesystem::exists(candidate, ec)) {
+				return candidate;
 			}
-			for (std::filesystem::recursive_directory_iterator it(
-					 project->AssetsDirectory,
-					 std::filesystem::directory_options::none,
-					 ec), end;
-				 it != end;
-				 it.increment(ec)) {
-				if (ec) {
-					if (outScanFailed) *outScanFailed = true;
-					return true;
-				}
-				std::error_code fileEc;
-				const bool isRegularFile = it->is_regular_file(fileEc);
-				if (fileEc) {
-					if (outScanFailed) *outScanFailed = true;
-					return true;
-				}
-				if (!isRegularFile) continue;
-				if (NormalizeSceneStem(it->path().extension().string()) != ".scene") continue;
-				if (!normalizedExcluded.empty() && it->path().lexically_normal() == normalizedExcluded) continue;
-				if (NormalizeSceneStem(it->path().stem().string()) == normalizedStem) return true;
-			}
-			if (ec) {
-				if (outScanFailed) *outScanFailed = true;
-				return true;
-			}
-			return false;
-		}
 
-		std::filesystem::path MakeGloballyUniqueScenePath(const std::filesystem::path& preferredPath) {
-			std::filesystem::path candidate = preferredPath;
-			const std::string baseStem = preferredPath.stem().string();
-			std::error_code ec;
-			for (int index = 1; index < 10000; ++index) {
-				bool scanFailed = false;
-				const bool stemExists = SceneStemExists(candidate.stem().string(), {}, &scanFailed);
-				if (scanFailed) return {};
-				const bool pathExists = std::filesystem::exists(candidate, ec);
-				if (ec) return {};
-				if (!stemExists && !pathExists) return candidate;
-				candidate = preferredPath.parent_path()
-					/ (FormatDuplicateAssetName(baseStem, index) + preferredPath.extension().string());
+			const std::string stem = GetDuplicateBaseName(source.stem().string());
+			const std::string extension = source.extension().string();
+			const auto suffixStyle = GetAssetDuplicateSuffixStyle();
+			for (int counter = 1; counter < 10000; ++counter) {
+				candidate = destinationDirectory / (FormatDuplicateAssetName(stem, counter, suffixStyle) + extension);
 				ec.clear();
+				if (!std::filesystem::exists(candidate, ec)) {
+					return candidate;
+				}
 			}
-			return {};
+
+			return destinationDirectory / (FormatDuplicateAssetName(stem, static_cast<int>(std::time(nullptr)), suffixStyle) + extension);
 		}
 
-		// .scene files embed "name"; if not synced after rename, the hierarchy still shows the old stem. Handles both JSON and Binary formats.
-		void SyncSceneEmbeddedNameToFilename(const std::string& scenePath, const std::string& newStem) {
-			Json::Value root;
-			std::string readError;
-			if (!SceneSerializerStorage::ReadRootFromFile(scenePath, root, &readError) || !root.IsObject()) {
-				FNK_WARN_TAG("AssetBrowser",
-					"Renamed scene '{}' could not be read for embedded-name sync ({}); the embedded name was not updated.",
-					scenePath, readError);
-				return;
-			}
-
-			if (Json::Value* nameNode = root.FindMember("name")) {
-				if (nameNode->AsStringOr() == newStem) {
-					return;
-				}
-				*nameNode = Json::Value(newStem);
+		bool CopyEntryTo(const std::filesystem::path& source, const std::filesystem::path& destination) {
+			if (!AssetFileHistory::DestinationAvailable(destination)) return false;
+			std::error_code error;
+			const bool directory = std::filesystem::is_directory(source, error);
+			if (error) return false;
+			if (directory) {
+				if (!std::filesystem::create_directory(destination, error) || error) return false;
+				std::filesystem::copy(source, destination, std::filesystem::copy_options::recursive, error);
 			}
 			else {
-				root.AddMember("name", Json::Value(newStem));
+				if (!std::filesystem::copy_file(source, destination, std::filesystem::copy_options::none, error)) return false;
 			}
-
-			// Preserve the on-disk format. A binary scene rewritten as JSON
-			// would silently switch formats and break any tooling that
-			// checks the magic header.
-			const std::vector<std::uint8_t> rawBytes = File::ReadAllBytes(scenePath);
-			const SceneSerializationFormat format = SceneSerializerStorage::IsBinaryData(rawBytes)
-				? SceneSerializationFormat::Binary
-				: SceneSerializationFormat::Json;
-
-			if (!SceneSerializerStorage::WriteRootToFile(scenePath, root, format)) {
-				FNK_WARN_TAG("AssetBrowser",
-					"Failed to write renamed scene '{}' back to disk; embedded name remains stale.",
-					scenePath);
+			if (!error) {
+				auto fromMeta = source; fromMeta += ".meta";
+				auto toMeta = destination; toMeta += ".meta";
+				if (std::filesystem::exists(fromMeta)) std::filesystem::copy_file(fromMeta, toMeta, std::filesystem::copy_options::none, error);
 			}
-		}
-
-		void UpdateLoadedSceneNameAfterRename(const std::string& oldStem, const std::string& newStem) {
-			SceneManager::ForeachLoadedScene([&](Scene& scene) {
-				if (scene.GetName() == oldStem) {
-					scene.SetName(newStem);
-				}
-			});
-
-			if (FunkeProject* project = ProjectManager::GetCurrentProject()) {
-				// Scenes are referenced BY NAME throughout the project file. A rename
-				// must remap EVERY reference, not just LastOpenedScene — otherwise
-				// StartupScene / BuildSceneList keep pointing at the old stem and a
-				// build's runtime loads a now-missing scene (blank window) even though
-				// the renamed .scene file ships fine.
-				bool dirty = false;
-				if (project->LastOpenedScene == oldStem) {
-					project->LastOpenedScene = newStem;
-					dirty = true;
-				}
-				if (project->StartupScene == oldStem) {
-					project->StartupScene = newStem;
-					dirty = true;
-				}
-				for (FunkeProject::BuildSceneEntry& entry : project->BuildSceneList) {
-					if (entry.Name == oldStem) {
-						entry.Name = newStem;
-						dirty = true;
-					}
-				}
-				if (dirty) {
-					project->Save();
-				}
+			if (error) {
+				std::error_code cleanup;
+				std::filesystem::remove_all(destination, cleanup);
+				return false;
 			}
-		}
-
-		std::uintmax_t SafeFileSize(const std::filesystem::path& path) {
-			std::error_code ec;
-			const std::uintmax_t size = std::filesystem::file_size(path, ec);
-			return ec ? 0 : size;
-		}
-
-		void CollectImportByteSize(const std::filesystem::path& path, std::uintmax_t& totalBytes) {
-			std::error_code ec;
-			if (std::filesystem::is_regular_file(path, ec) && !ec) {
-				totalBytes += SafeFileSize(path);
-				return;
-			}
-
-			ec.clear();
-			if (!std::filesystem::is_directory(path, ec) || ec) {
-				return;
-			}
-
-			for (std::filesystem::recursive_directory_iterator it(
-				 path,
-				 std::filesystem::directory_options::skip_permission_denied,
-				 ec), end;
-				 it != end;
-				 it.increment(ec)) {
-				if (ec) {
-					ec.clear();
-					continue;
-				}
-
-				std::error_code fileEc;
-				if (it->is_regular_file(fileEc) && !fileEc) {
-					totalBytes += SafeFileSize(it->path());
-				}
-			}
-		}
-
-		std::filesystem::path MakeUniqueImportFilePath(
-			const std::filesystem::path& source,
-			const std::filesystem::path& destinationDirectory)
-		{
-			std::filesystem::path dest = destinationDirectory / source.filename();
-			if (NormalizeSceneStem(dest.extension().string()) == ".scene") {
-				return MakeGloballyUniqueScenePath(dest);
-			}
-			std::error_code ec;
-			if (AssetFileHistory::DestinationAvailable(dest)) {
-				return dest;
-			}
-
-			const std::string stem = dest.stem().string();
-			const std::string ext = dest.extension().string();
-			for (int counter = 1; counter < 10000; ++counter) {
-				dest = destinationDirectory / (stem + " (" + std::to_string(counter) + ")" + ext);
-				ec.clear();
-				if (AssetFileHistory::DestinationAvailable(dest)) {
-					return dest;
-				}
-			}
-
-			return destinationDirectory / (stem + " (" + std::to_string(std::time(nullptr)) + ")" + ext);
-		}
-
-		void AddImportedAssetPath(std::vector<std::string>& paths, const std::filesystem::path& path) {
-			const std::string assetPath = path.string();
-			if (!AssetRegistry::IsMetaFilePath(assetPath)) {
-				paths.push_back(assetPath);
-			}
+			return true;
 		}
 
 		void CollectRegistryAssetPaths(const std::filesystem::path& path, std::vector<std::string>& paths)
 		{
 			std::error_code ec;
 			if (std::filesystem::is_regular_file(path, ec) && !ec) {
-				AddImportedAssetPath(paths, path);
+				const std::string assetPath = path.string();
+				if (!AssetRegistry::IsMetaFilePath(assetPath)) {
+					paths.push_back(assetPath);
+				}
 				return;
 			}
 
@@ -458,7 +169,10 @@ namespace Funke {
 					continue;
 				}
 
-				AddImportedAssetPath(paths, it->path());
+				const std::string assetPath = it->path().string();
+				if (!AssetRegistry::IsMetaFilePath(assetPath)) {
+					paths.push_back(assetPath);
+				}
 			}
 		}
 
@@ -478,1983 +192,247 @@ namespace Funke {
 			}
 		}
 
-		bool CopyFileChunked(
-			const std::filesystem::path& source,
-			const std::filesystem::path& destination,
-			bool skipExisting,
-			const std::atomic_bool& keepRunning,
-			const std::function<void(std::uintmax_t)>& onCopiedBytes)
-		{
-			(void)skipExisting;
-			if (!keepRunning.load(std::memory_order_acquire)) return false;
-			std::ifstream input(source, std::ios::binary);
-			if (!input) return false;
-			std::FILE* output = nullptr;
-#ifdef FNK_PLATFORM_WINDOWS
-			if (_wfopen_s(&output, destination.c_str(), L"wbx") != 0) return false;
-#else
-			output = std::fopen(destination.c_str(), "wbx");
-			if (!output) return false;
-#endif
-			std::unique_ptr<std::FILE, decltype(&std::fclose)> file(output, &std::fclose);
-			std::vector<char> buffer(1024 * 1024);
-			bool succeeded = true;
-			while (keepRunning.load(std::memory_order_acquire) && input) {
-				input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
-				const auto count = input.gcount();
-				if (count <= 0) break;
-				if (std::fwrite(buffer.data(), 1, static_cast<size_t>(count), file.get()) != static_cast<size_t>(count)) {
-					succeeded = false;
-					break;
-				}
-				onCopiedBytes(static_cast<std::uintmax_t>(count));
-			}
-			succeeded = succeeded && !input.bad() && keepRunning.load(std::memory_order_acquire);
-			if (std::fclose(file.release()) != 0) succeeded = false;
-			if (!succeeded) {
-				std::error_code error;
-				std::filesystem::remove(destination, error);
-			}
-			return succeeded;
+		bool MoveEntryTo(const std::filesystem::path& source, const std::filesystem::path& destination) {
+			return AssetFileHistory::MoveAsset(source, destination);
 		}
 	}
 
-	std::shared_ptr<AssetFileHistory::Change> AssetBrowser::BeginFileEdit(const std::vector<std::string>& paths, const char* label) {
-		if (IsImportingAssets() || IsDeleting()) return nullptr;
-		try {
-			auto affected = paths;
-			for (const auto& path : paths) {
-				RegisterRegistryAssetTree(Path::FromUtf8(path));
-				const auto mirror = ResolveNativeScriptMirrorPath(path);
-				if (!mirror.empty()) affected.push_back(mirror.string());
-				if (std::filesystem::path(path).extension() == ".cs") {
-					if (const auto* project = ProjectManager::GetCurrentProject(); project && !project->ScriptsDirectory.empty()) {
-						affected.push_back((std::filesystem::path(project->ScriptsDirectory) / std::filesystem::path(path).filename()).string());
-					}
-				}
-			}
-			auto edit = m_FileHistory.Begin(affected, label);
-			m_AssetHistoryContext = true;
-			return edit;
-		}
-		catch (const std::exception& error) {
-			FNK_ERROR_TAG("AssetUndo", "Cannot record asset operation: {}", error.what());
-			return nullptr;
-		}
-	}
-
-	void AssetBrowser::FinishFileEdit(const std::shared_ptr<AssetFileHistory::Change>& change) {
-		try { m_FileHistory.Commit(change); }
-		catch (const std::exception& error) {
-			if (change) change->KeepRecoveryFiles = true;
-			FNK_ERROR_TAG("AssetUndo", "Could not finish asset history: {}. Recovery: {}", error.what(),
-				change ? Path::ToUtf8(change->Storage) : std::string{});
-		}
-	}
-
-	std::string AssetBrowser::UndoRedoAssets(bool redo) {
-		if (redo ? !CanRedoAssets() : !CanUndoAssets()) return {};
-		std::string label;
-		try {
-			label = redo ? m_FileHistory.Redo() : m_FileHistory.Undo();
-		}
-		catch (const std::exception& error) {
-			FNK_ERROR_TAG("AssetUndo", "{}", error.what());
-			throw;
-		}
-		try {
-			m_NeedsRefresh = true;
-			m_ClearHistoryThumbnails = true;
-			while (!std::filesystem::exists(Path::FromUtf8(m_CurrentDirectory)) && m_CurrentDirectory != m_RootDirectory) {
-				m_CurrentDirectory = Path::ToUtf8(Path::FromUtf8(m_CurrentDirectory).parent_path());
-				if (m_CurrentDirectory.empty()) { m_CurrentDirectory = m_RootDirectory; break; }
-			}
-			ClearAssetSelection();
-			EditorScriptDiscovery::MarkDirty();
-		}
-		catch (const std::exception& error) {
-			FNK_ERROR_TAG("AssetUndo", "{} applied, browser refresh failed: {}", label, error.what());
-		}
-		return label;
-	}
-
-	void AssetBrowser::BeginRename(const std::string& path, const std::string& currentName) {
-		m_IsRenaming = true;
-		m_RenamePath = path;
-		m_PressedPath.clear();
-		m_PendingScrollToPath = path;
-		m_RenameInput.Reset();
-
-		// Strip extension from display name when ShowFileExtensions is off; CommitRename re-appends it on commit.
-		const bool showExt = EditorPreferences::GetShowFileExtensions();
-		std::string display = currentName;
-		if (!showExt) {
-			std::filesystem::path p(currentName);
-			std::string stem = p.stem().string();
-			std::string ext = p.extension().string();
-			// stem.empty() catches dotfiles like ".env" — leave them
-			// alone so we don't render an empty rename buffer.
-			if (!ext.empty() && !stem.empty()) {
-				display = stem;
-			}
-		}
-		std::snprintf(m_RenameBuffer, sizeof(m_RenameBuffer), "%s", display.c_str());
-	}
-
-	void AssetBrowser::CommitRename() {
-		std::string newName(m_RenameBuffer);
-		std::string oldName = std::filesystem::path(m_RenamePath).filename().string();
-
-		if (m_PendingScriptType == PendingScriptType::EntityPrefab) {
-			// Strip a trailing ".prefab" the user typed so we don't end up with "Foo.prefab.prefab".
-			std::string baseName = newName;
-			if (baseName.size() > 7) {
-				std::string lower = baseName;
-				std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
-				if (lower.substr(lower.size() - 7) == ".prefab") {
-					baseName = baseName.substr(0, baseName.size() - 7);
-				}
-			}
-			if (baseName.empty()) {
-				baseName = "NewPrefab";
-			}
-
-			// Suffix " (N)" to dodge collisions with anything already in the folder.
-			std::filesystem::path targetPath = std::filesystem::path(m_PendingScriptDir) / (baseName + ".prefab");
-			std::error_code existsEc;
-			for (int n = 1; targetPath.string() != m_RenamePath
-				&& std::filesystem::exists(targetPath, existsEc) && n < 10000; ++n) {
-				targetPath = std::filesystem::path(m_PendingScriptDir) / (FormatDuplicateAssetName(baseName, n) + ".prefab");
-				existsEc.clear();
-			}
-
-			const std::string finalPath = targetPath.string();
-			if (finalPath != m_RenamePath) RenameEntry(m_RenamePath, targetPath.filename().string());
-			else AssetRegistry::ImportAssetPathIncremental(finalPath);
-
-			m_PendingScriptType = PendingScriptType::None;
-			m_PendingScriptDir.clear();
-			m_PendingPrefabSourceEntity = entt::null;
-			m_NeedsRefresh = true;
-			CancelRename();
-			return;
-		}
-
-		if (m_PendingScriptType != PendingScriptType::None) {
-			std::string className = newName;
-			const bool isCSharp = m_PendingScriptType == PendingScriptType::CSharp
-				|| m_PendingScriptType == PendingScriptType::CSharpEmpty
-				|| m_PendingScriptType == PendingScriptType::CSharpComponent
-				|| m_PendingScriptType == PendingScriptType::CSharpNativeComponent
-				|| m_PendingScriptType == PendingScriptType::CSharpSceneSystem
-				|| m_PendingScriptType == PendingScriptType::CSharpGlobalSystem
-				|| m_PendingScriptType == PendingScriptType::CSharpDataAsset;
-
-			const bool isComponent = m_PendingScriptType == PendingScriptType::CSharpComponent;
-			const bool isNativeComponent = m_PendingScriptType == PendingScriptType::CSharpNativeComponent;
-			const bool isSceneSystem = m_PendingScriptType == PendingScriptType::CSharpSceneSystem;
-			const bool isGlobalSystem = m_PendingScriptType == PendingScriptType::CSharpGlobalSystem;
-			const bool isEmpty = m_PendingScriptType == PendingScriptType::CSharpEmpty;
-			const bool isDataAsset = m_PendingScriptType == PendingScriptType::CSharpDataAsset;
-			std::string ext = isCSharp ? ".cs" : ".cpp";
-
-			if (!className.empty() && className.find('.') == std::string::npos) {
-			}
-			else if (className.size() > ext.size()) {
-				std::string lowerName = className;
-				std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), ::tolower);
-				if (lowerName.substr(lowerName.size() - ext.size()) == ext)
-					className = className.substr(0, className.size() - ext.size());
-			}
-
-			const std::string classNameFallback = isComponent       ? "NewComponent"
-			                                    : isNativeComponent ? "NewNativeComponent"
-			                                    : isSceneSystem      ? "NewSceneSystem"
-			                                    : isGlobalSystem    ? "NewGlobalSystem"
-			                                    : isDataAsset       ? "NewDataAsset"
-			                                                        : "NewScript";
-			className = EditorScriptDiscovery::SanitizeIdentifier(className, classNameFallback);
-
-			std::string finalFileName = className + ext;
-			std::string finalPath = (std::filesystem::path(m_PendingScriptDir) / finalFileName).string();
-
-			// Never overwrite an existing script with boilerplate. The collision prompt only
-			// guards the placeholder name, not the name typed here. A target that resolves to
-			// the placeholder itself (same name, or a case-only change) is fine.
-			{
-				std::error_code existsEc;
-				if (std::filesystem::exists(finalPath, existsEc)) {
-					std::error_code eqEc;
-					const bool isPlaceholder = std::filesystem::exists(m_RenamePath, eqEc)
-						&& std::filesystem::equivalent(finalPath, m_RenamePath, eqEc) && !eqEc;
-					if (!isPlaceholder) {
-						FNK_ERROR_TAG("AssetBrowser",
-							"Can't create '{}': a file with that name already exists. Choose a different name.",
-							finalFileName);
-						CancelRename();
-						return;
-					}
-				}
-			}
-
-			if (!std::filesystem::exists(finalPath) && !AssetFileHistory::DestinationAvailable(finalPath)) {
-				FNK_ERROR_TAG("AssetBrowser", "Script metadata already exists: {}", finalPath);
-				return;
-			}
-			auto edit = BeginFileEdit({ m_RenamePath, finalPath }, "Create Script");
-			if (!edit) return;
-			if (std::filesystem::exists(m_RenamePath)) {
-				std::error_code ec;
-				std::filesystem::remove(m_RenamePath, ec);
-			}
-
-			if (isCSharp) {
-				std::string boilerplate;
-				if (isComponent) {
-					boilerplate =
-						"using Funke;\n"
-						"\n"
-						"public class " + className + " : Component\n"
-						"{\n"
-						"     \n"
-						"}\n";
-				}
-				else if (isNativeComponent) {
-					boilerplate =
-						"using System.Runtime.InteropServices;\n"
-						"using Funke;\n"
-						"using Funke.Components;\n"
-						"\n"
-						"[StructLayout(LayoutKind.Sequential)]\n"
-						"public struct " + className + " : IComponent\n"
-						"{\n"
-						"     \n"
-						"    public " + className + "() { }\n"
-						"}\n";
-				}
-				else if (isSceneSystem) {
-					boilerplate =
-						"using Funke;\n"
-						"\n"
-						"public class " + className + " : SceneSystem\n"
-						"{\n"
-						"    public override void OnStart()\n"
-						"    {\n"
-						"    }\n"
-						"\n"
-						"    public override void OnUpdate()\n"
-						"    {\n"
-						"    }\n"
-						"}\n";
-				}
-				else if (isGlobalSystem) {
-					boilerplate =
-						"using Funke;\n"
-						"\n"
-						"public class " + className + " : GlobalSystem\n"
-						"{\n"
-						"    public static " + className + " Instance { get; private set; } = null!;\n"
-						"\n"
-						"    public override void OnInitialize()\n"
-						"    {\n"
-						"        Instance = this;\n"
-						"    }\n"
-						"\n"
-						"    public override void OnUpdate()\n"
-						"    {\n"
-						"    }\n"
-						"}\n";
-				}
-				else if (isDataAsset) {
-					boilerplate =
-						"using Funke;\n"
-						"\n"
-						"[CreateDataAsset(\"" + className + "\")]\n"
-						"public class " + className + " : DataAsset\n"
-						"{\n"
-						"     \n"
-						"}\n";
-				}
-				else if (isEmpty) {
-					boilerplate =
-						"using Funke;\n"
-						"\n"
-						"public class " + className + "\n"
-						"{\n"
-						"     \n"
-						"}\n";
-				}
-				else {
-					boilerplate =
-						"using Funke;\n"
-						"\n"
-						"public class " + className + " : EntityScript\n"
-						"{\n"
-						"    public override void OnStart()\n"
-						"    {\n"
-						"    }\n"
-						"\n"
-						"    public override void OnUpdate()\n"
-						"    {\n"
-						"    }\n"
-						"}\n";
-				}
-
-				std::ofstream file(finalPath);
-				if (file.is_open()) { file << boilerplate; file.close(); }
-
-				FunkeProject* project = ProjectManager::GetCurrentProject();
-				if (!project) {
-					auto sandboxDir = std::filesystem::path(Path::ExecutableDir()) / ".." / ".." / ".." / "Funke-Sandbox" / "Source";
-					if (std::filesystem::exists(sandboxDir)) {
-						auto dst = sandboxDir / finalFileName;
-						if (!std::filesystem::exists(dst)) {
-							std::ofstream f(dst); if (f.is_open()) { f << boilerplate; f.close(); }
-						}
-					}
-				}
-			}
-			else {
-				const std::string boilerplate = EditorScriptDiscovery::BuildNativeScriptSource(className);
-
-				std::ofstream file(finalPath);
-				file << boilerplate;
-				file.close();
-				if (!file) {
-					FNK_ERROR_TAG("AssetBrowser", "Failed to write C++ script '{}'", finalPath);
-					CancelRename();
-					return;
-				}
-
-				FunkeProject* project = ProjectManager::GetCurrentProject();
-				if (project) {
-					project->EnsureNativeScriptProjectFiles();
-				}
-				else if (std::filesystem::path nativeDir = GetNativeSourceDirectory(true); !nativeDir.empty()) {
-					std::error_code ec;
-					std::filesystem::create_directories(nativeDir, ec);
-					auto dst = nativeDir / finalFileName;
-					if (!std::filesystem::exists(dst)) {
-						std::ofstream f(dst); if (f.is_open()) { f << boilerplate; f.close(); }
-					}
-				}
-			}
-
-			AssetRegistry::ImportAssetPathIncremental(finalPath);
-			FinishFileEdit(edit);
-			EditorScriptDiscovery::MarkDirty();
-			m_SelectedPath = finalPath;
-			m_PendingScriptType = PendingScriptType::None;
-			m_PendingScriptDir.clear();
-			m_NeedsRefresh = true;
-			CancelRename();
-			return;
-		}
-
-		if (!newName.empty() && newName.find('.') == std::string::npos) {
-			std::string oldExt = std::filesystem::path(m_RenamePath).extension().string();
-			if (!oldExt.empty()) {
-				newName += oldExt;
-			}
-		}
-
-		if (!newName.empty() && newName != oldName) {
-			RenameEntry(m_RenamePath, newName);
-		}
-		CancelRename();
-	}
-
-	void AssetBrowser::CancelRename() {
-		if (m_PendingScriptType != PendingScriptType::None) {
-			if (!m_RenamePath.empty() && std::filesystem::exists(m_RenamePath)) {
-				std::error_code ec;
-				std::filesystem::remove(m_RenamePath, ec);
-				if (!ec) {
-					AssetRegistry::DeleteCompanionMetadata(m_RenamePath);
-				}
-			}
-			m_PendingScriptType = PendingScriptType::None;
-			m_PendingScriptDir.clear();
-			m_PendingPrefabSourceEntity = entt::null;
-			m_NeedsRefresh = true;
-		}
-
-		m_IsRenaming = false;
-		m_RenamePath.clear();
-		m_RenameInput.Reset();
-	}
-
-	bool AssetBrowser::IsRenamingEntry(const std::string& path) const {
-		return m_IsRenaming && m_RenamePath == path;
-	}
-
-	bool AssetBrowser::BeginRenameSelected() {
-		if (m_SelectedPath.empty() || m_IsRenaming) {
+	bool AssetBrowser::TryCreatePrefabFromHierarchyDrop(const ImGuiPayload* payload, const std::string& targetDirectory) {
+		if (!payload || payload->DataSize != sizeof(HierarchyDragData)) {
 			return false;
 		}
 
-		std::error_code ec;
-		if (!std::filesystem::exists(m_SelectedPath, ec) || ec) {
+		// Hierarchy panel drag payload — see Gui/HierarchyDragData.hpp.
+		const auto* dragData = static_cast<const HierarchyDragData*>(payload->Data);
+		const entt::entity entityHandle = static_cast<entt::entity>(dragData->EntityHandle);
+
+		// Resolve via SourceSceneId so cross-scene drags find the right registry; falls back to the active scene for older producers.
+		Scene* scene = nullptr;
+		if (dragData->SourceSceneId != 0) {
+			SceneManager::ForeachLoadedScene([&](Scene& s) {
+				if (!scene && static_cast<uint64_t>(s.GetSceneId()) == dragData->SourceSceneId) {
+					scene = &s;
+				}
+			});
+		}
+		if (!scene) scene = SceneManager::GetActiveScene();
+		if (!scene || !scene->IsValid(entityHandle)) {
 			return false;
 		}
 
-		BeginRename(m_SelectedPath, std::filesystem::path(m_SelectedPath).filename().string());
+		std::string entityName = "Entity";
+		if (scene->HasComponent<NameComponent>(entityHandle)) {
+			const std::string& sourceName = scene->GetComponent<NameComponent>(entityHandle).Name;
+			if (!sourceName.empty()) entityName = sourceName;
+		}
+
+		// Append " (N)" until the path is free — never silently overwrite an
+		// existing prefab. Cap at 10,000 to keep us out of an infinite loop
+		// if the directory state is unreadable.
+		std::filesystem::path prefabPath = std::filesystem::path(targetDirectory) / (entityName + ".prefab");
+		std::error_code existsEc;
+		for (int n = 1; std::filesystem::exists(prefabPath, existsEc) && n < 10000; ++n) {
+			prefabPath = std::filesystem::path(targetDirectory) / (entityName + " (" + std::to_string(n) + ").prefab");
+			existsEc.clear();
+		}
+
+		if (!AssetFileHistory::DestinationAvailable(prefabPath)) return false;
+		auto edit = BeginFileEdit({ prefabPath.string() }, "Create Prefab Asset");
+		if (!edit) return false;
+		// Convert root AND children — marking only the root left children as plain scene entities (half-converted prefab bug).
+		if (SceneSerializer::SaveEntityAsPrefabInstance(*scene, entityHandle, prefabPath.string()) == 0) {
+			return false;
+		}
+		RegisterRegistryAssetTree(prefabPath);
+		FinishFileEdit(edit);
 		return true;
 	}
 
-	void AssetBrowser::DeleteEntry(const std::string& path) {
-		auto edit = BeginFileEdit({ path }, "Delete Assets");
-		if (!edit) return;
-		// Defer thumbnail invalidation: see m_PendingThumbnailInvalidates docs.
-		// The file itself is deleted now so on-disk state is consistent before
-		// Render() returns; only the GPU-bound Texture2D destruction waits.
-		m_PendingThumbnailInvalidates.push_back(path);
-		const std::filesystem::path nativeMirrorPath = ResolveNativeScriptMirrorPath(path);
-		const std::filesystem::path pathFs(path);
-		const bool wasSceneFile = pathFs.extension() == ".scene";
-		const std::string sceneStem = wasSceneFile ? pathFs.stem().string() : std::string{};
-		std::vector<std::string> deletedAssetPaths;
-		CollectRegistryAssetPaths(pathFs, deletedAssetPaths);
-
-		if (Directory::Delete(path)) {
-			AssetRegistry::DeleteCompanionMetadata(path);
-			ForgetRegistryAssetPaths(deletedAssetPaths);
-			EditorScriptDiscovery::MarkDirty();
-			if (!nativeMirrorPath.empty()) {
-				std::error_code ec;
-				std::filesystem::remove(nativeMirrorPath, ec);
-			}
-
-			if (m_SelectedPath == path) {
-				m_SelectedPath.clear();
-			}
-			m_SelectedPaths.erase(
-				std::remove(m_SelectedPaths.begin(), m_SelectedPaths.end(), path),
-				m_SelectedPaths.end());
-			if (m_PressedPath == path) {
-				m_PressedPath.clear();
-			}
-			CancelRename();
-			m_NeedsRefresh = true;
-
-			// Drop the SceneDefinition so a script-side LoadScene of the
-			// deleted name can't resurrect an empty Scene from the registered
-			// definition.
-			if (wasSceneFile && !sceneStem.empty()) {
-				SceneManager::UnregisterScene(sceneStem);
-			}
-		}
-		FinishFileEdit(edit);
+	void AssetBrowser::CopySelectedAssets(bool cut) {
+		m_AssetClipboardPaths = GetSelectedPaths();
+		m_AssetClipboardCut = cut && !m_AssetClipboardPaths.empty();
 	}
 
-	void AssetBrowser::RenameEntry(const std::string& path, const std::string& newName) {
-		// The name is joined onto the parent directory, so separators or ".." would move the asset (and its
-		// .meta) elsewhere, even out of Assets/. Windows also rejects reserved characters and trailing dots/spaces.
-		const bool invalidName = newName.empty() || newName == "." || newName == ".."
-			|| newName.find_first_of("/\\:*?\"<>|") != std::string::npos
-			|| newName.back() == '.' || newName.back() == ' '
-			|| std::any_of(newName.begin(), newName.end(), [](char c) { return static_cast<unsigned char>(c) < 0x20; });
-		if (invalidName) {
-			FNK_WARN_TAG("AssetBrowser", "Cannot rename to '{}': names cannot be empty, contain / \\ : * ? \" < > |, or end with a dot or space",
-				newName);
+	void AssetBrowser::PasteAssets() {
+		if (m_AssetClipboardPaths.empty()) {
 			return;
 		}
 
-		const std::filesystem::path oldPath(path);
-		const std::filesystem::path requestedPath = oldPath.parent_path() / newName;
-		if (NormalizeSceneStem(requestedPath.extension().string()) == ".scene"
-			&& SceneStemExists(requestedPath.stem().string(), oldPath)) {
-			FNK_WARN_TAG("AssetBrowser", "Cannot rename scene '{}': another scene already uses that name",
-				requestedPath.stem().string());
-			return;
-		}
+		std::vector<std::string> pastedPaths;
+		const std::filesystem::path targetDirectory(m_CurrentDirectory);
 
-		if (oldPath == requestedPath) return;
-		if (!AssetFileHistory::DestinationAvailable(requestedPath)) {
-			FNK_WARN_TAG("AssetBrowser", "Rename target or metadata already exists: {}", requestedPath.string());
-			return;
-		}
-		if (NormalizeSceneStem(requestedPath.extension().string()) == ".cs") {
-			if (const auto* project = ProjectManager::GetCurrentProject(); project && !project->ScriptsDirectory.empty()) {
-				const auto mirrorTarget = (std::filesystem::path(project->ScriptsDirectory) / newName).lexically_normal();
-				if (mirrorTarget != requestedPath.lexically_normal() && !AssetFileHistory::DestinationAvailable(mirrorTarget)) {
-					FNK_WARN_TAG("AssetBrowser", "Script mirror target already exists: {}", mirrorTarget.string());
-					return;
-				}
-			}
-		}
-		auto edit = BeginFileEdit({ path, requestedPath.string() }, "Rename Asset");
-		if (!edit) return;
-		// Same dangling-WGPUTextureView risk as DeleteEntry: ImGui may have
-		// already recorded a draw command for the old-key thumbnail this
-		// frame. Queue the invalidate for next frame instead.
-		m_PendingThumbnailInvalidates.push_back(path);
-
-		std::string oldExt = std::filesystem::path(path).extension().string();
-		std::string oldStem = std::filesystem::path(path).stem().string();
-		std::vector<std::string> renamedAssetPaths;
-		CollectRegistryAssetPaths(path, renamedAssetPaths);
-
-		if (AssetFileHistory::MoveAsset(oldPath, requestedPath)) {
-			EditorScriptDiscovery::MarkDirty();
-			std::filesystem::path p(path);
-			std::string newPath = (p.parent_path() / newName).string();
-			ForgetRegistryAssetPaths(renamedAssetPaths);
-			RegisterRegistryAssetTree(newPath);
-			if (m_SelectedPath == path) {
-				m_SelectedPath = newPath;
-			}
-			for (std::string& selectedPath : m_SelectedPaths) {
-				if (selectedPath == path) {
-					selectedPath = newPath;
-				}
+		for (const std::string& sourcePathString : m_AssetClipboardPaths) {
+			const std::filesystem::path sourcePath(sourcePathString);
+			std::error_code ec;
+			if (!std::filesystem::exists(sourcePath, ec) || ec) {
+				continue;
 			}
 
-			std::string ext = std::filesystem::path(newName).extension().string();
-			std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-			std::string newStem = std::filesystem::path(newName).stem().string();
-			const bool oldIsNativeScript = IsNativeScriptSourceExtension(oldExt);
-			const bool newIsNativeScript = IsNativeScriptSourceExtension(ext);
+			const bool sameDirectory = std::filesystem::equivalent(sourcePath.parent_path(), targetDirectory, ec) && !ec;
+			const std::filesystem::path targetPath = MakeUniqueAssetPath(sourcePath, targetDirectory, !sameDirectory);
 
-			std::filesystem::path projectSourceDir;
-			FunkeProject* project = ProjectManager::GetCurrentProject();
-			if ((oldIsNativeScript || newIsNativeScript) && !project)
-			{
-				projectSourceDir = GetNativeSourceDirectory(newIsNativeScript);
-			}
-			else if (ext == ".cs")
-			{
-				if (project)
-					projectSourceDir = project->ScriptsDirectory;
-				else
-					projectSourceDir = std::filesystem::path(Path::ExecutableDir()) / ".." / ".." / ".." / "Funke-Sandbox" / "Source";
-			}
-
-			if (!projectSourceDir.empty() && (std::filesystem::exists(projectSourceDir) || newIsNativeScript))
-			{
-				if (newIsNativeScript) {
-					std::error_code ec;
-					std::filesystem::create_directories(projectSourceDir, ec);
-				}
-
-				auto oldProjectFile = projectSourceDir / (oldStem + oldExt);
-				auto newProjectFile = projectSourceDir / newName;
-
-				if (oldIsNativeScript && !newIsNativeScript)
-				{
-					std::error_code ec;
-					std::filesystem::remove(oldProjectFile, ec);
-				}
-				else if (newIsNativeScript)
-				{
-					if (std::filesystem::exists(oldProjectFile))
-					{
-						std::error_code ec;
-						std::filesystem::rename(oldProjectFile, newProjectFile, ec);
-					}
-					else if (std::filesystem::exists(newPath) && !std::filesystem::exists(newProjectFile))
-					{
-						std::error_code ec;
-						std::filesystem::copy_file(newPath, newProjectFile, std::filesystem::copy_options::none, ec);
-					}
-
-					if (std::filesystem::exists(newProjectFile))
-					{
-						std::ifstream in(newProjectFile);
-						std::string content((std::istreambuf_iterator<char>(in)),
-							std::istreambuf_iterator<char>());
-						in.close();
-
-						const std::string renamed = RenameCppIdentifier(content, oldStem, newStem);
-						if (renamed != content) {
-							std::ofstream out(newProjectFile, std::ios::binary | std::ios::trunc);
-							out << renamed;
-							out.flush();
-							if (!out) {
-								FNK_ERROR_TAG("AssetBrowser",
-									"Failed to update class name in '{}'; rename '{}' to '{}' there manually.",
-									Path::ToUtf8(newProjectFile), oldStem, newStem);
-							}
-						}
-					}
-				}
-			}
-
-			// Scene files carry their displayed name inside the JSON. Without
-			// this sync, renaming Foo.scene -> Bar.scene leaves the embedded
-			// name as "Foo", and the hierarchy still shows "Foo" the next time
-			// the file is opened.
-			if (ext == ".scene")
-			{
-				SyncSceneEmbeddedNameToFilename(newPath, newStem);
-				UpdateLoadedSceneNameAfterRename(oldStem, newStem);
-				edit->Validate = [oldStem, newStem, oldPath, requestedPath](bool redo) {
-					if (SceneStemExists(redo ? newStem : oldStem, redo ? oldPath : requestedPath)) {
-						throw std::runtime_error("Another scene already uses the name '" + (redo ? newStem : oldStem)
-							+ "' required by " + Path::ToUtf8(redo ? requestedPath : oldPath));
-					}
-				};
-				edit->Applied = [oldStem, newStem](bool redo) {
-					UpdateLoadedSceneNameAfterRename(redo ? oldStem : newStem, redo ? newStem : oldStem);
-				};
-			}
-
-			m_NeedsRefresh = true;
-		}
-		FinishFileEdit(edit);
-	}
-
-	void AssetBrowser::SyncSceneEmbeddedNameIfNeeded(const std::filesystem::path& copiedPath) {
-		if (NormalizeSceneStem(copiedPath.extension().string()) != ".scene") return;
-		SyncSceneEmbeddedNameToFilename(copiedPath.string(), copiedPath.stem().string());
-	}
-
-	void AssetBrowser::CopyPathToClipboard(const std::string& path) {
-		ImGui::SetClipboardText(path.c_str());
-	}
-
-	void AssetBrowser::CreateAssetWithCollisionCheck(
-		std::filesystem::path preferredPath,
-		std::function<void(const std::filesystem::path&)> doCreate)
-	{
-		doCreate = [this, create = std::move(doCreate)](const std::filesystem::path& path) {
-			if (!AssetFileHistory::DestinationAvailable(path)) {
-				FNK_WARN_TAG("AssetBrowser", "Creation target or metadata already exists: {}", path.string());
-				return;
-			}
-			auto edit = BeginFileEdit({ path.string() }, "Create Asset");
+			if (!AssetFileHistory::DestinationAvailable(targetPath)) continue;
+			auto edit = BeginFileEdit(m_AssetClipboardCut ? std::vector<std::string>{ sourcePathString, targetPath.string() }
+				: std::vector<std::string>{ targetPath.string() }, m_AssetClipboardCut ? "Move Asset" : "Paste Asset");
 			if (!edit) return;
-			create(path);
-			RegisterRegistryAssetTree(path);
-			FinishFileEdit(edit);
-		};
-		std::error_code ec;
-		const bool exists = !AssetFileHistory::DestinationAvailable(preferredPath);
-		if (!exists) {
-			doCreate(preferredPath);
-			return;
-		}
-
-		auto prompt = std::make_unique<PendingCreationPrompt>();
-		prompt->PreferredPath = std::move(preferredPath);
-		prompt->DisplayName = prompt->PreferredPath.filename().string();
-		prompt->DoCreate = std::move(doCreate);
-		m_PendingCreationPrompt = std::move(prompt);
-		m_OpenCreationPromptThisFrame = true;
-	}
-
-	void AssetBrowser::RenderCreationCollisionPrompt() {
-		constexpr const char* k_PromptId = "Asset already exists###AssetBrowserCollision";
-
-		if (m_OpenCreationPromptThisFrame) {
-			ImGui::OpenPopup(k_PromptId);
-			m_OpenCreationPromptThisFrame = false;
-		}
-
-		if (!m_PendingCreationPrompt) return;
-
-		// Center on the main viewport (= editor window). Promoted to a real OS
-		// window via SetNextWindowAsNativeDialog so the prompt isn't trapped
-		// inside the editor and still works while the editor is unfocused.
-		const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
-		ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-		ImGui::SetNextWindowSize(ImVec2(420, 0), ImGuiCond_Appearing);
-		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
-
-		if (ImGuiDialog::BeginModal(k_PromptId, nullptr, ImGuiWindowFlags_NoSavedSettings)) {
-			ImGuiDialog::Message("##Collision", ("An asset named \"" + m_PendingCreationPrompt->DisplayName
-				+ "\" already exists in this folder.").c_str());
-			ImGui::Spacing();
-			// The footer has no per-button tooltips, so the choices are explained inline.
-			ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
-			ImGui::TextWrapped("Make Copy keeps the existing asset and creates the new one with a numbered suffix.");
-			ImGui::PopStyleColor();
-
-			bool decided = false;
-			// Move the prompt out before invoking DoCreate so the callback can
-			// re-enter CreateAssetWithCollisionCheck without trampling state.
-			auto finishWith = [&](const std::filesystem::path& finalPath) {
-				auto local = std::move(m_PendingCreationPrompt);
-				local->DoCreate(finalPath);
-				decided = true;
-			};
-
-			const int choice = EditorUI::DialogFooter({ "Make Copy", "Cancel" }, /*primary=*/0);
-			if (choice == 0) {
-				const std::filesystem::path parent = m_PendingCreationPrompt->PreferredPath.parent_path();
-				const std::string stem = m_PendingCreationPrompt->PreferredPath.stem().string();
-				const std::string ext = m_PendingCreationPrompt->PreferredPath.extension().string();
-				std::filesystem::path candidate = m_PendingCreationPrompt->PreferredPath;
-				std::error_code ec;
-				for (int n = 1; !AssetFileHistory::DestinationAvailable(candidate) && n < 10000; ++n) {
-					candidate = parent / (FormatDuplicateAssetName(stem, n) + ext);
-					ec.clear();
+			bool succeeded = false;
+			std::vector<std::string> movedSourceAssetPaths;
+			if (m_AssetClipboardCut) {
+				if (sameDirectory) {
+					continue;
 				}
-				finishWith(candidate);
-			}
-			else if (choice == 1) {
-				m_PendingCreationPrompt.reset();
-				decided = true;
-			}
-
-			if (!decided && ImGui::IsKeyPressed(ImGuiKey_Escape)) {
-				m_PendingCreationPrompt.reset();
-				decided = true;
-			}
-
-			if (decided) {
-				ImGui::CloseCurrentPopup();
-			}
-			ImGui::EndPopup();
-		}
-	}
-
-	void AssetBrowser::RequestDeleteSelectedAssets() {
-		const std::vector<std::string> paths = GetSelectedPaths();
-		if (paths.empty()) {
-			return;
-		}
-
-		// Confirmation disabled in preferences: delete straight away.
-		if (!EditorPreferences::GetConfirmOnDeleteAsset()) {
-			DeleteSelectedAssets();
-			return;
-		}
-
-		m_PendingDeletePaths = paths;
-		m_OpenDeletePromptThisFrame = true;
-	}
-
-	void AssetBrowser::RenderDeleteConfirmationPrompt() {
-		constexpr const char* k_DeleteId = "Delete Asset###AssetBrowserDelete";
-
-		if (m_OpenDeletePromptThisFrame) {
-			ImGui::OpenPopup(k_DeleteId);
-			m_OpenDeletePromptThisFrame = false;
-		}
-
-		if (m_PendingDeletePaths.empty()) return;
-
-		// Same native-dialog centering as RenderCreationCollisionPrompt so the
-		// prompt isn't trapped inside the editor window.
-		const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
-		ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-		ImGui::SetNextWindowSize(ImVec2(420, 0), ImGuiCond_Appearing);
-		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
-
-		if (ImGuiDialog::BeginModal(k_DeleteId, nullptr, ImGuiWindowFlags_NoSavedSettings)) {
-			if (m_PendingDeletePaths.size() == 1) {
-				const std::string name = std::filesystem::path(m_PendingDeletePaths.front()).filename().string();
-				ImGuiDialog::Message("##DeleteAsset", ("Delete \"" + name + "\"?").c_str());
+				CollectRegistryAssetPaths(sourcePath, movedSourceAssetPaths);
+				succeeded = MoveEntryTo(sourcePath, targetPath);
 			}
 			else {
-				ImGui::TextWrapped("Delete %zu selected items?", m_PendingDeletePaths.size());
-			}
-			ImGui::Spacing();
-			ImGui::TextDisabled("You can undo this while the project remains open.");
-
-			bool decided = false;
-			// Cancel is the accent default so the safe choice reads first; Delete keeps the destructive style.
-			const int choice = EditorUI::DialogFooter({ "Delete", "Cancel" }, /*primary=*/1, /*danger=*/0);
-			if (choice == 0) {
-				StartAssetDeletion(m_PendingDeletePaths);
-				decided = true;
-			}
-			else if (choice == 1 || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
-				decided = true;
-			}
-
-			if (decided) {
-				m_PendingDeletePaths.clear();
-				ImGui::CloseCurrentPopup();
-			}
-			ImGui::EndPopup();
-		}
-	}
-
-	void AssetBrowser::CreateFolder(const std::string& parentDir) {
-		std::string baseName = "New Folder";
-		std::string folderPath = (std::filesystem::path(parentDir) / baseName).string();
-		int counter = 1;
-		while (!AssetFileHistory::DestinationAvailable(Path::FromUtf8(folderPath))) {
-			folderPath = (std::filesystem::path(parentDir) / (baseName + " " + std::to_string(counter))).string();
-			counter++;
-		}
-
-		auto edit = BeginFileEdit({ folderPath }, "Create Folder");
-		if (!edit) return;
-		Directory::Create(folderPath, false);
-		FinishFileEdit(edit);
-		m_NeedsRefresh = true;
-
-		Refresh();
-
-		m_SelectedPath = folderPath;
-		std::string name = std::filesystem::path(folderPath).filename().string();
-		BeginRename(folderPath, name);
-	}
-
-	void AssetBrowser::CreateScript(const std::string& parentDir) {
-		const std::filesystem::path preferred = std::filesystem::path(parentDir) / "NewEntityScript.cs";
-		CreateAssetWithCollisionCheck(preferred,
-			[this, parentDir](const std::filesystem::path& finalPath) {
-				m_PendingScriptType = PendingScriptType::CSharp;
-				m_PendingScriptDir = parentDir;
-				m_NeedsRefresh = true;
-				Refresh();
-				m_SelectedPath = finalPath.string();
-				BeginRename(finalPath.string(), finalPath.stem().string());
-			});
-	}
-
-	void AssetBrowser::CreateCppScript(const std::string& parentDir) {
-		if (!ProjectManager::GetCurrentProject()) {
-			FNK_WARN_TAG("AssetBrowser", "Open or create a project to add C++ scripts.");
-			return;
-		}
-		const std::filesystem::path preferred = std::filesystem::path(parentDir) / "NewNativeScript.cpp";
-		CreateAssetWithCollisionCheck(preferred,
-			[this, parentDir](const std::filesystem::path& finalPath) {
-				m_PendingScriptType = PendingScriptType::Cpp;
-				m_PendingScriptDir = parentDir;
-				m_NeedsRefresh = true;
-				Refresh();
-				m_SelectedPath = finalPath.string();
-				BeginRename(finalPath.string(), finalPath.stem().string());
-			});
-	}
-
-	void AssetBrowser::CreateManagedCSharpComponent(const std::string& parentDir) {
-		const std::filesystem::path preferred = std::filesystem::path(parentDir) / "NewComponent.cs";
-		CreateAssetWithCollisionCheck(preferred,
-			[this, parentDir](const std::filesystem::path& finalPath) {
-				m_PendingScriptType = PendingScriptType::CSharpComponent;
-				m_PendingScriptDir = parentDir;
-				m_NeedsRefresh = true;
-				Refresh();
-				m_SelectedPath = finalPath.string();
-				BeginRename(finalPath.string(), finalPath.stem().string());
-			});
-	}
-
-	void AssetBrowser::CreateNativeCSharpComponent(const std::string& parentDir) {
-		const std::filesystem::path preferred = std::filesystem::path(parentDir) / "NewNativeComponent.cs";
-		CreateAssetWithCollisionCheck(preferred,
-			[this, parentDir](const std::filesystem::path& finalPath) {
-				m_PendingScriptType = PendingScriptType::CSharpNativeComponent;
-				m_PendingScriptDir = parentDir;
-				m_NeedsRefresh = true;
-				Refresh();
-				m_SelectedPath = finalPath.string();
-				BeginRename(finalPath.string(), finalPath.stem().string());
-			});
-	}
-
-	void AssetBrowser::CreateSceneSystem(const std::string& parentDir) {
-		const std::filesystem::path preferred = std::filesystem::path(parentDir) / "NewSceneSystem.cs";
-		CreateAssetWithCollisionCheck(preferred,
-			[this, parentDir](const std::filesystem::path& finalPath) {
-				m_PendingScriptType = PendingScriptType::CSharpSceneSystem;
-				m_PendingScriptDir = parentDir;
-				m_NeedsRefresh = true;
-				Refresh();
-				m_SelectedPath = finalPath.string();
-				BeginRename(finalPath.string(), finalPath.stem().string());
-			});
-	}
-
-	void AssetBrowser::CreateGlobalSystem(const std::string& parentDir) {
-		const std::filesystem::path preferred = std::filesystem::path(parentDir) / "NewGlobalSystem.cs";
-		CreateAssetWithCollisionCheck(preferred,
-			[this, parentDir](const std::filesystem::path& finalPath) {
-				m_PendingScriptType = PendingScriptType::CSharpGlobalSystem;
-				m_PendingScriptDir = parentDir;
-				m_NeedsRefresh = true;
-				Refresh();
-				m_SelectedPath = finalPath.string();
-				BeginRename(finalPath.string(), finalPath.stem().string());
-			});
-	}
-
-	void AssetBrowser::CreateEmptyScript(const std::string& parentDir) {
-		const std::filesystem::path preferred = std::filesystem::path(parentDir) / "NewScript.cs";
-		CreateAssetWithCollisionCheck(preferred,
-			[this, parentDir](const std::filesystem::path& finalPath) {
-				m_PendingScriptType = PendingScriptType::CSharpEmpty;
-				m_PendingScriptDir = parentDir;
-				m_NeedsRefresh = true;
-				Refresh();
-				m_SelectedPath = finalPath.string();
-				BeginRename(finalPath.string(), finalPath.stem().string());
-			});
-	}
-
-	void AssetBrowser::CreateDataAssetScript(const std::string& parentDir) {
-		const std::filesystem::path preferred = std::filesystem::path(parentDir) / "NewDataAsset.cs";
-		CreateAssetWithCollisionCheck(preferred,
-			[this, parentDir](const std::filesystem::path& finalPath) {
-				m_PendingScriptType = PendingScriptType::CSharpDataAsset;
-				m_PendingScriptDir = parentDir;
-				m_NeedsRefresh = true;
-				Refresh();
-				m_SelectedPath = finalPath.string();
-				BeginRename(finalPath.string(), finalPath.stem().string());
-			});
-	}
-
-	
-	void AssetBrowser::CreateDefaultTexture(const std::string& parentDir,
-		const std::string& sourceFile, const std::string& displayName)
-	{
-		const std::string sourceDir = Path::ResolveFunkeAssets("Textures/Default");
-		if (sourceDir.empty()) {
-			FNK_WARN_TAG("AssetBrowser",
-				"Default textures directory not found (FunkeAssets/Textures/Default). "
-				"Cannot create '{}'.", displayName);
-			return;
-		}
-
-		const std::filesystem::path source =
-			std::filesystem::path(sourceDir) / sourceFile;
-		if (!std::filesystem::exists(source)) {
-			FNK_WARN_TAG("AssetBrowser",
-				"Default texture '{}' not found at {}.",
-				sourceFile, source.string());
-			return;
-		}
-
-		const std::string ext = source.extension().string();
-		const std::filesystem::path preferred =
-			std::filesystem::path(parentDir) / (displayName + ext);
-
-		CreateAssetWithCollisionCheck(preferred,
-			[this, source](const std::filesystem::path& finalPath) {
-				try {
-					std::filesystem::copy_file(source, finalPath,
-						std::filesystem::copy_options::overwrite_existing);
-				}
-				catch (const std::exception& e) {
-					FNK_ERROR_TAG("AssetBrowser",
-						"Failed to copy default texture '{}' to '{}': {}",
-						source.string(), finalPath.string(), e.what());
-					return;
-				}
-
-				const std::string finalPathStr = finalPath.string();
-				AssetRegistry::ImportAssetPathIncremental(finalPathStr);
-				m_NeedsRefresh = true;
-				Refresh();
-				m_SelectedPath = finalPathStr;
-				BeginRename(finalPathStr, finalPath.stem().string());
-			});
-	}
-
-	void AssetBrowser::CreateScene(const std::string& parentDir) {
-		const std::filesystem::path preferred = MakeGloballyUniqueScenePath(
-			std::filesystem::path(parentDir) / "NewScene.scene");
-		if (preferred.empty()) {
-			FNK_WARN_TAG("AssetBrowser", "Could not choose a globally unique scene name");
-			return;
-		}
-
-		CreateAssetWithCollisionCheck(preferred,
-			[this](const std::filesystem::path& finalPath) {
-				const std::string sceneName = finalPath.stem().string();
-				const std::string content =
-					"{\n"
-					"  \"version\": 1,\n"
-					"  \"name\": \"" + sceneName + "\",\n"
-					"  \"systems\": [],\n"
-					"  \"entities\": [\n"
-					"    {\n"
-					"      \"name\": \"Camera\",\n"
-					"      \"Transform2D\": { \"posX\": 0, \"posY\": 0, \"rotation\": 0, \"scaleX\": 1, \"scaleY\": 1 },\n"
-					"      \"Camera2D\": { \"orthoSize\": 5, \"zoom\": 1 }\n"
-					"    }\n"
-					"  ]\n"
-					"}\n";
-
-				const std::string finalPathStr = finalPath.string();
-				if (!File::WriteAllText(finalPathStr, content)) {
-					FNK_WARN_TAG("AssetBrowser", "Failed to create scene '{}'", finalPathStr);
-					return;
-				}
-
-				AssetRegistry::ImportAssetPathIncremental(finalPathStr);
-				m_NeedsRefresh = true;
-				Refresh();
-				m_SelectedPath = finalPathStr;
-				BeginRename(finalPathStr, finalPath.filename().string());
-			});
-	}
-
-	void AssetBrowser::CreateDataAsset(const std::string& parentDir, const std::string& typeName) {
-		const std::string fileName = typeName.starts_with("type:") ? typeName.substr(5) : typeName;
-		const std::filesystem::path preferred =
-			std::filesystem::path(parentDir) / (fileName + ".dataasset");
-
-		CreateAssetWithCollisionCheck(preferred,
-			[this, typeName](const std::filesystem::path& finalPath) {
-				const std::string finalPathStr = finalPath.string();
-				// DataAssetManager::Create writes the {version,type,fields} stub and registers the GUID.
-				if (DataAssetManager::Create(finalPathStr, typeName) == 0)
-					return;
-
-				m_NeedsRefresh = true;
-				Refresh();
-				m_SelectedPath = finalPathStr;
-				BeginRename(finalPathStr, finalPath.stem().string());
-			});
-	}
-
-	void AssetBrowser::CreateMaterial(const std::string& parentDir) {
-		const std::filesystem::path preferred = std::filesystem::path(parentDir) / (std::string("NewMaterial") + k_MaterialExtension);
-
-		CreateAssetWithCollisionCheck(preferred,
-			[this](const std::filesystem::path& finalPath) {
-				const std::string finalPathStr = finalPath.string();
-				if (!MaterialLibrary::SaveToFile(finalPathStr, Material{})) {
-					FNK_WARN_TAG("AssetBrowser", "Failed to create material '{}'", finalPathStr);
-					return;
-				}
-
-				AssetRegistry::ImportAssetPathIncremental(finalPathStr);
-				m_NeedsRefresh = true;
-				Refresh();
-				m_SelectedPath = finalPathStr;
-				BeginRename(finalPathStr, finalPath.stem().string());
-			});
-	}
-
-	void AssetBrowser::CreateAnimationAsset(const std::string& parentDir, bool controller) {
-		const std::filesystem::path preferred = std::filesystem::path(parentDir)
-			/ (controller ? std::string("NewAnimator") + k_AnimatorControllerExtension : std::string("NewAnimation") + k_AnimationClipExtension);
-
-		CreateAssetWithCollisionCheck(preferred,
-			[this, controller](const std::filesystem::path& finalPath) {
-				const std::string finalPathStr = finalPath.string();
-				const bool saved = controller
-					? AnimatorControllerLibrary::SaveToFile(finalPathStr, AnimatorController{})
-					: AnimationClipLibrary::SaveToFile(finalPathStr, AnimationClip{});
-				if (!saved) {
-					FNK_WARN_TAG("AssetBrowser", "Failed to create '{}'", finalPathStr);
-					return;
-				}
-
-				AssetRegistry::ImportAssetPathIncremental(finalPathStr);
-				m_NeedsRefresh = true;
-				Refresh();
-				m_SelectedPath = finalPathStr;
-				BeginRename(finalPathStr, finalPath.stem().string());
-			});
-	}
-
-	void AssetBrowser::CreateFile(const std::string& parentDir, const std::string& baseName,
-		const std::string& extension, const std::string& defaultContent) {
-		// Normalize: extension may or may not include the leading dot.
-		const std::string ext = (extension.empty() || extension[0] == '.') ? extension : ("." + extension);
-
-		const std::filesystem::path preferred =
-			std::filesystem::path(parentDir) / (baseName + ext);
-
-		CreateAssetWithCollisionCheck(preferred,
-			[this, defaultContent](const std::filesystem::path& finalPath) {
-				const std::string finalPathStr = finalPath.string();
-				std::ofstream file(finalPathStr, std::ios::binary);
-				if (file.is_open()) {
-					if (!defaultContent.empty()) {
-						file.write(defaultContent.data(),
-							static_cast<std::streamsize>(defaultContent.size()));
-					}
-					file.close();
-				}
-
-				AssetRegistry::ImportAssetPathIncremental(finalPathStr);
-				m_NeedsRefresh = true;
-				Refresh();
-				m_SelectedPath = finalPathStr;
-				BeginRename(finalPathStr,
-					std::filesystem::path(finalPathStr).stem().string());
-			});
-	}
-
-	void AssetBrowser::CreateEntityPrefab(const std::string& parentDir, EntityHandle sourceEntity) {
-		const std::filesystem::path preferred =
-			std::filesystem::path(parentDir) / "NewPrefab.prefab";
-
-		CreateAssetWithCollisionCheck(preferred,
-			[this, parentDir, sourceEntity](const std::filesystem::path& finalPath) {
-				const std::string finalPathStr = finalPath.string();
-
-				if (sourceEntity != entt::null) {
-					Scene* activeScene = SceneManager::GetActiveScene();
-					if (activeScene && activeScene->IsValid(sourceEntity)) {
-						SceneSerializer::SaveEntityToFile(*activeScene, sourceEntity, finalPathStr);
-					}
-				}
-				else {
-					const std::string content =
-						"{\n"
-						"  \"version\": 1,\n"
-						"  \"type\": \"Prefab\",\n"
-						"  \"Entity\": {\n"
-						"    \"Transform2D\": { \"posX\": 0, \"posY\": 0, \"rotation\": 0, \"scaleX\": 1, \"scaleY\": 1 }\n"
-						"  },\n"
-						"  \"prefab\": {\n"
-						"    \"Transform2D\": { \"posX\": 0, \"posY\": 0, \"rotation\": 0, \"scaleX\": 1, \"scaleY\": 1 }\n"
-						"  }\n"
-						"}\n";
-					std::ofstream file(finalPathStr);
-					if (file.is_open()) {
-						file << content;
-						file.close();
-					}
-				}
-
-				AssetRegistry::ImportAssetPathIncremental(finalPathStr);
-				m_PendingScriptType = PendingScriptType::EntityPrefab;
-				m_PendingScriptDir = parentDir;
-				m_PendingPrefabSourceEntity = sourceEntity;
-				m_NeedsRefresh = true;
-				Refresh();
-				m_SelectedPath = finalPathStr;
-				BeginRename(finalPathStr, finalPath.filename().string());
-			});
-	}
-
-	void AssetBrowser::OpenAssetExternal(const DirectoryEntry& entry) {
-		try
-		{
-			std::string ext = std::filesystem::path(entry.Path).extension().string();
-			std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-
-			if (ext == ".scene")
-			{
-				m_PendingSceneLoad = entry.Path;
-				return;
-			}
-
-			if (ext == ".anim" || ext == ".animctrl")
-			{
-				m_PendingAnimationOpen = entry.Path;
-				return;
-			}
-
-			if (ext == ".prefab")
-			{
-				// Defer: ImGuiEditorLayer drains this in OnPreRender to enter prefab-edit mode; routing here keeps prefab and scene double-click behaviour in the same place.
-				m_PendingPrefabEdit = entry.Path;
-				return;
-			}
-
-			if (ExternalEditor::IsScriptExtension(ext))
-			{
-				std::filesystem::path scriptPath = entry.Path;
-				const std::filesystem::path nativeMirrorPath = ResolveNativeScriptMirrorPath(entry.Path);
-				if (!nativeMirrorPath.empty() && std::filesystem::exists(nativeMirrorPath)) {
-					scriptPath = nativeMirrorPath;
-				}
-				ExternalEditor::OpenFile(scriptPath.string());
-				return;
-			}
-
-#ifdef FNK_PLATFORM_WINDOWS
-			// ShellExecuteW is needed for OS file-association handling; threads are tracked (not detached) so Shutdown can join them.
-			static constexpr int k_MaxConcurrentOpens = 8;
-			static std::atomic<int> s_ActiveOpens{ 0 };
-			if (s_ActiveOpens.load(std::memory_order_acquire) >= k_MaxConcurrentOpens) {
-				FNK_WARN_TAG("AssetBrowser",
-					"Skipping external open for '{}' — too many concurrent shell launches.",
-					entry.Path);
-				return;
-			}
-			s_ActiveOpens.fetch_add(1, std::memory_order_acq_rel);
-
-			std::wstring wpath = std::filesystem::absolute(entry.Path).wstring();
-			std::thread worker([wpath]() {
-				CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-				ShellExecuteW(nullptr, L"open", wpath.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-				CoUninitialize();
-				s_ActiveOpens.fetch_sub(1, std::memory_order_acq_rel);
-			});
-			TrackShellLaunchThread(std::move(worker));
-#else
-			Platform::OpenPath(std::filesystem::absolute(entry.Path));
-#endif
-		}
-		catch (...) {}
-	}
-
-	void AssetBrowser::StartExternalAssetImport(std::vector<std::string> paths, std::string destinationDirectory) {
-		if (paths.empty() || destinationDirectory.empty()) {
-			return;
-		}
-
-		// Import and delete share the single Win32 progress popup and the
-		// (unsynchronized) AssetRegistry, so they must not overlap. A delete already in
-		// flight wins; the drop is ignored (same behaviour as dropping mid-import).
-		if (m_DeleteActive.load(std::memory_order_acquire)) {
-			FNK_CORE_WARN_TAG("AssetBrowser", "Asset deletion is in progress; ignoring {} dropped path(s).", paths.size());
-			return;
-		}
-
-		if (m_ImportActive.exchange(true, std::memory_order_acq_rel)) {
-			FNK_CORE_WARN_TAG("AssetBrowser", "Asset import is already running; ignoring {} dropped path(s).", paths.size());
-			return;
-		}
-
-		if (m_ImportThread.joinable()) {
-			m_ImportThread.join();
-		}
-
-		{
-			std::scoped_lock lock(m_ImportMutex);
-			m_ImportWorkerFinished = false;
-			m_ImportResultsConsumed = true;
-			m_ImportDestinationDirectory = destinationDirectory;
-			m_ImportCurrentItem = "Preparing...";
-			m_ImportTotalBytes = 0;
-			m_ImportCopiedBytes = 0;
-			m_ImportTotalRootItems = paths.size();
-			m_ImportProcessedRootItems = 0;
-			m_ImportImportedRootCount = 0;
-			m_ImportImportedRootPaths.clear();
-			m_ImportImportedAssetPaths.clear();
-			m_ImportErrors.clear();
-		}
-
-		try {
-			m_ImportThread = std::thread(
-				&AssetBrowser::RunExternalAssetImport,
-				this,
-				std::move(paths),
-				std::move(destinationDirectory));
-		}
-		catch (const std::exception& e) {
-			m_ImportActive.store(false, std::memory_order_release);
-			FNK_CORE_ERROR_TAG("AssetBrowser", "Failed to start asset import worker: {}", e.what());
-		}
-	}
-
-	void AssetBrowser::RunExternalAssetImport(std::vector<std::string> paths, std::string destinationDirectory) {
-		namespace fs = std::filesystem;
-
-		// Boundary guard: a throw escaping this std::thread body calls std::terminate and kills the
-		// editor. Most fs calls here use error_code, but allocation (the copy buffer, path strings) can
-		// still throw — catch and publish a finished+error state so the import UI recovers instead.
-		try {
-
-		std::vector<std::string> importedRootPaths;
-		std::vector<std::string> importedAssetPaths;
-		std::vector<std::string> errors;
-		std::size_t importedRootCount = 0;
-
-		auto publishCurrentItem = [this](const std::string& item) {
-			std::scoped_lock lock(m_ImportMutex);
-			m_ImportCurrentItem = item;
-		};
-
-		auto publishCopiedBytes = [this](std::uintmax_t bytes) {
-			std::scoped_lock lock(m_ImportMutex);
-			m_ImportCopiedBytes += bytes;
-		};
-
-		auto publishProcessedRoot = [this](std::size_t processed) {
-			std::scoped_lock lock(m_ImportMutex);
-			m_ImportProcessedRootItems = processed;
-		};
-
-		auto appendError = [&errors](const fs::path& path, const std::string& message) {
-			errors.push_back("Failed to import '" + path.string() + "': " + message);
-		};
-
-		publishCurrentItem("Scanning...");
-		std::uintmax_t totalBytes = 0;
-		for (const std::string& pathString : paths) {
-			if (!m_ImportActive.load(std::memory_order_acquire)) {
-				break;
-			}
-
-			std::error_code ec;
-			const fs::path path(pathString);
-			if (fs::exists(path, ec) && !ec) {
-				CollectImportByteSize(path, totalBytes);
-			}
-		}
-
-		{
-			std::scoped_lock lock(m_ImportMutex);
-			m_ImportTotalBytes = totalBytes;
-		}
-
-		const fs::path destDir(destinationDirectory);
-		for (std::size_t i = 0; i < paths.size(); ++i) {
-			if (!m_ImportActive.load(std::memory_order_acquire)) {
-				break;
-			}
-
-			const fs::path src(paths[i]);
-			publishCurrentItem(src.filename().empty() ? src.string() : src.filename().string());
-
-			std::error_code ec;
-			if (!fs::exists(src, ec) || ec) {
-				appendError(src, ec ? ec.message() : "source path does not exist");
-				publishProcessedRoot(i + 1);
-				continue;
-			}
-
-			bool importedThisRoot = false;
-			fs::path importedRootPath;
-
-			if (fs::is_directory(src, ec) && !ec) {
-				const fs::path destRoot = MakeUniqueImportFilePath(src, destDir);
-				const bool created = !destRoot.empty() && AssetFileHistory::DestinationAvailable(destRoot) && fs::create_directory(destRoot, ec);
-				if (!created || ec) {
-					appendError(src, ec.message());
-					publishProcessedRoot(i + 1);
-					continue;
-				}
-
-				importedThisRoot = true;
-				importedRootPath = destRoot;
-
-				for (fs::recursive_directory_iterator it(
-					 src,
-					 fs::directory_options::skip_permission_denied,
-					 ec), end;
-					 it != end && m_ImportActive.load(std::memory_order_acquire);
-					 it.increment(ec)) {
-					if (ec) {
-						ec.clear();
-						continue;
-					}
-
-					std::error_code relEc;
-					const fs::path rel = fs::relative(it->path(), src, relEc);
-					if (relEc) {
-						continue;
-					}
-
-					fs::path dest = destRoot / rel;
-					std::error_code entryEc;
-					if (it->is_directory(entryEc) && !entryEc) {
-						fs::create_directories(dest, entryEc);
-						if (entryEc) {
-							appendError(it->path(), entryEc.message());
-						}
-						continue;
-					}
-
-					entryEc.clear();
-					if (!it->is_regular_file(entryEc) || entryEc) {
-						continue;
-					}
-					if (NormalizeSceneStem(dest.extension().string()) == ".scene") {
-						dest = MakeGloballyUniqueScenePath(dest);
-						if (dest.empty()) {
-							appendError(it->path(), "could not choose a globally unique scene name");
-							continue;
-						}
-					}
-
-					if (fs::exists(dest, entryEc) && !entryEc) {
-						publishCopiedBytes(SafeFileSize(it->path()));
-						continue;
-					}
-
-					if (CopyFileChunked(it->path(), dest, false, m_ImportActive, publishCopiedBytes)) {
-						AddImportedAssetPath(importedAssetPaths, dest);
-					}
-					else if (m_ImportActive.load(std::memory_order_acquire)) {
-						appendError(it->path(), "copy failed");
-					}
-				}
-			}
-			else if (fs::is_regular_file(src, ec) && !ec) {
-				if (AssetRegistry::IsMetaFilePath(src.string())) continue;
-				const fs::path dest = MakeUniqueImportFilePath(src, destDir);
-				if (dest.empty() || !AssetFileHistory::DestinationAvailable(dest)) {
-					appendError(src, "could not choose a globally unique scene name");
-					publishProcessedRoot(i + 1);
-					continue;
-				}
-				if (CopyFileChunked(src, dest, false, m_ImportActive, publishCopiedBytes)) {
-					importedThisRoot = true;
-					importedRootPath = dest;
-					AddImportedAssetPath(importedAssetPaths, dest);
-					auto sourceMeta = src; sourceMeta += ".meta";
-					auto destinationMeta = dest; destinationMeta += ".meta";
-					if (fs::is_regular_file(sourceMeta, ec) && !ec) {
-						CopyFileChunked(sourceMeta, destinationMeta, false, m_ImportActive, publishCopiedBytes);
-					}
-				}
-				else if (m_ImportActive.load(std::memory_order_acquire)) {
-					appendError(src, "copy failed");
+				succeeded = CopyEntryTo(sourcePath, targetPath);
+				if (succeeded) {
+					SyncSceneEmbeddedNameIfNeeded(targetPath);
 				}
 			}
 
-			if (importedThisRoot) {
-				++importedRootCount;
-				importedRootPaths.push_back(importedRootPath.string());
-			}
-
-			publishProcessedRoot(i + 1);
-		}
-
-		{
-			std::scoped_lock lock(m_ImportMutex);
-			m_ImportCurrentItem = m_ImportActive.load(std::memory_order_acquire) ? "Copy complete" : "Cancelled";
-			m_ImportImportedRootCount = importedRootCount;
-			m_ImportImportedRootPaths = std::move(importedRootPaths);
-			m_ImportImportedAssetPaths = std::move(importedAssetPaths);
-			m_ImportErrors = std::move(errors);
-			m_ImportWorkerFinished = true;
-			m_ImportResultsConsumed = false;
-		}
-		}
-		catch (const std::exception& e) {
-			FNK_CORE_ERROR_TAG("AssetBrowser", "Asset import worker crashed: {}", e.what());
-			std::scoped_lock lock(m_ImportMutex);
-			m_ImportCurrentItem = "Import failed";
-			m_ImportErrors.push_back(std::string("Import failed: ") + e.what());
-			m_ImportWorkerFinished = true;
-			m_ImportResultsConsumed = false;
-		}
-		catch (...) {
-			FNK_CORE_ERROR_TAG("AssetBrowser", "Asset import worker crashed: unknown exception");
-			std::scoped_lock lock(m_ImportMutex);
-			m_ImportCurrentItem = "Import failed";
-			m_ImportErrors.push_back("Import failed: unknown error");
-			m_ImportWorkerFinished = true;
-			m_ImportResultsConsumed = false;
-		}
-	}
-
-	void AssetBrowser::ConsumeFinishedExternalAssetImport() {
-		bool shouldConsume = false;
-		{
-			std::scoped_lock lock(m_ImportMutex);
-			shouldConsume = m_ImportWorkerFinished && !m_ImportResultsConsumed;
-		}
-
-		if (!shouldConsume) {
-			return;
-		}
-
-		if (m_ImportThread.joinable()) {
-			m_ImportThread.join();
-		}
-
-		std::vector<std::string> errors;
-		{
-			std::scoped_lock lock(m_ImportMutex);
-			m_PendingImportedAssetRegistrations = std::move(m_ImportImportedAssetPaths);
-			m_PendingImportRootPaths = std::move(m_ImportImportedRootPaths);
-			m_PendingImportRootCount = m_ImportImportedRootCount;
-			m_PendingImportDestinationDirectory = m_ImportDestinationDirectory;
-			m_PendingImportedAssetRegistrationIndex = 0;
-			errors = std::move(m_ImportErrors);
-			m_ImportResultsConsumed = true;
-		}
-
-		for (const std::string& error : errors) {
-			FNK_CORE_WARN_TAG("AssetBrowser", "{}", error);
-		}
-	}
-
-	void AssetBrowser::ProcessPendingImportedAssetRegistrations() {
-		if (!m_ImportActive.load(std::memory_order_acquire)) {
-			return;
-		}
-
-		const bool workerDone = [&]() {
-			std::scoped_lock lock(m_ImportMutex);
-			return m_ImportWorkerFinished && m_ImportResultsConsumed;
-		}();
-
-		if (!workerDone) {
-			return;
-		}
-
-		const auto start = std::chrono::steady_clock::now();
-		constexpr auto kBudget = std::chrono::milliseconds(4);
-		std::size_t processedThisFrame = 0;
-
-		while (m_PendingImportedAssetRegistrationIndex < m_PendingImportedAssetRegistrations.size()) {
-			const std::string& path = m_PendingImportedAssetRegistrations[m_PendingImportedAssetRegistrationIndex];
-			SyncSceneEmbeddedNameIfNeeded(path);
-			AssetRegistry::ImportAssetPathIncremental(path);
-			m_Thumbnails.Invalidate(path);
-			++m_PendingImportedAssetRegistrationIndex;
-			++processedThisFrame;
-
-			if (processedThisFrame >= 1 && std::chrono::steady_clock::now() - start >= kBudget) {
-				return;
+			if (succeeded) {
+				if (m_AssetClipboardCut) {
+					ForgetRegistryAssetPaths(movedSourceAssetPaths);
+				}
+				RegisterRegistryAssetTree(targetPath);
+				FinishFileEdit(edit);
+				pastedPaths.push_back(targetPath.string());
+				if (m_AssetClipboardCut) m_Thumbnails.Invalidate(sourcePath.string());
+				m_Thumbnails.Invalidate(targetPath.string());
 			}
 		}
 
-		if (m_PendingImportRootCount > 0) {
-			if (m_CurrentDirectory == m_PendingImportDestinationDirectory) {
-				m_SelectedPaths = m_PendingImportRootPaths;
-				m_SelectedPath = m_PendingImportRootPaths.empty() ? std::string{} : m_PendingImportRootPaths.back();
-				m_LastSelectionIndex = -1;
-			}
-			m_SkipRegistrySyncOnNextRefresh = true;
+		if (m_AssetClipboardCut) {
+			m_AssetClipboardPaths.clear();
+			m_AssetClipboardCut = false;
+		}
+
+		if (!pastedPaths.empty()) {
+			m_SelectedPaths = pastedPaths;
+			m_SelectedPath = pastedPaths.back();
+			m_LastSelectionIndex = -1;
 			m_NeedsRefresh = true;
-			m_SuppressNextAssetWatcherRefresh.store(true, std::memory_order_release);
-			FNK_CORE_INFO_TAG("AssetBrowser",
-				"Imported {} item(s) into {}",
-				m_PendingImportRootCount,
-				m_PendingImportDestinationDirectory);
 		}
-
-		if (!m_PendingImportRootPaths.empty()) {
-			try {
-				m_FileHistory.RecordCreated(m_PendingImportRootPaths, "Import Assets");
-				m_AssetHistoryContext = true;
-			}
-			catch (const std::exception& error) { FNK_ERROR_TAG("AssetUndo", "Cannot record import: {}", error.what()); }
-		}
-		m_PendingImportedAssetRegistrations.clear();
-		m_PendingImportRootPaths.clear();
-		m_PendingImportedAssetRegistrationIndex = 0;
-		m_PendingImportRootCount = 0;
-		m_PendingImportDestinationDirectory.clear();
-		m_ImportActive.store(false, std::memory_order_release);
 	}
 
-	void AssetBrowser::UpdateExternalAssetImportProgressWindow() {
-		if (!m_ImportActive.load(std::memory_order_acquire)) {
-			if (m_ImportProgressWindowVisible) {
-				Win32BuildProgressWindow::Hide();
-				m_ImportProgressWindowVisible = false;
-			}
+	void AssetBrowser::DuplicateSelectedAssets() {
+		const std::vector<std::string> selectedPaths = GetSelectedPaths();
+		if (selectedPaths.empty()) {
 			return;
 		}
 
-		if (!m_ImportProgressWindowVisible) {
-			Win32BuildProgressWindow::Show("Importing Assets...");
-			m_ImportProgressWindowVisible = true;
-		}
-
-		float progress = 0.0f;
-		std::string stage = "Preparing...";
-
-		const bool workerDone = [&]() {
-			std::scoped_lock lock(m_ImportMutex);
-			return m_ImportWorkerFinished && m_ImportResultsConsumed;
-		}();
-
-		if (workerDone) {
-			const std::size_t total = m_PendingImportedAssetRegistrations.size();
-			if (total > 0) {
-				progress = 0.90f + 0.10f * (
-					static_cast<float>(m_PendingImportedAssetRegistrationIndex) /
-					static_cast<float>(total));
-				stage = "Indexing assets...";
-			}
-			else {
-				progress = 1.0f;
-				stage = "Done";
-			}
-		}
-		else {
-			std::uintmax_t totalBytes = 0;
-			std::uintmax_t copiedBytes = 0;
-			std::size_t totalRoots = 0;
-			std::size_t processedRoots = 0;
-			{
-				std::scoped_lock lock(m_ImportMutex);
-				totalBytes = m_ImportTotalBytes;
-				copiedBytes = m_ImportCopiedBytes;
-				totalRoots = m_ImportTotalRootItems;
-				processedRoots = m_ImportProcessedRootItems;
-				stage = m_ImportCurrentItem.empty() ? "Copying..." : m_ImportCurrentItem;
-			}
-
-			if (totalBytes > 0) {
-				progress = 0.90f * std::min(
-					1.0f,
-					static_cast<float>(copiedBytes) / static_cast<float>(totalBytes));
-			}
-			else if (totalRoots > 0) {
-				progress = 0.10f * (
-					static_cast<float>(processedRoots) / static_cast<float>(totalRoots));
-			}
-		}
-
-		Win32BuildProgressWindow::Update(progress, stage);
-	}
-
-	void AssetBrowser::PumpExternalAssetImport() {
-		ConsumeFinishedExternalAssetImport();
-		ProcessPendingImportedAssetRegistrations();
-		UpdateExternalAssetImportProgressWindow();
-	}
-
-	void AssetBrowser::OnExternalFileDrop(const std::vector<std::string>& paths) {
-		if (m_CurrentDirectory.empty()) return;
-		if (paths.empty()) return;
-
-		StartExternalAssetImport(paths, m_CurrentDirectory);
-	}
-
-	void AssetBrowser::StartAssetDeletion(std::vector<std::string> paths) {
-		if (paths.empty()) {
-			return;
-		}
-
-		// Registry publication and the progress window have a single owner.
-
-		if (IsImportingAssets() || IsDeleting()) return;
-
-		// A finished-but-not-yet-reaped worker can linger if the editor closed the
-		// progress flow early; drain it before reusing the thread handle.
-		if (m_DeleteThread.joinable()) {
-			m_DeleteThread.join();
-		}
-
-		// Main-thread, pre-spawn bookkeeping. The actual filesystem removal is the slow
-		// part and runs on the worker; everything that needs the files to still exist
-		// (native-mirror resolution) or touches render/UI state happens here, and the
-		// registry/scene/selection cleanup is deferred to the pump once the worker
-		// reports which roots actually got deleted.
-		std::vector<DeleteRootInfo> roots;
-		roots.reserve(paths.size());
-		for (const std::string& path : paths) {
-			// Defer thumbnail invalidation to next frame's Render() exactly as the sync
-			// DeleteEntry did — destroying the GPU texture now would dangle a
-			// WGPUTextureView mid-frame (see m_PendingThumbnailInvalidates docs).
-			m_PendingThumbnailInvalidates.push_back(path);
-
-			DeleteRootInfo info;
-			info.Path = path;
+		std::vector<std::string> duplicatedPaths;
+		for (const std::string& sourcePathString : selectedPaths) {
+			const std::filesystem::path sourcePath(sourcePathString);
 			std::error_code ec;
-			info.IsDirectory = std::filesystem::is_directory(path, ec) && !ec;
-
-			const std::filesystem::path mirror = ResolveNativeScriptMirrorPath(path);
-			info.NativeMirrorPath = mirror.empty() ? std::string{} : mirror.string();
-
-			const std::filesystem::path pathFs(path);
-			if (!info.IsDirectory && pathFs.extension() == ".scene") {
-				info.SceneStem = pathFs.stem().string();
-			}
-
-			roots.push_back(std::move(info));
-		}
-
-		// A pending rename targeting one of these paths would otherwise resolve against
-		// a vanished file; cancel it now (matches the old sync DeleteEntry).
-		CancelRename();
-
-		{
-			std::scoped_lock lock(m_DeleteMutex);
-			m_DeleteWorkerFinished = false;
-			m_DeleteResultsConsumed = true;
-			m_DeleteCurrentItem = "Preparing...";
-			m_DeleteForgetAssetPaths.clear();
-			m_DeleteSucceededRoots.clear();
-			m_DeleteErrors.clear();
-		}
-		// m_DeleteRoots / m_DeleteStartTime need no atomics or lock: the std::thread
-		// constructor below establishes a happens-before edge, so every write here is
-		// visible to the worker, and the worker is join()ed before they are touched
-		// again (pump / next Start). m_DeleteStartTime is then only ever read on the
-		// main thread.
-		m_DeleteFileEdit.reset();
-		m_DeleteRoots = std::move(roots);
-		m_DeleteTotalEntries.store(0, std::memory_order_release);
-		m_DeleteProcessedEntries.store(0, std::memory_order_release);
-		m_DeleteStartTime = std::chrono::steady_clock::now();
-		m_DeleteActive.store(true, std::memory_order_release);
-
-		try {
-			m_DeleteThread = std::thread(&AssetBrowser::RunAssetDeletion, this);
-		}
-		catch (const std::exception& e) {
-			m_DeleteActive.store(false, std::memory_order_release);
-			FNK_CORE_ERROR_TAG("AssetBrowser", "Failed to start asset deletion worker: {}", e.what());
-			// Worker never launched — complete the user's action synchronously.
-			std::vector<DeleteRootInfo> fallback = std::move(m_DeleteRoots);
-			m_DeleteRoots.clear();
-			for (const DeleteRootInfo& info : fallback) {
-				DeleteEntry(info.Path);
-			}
-		}
-	}
-
-	void AssetBrowser::RunAssetDeletion() {
-		namespace fs = std::filesystem;
-
-		// Boundary guard: a throw escaping this std::thread body calls std::terminate
-		// and kills the editor. fs calls use error_code, but allocation (the path
-		// vectors) can still throw — catch and publish a finished+error state so the
-		// deletion UI recovers instead.
-		try {
-
-		std::vector<std::string> undoPaths;
-		for (const auto& root : m_DeleteRoots) {
-			undoPaths.push_back(root.Path);
-			if (!root.NativeMirrorPath.empty()) undoPaths.push_back(root.NativeMirrorPath);
-		}
-		m_DeleteFileEdit = m_FileHistory.Begin(undoPaths, "Delete Assets");
-
-		auto publishCurrentItem = [this](const std::string& item) {
-			std::scoped_lock lock(m_DeleteMutex);
-			m_DeleteCurrentItem = item;
-		};
-
-		// --- Pass 1: enumerate every entry up front so the progress bar is determinate. ---
-		struct RootPlan {
-			const DeleteRootInfo* Info = nullptr;
-			std::vector<fs::path> Removal;        // ordered children-before-parents
-			std::vector<std::string> AssetPaths;  // non-.meta assets to forget on success
-		};
-
-		publishCurrentItem("Scanning...");
-		std::vector<RootPlan> plans;
-		plans.reserve(m_DeleteRoots.size());
-		std::size_t totalEntries = 0;
-
-		for (const DeleteRootInfo& info : m_DeleteRoots) {
-			if (!m_DeleteActive.load(std::memory_order_acquire)) {
-				break;
-			}
-
-			RootPlan plan;
-			plan.Info = &info;
-
-			std::error_code ec;
-			if (info.IsDirectory) {
-				std::vector<fs::path> descendants;
-				for (fs::recursive_directory_iterator it(
-					 info.Path, fs::directory_options::skip_permission_denied, ec), end;
-					 it != end; it.increment(ec)) {
-					// Bail a huge scan on shutdown (Shutdown sets m_DeleteActive=false).
-					if (!m_DeleteActive.load(std::memory_order_acquire)) {
-						break;
-					}
-					if (ec) { ec.clear(); continue; }
-
-					// Never descend INTO a symlink/junction directory: it can point back
-					// up the tree and spin the iterator into unbounded growth. The link
-					// entry itself is still recorded below so the link is removed.
-					std::error_code symEc;
-					if (it->is_symlink(symEc)) {
-						it.disable_recursion_pending();
-					}
-
-					descendants.push_back(it->path());
-
-					std::error_code fileEc;
-					if (it->is_regular_file(fileEc) && !fileEc
-						&& !AssetRegistry::IsMetaFilePath(it->path().string())) {
-						plan.AssetPaths.push_back(it->path().string());
-					}
-				}
-				// recursive_directory_iterator is pre-order (parent before children);
-				// reversing it removes children before their parent. The root directory
-				// itself is appended last so it is empty by the time we remove it.
-				plan.Removal.assign(descendants.rbegin(), descendants.rend());
-				plan.Removal.emplace_back(info.Path);
-			}
-			else {
-				plan.Removal.emplace_back(info.Path);
-				if (!AssetRegistry::IsMetaFilePath(info.Path)) {
-					plan.AssetPaths.push_back(info.Path);
-				}
-			}
-
-			totalEntries += plan.Removal.size();
-			plans.push_back(std::move(plan));
-		}
-
-		m_DeleteTotalEntries.store(totalEntries, std::memory_order_release);
-
-		// --- Pass 2: remove entries bottom-up, publishing progress per entry. ---
-		std::vector<std::string> forgetAssetPaths;
-		std::vector<std::string> succeededRoots;
-		std::vector<std::string> errors;
-
-		for (const RootPlan& plan : plans) {
-			if (!m_DeleteActive.load(std::memory_order_acquire)) {
-				break;
-			}
-
-			const fs::path rootPath(plan.Info->Path);
-			publishCurrentItem(rootPath.filename().empty()
-				? plan.Info->Path : rootPath.filename().string());
-
-			for (const fs::path& entry : plan.Removal) {
-				if (!m_DeleteActive.load(std::memory_order_acquire)) {
-					break;
-				}
-				std::error_code ec;
-				fs::remove(entry, ec);
-				m_DeleteProcessedEntries.fetch_add(1, std::memory_order_acq_rel);
-			}
-
-			if (!plan.Info->NativeMirrorPath.empty()) {
-				std::error_code ec;
-				fs::remove(plan.Info->NativeMirrorPath, ec);
-			}
-
-			// Treat the root as deleted only if it is provably gone: fs::exists returns
-			// false on error too, so without the !existsEc guard a stat failure on a
-			// still-present folder would wrongly forget its assets from the registry.
-			std::error_code existsEc;
-			const bool stillExists = fs::exists(plan.Info->Path, existsEc);
-			if (!stillExists && !existsEc) {
-				succeededRoots.push_back(plan.Info->Path);
-				forgetAssetPaths.insert(forgetAssetPaths.end(),
-					plan.AssetPaths.begin(), plan.AssetPaths.end());
-			}
-			else {
-				errors.push_back("Failed to fully delete '" + plan.Info->Path + "'");
-			}
-		}
-
-		{
-			std::scoped_lock lock(m_DeleteMutex);
-			m_DeleteCurrentItem = m_DeleteActive.load(std::memory_order_acquire) ? "Delete complete" : "Cancelled";
-			m_DeleteForgetAssetPaths = std::move(forgetAssetPaths);
-			m_DeleteSucceededRoots = std::move(succeededRoots);
-			m_DeleteErrors = std::move(errors);
-			m_DeleteWorkerFinished = true;
-			m_DeleteResultsConsumed = false;
-		}
-
-		}
-		catch (const std::exception& e) {
-			FNK_CORE_ERROR_TAG("AssetBrowser", "Asset deletion worker crashed: {}", e.what());
-			std::scoped_lock lock(m_DeleteMutex);
-			m_DeleteCurrentItem = "Delete failed";
-			m_DeleteErrors.push_back(std::string("Delete failed: ") + e.what());
-			m_DeleteWorkerFinished = true;
-			m_DeleteResultsConsumed = false;
-		}
-		catch (...) {
-			FNK_CORE_ERROR_TAG("AssetBrowser", "Asset deletion worker crashed: unknown exception");
-			std::scoped_lock lock(m_DeleteMutex);
-			m_DeleteCurrentItem = "Delete failed";
-			m_DeleteErrors.push_back("Delete failed: unknown error");
-			m_DeleteWorkerFinished = true;
-			m_DeleteResultsConsumed = false;
-		}
-	}
-
-	void AssetBrowser::ConsumeAndApplyFinishedAssetDeletion() {
-		bool shouldApply = false;
-		{
-			std::scoped_lock lock(m_DeleteMutex);
-			shouldApply = m_DeleteWorkerFinished && !m_DeleteResultsConsumed;
-		}
-		if (!shouldApply) {
-			return;
-		}
-
-		if (m_DeleteThread.joinable()) {
-			m_DeleteThread.join();
-		}
-
-		std::vector<std::string> forgetAssetPaths;
-		std::vector<std::string> succeededRoots;
-		std::vector<std::string> errors;
-		{
-			std::scoped_lock lock(m_DeleteMutex);
-			forgetAssetPaths = std::move(m_DeleteForgetAssetPaths);
-			succeededRoots = std::move(m_DeleteSucceededRoots);
-			errors = std::move(m_DeleteErrors);
-			m_DeleteResultsConsumed = true;
-		}
-
-		const std::unordered_set<std::string> succeeded(succeededRoots.begin(), succeededRoots.end());
-
-		// All of this is main-thread-only: AssetRegistry and SceneManager keep
-		// unsynchronized global state, and selection fields are read by Render().
-		for (const DeleteRootInfo& info : m_DeleteRoots) {
-			if (succeeded.find(info.Path) == succeeded.end()) {
+			if (!std::filesystem::exists(sourcePath, ec) || ec) {
 				continue;
 			}
 
-			// Root sidecars are siblings, so the worker does not traverse them.
-
-			AssetRegistry::DeleteCompanionMetadata(info.Path);
-
-			// Drop the SceneDefinition so a script-side LoadScene of the deleted name
-			// can't resurrect an empty Scene from the stale definition.
-			if (!info.SceneStem.empty()) {
-				SceneManager::UnregisterScene(info.SceneStem);
-			}
-
-			if (m_SelectedPath == info.Path) {
-				m_SelectedPath.clear();
-			}
-			m_SelectedPaths.erase(
-				std::remove(m_SelectedPaths.begin(), m_SelectedPaths.end(), info.Path),
-				m_SelectedPaths.end());
-			if (m_PressedPath == info.Path) {
-				m_PressedPath.clear();
+			const std::filesystem::path targetPath = MakeUniqueAssetPath(sourcePath, sourcePath.parent_path(), false);
+			if (!AssetFileHistory::DestinationAvailable(targetPath)) continue;
+			auto edit = BeginFileEdit({ targetPath.string() }, "Duplicate Asset");
+			if (!edit) return;
+			if (CopyEntryTo(sourcePath, targetPath)) {
+				SyncSceneEmbeddedNameIfNeeded(targetPath);
+				RegisterRegistryAssetTree(targetPath);
+				FinishFileEdit(edit);
+				duplicatedPaths.push_back(targetPath.string());
+				m_Thumbnails.Invalidate(targetPath.string());
 			}
 		}
 
-		ForgetRegistryAssetPaths(forgetAssetPaths);
-		EditorScriptDiscovery::MarkDirty();
-
-		for (const std::string& error : errors) {
-			FNK_CORE_WARN_TAG("AssetBrowser", "{}", error);
+		if (!duplicatedPaths.empty()) {
+			m_SelectedPaths = duplicatedPaths;
+			m_SelectedPath = duplicatedPaths.back();
+			m_LastSelectionIndex = -1;
+			m_NeedsRefresh = true;
 		}
-
-		FinishFileEdit(m_DeleteFileEdit);
-		m_DeleteFileEdit.reset();
-		m_DeleteRoots.clear();
-		m_NeedsRefresh = true;
-		// Mirror the import path: suppress the single asset-watcher refresh that would
-		// otherwise fire right after we mutate the tree. Import and delete never overlap
-		// (StartAssetDeletion serializes them), so reusing the import flag is safe.
-		m_SuppressNextAssetWatcherRefresh.store(true, std::memory_order_release);
-		m_DeleteActive.store(false, std::memory_order_release);
 	}
 
-	void AssetBrowser::UpdateAssetDeletionProgressWindow() {
-		if (!m_DeleteActive.load(std::memory_order_acquire)) {
-			if (m_DeleteProgressWindowVisible) {
-				Win32BuildProgressWindow::Hide();
-				m_DeleteProgressWindowVisible = false;
-			}
-			return;
-		}
+	void AssetBrowser::DeleteSelectedAssets() {
+		StartAssetDeletion(GetSelectedPaths());
+	}
 
-		if (!m_DeleteProgressWindowVisible) {
-			// Grace period: a fast delete (a single small file) finishes before this
-			// elapses, so the popup never flashes. Only genuinely slow deletes — big
-			// folders, large or Defender-throttled removals — surface the window.
-			constexpr auto kGrace = std::chrono::milliseconds(200);
-			if (std::chrono::steady_clock::now() - m_DeleteStartTime < kGrace) {
+	void AssetBrowser::HandleDragSource(const DirectoryEntry& entry) {
+		if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
+			const char* pathStr = entry.Path.c_str();
+			ImGui::SetDragDropPayload("ASSET_BROWSER_ITEM", pathStr, entry.Path.size() + 1);
+			std::vector<std::string> dragPaths = IsPathSelected(entry.Path)
+				? GetSelectedPaths()
+				: std::vector<std::string>{ entry.Path };
+			if (dragPaths.size() > 1) {
+				ImGui::Text("Drag %zu assets", dragPaths.size());
+			}
+			else {
+				ImGui::Text("Drag: %s", entry.Name.c_str());
+			}
+			ImGui::EndDragDropSource();
+		}
+	}
+
+	void AssetBrowser::HandleDropTarget(const DirectoryEntry& entry) {
+		std::vector<std::string> sourcePaths;
+		if (const ImGuiPayload* dragged = ImGui::GetDragDropPayload();
+			dragged && dragged->Data && dragged->IsDataType("ASSET_BROWSER_ITEM")) {
+			const std::string draggedPath(static_cast<const char*>(dragged->Data));
+			sourcePaths = IsPathSelected(draggedPath)
+				? GetSelectedPaths()
+				: std::vector<std::string>{ draggedPath };
+			const std::string targetKey = MakeFolderTreeKey(entry.Path);
+			for (const std::string& sourcePath : sourcePaths) {
+				const std::string sourceKey = MakeFolderTreeKey(sourcePath);
+				if (sourceKey == targetKey || IsFolderTreeAncestor(sourceKey, targetKey)) {
+					return;
+				}
+			}
+			std::erase_if(sourcePaths, [&](const std::string& sourcePath) {
+				return MakeFolderTreeKey(Path::ToUtf8(Path::FromUtf8(sourcePath).parent_path())) == targetKey;
+			});
+			if (sourcePaths.empty()) {
 				return;
 			}
-			Win32BuildProgressWindow::Show("Deleting Assets...");
-			m_DeleteProgressWindowVisible = true;
 		}
 
-		const std::size_t total = m_DeleteTotalEntries.load(std::memory_order_acquire);
-		const std::size_t processed = m_DeleteProcessedEntries.load(std::memory_order_acquire);
-		const float progress = total > 0
-			? std::min(1.0f, static_cast<float>(processed) / static_cast<float>(total))
-			: 0.0f;
-
-		std::string stage;
-		{
-			std::scoped_lock lock(m_DeleteMutex);
-			stage = m_DeleteCurrentItem.empty() ? "Deleting..." : m_DeleteCurrentItem;
+		if (ImGui::BeginDragDropTarget()) {
+			if (ImGui::AcceptDragDropPayload("ASSET_BROWSER_ITEM")) {
+				for (const std::string& sourcePath : sourcePaths) {
+					const auto target = Path::FromUtf8(entry.Path) / Path::FromUtf8(sourcePath).filename();
+					if (!AssetFileHistory::DestinationAvailable(target)) continue;
+					auto edit = BeginFileEdit({ sourcePath, Path::ToUtf8(target) }, "Move Asset");
+					if (!edit) continue;
+					std::vector<std::string> oldAssets;
+					CollectRegistryAssetPaths(Path::FromUtf8(sourcePath), oldAssets);
+					if (MoveEntryTo(Path::FromUtf8(sourcePath), target)) {
+						ForgetRegistryAssetPaths(oldAssets);
+						RegisterRegistryAssetTree(target);
+						FinishFileEdit(edit);
+						m_PendingThumbnailInvalidates.push_back(sourcePath);
+						if (m_SelectedPath == sourcePath) {
+							m_SelectedPath.clear();
+						}
+						m_SelectedPaths.erase(
+							std::remove(m_SelectedPaths.begin(), m_SelectedPaths.end(), sourcePath),
+							m_SelectedPaths.end());
+						if (m_PressedPath == sourcePath) {
+							m_PressedPath.clear();
+						}
+						m_NeedsRefresh = true;
+					}
+				}
+				if (m_SelectedPath.empty() && !m_SelectedPaths.empty()) {
+					m_SelectedPath = m_SelectedPaths.back();
+				}
+			}
+			// Hierarchy entity dropped directly onto a folder tile — save the
+			// prefab inside THAT folder, not the current directory.
+			else if (const ImGuiPayload* entityPayload = ImGui::AcceptDragDropPayload("HIERARCHY_ENTITY")) {
+				if (TryCreatePrefabFromHierarchyDrop(entityPayload, entry.Path)) {
+					m_NeedsRefresh = true;
+				}
+			}
+			ImGui::EndDragDropTarget();
 		}
-
-		Win32BuildProgressWindow::Update(progress, stage);
 	}
-
-	void AssetBrowser::PumpAssetDeletion() {
-		ConsumeAndApplyFinishedAssetDeletion();
-		UpdateAssetDeletionProgressWindow();
-	}
-
 }

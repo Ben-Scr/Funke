@@ -270,6 +270,7 @@ namespace Funke {
 
 		// True for RegisterDynamic components (C# user assemblies); UnregisterAllDynamic drops all flagged entries on unload.
 		bool isDynamic = false;
+		bool IsBoltStruct() const { return isDynamic && serializedName.starts_with("bolt:"); }
 
 		// Non-zero for native package registrations; ComponentRegistry::UnregisterOwner drops them before the package module unloads.
 		uint32_t ownerId = 0;

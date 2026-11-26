@@ -1,0 +1,13 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public enum AnimationCullingMode {
+    AlwaysAnimate = 0,
+    
+    CullPose = 1,
+    
+    CullCompletely = 2,
+}

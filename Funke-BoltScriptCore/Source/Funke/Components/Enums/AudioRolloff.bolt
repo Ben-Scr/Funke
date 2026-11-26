@@ -1,0 +1,12 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public enum AudioRolloff {
+    
+    Logarithmic = 0,
+    
+    Linear = 1,
+}

@@ -1,0 +1,41 @@
+import Funke
+namespace Funke.UI;
+
+public class Toggle : Component {
+public:
+    protected override ulong FkType() { return 44ul; }
+    bool IsOn { get { return (FkToggle_GetIsOn(ID, 0ul) != 0ul); } set { FkToggle_SetIsOn(ID, (value ? 1ul : 0ul)); } }
+    bool IsReadOnly { get { return (FkToggle_GetIsReadOnly(ID, 0ul) != 0ul); } set { FkToggle_SetIsReadOnly(ID, (value ? 1ul : 0ul)); } }
+    UITransitionMode TransitionMode { get { return (UITransitionMode)FkToggle_GetTransitionMode(ID, 0ul); } set { FkToggle_SetTransitionMode(ID, (ulong)value); } }
+    Vector4 NormalColor { get { return FunkeApiTypes.DecodeVector4(FkToggle_GetNormalColor(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkToggle_SetNormalColor(ID, value.LowBits()); } }
+    Vector4 HoveredColor { get { return FunkeApiTypes.DecodeVector4(FkToggle_GetHoveredColor(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkToggle_SetHoveredColor(ID, value.LowBits()); } }
+    Vector4 PressedColor { get { return FunkeApiTypes.DecodeVector4(FkToggle_GetPressedColor(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkToggle_SetPressedColor(ID, value.LowBits()); } }
+    Vector4 DisabledColor { get { return FunkeApiTypes.DecodeVector4(FkToggle_GetDisabledColor(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkToggle_SetDisabledColor(ID, value.LowBits()); } }
+    Vector4 FocusedColor { get { return FunkeApiTypes.DecodeVector4(FkToggle_GetFocusedColor(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkToggle_SetFocusedColor(ID, value.LowBits()); } }
+    bool ValueChangedThisFrame => (FkToggle_GetValueChangedThisFrame(ID, 0ul) != 0ul);
+    Funke.Entity? CheckmarkEntity { get { return Funke.Entity.FromId(FkToggle_GetCheckmarkEntity(ID, 0ul)); } set { ulong id = 0ul; if (value != null) id = value.Value.ID; FkToggle_SetCheckmarkEntity(ID, id); } }
+    Funke.Texture? NormalSprite { get { return Funke.Texture.FromAssetUUID(FkToggle_GetNormalSprite(ID, 0ul)); } set { ulong guid = 0ul; if (value != null) guid = value.Value.UUID; FkToggle_SetNormalSprite(ID, guid); } }
+    Funke.Texture? HoveredSprite { get { return Funke.Texture.FromAssetUUID(FkToggle_GetHoveredSprite(ID, 0ul)); } set { ulong guid = 0ul; if (value != null) guid = value.Value.UUID; FkToggle_SetHoveredSprite(ID, guid); } }
+    Funke.Texture? PressedSprite { get { return Funke.Texture.FromAssetUUID(FkToggle_GetPressedSprite(ID, 0ul)); } set { ulong guid = 0ul; if (value != null) guid = value.Value.UUID; FkToggle_SetPressedSprite(ID, guid); } }
+    Funke.Texture? DisabledSprite { get { return Funke.Texture.FromAssetUUID(FkToggle_GetDisabledSprite(ID, 0ul)); } set { ulong guid = 0ul; if (value != null) guid = value.Value.UUID; FkToggle_SetDisabledSprite(ID, guid); } }
+    Funke.Texture? FocusedSprite { get { return Funke.Texture.FromAssetUUID(FkToggle_GetFocusedSprite(ID, 0ul)); } set { ulong guid = 0ul; if (value != null) guid = value.Value.UUID; FkToggle_SetFocusedSprite(ID, guid); } }
+    void SetValue(bool value, bool notifyEvent = true) {
+        bool previous = IsOn;
+        IsOn = value;
+        FkToggle_MarkIsOnObserved(ID, 0ul);
+        bool applied = IsOn;
+        if (notifyEvent && applied != previous) Events.FkChanged(applied);
+    }
+    ToggleEvents& Events { get { return FkUiStore<Toggle, ToggleEvents>.For(ID).Get(); } }
+    WidgetEvent<bool> ValueChanged {
+        get {
+            Shared<ToggleEvents> state = FkUiStore<Toggle, ToggleEvents>.For(ID);
+            WidgetEvent<bool> signal;
+            signal.FkAdd = (Action<bool> h) => { state.Get().ValueChanged += h; };
+            signal.FkRemove = (Action<bool> h) => { state.Get().ValueChanged -= h; };
+            return signal;
+        }
+        set {}
+    }
+    WidgetEvent<bool> OnValueChanged { get { return ValueChanged; } set {} }
+}

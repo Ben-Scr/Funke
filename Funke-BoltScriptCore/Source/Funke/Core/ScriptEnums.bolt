@@ -1,0 +1,150 @@
+namespace Funke;
+
+public enum AnimatorUpdateMode {
+    Normal = 0,
+    UnscaledTime = 1,
+    Fixed = 2
+}
+
+public enum MediaCommand {
+    None = 0,
+    Play = 1,
+    Pause = 2,
+    Next = 3,
+    Previous = 4,
+    Seek = 5
+}
+
+public enum CursorMode {
+    Default = 0,
+    Locked = 1
+}
+
+public enum DebugMetric : ulong {
+    CompletedFrame = 1ul,
+    ProcessMemory = 2ul,
+    VirtualMemory = 4ul,
+    CurrentThreadStack = 8ul,
+    TrackedAllocations = 16ul,
+    ScratchArenas = 32ul,
+    RenderThreadTiming = 64ul,
+    Lights2D = 128ul
+}
+
+public enum MaterialSurface {
+    Opaque = 0,
+    Transparent = 1,
+    Cutout = 2
+}
+
+public enum UpscaleFilterMode {
+    Point = 0,
+    Linear = 1
+}
+
+public enum PostProcessingQualityLevel {
+    Low = 0,
+    Medium = 1,
+    High = 2
+}
+
+public enum ParticleQualityLevel {
+    Off = 0,
+    Low = 1,
+    Medium = 2,
+    High = 3
+}
+
+public enum ShadowQualityLevel {
+    Off = 0,
+    Low = 1,
+    Medium = 2,
+    High = 3
+}
+
+public enum ToneMappingMode {
+    None = 0,
+    Reinhard = 1,
+    ACES = 2
+}
+
+public enum TextureQualityLevel {
+    Full = 0,
+    Half = 1,
+    Quarter = 2
+}
+
+public enum AnisotropicFilteringLevel {
+    Off = 0,
+    X2 = 1,
+    X4 = 2,
+    X8 = 3,
+    X16 = 4
+}
+
+public enum AntiAliasingMode {
+    Off = 0,
+    FXAA = 1,
+    MSAA4x = 2
+}
+
+public enum AntiAliasingQualityLevel {
+    Low = 0,
+    Medium = 1,
+    High = 2
+}
+
+public enum GraphicsApplyStatus {
+    Applied = 0,
+    Unchanged = 1,
+    InvalidValue = 2,
+    NotInitialized = 3,
+    WrongThread = 4,
+    ShuttingDown = 5
+}
+
+public enum DefaultTexture : byte {
+    Square = 0,
+    Pixel = 1,
+    Circle = 2,
+    Capsule = 3,
+    IsometricDiamond = 4,
+    HexagonFlatTop = 5,
+    HexagonPointedTop = 6,
+    NineSliced = 7,
+    Invisible = 8
+}
+
+public enum RuntimeTextureLifetime {
+    Automatic,
+    ScriptGeneration,
+    Manual
+}
+
+public enum SceneLoadPhase {
+    Queued,
+    ReadingFiles,
+    LoadingAssets,
+    Ready,
+    CreatingEntities,
+    Activating,
+    Completed
+}
+
+public enum FilterOption {
+    Digits,
+    Letters,
+    Alphanumeric
+}
+
+public enum CaseConvention {
+    PascalCase,
+    CamelCase,
+    SnakeCase,
+    KebabCase
+}
+
+public enum Space {
+    Local,
+    World
+}

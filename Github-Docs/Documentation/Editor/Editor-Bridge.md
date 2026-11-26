@@ -168,3 +168,36 @@ funke editor play --size 1080x2400
 - Your own mouse moving over a visible Game View during a test also moves the game's pointer.
 - Screenshots show the game only, without the Game View's stats and log overlays.
 - The editor must be a build that includes the bridge (2026.1.0-beta.1 or later). After updating, restart the editor.
+
+
+## Dry-run revisions and failed rollback recovery
+
+Dry-run validates the current scene and component schema without invoking
+mutating setters or adding history. Responses include `validatedRevision` and
+`validatedSchema` (the native registry generation). The bridge still requires its
+existing `expectedRevision` string and `expectedSchemaRevision` token. Native
+callers may additionally pass `expectedSchema` as a registry generation. Scene or
+registry changes between preflight and commit return `revision_conflict` before
+applying the planned edits. This cannot predict arbitrary user-code failures or
+external changes after validation.
+
+`apply_failed` means supported restoration completed. `rollback_failed` retains
+the restoration command and both failure causes in a recovery state. Further
+batches and undo/redo, including linked history from another scene, are blocked.
+Clearing ordinary history does not dismiss this state. Read/query access remains
+available; this is not a lock on all manual editor actions.
+
+To retry restoration, submit a fresh bridge request with current scene/schema
+tokens and exactly one operation:
+
+```json
+{"operations":[{"op":"history.recover"}]}
+```
+
+`dryRun: true` reports `recoveryRequired` without restoring. A failed retry returns
+`recovery_failed` and retains recovery state. A successful retry restores the
+saved state, discards obsolete undo/redo history and permits subsequent batches.
+If no recoverable command exists, reload the scene from disk or a recovery
+checkpoint; do not treat the partly modified scene as a successful rollback.
+Fault-injection regressions cover setter failure, deserialize failure, blocked
+follow-up edits, failed retries and explicit successful recovery.

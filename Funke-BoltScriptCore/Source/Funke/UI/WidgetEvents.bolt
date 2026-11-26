@@ -1,0 +1,139 @@
+import System
+import System.Memory
+import Funke
+namespace Funke.UI;
+
+public class InteractableEvents {
+public:
+    event Action<Interactable> Hovered;
+    event Action<Interactable> Pressed;
+    event Action<Interactable> Clicked;
+    event Action<Interactable> MouseDown;
+    event Action<Interactable> MouseUp;
+    event Action<Interactable> FocusEnter;
+    event Action<Interactable> FocusExit;
+    private bool wasHovered, wasFocused;
+    void FkPoll(Interactable widget) {
+        bool hovered = widget.IsHovered;
+        bool focused = widget.IsFocused;
+        if (hovered && !wasHovered) Hovered.Invoke(widget);
+        if (widget.IsPressed) Pressed.Invoke(widget);
+        if (focused && !wasFocused) FocusEnter.Invoke(widget);
+        if (!focused && wasFocused) FocusExit.Invoke(widget);
+        if (widget.IsMouseDown) MouseDown.Invoke(widget);
+        if (widget.IsClicked) Clicked.Invoke(widget);
+        if (widget.IsMouseUp) MouseUp.Invoke(widget);
+        wasHovered = hovered;
+        wasFocused = focused;
+    }
+}
+
+public class ButtonEvents {
+public:
+    event Action<Button> ClickDown;
+    event Action<Button> Clicked;
+    event Action<Button> ClickUp;
+    event Action<Button> Pressed;
+    void FkPoll(Button widget) {
+        Funke.Entity owner = FunkeApiTypes.MakeEntity(widget.ID);
+        Interactable? hit = owner.GetComponent<Interactable>();
+        if (hit == null) {
+            Funke.Entity? target = widget.TargetGraphic;
+            if (target != null) hit = target.Value.GetComponent<Interactable>();
+        }
+        if (hit == null) return;
+        if (hit.Value.IsMouseDown) ClickDown.Invoke(widget);
+        if (hit.Value.IsClicked) Clicked.Invoke(widget);
+        if (hit.Value.IsMouseUp) ClickUp.Invoke(widget);
+        if (hit.Value.IsPressed) Pressed.Invoke(widget);
+    }
+}
+
+public class SliderEvents {
+public:
+    event Action<float> ValueChanged;
+    void FkChanged(float value) { ValueChanged.Invoke(value); }
+    void FkPoll(Slider widget) {
+        if (FkSlider_GetValueChangedThisFrame(widget.ID, 0ul) != 0ul) ValueChanged.Invoke(widget.Value);
+    }
+}
+
+public class ToggleEvents {
+public:
+    event Action<bool> ValueChanged;
+    void FkChanged(bool value) { ValueChanged.Invoke(value); }
+    void FkPoll(Toggle widget) {
+        if (FkToggle_GetValueChangedThisFrame(widget.ID, 0ul) != 0ul) ValueChanged.Invoke(widget.IsOn);
+    }
+}
+
+public class DropdownEvents {
+public:
+    event Action<int> SelectedIndexChange;
+    void FkPoll(Dropdown widget) {
+        if (FkDropdown_GetSelectionChangedThisFrame(widget.ID, 0ul) != 0ul) SelectedIndexChange.Invoke(widget.SelectedIndex);
+    }
+}
+
+public class InputFieldEvents {
+public:
+    event Action<string> ValueChanged;
+    event Action<InputField> Select;
+    event Action<InputField> Deselect;
+    void FkChanged(string value) { ValueChanged.Invoke(value); }
+    void FkObserveText(string value) { hasText = true; lastText = value; }
+    private bool hasText, wasFocused;
+    private string lastText;
+    void FkPoll(InputField widget) {
+        string text = widget.Text;
+        if (hasText && text != lastText) ValueChanged.Invoke(text);
+        hasText = true;
+        lastText = text;
+        bool focused = widget.IsFocused;
+        if (focused && !wasFocused) Select.Invoke(widget);
+        if (!focused && wasFocused) Deselect.Invoke(widget);
+        wasFocused = focused;
+    }
+}
+
+public class ScrollbarEvents {
+public:
+    event Action<float> ValueChanged;
+    void FkChanged(float value) { ValueChanged.Invoke(value); }
+    void FkPoll(Scrollbar widget) {
+        if (FkScrollbar_GetValueChangedThisFrame(widget.ID, 0ul) != 0ul) ValueChanged.Invoke(widget.Value);
+    }
+}
+
+public class CircularSliderEvents {
+public:
+    event Action<float> ValueChanged;
+    void FkChanged(float value) { ValueChanged.Invoke(value); }
+    void FkPoll(CircularSlider widget) {
+        if (FkCircularSlider_GetValueChangedThisFrame(widget.ID, 0ul) != 0ul) ValueChanged.Invoke(widget.Value);
+    }
+}
+
+public class ScrollRectEvents {
+public:
+    event Action<Vector2> ValueChanged;
+    void FkChanged(Vector2 value) { ValueChanged.Invoke(value); }
+    void FkPoll(ScrollRect widget) {
+        if (FkScrollRect_GetValueChangedThisFrame(widget.ID, 0ul) != 0ul) ValueChanged.Invoke(widget.NormalizedPosition);
+    }
+}
+
+public static class FkUiDispatch {
+public:
+    static void Tick() {
+        FkUiStore<Interactable, InteractableEvents>.Tick();
+        FkUiStore<Button, ButtonEvents>.Tick();
+        FkUiStore<Slider, SliderEvents>.Tick();
+        FkUiStore<Toggle, ToggleEvents>.Tick();
+        FkUiStore<Dropdown, DropdownEvents>.Tick();
+        FkUiStore<InputField, InputFieldEvents>.Tick();
+        FkUiStore<Scrollbar, ScrollbarEvents>.Tick();
+        FkUiStore<CircularSlider, CircularSliderEvents>.Tick();
+        FkUiStore<ScrollRect, ScrollRectEvents>.Tick();
+    }
+}

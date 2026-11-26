@@ -7,6 +7,7 @@
 namespace Funke {
 
 	void UndoStack::Push(std::unique_ptr<EditCommand> command) {
+		if (NeedsRecovery()) return;
 		if (!command) return;
 		m_LastError.clear();
 		m_State->Redo.clear();
@@ -18,6 +19,7 @@ namespace Funke {
 
 	void UndoStack::PushLinked(UndoStack& other, std::unique_ptr<EditCommand> command) {
 		if (!command) return;
+		if (NeedsRecovery() || other.NeedsRecovery()) return;
 		if (this == &other) { Push(std::move(command)); return; }
 		m_State->Undo.reserve(m_State->Undo.size() + 1);
 		other.m_State->Undo.reserve(other.m_State->Undo.size() + 1);
@@ -38,6 +40,7 @@ namespace Funke {
 	bool UndoStack::CanApply(const std::shared_ptr<State>& state, bool redo, std::string* reason) {
 		if (reason) reason->clear();
 		if (!state) return false;
+		if (!state->RecoveryReason.empty()) { if (reason) *reason = state->RecoveryReason; return false; }
 		const auto& entries = redo ? state->Redo : state->Undo;
 		if (entries.empty()) return false;
 		const auto& entry = entries.back();
@@ -49,6 +52,7 @@ namespace Funke {
 		if (!entry.Linked) return true;
 		const auto partner = entry.Partner.lock();
 		if (partner) {
+			if (!partner->RecoveryReason.empty()) return blocked("The partner scene requires recovery: " + partner->RecoveryReason);
 			const auto& peers = redo ? partner->Redo : partner->Undo;
 			if (!peers.empty() && peers.back().Command == entry.Command) return true;
 		}
@@ -105,6 +109,23 @@ namespace Funke {
 	std::string UndoStack::Undo(Scene& scene) { return Apply(scene, false); }
 	std::string UndoStack::Redo(Scene& scene) { return Apply(scene, true); }
 
+	void UndoStack::RequireRecovery(std::unique_ptr<EditCommand> command, std::string reason) {
+		m_State->RecoveryCommand = std::move(command);
+		m_State->RecoveryReason = std::move(reason);
+		m_LastError = m_State->RecoveryReason;
+	}
+
+	bool UndoStack::Recover(Scene& scene) {
+		if (!NeedsRecovery()) return true;
+		if (!m_State->RecoveryCommand) { m_LastError = "Recovery snapshot unavailable; reload the scene from disk or its recovery checkpoint."; return false; }
+		try { m_State->RecoveryCommand->Undo(scene); }
+		catch (const std::exception& error) { m_LastError = error.what(); return false; }
+		m_State->RecoveryCommand.reset();
+		m_State->RecoveryReason.clear();
+		Clear(); // Previous history may describe the intermediate state; discard it after explicit recovery.
+		return true;
+	}
+
 	void UndoStack::Clear() {
 		m_LastError.clear();
 		if (!m_State) m_State = std::make_shared<State>();
@@ -116,6 +137,7 @@ namespace Funke {
 		m_State->OwnerName = scene ? scene->GetName() : std::string{};
 		const std::weak_ptr<Scene> replacement(scene);
 		if (!m_State->Owner.owner_before(replacement) && !replacement.owner_before(m_State->Owner)) return;
+		if (m_State->RecoveryCommand) m_State->RecoveryCommand->RebindScene(m_State->Owner, scene);
 		for (const auto* entries : { &m_State->Undo, &m_State->Redo }) {
 			for (const auto& entry : *entries) entry.Command->RebindScene(m_State->Owner, scene);
 		}

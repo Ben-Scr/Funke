@@ -1,6 +1,6 @@
 ---
 name: funke-add-editor-panel
-description: Use when adding or changing an ImGui editor panel / window in Funke-Editor. Triggers on "add an editor panel", "new panel", "editor window", "tool window", "Tools menu", "command palette entry", "ImGuiEditorLayer", "OnAttach / OnDetach / OnPreRender", "m_Show…", "EditorUI", "SetNextWindowAsNativeDialog", "NextWindowDefaultSize", "EmptyState", "ProfilerPanel / PackageManagerPanel / BuildProfilesPanel / EditorPreferencesPanel / SpriteEditorPanel", "worker thread in a panel", "panel freezes the editor", or work in `Funke-Editor/src/Gui/*Panel.{hpp,cpp}` and `Funke-Editor/src/Systems/ImGuiEditorLayer*.{hpp,cpp}`. Covers the panel class shape (Initialize / Render(bool* pOpen) / Shutdown), window setup conventions, the ImGuiEditorLayer integration sites (member + flag, OnAttach, OnDetach, the render call in OnPreRender, menu + command palette), lazy-init panels, and the async worker pattern (shared_ptr state + mutex + atomic + std::thread + main-thread poll).
+description: "Add or change a Funke Editor ImGui panel, including window lifecycle, menus, command palette entries and background work."
 ---
 
 # Add an Editor Panel
@@ -19,39 +19,7 @@ Some windows (Log, Build, Project Settings, Project/Asset browser) are **not** c
 
 ## Class skeleton
 
-`Funke-Editor/src/Gui/MyPanel.hpp`:
-
-```cpp
-#pragma once
-
-#include <string>
-#include <vector>
-
-namespace Funke {
-
-	class MyPanel {
-	public:
-		void Initialize();          // one-time setup; no ImGui calls
-		void Shutdown();            // join workers, free resources; no ImGui calls
-		void Render(bool* pOpen);   // every frame; pOpen flips false on the title-bar X
-
-	private:
-		void RefreshIfDirty();
-		void RenderToolbar();
-		void RenderList();
-
-		std::vector<std::string> m_Items;
-		bool m_Dirty = true;
-		char m_SearchBuffer[256]{};
-
-		std::string m_StatusMessage;
-		bool m_StatusIsError = false;
-	};
-
-} // namespace Funke
-```
-
-`Funke-Editor/src/Gui/MyPanel.cpp`:
+In `Gui/MyPanel.hpp` declare `Initialize()`, `Shutdown()` and `Render(bool* pOpen)`. Initialize and shut down outside the ImGui frame. Keep cached data and its dirty flag on the panel. The render method owns the window unless the layer already wraps it, as it does for `PackageManagerPanel`.
 
 ```cpp
 #include "Gui/MyPanel.hpp"
@@ -96,98 +64,15 @@ Conventions:
 
 ## Integration sites in ImGuiEditorLayer
 
-### 1 — Member + visibility flag
-`Funke-Editor/src/Systems/ImGuiEditorLayer.hpp`: add `#include "Gui/MyPanel.hpp"` next to the other `Gui/*Panel.hpp` includes, and in the private section (near `m_ShowProfiler` / `m_ProfilerPanel`):
-
-```cpp
-bool    m_ShowMyPanel = false;
-MyPanel m_MyPanel;
-```
-
-### 2 — Initialize: `ImGuiEditorLayer::OnAttach` (`ImGuiEditorLayer.cpp`)
-Next to `m_ProfilerPanel.Initialize(); m_SpriteEditorPanel.Initialize();`:
-```cpp
-m_MyPanel.Initialize();
-```
-**Or lazy-init** on first show when setup is expensive or needs a project — the `RenderBuildProfilesPanel` pattern (`ImGuiEditorLayerPanels.cpp`):
-```cpp
-void ImGuiEditorLayer::RenderMyPanel() {
-	if (!m_ShowMyPanel) return;
-	if (!m_MyPanelInitialized) { m_MyPanel.Initialize(); m_MyPanelInitialized = true; }
-	m_MyPanel.Render(&m_ShowMyPanel);
-}
-```
-
-### 3 — Shutdown: `ImGuiEditorLayer::OnDetach` (`ImGuiEditorLayer.cpp`)
-Next to `m_ProfilerPanel.Shutdown(); m_SpriteEditorPanel.Shutdown(); m_EditorPreferencesPanel.Shutdown();` (these run after the layer's own build/reserialize workers are joined and before WebGPU teardown — a panel owning GPU textures must release them here). Panels with workers go with `m_PackageManagerPanel.Shutdown()` in the "panels → icons → FBOs" block.
-```cpp
-m_MyPanel.Shutdown();
-```
-
-### 4 — Render: `ImGuiEditorLayer::OnPreRender` (`ImGuiEditorLayerChrome.cpp`)
-Two spots:
-- **Inside** `ImGui::BeginDisabled(m_BuildState > 0 || m_ReserializeState > 0)` … `EndDisabled()` with `RenderBuildPanel(); RenderBuildProfilesPanel(); RenderPackageManagerPanel();` — use this if the panel must be greyed out while a build/reserialize runs.
-- **After** `EndDisabled()` with the Profiler / Sprite Editor — always interactive:
-```cpp
-if (m_ShowMyPanel) {
-	m_MyPanel.Render(&m_ShowMyPanel);
-}
-```
-(Global shortcuts live here too, e.g. `ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_F6)` toggles the profiler.)
-
-### 5 — Entry points (`ImGuiEditorLayer.cpp`)
-- **Main menu** — `RenderMainMenu`: menus are `Application`, `Project` (Build, Build Profiles…, Project Settings, Package Manager), `Edit` (Undo/Redo, Preferences...), `Tools` (`ImGui::MenuItem("Profiler", "Ctrl+F6", &m_ShowProfiler);`). Gate project-dependent items with `hasProject`.
-- **Command palette** (Ctrl+K) — `RenderCommandPalette`: add `{ "My Panel", nullptr, hasProject, [&]() { m_ShowMyPanel = true; } },` to the `commands[]` array.
-
-Missing site 4 is the classic bug: it compiles, the menu flips the bool, nothing appears. New `.cpp/.hpp` files under `Funke-Editor/src/` are picked up by the `src/**.cpp` glob once premake regenerates; `scripts\dev\Build.ps1 Editor` does that automatically (`funke-build-engine`).
+1. Add the panel member and its visibility flag to `ImGuiEditorLayer.hpp`.
+2. Call `Initialize()` in `OnAttach`, or on first show if setup is expensive or needs a project. `RenderBuildProfilesPanel` shows lazy initialization.
+3. Call `Shutdown()` in `OnDetach` after layer workers finish and before WebGPU teardown. Panels with workers belong in the panels → icons → FBOs shutdown block. Release their GPU textures there.
+4. In `OnPreRender`, draw the visible panel with `m_MyPanel.Render(&m_ShowMyPanel)`. Put it within the build/reserialize disabled block when those operations should block interaction. Global shortcuts are handled in the chrome.
+5. Expose the same flag in `RenderMainMenu` and the Ctrl+K `RenderCommandPalette` in `ImGuiEditorLayerCommands.cpp`. Gate project-dependent commands with `hasProject`. Build new panel sources with the Editor target once the Premake graph includes them.
 
 ## Async work — the long-task pattern
 
-ImGui runs on the main thread; anything that can exceed a frame (file I/O over many files, `dotnet`/`cmake`/Python processes, network, blocking Win32 dialogs) goes to a worker. `PackageManagerPanel` has six instances of this pattern (`AutomationTaskState`, `RegistryFetchTaskState`, `CloudInstallTaskState`, `GitInstallTaskState`, `NewPackageTaskState`, `DiskInstallTaskState`):
-
-```cpp
-struct FetchTaskState {
-	std::mutex Mutex;
-	std::atomic<bool> Running{ false };
-	bool Finished = false;
-	bool Success = false;
-	std::string Error;
-	std::string Result;
-};
-std::shared_ptr<FetchTaskState> m_FetchTask;
-std::thread m_FetchWorker;
-
-void MyPanel::StartFetch() {
-	if (m_FetchTask && m_FetchTask->Running.load()) return;
-	if (m_FetchWorker.joinable()) m_FetchWorker.join();
-	m_FetchTask = std::make_shared<FetchTaskState>();
-	m_FetchTask->Running.store(true);
-	auto state = m_FetchTask;                    // capture the shared_ptr, never `this`
-	m_FetchWorker = std::thread([state]() {
-		std::string result, error; bool ok = /* long work */ true;
-		std::scoped_lock lock(state->Mutex);
-		state->Result = std::move(result); state->Error = std::move(error);
-		state->Success = ok; state->Finished = true;
-		state->Running.store(false);
-	});
-}
-
-void MyPanel::PollFetch() {                      // call at the top of Render
-	if (!m_FetchTask) return;
-	bool finished = false;
-	{ std::scoped_lock lock(m_FetchTask->Mutex); finished = m_FetchTask->Finished; }
-	if (!finished) return;
-	{ std::scoped_lock lock(m_FetchTask->Mutex); m_FetchTask->Finished = false; }
-	if (m_FetchWorker.joinable()) m_FetchWorker.join();
-	// consume Result/Error on the main thread: touch project state, mark dirty, set status
-}
-
-void MyPanel::Shutdown() {
-	if (m_FetchWorker.joinable()) m_FetchWorker.join();
-}
-```
-
-Rules (from `PackageManagerPanel`):
+Follow the worker and poll implementation in `PackageManagerPanel` for file scans, subprocesses, network work and blocking dialogs. Reject overlapping starts, join any completed worker before reuse, and capture shared task state by value. Publish results and completion under its mutex. Poll from `Render` and consume each result once.
 - **Snapshot under the lock, act outside it.** Copy fields out, release, then do work.
 - **Project/engine state changes happen on the main thread** in the poll (e.g. `InstallToProject` + post-install automation after a git clone), never in the worker.
 - **`Shutdown` joins every `std::thread` and waits every `std::future`** before clearing state — destroying a joinable thread is `std::terminate`, and `std::async` futures block in their destructor.
@@ -196,11 +81,7 @@ Rules (from `PackageManagerPanel`):
 
 ## Pitfalls
 
-- **ImGui calls in `Initialize`/`Shutdown`** — run outside a frame; defer to `Render`.
-- **Another window begins after `SetNextWindowAsNativeDialog`** — that window consumes the pending class; keep the call with its intended `Begin`/`BeginPopupModal` setup.
 - **Window title collisions** — the ImGui title is the ID and the `imgui.ini` key; keep it unique and stable (rename = users lose saved docking for it). Use `"Title##id"` to disambiguate.
-- **Worker captures `this`** — races panel destruction. Capture the `shared_ptr` state.
-- **Forgetting `Shutdown`** in `OnDetach` — hang or `std::terminate` on editor close.
 - **Opening a popup from inside another ID scope** — set a request flag (`m_OpenRenamePopup`, `m_OpenDeletePopup`) and call `OpenPopup` where the `BeginPopupModal` lives (BuildProfilesPanel / EditorPreferencesPanel do this).
 
 ## Related skills

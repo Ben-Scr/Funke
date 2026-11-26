@@ -213,6 +213,26 @@ namespace Funke {
 			return 1;
 		}
 
+		int Funke_Physics3D_RaycastMasked(float ox, float oy, float oz, float dx, float dy, float dz, float distance,
+			uint64_t mask, int includeTriggers, uint64_t* id, float* values, int count) {
+			if (!id || !values || count < k_RaycastValueCount) return 0;
+			*id = 0;
+			Scene* scene = GetScene();
+			auto* world = scene ? PhysicsSystem3D::FindWorld(*scene) : nullptr;
+			RaycastHit3D hit;
+			if (!world || !world->Raycast({ox, oy, oz}, {dx, dy, dz}, distance, hit, mask, includeTriggers != 0)) return 0;
+			*id = scene->IsValid(hit.Entity) ? GetEntityScriptId(*scene, hit.Entity) : 0;
+			const float packed[] = {hit.Point.x, hit.Point.y, hit.Point.z, hit.Normal.x, hit.Normal.y, hit.Normal.z, hit.Distance};
+			std::copy_n(packed, k_RaycastValueCount, values);
+			return 1;
+		}
+
+		int Funke_Physics3D_CheckSphere(float x, float y, float z, float radius, uint64_t mask, int includeTriggers) {
+			Scene* scene = GetScene();
+			auto* world = scene ? PhysicsSystem3D::FindWorld(*scene) : nullptr;
+			return world && world->CheckSphere({x, y, z}, radius, mask, includeTriggers != 0) ? 1 : 0;
+		}
+
 		void Funke_Physics3D_GetGravity(float* x, float* y, float* z) {
 			Scene* scene = GetScene();
 			PhysicsWorld3D* world = scene ? PhysicsSystem3D::FindWorld(*scene) : nullptr;

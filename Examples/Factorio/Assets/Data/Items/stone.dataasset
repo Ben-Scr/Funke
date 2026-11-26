@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "type": "ItemDefinition",
+  "fields": {
+    "Id": "stone",
+    "DisplayName": "Stone",
+    "Icon": "3799167722807270014",
+    "SpriteName": "rock",
+    "StackSize": "100"
+  }
+}

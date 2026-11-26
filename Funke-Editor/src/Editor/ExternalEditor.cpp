@@ -1,5 +1,8 @@
 #include "pch.hpp"
 #include "Editor/ExternalEditor.hpp"
+#if defined(FUNKE_WEB_EDITOR)
+#include <emscripten/emscripten.h>
+#endif
 #include "Editor/ExternalEditorProjectContext.hpp"
 #include "Core/Platform.hpp"
 #include "Serialization/File.hpp"
@@ -338,7 +341,7 @@ namespace Funke {
 	bool ExternalEditor::s_Detected = false;
 
 	bool ExternalEditor::IsScriptExtension(const std::string& ext) {
-		return ext == ".cs" || ext == ".cpp" || ext == ".cc" || ext == ".cxx" || ext == ".c"
+		return ext == ".bolt" || ext == ".cs" || ext == ".cpp" || ext == ".cc" || ext == ".cxx" || ext == ".c"
 			|| ext == ".h" || ext == ".hh" || ext == ".hpp" || ext == ".hxx" || ext == ".inl" || ext == ".ipp"
 			|| ext == ".lua" || ext == ".py" || ext == ".js" || ext == ".ts"
 			|| ext == ".json" || ext == ".xml" || ext == ".yaml" || ext == ".yml"
@@ -391,9 +394,17 @@ namespace Funke {
 
 			// Also check PATH
 			char pathBuf[MAX_PATH]{};
-			DWORD found = SearchPathA(nullptr, "code.cmd", nullptr, MAX_PATH, pathBuf, nullptr);
-			if (found > 0)
-				vscodePaths.insert(vscodePaths.begin(), std::string(pathBuf));
+			DWORD found = SearchPathA(nullptr, "Code.exe", nullptr, MAX_PATH, pathBuf, nullptr);
+			if (found > 0 && found < MAX_PATH)
+				vscodePaths.emplace_back(pathBuf);
+
+			found = SearchPathA(nullptr, "code.cmd", nullptr, MAX_PATH, pathBuf, nullptr);
+			if (found > 0 && found < MAX_PATH) {
+				const auto binDir = std::filesystem::path(pathBuf).parent_path();
+				if (binDir.filename() == "bin")
+					vscodePaths.push_back((binDir.parent_path() / "Code.exe").string());
+				vscodePaths.emplace_back(pathBuf);
+			}
 
 			TryDetect(ExternalEditorType::VSCode, "Visual Studio Code", vscodePaths);
 		}
@@ -577,6 +588,8 @@ namespace Funke {
 		std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char ch) {
 			return static_cast<char>(std::tolower(ch));
 		});
+
+		if (ext == ".bolt") return "";
 
 		// C++ native scripts → NativeScripts .sln
 		if (ext == ".cpp" || ext == ".cc" || ext == ".cxx" || ext == ".c"
@@ -860,6 +873,10 @@ namespace Funke {
 #endif
 
 	void ExternalEditor::OpenFile(const std::string& filePath, int line) {
+#if defined(FUNKE_WEB_EDITOR)
+		EM_ASM({ if (Module.funkeOpenScript) Module.funkeOpenScript(UTF8ToString($0), $1); }, filePath.c_str(), line);
+		return;
+#endif
 		DetectEditors();
 
 		if (s_Editors.empty()) {

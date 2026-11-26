@@ -1,0 +1,19 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public struct ReadOnlyComponentRef<T> {
+private:
+    T* address;
+public:
+    ReadOnlyComponentRef(T* value) { address=value; }
+    [ReadOnly] bool HasValue => address!=null;
+    T Value {
+        get {
+            if(address==null)throw System.InvalidOperationException("Component is absent.");
+            return *address;
+        }
+    }
+}

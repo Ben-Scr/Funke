@@ -137,6 +137,7 @@ namespace Funke {
 		}
 
 		auto tmpl = std::make_shared<PrefabTemplate>();
+		if (!SceneSerializer::GetPrefabDependencies(prefabGuid, tmpl->InheritanceDependencies)) return;
 
 		// Internal entity refs (deferred fixups) can't be represented in v1 templates; mark unbakeable so spawns fall back to the slow path.
 		if (fixupsAddedDuringDeserialize > 0) {
@@ -404,6 +405,10 @@ namespace Funke {
 	{
 		std::unique_lock lock(m_Mutex);
 		m_Templates.erase(prefabGuid);
+		std::erase_if(m_Templates, [&](const auto& entry) {
+			const auto& dependencies = entry.second->InheritanceDependencies;
+			return std::find(dependencies.begin(), dependencies.end(), prefabGuid) != dependencies.end();
+		});
 	}
 
 	void PrefabTemplateCache::InvalidateAll()

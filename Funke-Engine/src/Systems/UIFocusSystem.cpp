@@ -17,6 +17,7 @@
 #include "Core/MouseButton.hpp"
 #include "Core/Window.hpp"
 #include "Gui/UIDrawOrder.hpp"
+#include "Gui/SpatialNavigation.hpp"
 #include "Profiling/Profiler.hpp"
 #include "Scene/Scene.hpp"
 
@@ -295,6 +296,45 @@ namespace Funke {
 				const int direction = static_cast<int>(right || up) - static_cast<int>(left || down);
 				left = right = up = down = false;
 				ApplySliderNavigation(*circular, direction, navigation);
+			}
+		}
+		// Widgets consume their editing keys above. Only the remaining arrows navigate.
+		if (!tabPressed && (left || right || up || down) && m_FocusedEntity != entt::null) {
+			const auto& source = registry.get<InteractableComponent>(m_FocusedEntity);
+			if (source.SpatialNavigation) {
+				// Scripts run after the initial layout pass; refresh their same-frame edits.
+				UpdateUILayout(scene);
+				const auto* origin = registry.try_get<RectTransform2DComponent>(m_FocusedEntity);
+				const int dx = static_cast<int>(right) - static_cast<int>(left);
+				const int dy = static_cast<int>(up) - static_cast<int>(down);
+				// Deterministic vertical precedence for diagonal input; opposing inputs cancel.
+				const Vec2 direction = dy ? Vec2{ 0, static_cast<float>(dy) } : Vec2{ static_cast<float>(dx), 0 };
+				const EntityHandle linked = dy > 0 ? source.NavigationUp : dy < 0 ? source.NavigationDown
+					: dx > 0 ? source.NavigationRight : source.NavigationLeft;
+				std::vector<EntityHandle> targets;
+				std::vector<SpatialNavigation::Point> centers;
+				const EntityHandle canvas = WorldUI::FindRoot(registry, m_FocusedEntity);
+				for (EntityHandle entity : focusables) {
+					if (entity == m_FocusedEntity || WorldUI::FindRoot(registry, entity) != canvas) continue;
+					const auto* rect = registry.try_get<RectTransform2DComponent>(entity);
+					if (!rect) continue;
+					const Vec2 center = rect->GetCenter();
+					const Vec2 size = rect->GetSize();
+					if (!(size.x > 0 && size.y > 0) || !std::isfinite(center.x) || !std::isfinite(center.y)
+						|| !UIDrawOrder::PassesAncestorMasks(registry, entity, center)) continue;
+					targets.push_back(entity);
+					centers.push_back({ center.x, center.y });
+				}
+				if (origin && (dx || dy)) {
+					const auto explicitTarget = std::find(targets.begin(), targets.end(), linked);
+					if (explicitTarget != targets.end()) m_FocusedEntity = linked;
+					else {
+						const Vec2 center = origin->GetCenter();
+						const size_t selected = SpatialNavigation::Pick({ center.x, center.y }, { direction.x, direction.y }, centers, source.NavigationWrap);
+						if (selected != SpatialNavigation::None) m_FocusedEntity = targets[selected];
+					}
+				}
+				left = right = up = down = false;
 			}
 		}
 		const bool wantNext = (tabPressed && !navigation.Shift) || (!tabPressed && (down || right));

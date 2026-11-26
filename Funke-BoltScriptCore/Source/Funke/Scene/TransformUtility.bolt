@@ -1,0 +1,205 @@
+import System
+import System.Collections.Generic
+namespace Funke;
+
+public struct WorldPose {
+public:
+    Vector3 Position;
+    Quaternion Rotation;
+    WorldPose(Vector3 position, Quaternion rotation) : Position(position), Rotation(rotation) {}
+    void Deconstruct(Vector3& position, Quaternion& rotation) { position = Position; rotation = Rotation; }
+}
+
+public static class TransformUtility {
+private:
+    static List<Transform3D> Hierarchy(Transform3D transform, bool includeSelf) {
+        List<Transform3D> chain;
+        if (includeSelf) chain.Add(transform);
+        Funke.Entity owner = transform.Entity;
+        Funke.Entity? parent = owner.Parent;
+        int depth = 0;
+        while (parent != null) {
+            if (++depth > 1024) throw InvalidOperationException("Transform hierarchy exceeds 1024 ancestors or contains a cycle.");
+            Funke.Entity entity = parent.Value;
+            Transform3D? ancestor = entity.GetComponent<Transform3D>();
+            if (ancestor != null) chain.Add(ancestor.Value);
+            parent = entity.Parent;
+        }
+        return chain;
+    }
+    static bool Apply(Transform3D transform, Vector3 input, bool includeSelf, bool inverse, bool point, bool normal, Vector3& output) {
+        Vector3.FkValidateFinite(input, "input");
+        List<Transform3D> chain = Hierarchy(transform, includeSelf);
+        Vector3 v = input;
+        for (int i = 0; i < chain.Count; i++) {
+            Transform3D current = chain[inverse ? chain.Count - 1 - i : i];
+            Vector3 s = current.Scale;
+            Vector3 p = current.Position;
+            Vector3 euler = current.Rotation;
+            Vector3.FkValidateFinite(s, "scale");
+            Vector3.FkValidateFinite(p, "position");
+            Vector3.FkValidateFinite(euler, "rotation");
+            Quaternion q = Quaternion.Euler(euler);
+            if ((inverse || normal) && (s.X == 0.0f || s.Y == 0.0f || s.Z == 0.0f)) return false;
+            if (inverse) {
+                if (point) v = v - p;
+                v = Quaternion.Inverse(q) * v;
+                v = Vector3(v.X / s.X, v.Y / s.Y, v.Z / s.Z);
+            } else {
+                if (normal) v = Vector3(v.X / s.X, v.Y / s.Y, v.Z / s.Z);
+                else v = Vector3(v.X * s.X, v.Y * s.Y, v.Z * s.Z);
+                v = q * v;
+                if (point) v = v + p;
+            }
+        }
+        output = v;
+        return Vector3.FkIsFinite(v);
+    }
+    static Vector3 Convert(Transform3D transform, Vector3 value, bool inverse, bool point, bool normal = false) {
+        Vector3 result;
+        if (!Apply(transform, value, true, inverse, point, normal, result)) throw InvalidOperationException("World transform is singular or nonfinite.");
+        return result;
+    }
+    static void RotateBy(Transform3D transform, Quaternion delta, Space space) {
+        if (space == Space.Local) transform.LocalRotation = transform.LocalRotation * delta;
+        else if (space == Space.World) transform.WorldRotation = delta * transform.WorldRotation;
+        else throw ArgumentOutOfRangeException("space");
+    }
+    static void ValidateAxis(Vector3 axis, float degrees) {
+        if (!Vector3.FkIsFinite(axis) || axis == Vector3.Zero || !Mathf.FkFinite(degrees)) throw ArgumentOutOfRangeException("axis or degrees");
+    }
+public:
+    static Vector3 TransformPoint(Transform3D transform, Vector3 point) { return Convert(transform, point, false, true); }
+    static Vector3 InverseTransformPoint(Transform3D transform, Vector3 point) { return Convert(transform, point, true, true); }
+    static Vector3 TransformVector(Transform3D transform, Vector3 vector) { return Convert(transform, vector, false, false); }
+    static Vector3 InverseTransformVector(Transform3D transform, Vector3 vector) { return Convert(transform, vector, true, false); }
+    static Vector3 TransformNormal(Transform3D transform, Vector3 normal) {
+        Vector3 result = Convert(transform, normal, false, false, true);
+        if (!Vector3.TryNormalize(result, result)) throw ArgumentException("Surface normal has no finite direction.");
+        return result;
+    }
+    static Vector3 GetWorldPosition(Transform3D transform) { return TransformPoint(transform, Vector3.Zero); }
+    static WorldPose GetWorldPose(Transform3D transform) { return WorldPose(GetWorldPosition(transform), transform.WorldRotation); }
+    static bool TrySetWorldPosition(Transform3D transform, Vector3 position) {
+        Vector3 local;
+        if (!Apply(transform, position, false, true, true, false, local)) return false;
+        transform.Position = local;
+        return true;
+    }
+    static void SetWorldPosition(Transform3D transform, Vector3 position) {
+        if (!TrySetWorldPosition(transform, position)) throw InvalidOperationException("Parent transform cannot represent this world position.");
+    }
+    static bool TrySetWorldPose(Transform3D transform, Vector3 position, Quaternion rotation) {
+        Funke.Entity owner = transform.Entity;
+        if (!Vector3.FkIsFinite(position) || !Quaternion.IsValidRotation(rotation) || !owner.HasComponent<Transform3D>()) return false;
+        Vector3 local;
+        if (!Apply(transform, position, false, true, true, false, local)) return false;
+        Quaternion parent = transform.WorldRotation * Quaternion.Inverse(transform.LocalRotation);
+        transform.SetLocalPose(local, Quaternion.Inverse(parent) * rotation);
+        return true;
+    }
+    static Vector3 TransformDirection(Transform3D transform, Vector3 direction) {
+        Vector3.FkValidateFinite(direction, "direction");
+        Vector3 result = transform.WorldRotation * direction;
+        Vector3.FkValidateFinite(result, "direction");
+        return result;
+    }
+    static Vector3 InverseTransformDirection(Transform3D transform, Vector3 direction) {
+        Vector3.FkValidateFinite(direction, "direction");
+        Vector3 result = Quaternion.Inverse(transform.WorldRotation) * direction;
+        Vector3.FkValidateFinite(result, "direction");
+        return result;
+    }
+    static void Translate(Transform3D transform, Vector3 displacement, Space space = Space.Local) {
+        if (space != Space.Local && space != Space.World) throw ArgumentOutOfRangeException("space");
+        Vector3 offset = space == Space.Local ? TransformDirection(transform, displacement) : displacement;
+        SetWorldPosition(transform, GetWorldPosition(transform) + offset);
+    }
+    static void Rotate(Transform3D transform, Vector3 eulerDegrees, Space space = Space.Local) {
+        Vector3.FkValidateFinite(eulerDegrees, "eulerDegrees");
+        RotateBy(transform, Quaternion.Euler(eulerDegrees), space);
+    }
+    static void Rotate(Transform3D transform, Vector3 axis, float degrees, Space space = Space.Local) {
+        ValidateAxis(axis, degrees);
+        RotateBy(transform, Quaternion.AngleAxis(degrees, axis), space);
+    }
+    static void RotateAround(Transform3D transform, Vector3 pivot, Vector3 axis, float degrees) {
+        Vector3.FkValidateFinite(pivot, "pivot");
+        ValidateAxis(axis, degrees);
+        Quaternion delta = Quaternion.AngleAxis(degrees, axis);
+        Quaternion next = delta * transform.WorldRotation;
+        SetWorldPosition(transform, pivot + delta * (GetWorldPosition(transform) - pivot));
+        transform.WorldRotation = next;
+    }
+    static Quaternion LookAt3D(Transform3D origin, Vector3 target, Vector3? up = null) {
+        Vector3.FkValidateFinite(target, "target");
+        Vector3 axis = up != null ? up.Value : Vector3.Up;
+        Vector3.FkValidateFinite(axis, "up");
+        Vector3 direction = target - GetWorldPosition(origin);
+        Vector3.FkValidateFinite(direction, "direction");
+        return direction.LengthSquared() <= Mathf.Epsilon * Mathf.Epsilon ? origin.WorldRotation : Quaternion.LookRotation(direction, axis);
+    }
+    static void Face3D(Transform3D origin, Vector3 target, Vector3? up = null) { origin.WorldRotation = LookAt3D(origin, target, up); }
+    static bool TryLookAt3D(Vector3 originWorld, Vector3 targetWorld, Vector3 up, Quaternion& rotation) { return Quaternion.TryLookRotation(targetWorld - originWorld, up, rotation); }
+    static Vector3 DirectionTo3D(Vector3 origin, Vector3 target) {
+        Vector3 dir; return Vector3.TryNormalize(target - origin, dir) ? dir : Vector3.Zero;
+    }
+    static Vector3 RotatePoint3D(Vector3 point, Vector3 pivot, Vector3 axis, float degrees) {
+        ValidateAxis(axis, degrees);
+        Vector3.FkValidateFinite(point, "point");
+        Vector3.FkValidateFinite(pivot, "pivot");
+        return pivot + Quaternion.AngleAxis(degrees, axis) * (point - pivot);
+    }
+    static void FaceTowards3D(Transform3D origin, Vector3 target, float maxDegreesPerSecond, float deltaTime, Vector3? up = null) {
+        if (!Mathf.FkFinite(maxDegreesPerSecond) || maxDegreesPerSecond < 0.0f || !Mathf.FkFinite(deltaTime) || deltaTime < 0.0f)
+            throw ArgumentOutOfRangeException("speed or deltaTime");
+        float step = (float)Math.Min<double>(180.0, (double)maxDegreesPerSecond * (double)deltaTime);
+        if (step > 0.0f) origin.WorldRotation = Quaternion.RotateTowards(origin.WorldRotation, LookAt3D(origin, target, up), step);
+    }
+    static bool FaceOnPlane3D(Transform3D origin, Vector3 target, Vector3 normal) {
+        if (!Vector3.TryNormalize(normal, normal)) return false;
+        Vector3 direction = Vector3.ProjectOnPlane(target - GetWorldPosition(origin), normal);
+        Quaternion result;
+        if (direction.LengthSquared() <= Mathf.Epsilon * Mathf.Epsilon || !Quaternion.TryLookRotation(direction, normal, result)) return false;
+        origin.WorldRotation = result;
+        return true;
+    }
+    static float LookAt2D(Transform2D origin, Vector2 target) {
+        Vector2 delta = target - origin.Position;
+        return delta.LengthSquared() <= Mathf.Epsilon * Mathf.Epsilon ? origin.RotationDegrees : Mathf.Atan2(-delta.X, delta.Y) * Mathf.Rad2Deg;
+    }
+    static float LookAt2D(Transform2D origin, Vector2 target, float lerp) { return LerpAngleDegrees(origin.RotationDegrees, LookAt2D(origin, target), lerp); }
+    static float LookAt2DRadians(Transform2D origin, Vector2 target, float lerp = 1.0f) {
+        Vector2 delta = target - origin.Position;
+        float start = origin.Rotation * Mathf.Deg2Rad;
+        return delta.LengthSquared() <= Mathf.Epsilon * Mathf.Epsilon ? start : LerpAngleRadians(start, Mathf.Atan2(-delta.X, delta.Y), lerp);
+    }
+    static float LookAtRight2DRadians(Vector2 origin, Vector2 target) {
+        Vector2 delta = target - origin;
+        return delta.LengthSquared() <= Mathf.Epsilon * Mathf.Epsilon ? 0.0f : Mathf.Atan2(delta.Y, delta.X);
+    }
+    static void Face2D(Transform2D origin, Vector2 target, float lerp = 1.0f) { origin.RotationDegrees = LookAt2D(origin, target, lerp); }
+    static Vector2 DirectionTo2D(Vector2 origin, Vector2 target) {
+        Vector2 delta = target - origin;
+        return delta.LengthSquared() > Mathf.Epsilon * Mathf.Epsilon ? delta.Normalized() : Vector2.Zero;
+    }
+    static Vector2 RotatePoint2D(Vector2 point, Vector2 pivot, float degrees) { return RotatePoint2DRadians(point, pivot, degrees * Mathf.Deg2Rad); }
+    static Vector2 RotatePoint2DRadians(Vector2 point, Vector2 pivot, float radians) {
+        Vector2 d = point - pivot;
+        float s = Mathf.Sin(radians), c = Mathf.Cos(radians);
+        return Vector2(d.X * c - d.Y * s + pivot.X, d.X * s + d.Y * c + pivot.Y);
+    }
+    static float DeltaAngleDegrees(float current, float target) {
+        float d = target - current;
+        d -= Mathf.Floor(d / 360.0f) * 360.0f;
+        return d > 180.0f ? d - 360.0f : d;
+    }
+    static float DeltaAngleRadians(float current, float target) {
+        float d = target - current;
+        d -= Mathf.Floor(d / Mathf.TwoPI) * Mathf.TwoPI;
+        return d > Mathf.PI ? d - Mathf.TwoPI : d;
+    }
+    static float LerpAngleDegrees(float current, float target, float lerp) { return current + DeltaAngleDegrees(current, target) * Mathf.Clamp01(lerp); }
+    static float LerpAngleRadians(float current, float target, float lerp) { return current + DeltaAngleRadians(current, target) * Mathf.Clamp01(lerp); }
+}
+

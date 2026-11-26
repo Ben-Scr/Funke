@@ -102,6 +102,26 @@ namespace Funke {
 			ComponentUtils::AddComponent<TTag>(*m_Registry, m_EntityHandle);
 		}
 
+		template<typename TComponent, typename... Args>
+			requires (!std::is_empty_v<TComponent> && !std::is_base_of_v<NativeScript, TComponent>)
+		TComponent& GetOrAddComponent(Args&&... args) {
+			if (auto* component = TryGetComponent<TComponent>()) return *component;
+			return AddComponent<TComponent>(std::forward<Args>(args)...);
+		}
+
+		template<typename TTag>
+			requires (std::is_empty_v<TTag> && !std::is_base_of_v<NativeScript, TTag>)
+		void GetOrAddComponent() {
+			if (!HasComponent<TTag>()) AddComponent<TTag>();
+		}
+
+		template<typename TScript>
+			requires std::is_base_of_v<NativeScript, TScript>
+		TScript* GetOrAddComponent() {
+			if (auto* script = GetComponent<TScript>()) return script;
+			return AddComponent<TScript>();
+		}
+
 		template<typename TComponent>
 			requires (!std::is_base_of_v<NativeScript, TComponent>)
 		bool HasComponent() const {
@@ -134,13 +154,38 @@ namespace Funke {
 		}
 
 		template<typename TComponent>
-			requires (!std::is_base_of_v<NativeScript, TComponent>)
-		bool TryGetComponent(TComponent*& out) {
-			if (!IsValid()) {
-				out = nullptr;
-				return false;
+			requires (!std::is_empty_v<TComponent>)
+		TComponent* TryGetComponent() {
+			if constexpr (std::is_base_of_v<NativeScript, TComponent>) {
+				return GetComponent<TComponent>();
+			} else {
+				if (!IsValid()) return nullptr;
+				return ComponentUtils::TryGetComponent<TComponent>(*m_Registry, m_EntityHandle);
 			}
-			out = ComponentUtils::TryGetComponent<TComponent>(*m_Registry, m_EntityHandle);
+		}
+
+		template<typename TComponent>
+			requires (!std::is_empty_v<TComponent>)
+		const TComponent* TryGetComponent() const {
+			if constexpr (std::is_base_of_v<NativeScript, TComponent>) {
+				return GetComponent<TComponent>();
+			} else {
+				if (!IsValid()) return nullptr;
+				return ComponentUtils::TryGetComponent<TComponent>(std::as_const(*m_Registry), m_EntityHandle);
+			}
+		}
+
+		template<typename TComponent>
+			requires (!std::is_empty_v<TComponent>)
+		bool TryGetComponent(TComponent*& out) {
+			out = TryGetComponent<TComponent>();
+			return out != nullptr;
+		}
+
+		template<typename TComponent>
+			requires (!std::is_empty_v<TComponent>)
+		bool TryGetComponent(const TComponent*& out) const {
+			out = TryGetComponent<TComponent>();
 			return out != nullptr;
 		}
 
@@ -169,10 +214,6 @@ namespace Funke {
 		template<typename TScript>
 			requires std::is_base_of_v<NativeScript, TScript>
 		const TScript* GetComponent() const;
-
-		template<typename TScript>
-			requires std::is_base_of_v<NativeScript, TScript>
-		bool TryGetComponent(TScript*& out);
 
 		template<typename TScript>
 			requires std::is_base_of_v<NativeScript, TScript>
@@ -264,13 +305,6 @@ namespace Funke {
 	const TScript* Entity::GetComponent() const {
 		if (!IsValid()) return nullptr;
 		return EntityScriptOps::GetScriptOnEntity<TScript>(m_Scene, m_EntityHandle);
-	}
-
-	template<typename TScript>
-		requires std::is_base_of_v<NativeScript, TScript>
-	bool Entity::TryGetComponent(TScript*& out) {
-		if (!IsValid()) { out = nullptr; return false; }
-		return EntityScriptOps::TryGetScriptOnEntity<TScript>(m_Scene, m_EntityHandle, out);
 	}
 
 	template<typename TScript>

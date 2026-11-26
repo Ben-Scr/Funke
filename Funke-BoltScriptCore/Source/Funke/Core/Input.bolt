@@ -1,0 +1,86 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public static class Input {
+public:
+    static event Action<KeyCode> KeyDown;
+    static event Action<KeyCode> KeyUp;
+    static event Action<char> CharEntered;
+    static event Action<MouseButton> MouseDown;
+    static event Action<MouseButton> MouseUp;
+    static event Action<float> MouseScroll;
+    static event Action<Vector2> MouseMove;
+    static void FkRaiseEvent(ulong eventId) {
+        ulong bits = FkEventWord(0ul, 0ul);
+        if (eventId == 41ul) KeyDown.Invoke((KeyCode)bits);
+        if (eventId == 42ul) KeyUp.Invoke((KeyCode)bits);
+        if (eventId == 43ul) CharEntered.Invoke((char)bits);
+        if (eventId == 44ul) MouseDown.Invoke((MouseButton)bits);
+        if (eventId == 45ul) MouseUp.Invoke((MouseButton)bits);
+        if (eventId == 46ul) MouseScroll.Invoke(Reinterpret<float>((uint)bits));
+        if (eventId == 47ul) MouseMove.Invoke(Vector2.FromBits(bits));
+    }
+    static int MaxGamepads => 4;
+    static float GamepadDeadzone = 0.2f;
+    static int TouchCount => (int)FkInput_GetTouchCount(0ul,0ul);
+    static Touch GetTouch(int index) {
+        if (index < 0 || FkTouch((ulong)index,0ul) == 0ul) throw ArgumentException("Touch index is outside the current touches");
+        ulong i = (ulong)index;
+        return Touch(Reinterpret<long>(FkTouch(i, 1ul)), Vector2.FromBits(FkTouch(i, 3ul)),
+            Vector2.FromBits(FkTouch(i, 4ul)), (TouchPhase)FkTouch(i, 2ul));
+    }
+    static Vector3 Acceleration => FunkeApiTypes.DecodeVector3(FkInput_GetAcceleration(0ul,0ul), FkReadExtra(0ul,0ul));
+    static Vector3 Gyroscope => FunkeApiTypes.DecodeVector3(FkInput_GetGyroscope(0ul,0ul), FkReadExtra(0ul,0ul));
+    static bool IsAccelerometerAvailable => FkInput_IsMotionSensorAvailable(0ul,0ul) != 0ul;
+    static bool IsGyroscopeAvailable => FkInput_IsMotionSensorAvailable(1ul,0ul) != 0ul;
+    static bool IsGamepadConnected(int gamepad = 0) { return gamepad >= 0 && FkInput_IsGamepadConnected((ulong)gamepad,0ul) != 0ul; }
+    static float GetGamepadAxis(GamepadAxis axis, int gamepad = 0) {
+        if (gamepad < 0) return 0.0f;
+        return Reinterpret<float>((uint)FkInput_GetGamepadAxis((ulong)axis,(ulong)gamepad));
+    }
+    private static Vector2 ApplyDeadzone(float x, float y) {
+        float length = Mathf.Sqrt(x*x + y*y);
+        if (length <= GamepadDeadzone || length == 0.0f) return Vector2.Zero;
+        float scaled = Mathf.Min(1.0f, (length-GamepadDeadzone)/(1.0f-GamepadDeadzone));
+        return Vector2(x/length*scaled, y/length*scaled);
+    }
+    static Vector2 GetLeftStick(int gamepad = 0) {
+        return ApplyDeadzone(GetGamepadAxis(GamepadAxis.LeftX,gamepad), -GetGamepadAxis(GamepadAxis.LeftY,gamepad));
+    }
+    static Vector2 GetRightStick(int gamepad = 0) {
+        return ApplyDeadzone(GetGamepadAxis(GamepadAxis.RightX,gamepad), -GetGamepadAxis(GamepadAxis.RightY,gamepad));
+    }
+    static float GetGamepadTrigger(GamepadAxis axis, int gamepad = 0) {
+        if (axis != GamepadAxis.LeftTrigger && axis != GamepadAxis.RightTrigger) throw ArgumentException("Expected a trigger axis");
+        if (!IsGamepadConnected(gamepad)) return 0.0f;
+        return Mathf.Clamp01((GetGamepadAxis(axis,gamepad) + 1.0f) * 0.5f);
+    }
+    static Vector2 GetAxisRaw() {
+        float x = 0.0f, y = 0.0f;
+        if (GetKey(KeyCode.D) || GetKey(KeyCode.Right)) x += 1.0f;
+        if (GetKey(KeyCode.A) || GetKey(KeyCode.Left)) x -= 1.0f;
+        if (GetKey(KeyCode.W) || GetKey(KeyCode.Up)) y += 1.0f;
+        if (GetKey(KeyCode.S) || GetKey(KeyCode.Down)) y -= 1.0f;
+        if (x == 0.0f && y == 0.0f) { Vector2 a = GetAxis(); return Vector2(Mathf.Sign(a.X), Mathf.Sign(a.Y)); }
+        return Vector2(x, y);
+    }
+    static bool GetGamepadButton(GamepadButton button, int gamepad = 0) { return gamepad >= 0 && FkInput_GetGamepadButton((ulong)button, (ulong)gamepad) != 0ul; }
+    static bool GetGamepadButtonDown(GamepadButton button, int gamepad = 0) { return gamepad >= 0 && FkInput_GetGamepadButtonDown((ulong)button, (ulong)gamepad) != 0ul; }
+    static bool GetGamepadButtonUp(GamepadButton button, int gamepad = 0) { return gamepad >= 0 && FkInput_GetGamepadButtonUp((ulong)button, (ulong)gamepad) != 0ul; }
+    static int KeyCount => 349;
+    static int MouseCount => 8;
+    static bool GetKey(KeyCode key) { return (FkInput_GetKey((ulong)key, 0ul) != 0ul); }
+    static bool GetKeyDown(KeyCode key) { return (FkInput_GetKeyDown((ulong)key, 0ul) != 0ul); }
+    static bool GetKeyUp(KeyCode key) { return (FkInput_GetKeyUp((ulong)key, 0ul) != 0ul); }
+    static bool GetMouseButton(MouseButton key) { return (FkInput_GetMouseButton((ulong)key, 0ul) != 0ul); }
+    static bool GetMouseButtonUp(MouseButton key) { return (FkInput_GetMouseButtonUp((ulong)key, 0ul) != 0ul); }
+    static bool GetMouseButtonDown(MouseButton key) { return (FkInput_GetMouseButtonDown((ulong)key, 0ul) != 0ul); }
+    static bool GetAnyKey() { return (FkInput_GetAnyKey(0ul, 0ul) != 0ul); }
+    static Vector2 GetMouseDelta() { return Vector2.FromBits(FkInput_GetMouseDelta(0ul, 0ul)); }
+    static float GetScrollWheelDelta() { return Reinterpret<float>((uint)(FkInput_GetScrollWheelDelta(0ul, 0ul))); }
+    static Vector2 GetAxis() { return Vector2.FromBits(FkInput_GetAxis(0ul, 0ul)); }
+    static Vector2 MousePosition => Vector2.FromBits(FkInput_GetMousePosition(0ul, 0ul));
+}

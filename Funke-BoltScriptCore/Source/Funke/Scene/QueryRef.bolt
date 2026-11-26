@@ -1,0 +1,679 @@
+namespace Funke;
+
+public class QueryRefBuilder1<W1Type> {
+public:
+    FkQueryRefSpec FkSpec;
+    QueryRefBuilder1<W1Type> With<T>() { QueryRefBuilder1<W1Type> copy = this; copy.FkSpec.Required += FkQueryRefSpec.Key<T>(); return copy; }
+    QueryRefBuilder1<W1Type> Without<T>() { QueryRefBuilder1<W1Type> copy = this; copy.FkSpec.Excluded += FkQueryRefSpec.Key<T>(); return copy; }
+    QueryRefBuilder1<W1Type> EnabledOnly() { QueryRefBuilder1<W1Type> copy = this; copy.FkSpec.EnableFilter = 1; return copy; }
+    QueryRefBuilder1<W1Type> DisabledOnly() { QueryRefBuilder1<W1Type> copy = this; copy.FkSpec.EnableFilter = 2; return copy; }
+    QueryRefBuilder1<W1Type> IncludeDisabled() { QueryRefBuilder1<W1Type> copy = this; copy.FkSpec.EnableFilter = 0; return copy; }
+    QueryRefEntityBuilder1<W1Type> WithEntity() { QueryRefEntityBuilder1<W1Type> copy; copy.FkSpec = FkSpec; return copy; }
+    QueryRefBuilder1_RO1<W1Type, RType> Readonly<RType>() { QueryRefBuilder1_RO1<W1Type, RType> copy; copy.FkSpec = FkSpec; copy.FkSpec.Reads = FkQueryRefSpec.Key<RType>(); return copy; }
+    public class Enumerator {
+    public:
+        FkQueryRefCursor FkCursor;
+        bool MoveNext() { return FkCursor.MoveNext(); }
+        void Dispose() { FkCursor.Dispose(); }
+        W1Type& Current { get { return *((W1Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 0)); } }
+    }
+    Enumerator GetEnumerator() {
+        Enumerator result;
+        result.FkCursor.Open(FkSpec, 1, false);
+        return result;
+    }
+}
+
+public class QueryRefEntityBuilder1<W1Type> {
+public:
+    FkQueryRefSpec FkSpec;
+    public class Row {
+    public:
+        FkQueryRefCursor FkCursor;
+        EntityRef Entity => FkCursor.Data.Get().EntityAt(FkCursor.Index);
+        W1Type& W1 { get { return *((W1Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 0)); } }
+        W1Type& W { get { return *((W1Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 0)); } }
+        void Deconstruct(EntityRef& entity, Funke.Components.Ref<W1Type>& w1) {
+            entity = Entity;
+            w1 = Funke.Components.Ref<W1Type>.FkBorrow((W1Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 0));
+        }
+    }
+    public class Enumerator {
+    public:
+        FkQueryRefCursor FkCursor;
+        bool MoveNext() { return FkCursor.MoveNext(); }
+        void Dispose() { FkCursor.Dispose(); }
+        Row Current { get { Row row; row.FkCursor = FkCursor; return row; } }
+    }
+    Enumerator GetEnumerator() {
+        Enumerator result;
+        result.FkCursor.Open(FkSpec, 1, true);
+        return result;
+    }
+}
+
+public class QueryRefBuilder1_RO1<W1Type, RType> {
+public:
+    FkQueryRefSpec FkSpec;
+    QueryRefBuilder1_RO1<W1Type, RType> With<T>() { QueryRefBuilder1_RO1<W1Type, RType> copy = this; copy.FkSpec.Required += FkQueryRefSpec.Key<T>(); return copy; }
+    QueryRefBuilder1_RO1<W1Type, RType> Without<T>() { QueryRefBuilder1_RO1<W1Type, RType> copy = this; copy.FkSpec.Excluded += FkQueryRefSpec.Key<T>(); return copy; }
+    QueryRefBuilder1_RO1<W1Type, RType> EnabledOnly() { QueryRefBuilder1_RO1<W1Type, RType> copy = this; copy.FkSpec.EnableFilter = 1; return copy; }
+    QueryRefBuilder1_RO1<W1Type, RType> DisabledOnly() { QueryRefBuilder1_RO1<W1Type, RType> copy = this; copy.FkSpec.EnableFilter = 2; return copy; }
+    QueryRefBuilder1_RO1<W1Type, RType> IncludeDisabled() { QueryRefBuilder1_RO1<W1Type, RType> copy = this; copy.FkSpec.EnableFilter = 0; return copy; }
+    QueryRefEntityBuilder1_RO1<W1Type, RType> WithEntity() { QueryRefEntityBuilder1_RO1<W1Type, RType> copy; copy.FkSpec = FkSpec; return copy; }
+    public class Row {
+    public:
+        FkQueryRefCursor FkCursor;
+        W1Type& W1 { get { return *((W1Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 0)); } }
+        W1Type& W { get { return *((W1Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 0)); } }
+        RType R { get { return *((RType*)FkCursor.Data.Get().Cell(FkCursor.Index, 1)); } }
+        void Deconstruct(Funke.Components.Ref<W1Type>& w1, Funke.Components.RefRO<RType>& r) {
+            w1 = Funke.Components.Ref<W1Type>.FkBorrow((W1Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 0));
+            r = Funke.Components.RefRO<RType>.FkBorrow((RType*)FkCursor.Data.Get().Cell(FkCursor.Index, 1));
+        }
+    }
+    public class Enumerator {
+    public:
+        FkQueryRefCursor FkCursor;
+        bool MoveNext() { return FkCursor.MoveNext(); }
+        void Dispose() { FkCursor.Dispose(); }
+        Row Current { get { Row row; row.FkCursor = FkCursor; return row; } }
+    }
+    Enumerator GetEnumerator() {
+        Enumerator result;
+        result.FkCursor.Open(FkSpec, 2, false);
+        return result;
+    }
+}
+
+public class QueryRefEntityBuilder1_RO1<W1Type, RType> {
+public:
+    FkQueryRefSpec FkSpec;
+    public class Row {
+    public:
+        FkQueryRefCursor FkCursor;
+        EntityRef Entity => FkCursor.Data.Get().EntityAt(FkCursor.Index);
+        W1Type& W1 { get { return *((W1Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 0)); } }
+        W1Type& W { get { return *((W1Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 0)); } }
+        RType R { get { return *((RType*)FkCursor.Data.Get().Cell(FkCursor.Index, 1)); } }
+        RType R1 { get { return *((RType*)FkCursor.Data.Get().Cell(FkCursor.Index, 1)); } }
+        void Deconstruct(EntityRef& entity, Funke.Components.Ref<W1Type>& w1, Funke.Components.RefRO<RType>& r) {
+            entity = Entity;
+            w1 = Funke.Components.Ref<W1Type>.FkBorrow((W1Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 0));
+            r = Funke.Components.RefRO<RType>.FkBorrow((RType*)FkCursor.Data.Get().Cell(FkCursor.Index, 1));
+        }
+    }
+    public class Enumerator {
+    public:
+        FkQueryRefCursor FkCursor;
+        bool MoveNext() { return FkCursor.MoveNext(); }
+        void Dispose() { FkCursor.Dispose(); }
+        Row Current { get { Row row; row.FkCursor = FkCursor; return row; } }
+    }
+    Enumerator GetEnumerator() {
+        Enumerator result;
+        result.FkCursor.Open(FkSpec, 2, true);
+        return result;
+    }
+}
+
+public class QueryRefBuilder2<W1Type, W2Type> {
+public:
+    FkQueryRefSpec FkSpec;
+    QueryRefBuilder2<W1Type, W2Type> With<T>() { QueryRefBuilder2<W1Type, W2Type> copy = this; copy.FkSpec.Required += FkQueryRefSpec.Key<T>(); return copy; }
+    QueryRefBuilder2<W1Type, W2Type> Without<T>() { QueryRefBuilder2<W1Type, W2Type> copy = this; copy.FkSpec.Excluded += FkQueryRefSpec.Key<T>(); return copy; }
+    QueryRefBuilder2<W1Type, W2Type> EnabledOnly() { QueryRefBuilder2<W1Type, W2Type> copy = this; copy.FkSpec.EnableFilter = 1; return copy; }
+    QueryRefBuilder2<W1Type, W2Type> DisabledOnly() { QueryRefBuilder2<W1Type, W2Type> copy = this; copy.FkSpec.EnableFilter = 2; return copy; }
+    QueryRefBuilder2<W1Type, W2Type> IncludeDisabled() { QueryRefBuilder2<W1Type, W2Type> copy = this; copy.FkSpec.EnableFilter = 0; return copy; }
+    QueryRefEntityBuilder2<W1Type, W2Type> WithEntity() { QueryRefEntityBuilder2<W1Type, W2Type> copy; copy.FkSpec = FkSpec; return copy; }
+    public class Row {
+    public:
+        FkQueryRefCursor FkCursor;
+        W1Type& W1 { get { return *((W1Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 0)); } }
+        W2Type& W2 { get { return *((W2Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 1)); } }
+        void Deconstruct(Funke.Components.Ref<W1Type>& w1, Funke.Components.Ref<W2Type>& w2) {
+            w1 = Funke.Components.Ref<W1Type>.FkBorrow((W1Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 0));
+            w2 = Funke.Components.Ref<W2Type>.FkBorrow((W2Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 1));
+        }
+    }
+    public class Enumerator {
+    public:
+        FkQueryRefCursor FkCursor;
+        bool MoveNext() { return FkCursor.MoveNext(); }
+        void Dispose() { FkCursor.Dispose(); }
+        Row Current { get { Row row; row.FkCursor = FkCursor; return row; } }
+    }
+    Enumerator GetEnumerator() {
+        Enumerator result;
+        result.FkCursor.Open(FkSpec, 2, false);
+        return result;
+    }
+}
+
+public class QueryRefEntityBuilder2<W1Type, W2Type> {
+public:
+    FkQueryRefSpec FkSpec;
+    public class Row {
+    public:
+        FkQueryRefCursor FkCursor;
+        EntityRef Entity => FkCursor.Data.Get().EntityAt(FkCursor.Index);
+        W1Type& W1 { get { return *((W1Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 0)); } }
+        W2Type& W2 { get { return *((W2Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 1)); } }
+        void Deconstruct(EntityRef& entity, Funke.Components.Ref<W1Type>& w1, Funke.Components.Ref<W2Type>& w2) {
+            entity = Entity;
+            w1 = Funke.Components.Ref<W1Type>.FkBorrow((W1Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 0));
+            w2 = Funke.Components.Ref<W2Type>.FkBorrow((W2Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 1));
+        }
+    }
+    public class Enumerator {
+    public:
+        FkQueryRefCursor FkCursor;
+        bool MoveNext() { return FkCursor.MoveNext(); }
+        void Dispose() { FkCursor.Dispose(); }
+        Row Current { get { Row row; row.FkCursor = FkCursor; return row; } }
+    }
+    Enumerator GetEnumerator() {
+        Enumerator result;
+        result.FkCursor.Open(FkSpec, 2, true);
+        return result;
+    }
+}
+
+public class QueryRefBuilder3<W1Type, W2Type, W3Type> {
+public:
+    FkQueryRefSpec FkSpec;
+    QueryRefBuilder3<W1Type, W2Type, W3Type> With<T>() { QueryRefBuilder3<W1Type, W2Type, W3Type> copy = this; copy.FkSpec.Required += FkQueryRefSpec.Key<T>(); return copy; }
+    QueryRefBuilder3<W1Type, W2Type, W3Type> Without<T>() { QueryRefBuilder3<W1Type, W2Type, W3Type> copy = this; copy.FkSpec.Excluded += FkQueryRefSpec.Key<T>(); return copy; }
+    QueryRefBuilder3<W1Type, W2Type, W3Type> EnabledOnly() { QueryRefBuilder3<W1Type, W2Type, W3Type> copy = this; copy.FkSpec.EnableFilter = 1; return copy; }
+    QueryRefBuilder3<W1Type, W2Type, W3Type> DisabledOnly() { QueryRefBuilder3<W1Type, W2Type, W3Type> copy = this; copy.FkSpec.EnableFilter = 2; return copy; }
+    QueryRefBuilder3<W1Type, W2Type, W3Type> IncludeDisabled() { QueryRefBuilder3<W1Type, W2Type, W3Type> copy = this; copy.FkSpec.EnableFilter = 0; return copy; }
+    QueryRefEntityBuilder3<W1Type, W2Type, W3Type> WithEntity() { QueryRefEntityBuilder3<W1Type, W2Type, W3Type> copy; copy.FkSpec = FkSpec; return copy; }
+    public class Row {
+    public:
+        FkQueryRefCursor FkCursor;
+        W1Type& W1 { get { return *((W1Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 0)); } }
+        W2Type& W2 { get { return *((W2Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 1)); } }
+        W3Type& W3 { get { return *((W3Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 2)); } }
+        void Deconstruct(Funke.Components.Ref<W1Type>& w1, Funke.Components.Ref<W2Type>& w2, Funke.Components.Ref<W3Type>& w3) {
+            w1 = Funke.Components.Ref<W1Type>.FkBorrow((W1Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 0));
+            w2 = Funke.Components.Ref<W2Type>.FkBorrow((W2Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 1));
+            w3 = Funke.Components.Ref<W3Type>.FkBorrow((W3Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 2));
+        }
+    }
+    public class Enumerator {
+    public:
+        FkQueryRefCursor FkCursor;
+        bool MoveNext() { return FkCursor.MoveNext(); }
+        void Dispose() { FkCursor.Dispose(); }
+        Row Current { get { Row row; row.FkCursor = FkCursor; return row; } }
+    }
+    Enumerator GetEnumerator() {
+        Enumerator result;
+        result.FkCursor.Open(FkSpec, 3, false);
+        return result;
+    }
+}
+
+public class QueryRefEntityBuilder3<W1Type, W2Type, W3Type> {
+public:
+    FkQueryRefSpec FkSpec;
+    public class Row {
+    public:
+        FkQueryRefCursor FkCursor;
+        EntityRef Entity => FkCursor.Data.Get().EntityAt(FkCursor.Index);
+        W1Type& W1 { get { return *((W1Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 0)); } }
+        W2Type& W2 { get { return *((W2Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 1)); } }
+        W3Type& W3 { get { return *((W3Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 2)); } }
+        void Deconstruct(EntityRef& entity, Funke.Components.Ref<W1Type>& w1, Funke.Components.Ref<W2Type>& w2, Funke.Components.Ref<W3Type>& w3) {
+            entity = Entity;
+            w1 = Funke.Components.Ref<W1Type>.FkBorrow((W1Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 0));
+            w2 = Funke.Components.Ref<W2Type>.FkBorrow((W2Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 1));
+            w3 = Funke.Components.Ref<W3Type>.FkBorrow((W3Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 2));
+        }
+    }
+    public class Enumerator {
+    public:
+        FkQueryRefCursor FkCursor;
+        bool MoveNext() { return FkCursor.MoveNext(); }
+        void Dispose() { FkCursor.Dispose(); }
+        Row Current { get { Row row; row.FkCursor = FkCursor; return row; } }
+    }
+    Enumerator GetEnumerator() {
+        Enumerator result;
+        result.FkCursor.Open(FkSpec, 3, true);
+        return result;
+    }
+}
+
+public class QueryRefBuilder4<W1Type, W2Type, W3Type, W4Type> {
+public:
+    FkQueryRefSpec FkSpec;
+    QueryRefBuilder4<W1Type, W2Type, W3Type, W4Type> With<T>() { QueryRefBuilder4<W1Type, W2Type, W3Type, W4Type> copy = this; copy.FkSpec.Required += FkQueryRefSpec.Key<T>(); return copy; }
+    QueryRefBuilder4<W1Type, W2Type, W3Type, W4Type> Without<T>() { QueryRefBuilder4<W1Type, W2Type, W3Type, W4Type> copy = this; copy.FkSpec.Excluded += FkQueryRefSpec.Key<T>(); return copy; }
+    QueryRefBuilder4<W1Type, W2Type, W3Type, W4Type> EnabledOnly() { QueryRefBuilder4<W1Type, W2Type, W3Type, W4Type> copy = this; copy.FkSpec.EnableFilter = 1; return copy; }
+    QueryRefBuilder4<W1Type, W2Type, W3Type, W4Type> DisabledOnly() { QueryRefBuilder4<W1Type, W2Type, W3Type, W4Type> copy = this; copy.FkSpec.EnableFilter = 2; return copy; }
+    QueryRefBuilder4<W1Type, W2Type, W3Type, W4Type> IncludeDisabled() { QueryRefBuilder4<W1Type, W2Type, W3Type, W4Type> copy = this; copy.FkSpec.EnableFilter = 0; return copy; }
+    QueryRefEntityBuilder4<W1Type, W2Type, W3Type, W4Type> WithEntity() { QueryRefEntityBuilder4<W1Type, W2Type, W3Type, W4Type> copy; copy.FkSpec = FkSpec; return copy; }
+    public class Row {
+    public:
+        FkQueryRefCursor FkCursor;
+        W1Type& W1 { get { return *((W1Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 0)); } }
+        W2Type& W2 { get { return *((W2Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 1)); } }
+        W3Type& W3 { get { return *((W3Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 2)); } }
+        W4Type& W4 { get { return *((W4Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 3)); } }
+        void Deconstruct(Funke.Components.Ref<W1Type>& w1, Funke.Components.Ref<W2Type>& w2, Funke.Components.Ref<W3Type>& w3, Funke.Components.Ref<W4Type>& w4) {
+            w1 = Funke.Components.Ref<W1Type>.FkBorrow((W1Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 0));
+            w2 = Funke.Components.Ref<W2Type>.FkBorrow((W2Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 1));
+            w3 = Funke.Components.Ref<W3Type>.FkBorrow((W3Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 2));
+            w4 = Funke.Components.Ref<W4Type>.FkBorrow((W4Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 3));
+        }
+    }
+    public class Enumerator {
+    public:
+        FkQueryRefCursor FkCursor;
+        bool MoveNext() { return FkCursor.MoveNext(); }
+        void Dispose() { FkCursor.Dispose(); }
+        Row Current { get { Row row; row.FkCursor = FkCursor; return row; } }
+    }
+    Enumerator GetEnumerator() {
+        Enumerator result;
+        result.FkCursor.Open(FkSpec, 4, false);
+        return result;
+    }
+}
+
+public class QueryRefEntityBuilder4<W1Type, W2Type, W3Type, W4Type> {
+public:
+    FkQueryRefSpec FkSpec;
+    public class Row {
+    public:
+        FkQueryRefCursor FkCursor;
+        EntityRef Entity => FkCursor.Data.Get().EntityAt(FkCursor.Index);
+        W1Type& W1 { get { return *((W1Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 0)); } }
+        W2Type& W2 { get { return *((W2Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 1)); } }
+        W3Type& W3 { get { return *((W3Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 2)); } }
+        W4Type& W4 { get { return *((W4Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 3)); } }
+        void Deconstruct(EntityRef& entity, Funke.Components.Ref<W1Type>& w1, Funke.Components.Ref<W2Type>& w2, Funke.Components.Ref<W3Type>& w3, Funke.Components.Ref<W4Type>& w4) {
+            entity = Entity;
+            w1 = Funke.Components.Ref<W1Type>.FkBorrow((W1Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 0));
+            w2 = Funke.Components.Ref<W2Type>.FkBorrow((W2Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 1));
+            w3 = Funke.Components.Ref<W3Type>.FkBorrow((W3Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 2));
+            w4 = Funke.Components.Ref<W4Type>.FkBorrow((W4Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 3));
+        }
+    }
+    public class Enumerator {
+    public:
+        FkQueryRefCursor FkCursor;
+        bool MoveNext() { return FkCursor.MoveNext(); }
+        void Dispose() { FkCursor.Dispose(); }
+        Row Current { get { Row row; row.FkCursor = FkCursor; return row; } }
+    }
+    Enumerator GetEnumerator() {
+        Enumerator result;
+        result.FkCursor.Open(FkSpec, 4, true);
+        return result;
+    }
+}
+
+public class QueryRefBuilder5<W1Type, W2Type, W3Type, W4Type, W5Type> {
+public:
+    FkQueryRefSpec FkSpec;
+    QueryRefBuilder5<W1Type, W2Type, W3Type, W4Type, W5Type> With<T>() { QueryRefBuilder5<W1Type, W2Type, W3Type, W4Type, W5Type> copy = this; copy.FkSpec.Required += FkQueryRefSpec.Key<T>(); return copy; }
+    QueryRefBuilder5<W1Type, W2Type, W3Type, W4Type, W5Type> Without<T>() { QueryRefBuilder5<W1Type, W2Type, W3Type, W4Type, W5Type> copy = this; copy.FkSpec.Excluded += FkQueryRefSpec.Key<T>(); return copy; }
+    QueryRefBuilder5<W1Type, W2Type, W3Type, W4Type, W5Type> EnabledOnly() { QueryRefBuilder5<W1Type, W2Type, W3Type, W4Type, W5Type> copy = this; copy.FkSpec.EnableFilter = 1; return copy; }
+    QueryRefBuilder5<W1Type, W2Type, W3Type, W4Type, W5Type> DisabledOnly() { QueryRefBuilder5<W1Type, W2Type, W3Type, W4Type, W5Type> copy = this; copy.FkSpec.EnableFilter = 2; return copy; }
+    QueryRefBuilder5<W1Type, W2Type, W3Type, W4Type, W5Type> IncludeDisabled() { QueryRefBuilder5<W1Type, W2Type, W3Type, W4Type, W5Type> copy = this; copy.FkSpec.EnableFilter = 0; return copy; }
+    QueryRefEntityBuilder5<W1Type, W2Type, W3Type, W4Type, W5Type> WithEntity() { QueryRefEntityBuilder5<W1Type, W2Type, W3Type, W4Type, W5Type> copy; copy.FkSpec = FkSpec; return copy; }
+    public class Row {
+    public:
+        FkQueryRefCursor FkCursor;
+        W1Type& W1 { get { return *((W1Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 0)); } }
+        W2Type& W2 { get { return *((W2Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 1)); } }
+        W3Type& W3 { get { return *((W3Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 2)); } }
+        W4Type& W4 { get { return *((W4Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 3)); } }
+        W5Type& W5 { get { return *((W5Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 4)); } }
+        void Deconstruct(Funke.Components.Ref<W1Type>& w1, Funke.Components.Ref<W2Type>& w2, Funke.Components.Ref<W3Type>& w3, Funke.Components.Ref<W4Type>& w4, Funke.Components.Ref<W5Type>& w5) {
+            w1 = Funke.Components.Ref<W1Type>.FkBorrow((W1Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 0));
+            w2 = Funke.Components.Ref<W2Type>.FkBorrow((W2Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 1));
+            w3 = Funke.Components.Ref<W3Type>.FkBorrow((W3Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 2));
+            w4 = Funke.Components.Ref<W4Type>.FkBorrow((W4Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 3));
+            w5 = Funke.Components.Ref<W5Type>.FkBorrow((W5Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 4));
+        }
+    }
+    public class Enumerator {
+    public:
+        FkQueryRefCursor FkCursor;
+        bool MoveNext() { return FkCursor.MoveNext(); }
+        void Dispose() { FkCursor.Dispose(); }
+        Row Current { get { Row row; row.FkCursor = FkCursor; return row; } }
+    }
+    Enumerator GetEnumerator() {
+        Enumerator result;
+        result.FkCursor.Open(FkSpec, 5, false);
+        return result;
+    }
+}
+
+public class QueryRefEntityBuilder5<W1Type, W2Type, W3Type, W4Type, W5Type> {
+public:
+    FkQueryRefSpec FkSpec;
+    public class Row {
+    public:
+        FkQueryRefCursor FkCursor;
+        EntityRef Entity => FkCursor.Data.Get().EntityAt(FkCursor.Index);
+        W1Type& W1 { get { return *((W1Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 0)); } }
+        W2Type& W2 { get { return *((W2Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 1)); } }
+        W3Type& W3 { get { return *((W3Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 2)); } }
+        W4Type& W4 { get { return *((W4Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 3)); } }
+        W5Type& W5 { get { return *((W5Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 4)); } }
+        void Deconstruct(EntityRef& entity, Funke.Components.Ref<W1Type>& w1, Funke.Components.Ref<W2Type>& w2, Funke.Components.Ref<W3Type>& w3, Funke.Components.Ref<W4Type>& w4, Funke.Components.Ref<W5Type>& w5) {
+            entity = Entity;
+            w1 = Funke.Components.Ref<W1Type>.FkBorrow((W1Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 0));
+            w2 = Funke.Components.Ref<W2Type>.FkBorrow((W2Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 1));
+            w3 = Funke.Components.Ref<W3Type>.FkBorrow((W3Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 2));
+            w4 = Funke.Components.Ref<W4Type>.FkBorrow((W4Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 3));
+            w5 = Funke.Components.Ref<W5Type>.FkBorrow((W5Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 4));
+        }
+    }
+    public class Enumerator {
+    public:
+        FkQueryRefCursor FkCursor;
+        bool MoveNext() { return FkCursor.MoveNext(); }
+        void Dispose() { FkCursor.Dispose(); }
+        Row Current { get { Row row; row.FkCursor = FkCursor; return row; } }
+    }
+    Enumerator GetEnumerator() {
+        Enumerator result;
+        result.FkCursor.Open(FkSpec, 5, true);
+        return result;
+    }
+}
+
+public class QueryRefBuilder6<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type> {
+public:
+    FkQueryRefSpec FkSpec;
+    QueryRefBuilder6<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type> With<T>() { QueryRefBuilder6<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type> copy = this; copy.FkSpec.Required += FkQueryRefSpec.Key<T>(); return copy; }
+    QueryRefBuilder6<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type> Without<T>() { QueryRefBuilder6<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type> copy = this; copy.FkSpec.Excluded += FkQueryRefSpec.Key<T>(); return copy; }
+    QueryRefBuilder6<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type> EnabledOnly() { QueryRefBuilder6<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type> copy = this; copy.FkSpec.EnableFilter = 1; return copy; }
+    QueryRefBuilder6<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type> DisabledOnly() { QueryRefBuilder6<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type> copy = this; copy.FkSpec.EnableFilter = 2; return copy; }
+    QueryRefBuilder6<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type> IncludeDisabled() { QueryRefBuilder6<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type> copy = this; copy.FkSpec.EnableFilter = 0; return copy; }
+    QueryRefEntityBuilder6<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type> WithEntity() { QueryRefEntityBuilder6<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type> copy; copy.FkSpec = FkSpec; return copy; }
+    public class Row {
+    public:
+        FkQueryRefCursor FkCursor;
+        W1Type& W1 { get { return *((W1Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 0)); } }
+        W2Type& W2 { get { return *((W2Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 1)); } }
+        W3Type& W3 { get { return *((W3Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 2)); } }
+        W4Type& W4 { get { return *((W4Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 3)); } }
+        W5Type& W5 { get { return *((W5Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 4)); } }
+        W6Type& W6 { get { return *((W6Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 5)); } }
+        void Deconstruct(Funke.Components.Ref<W1Type>& w1, Funke.Components.Ref<W2Type>& w2, Funke.Components.Ref<W3Type>& w3, Funke.Components.Ref<W4Type>& w4, Funke.Components.Ref<W5Type>& w5, Funke.Components.Ref<W6Type>& w6) {
+            w1 = Funke.Components.Ref<W1Type>.FkBorrow((W1Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 0));
+            w2 = Funke.Components.Ref<W2Type>.FkBorrow((W2Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 1));
+            w3 = Funke.Components.Ref<W3Type>.FkBorrow((W3Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 2));
+            w4 = Funke.Components.Ref<W4Type>.FkBorrow((W4Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 3));
+            w5 = Funke.Components.Ref<W5Type>.FkBorrow((W5Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 4));
+            w6 = Funke.Components.Ref<W6Type>.FkBorrow((W6Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 5));
+        }
+    }
+    public class Enumerator {
+    public:
+        FkQueryRefCursor FkCursor;
+        bool MoveNext() { return FkCursor.MoveNext(); }
+        void Dispose() { FkCursor.Dispose(); }
+        Row Current { get { Row row; row.FkCursor = FkCursor; return row; } }
+    }
+    Enumerator GetEnumerator() {
+        Enumerator result;
+        result.FkCursor.Open(FkSpec, 6, false);
+        return result;
+    }
+}
+
+public class QueryRefEntityBuilder6<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type> {
+public:
+    FkQueryRefSpec FkSpec;
+    public class Row {
+    public:
+        FkQueryRefCursor FkCursor;
+        EntityRef Entity => FkCursor.Data.Get().EntityAt(FkCursor.Index);
+        W1Type& W1 { get { return *((W1Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 0)); } }
+        W2Type& W2 { get { return *((W2Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 1)); } }
+        W3Type& W3 { get { return *((W3Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 2)); } }
+        W4Type& W4 { get { return *((W4Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 3)); } }
+        W5Type& W5 { get { return *((W5Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 4)); } }
+        W6Type& W6 { get { return *((W6Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 5)); } }
+        void Deconstruct(EntityRef& entity, Funke.Components.Ref<W1Type>& w1, Funke.Components.Ref<W2Type>& w2, Funke.Components.Ref<W3Type>& w3, Funke.Components.Ref<W4Type>& w4, Funke.Components.Ref<W5Type>& w5, Funke.Components.Ref<W6Type>& w6) {
+            entity = Entity;
+            w1 = Funke.Components.Ref<W1Type>.FkBorrow((W1Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 0));
+            w2 = Funke.Components.Ref<W2Type>.FkBorrow((W2Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 1));
+            w3 = Funke.Components.Ref<W3Type>.FkBorrow((W3Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 2));
+            w4 = Funke.Components.Ref<W4Type>.FkBorrow((W4Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 3));
+            w5 = Funke.Components.Ref<W5Type>.FkBorrow((W5Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 4));
+            w6 = Funke.Components.Ref<W6Type>.FkBorrow((W6Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 5));
+        }
+    }
+    public class Enumerator {
+    public:
+        FkQueryRefCursor FkCursor;
+        bool MoveNext() { return FkCursor.MoveNext(); }
+        void Dispose() { FkCursor.Dispose(); }
+        Row Current { get { Row row; row.FkCursor = FkCursor; return row; } }
+    }
+    Enumerator GetEnumerator() {
+        Enumerator result;
+        result.FkCursor.Open(FkSpec, 6, true);
+        return result;
+    }
+}
+
+public class QueryRefBuilder7<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type, W7Type> {
+public:
+    FkQueryRefSpec FkSpec;
+    QueryRefBuilder7<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type, W7Type> With<T>() { QueryRefBuilder7<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type, W7Type> copy = this; copy.FkSpec.Required += FkQueryRefSpec.Key<T>(); return copy; }
+    QueryRefBuilder7<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type, W7Type> Without<T>() { QueryRefBuilder7<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type, W7Type> copy = this; copy.FkSpec.Excluded += FkQueryRefSpec.Key<T>(); return copy; }
+    QueryRefBuilder7<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type, W7Type> EnabledOnly() { QueryRefBuilder7<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type, W7Type> copy = this; copy.FkSpec.EnableFilter = 1; return copy; }
+    QueryRefBuilder7<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type, W7Type> DisabledOnly() { QueryRefBuilder7<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type, W7Type> copy = this; copy.FkSpec.EnableFilter = 2; return copy; }
+    QueryRefBuilder7<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type, W7Type> IncludeDisabled() { QueryRefBuilder7<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type, W7Type> copy = this; copy.FkSpec.EnableFilter = 0; return copy; }
+    QueryRefEntityBuilder7<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type, W7Type> WithEntity() { QueryRefEntityBuilder7<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type, W7Type> copy; copy.FkSpec = FkSpec; return copy; }
+    public class Row {
+    public:
+        FkQueryRefCursor FkCursor;
+        W1Type& W1 { get { return *((W1Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 0)); } }
+        W2Type& W2 { get { return *((W2Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 1)); } }
+        W3Type& W3 { get { return *((W3Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 2)); } }
+        W4Type& W4 { get { return *((W4Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 3)); } }
+        W5Type& W5 { get { return *((W5Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 4)); } }
+        W6Type& W6 { get { return *((W6Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 5)); } }
+        W7Type& W7 { get { return *((W7Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 6)); } }
+        void Deconstruct(Funke.Components.Ref<W1Type>& w1, Funke.Components.Ref<W2Type>& w2, Funke.Components.Ref<W3Type>& w3, Funke.Components.Ref<W4Type>& w4, Funke.Components.Ref<W5Type>& w5, Funke.Components.Ref<W6Type>& w6, Funke.Components.Ref<W7Type>& w7) {
+            w1 = Funke.Components.Ref<W1Type>.FkBorrow((W1Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 0));
+            w2 = Funke.Components.Ref<W2Type>.FkBorrow((W2Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 1));
+            w3 = Funke.Components.Ref<W3Type>.FkBorrow((W3Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 2));
+            w4 = Funke.Components.Ref<W4Type>.FkBorrow((W4Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 3));
+            w5 = Funke.Components.Ref<W5Type>.FkBorrow((W5Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 4));
+            w6 = Funke.Components.Ref<W6Type>.FkBorrow((W6Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 5));
+            w7 = Funke.Components.Ref<W7Type>.FkBorrow((W7Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 6));
+        }
+    }
+    public class Enumerator {
+    public:
+        FkQueryRefCursor FkCursor;
+        bool MoveNext() { return FkCursor.MoveNext(); }
+        void Dispose() { FkCursor.Dispose(); }
+        Row Current { get { Row row; row.FkCursor = FkCursor; return row; } }
+    }
+    Enumerator GetEnumerator() {
+        Enumerator result;
+        result.FkCursor.Open(FkSpec, 7, false);
+        return result;
+    }
+}
+
+public class QueryRefEntityBuilder7<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type, W7Type> {
+public:
+    FkQueryRefSpec FkSpec;
+    public class Row {
+    public:
+        FkQueryRefCursor FkCursor;
+        EntityRef Entity => FkCursor.Data.Get().EntityAt(FkCursor.Index);
+        W1Type& W1 { get { return *((W1Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 0)); } }
+        W2Type& W2 { get { return *((W2Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 1)); } }
+        W3Type& W3 { get { return *((W3Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 2)); } }
+        W4Type& W4 { get { return *((W4Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 3)); } }
+        W5Type& W5 { get { return *((W5Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 4)); } }
+        W6Type& W6 { get { return *((W6Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 5)); } }
+        W7Type& W7 { get { return *((W7Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 6)); } }
+        void Deconstruct(EntityRef& entity, Funke.Components.Ref<W1Type>& w1, Funke.Components.Ref<W2Type>& w2, Funke.Components.Ref<W3Type>& w3, Funke.Components.Ref<W4Type>& w4, Funke.Components.Ref<W5Type>& w5, Funke.Components.Ref<W6Type>& w6, Funke.Components.Ref<W7Type>& w7) {
+            entity = Entity;
+            w1 = Funke.Components.Ref<W1Type>.FkBorrow((W1Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 0));
+            w2 = Funke.Components.Ref<W2Type>.FkBorrow((W2Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 1));
+            w3 = Funke.Components.Ref<W3Type>.FkBorrow((W3Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 2));
+            w4 = Funke.Components.Ref<W4Type>.FkBorrow((W4Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 3));
+            w5 = Funke.Components.Ref<W5Type>.FkBorrow((W5Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 4));
+            w6 = Funke.Components.Ref<W6Type>.FkBorrow((W6Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 5));
+            w7 = Funke.Components.Ref<W7Type>.FkBorrow((W7Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 6));
+        }
+    }
+    public class Enumerator {
+    public:
+        FkQueryRefCursor FkCursor;
+        bool MoveNext() { return FkCursor.MoveNext(); }
+        void Dispose() { FkCursor.Dispose(); }
+        Row Current { get { Row row; row.FkCursor = FkCursor; return row; } }
+    }
+    Enumerator GetEnumerator() {
+        Enumerator result;
+        result.FkCursor.Open(FkSpec, 7, true);
+        return result;
+    }
+}
+
+public class QueryRefBuilder8<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type, W7Type, W8Type> {
+public:
+    FkQueryRefSpec FkSpec;
+    QueryRefBuilder8<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type, W7Type, W8Type> With<T>() { QueryRefBuilder8<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type, W7Type, W8Type> copy = this; copy.FkSpec.Required += FkQueryRefSpec.Key<T>(); return copy; }
+    QueryRefBuilder8<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type, W7Type, W8Type> Without<T>() { QueryRefBuilder8<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type, W7Type, W8Type> copy = this; copy.FkSpec.Excluded += FkQueryRefSpec.Key<T>(); return copy; }
+    QueryRefBuilder8<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type, W7Type, W8Type> EnabledOnly() { QueryRefBuilder8<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type, W7Type, W8Type> copy = this; copy.FkSpec.EnableFilter = 1; return copy; }
+    QueryRefBuilder8<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type, W7Type, W8Type> DisabledOnly() { QueryRefBuilder8<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type, W7Type, W8Type> copy = this; copy.FkSpec.EnableFilter = 2; return copy; }
+    QueryRefBuilder8<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type, W7Type, W8Type> IncludeDisabled() { QueryRefBuilder8<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type, W7Type, W8Type> copy = this; copy.FkSpec.EnableFilter = 0; return copy; }
+    QueryRefEntityBuilder8<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type, W7Type, W8Type> WithEntity() { QueryRefEntityBuilder8<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type, W7Type, W8Type> copy; copy.FkSpec = FkSpec; return copy; }
+    public class Row {
+    public:
+        FkQueryRefCursor FkCursor;
+        W1Type& W1 { get { return *((W1Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 0)); } }
+        W2Type& W2 { get { return *((W2Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 1)); } }
+        W3Type& W3 { get { return *((W3Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 2)); } }
+        W4Type& W4 { get { return *((W4Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 3)); } }
+        W5Type& W5 { get { return *((W5Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 4)); } }
+        W6Type& W6 { get { return *((W6Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 5)); } }
+        W7Type& W7 { get { return *((W7Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 6)); } }
+        W8Type& W8 { get { return *((W8Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 7)); } }
+        void Deconstruct(Funke.Components.Ref<W1Type>& w1, Funke.Components.Ref<W2Type>& w2, Funke.Components.Ref<W3Type>& w3, Funke.Components.Ref<W4Type>& w4, Funke.Components.Ref<W5Type>& w5, Funke.Components.Ref<W6Type>& w6, Funke.Components.Ref<W7Type>& w7, Funke.Components.Ref<W8Type>& w8) {
+            w1 = Funke.Components.Ref<W1Type>.FkBorrow((W1Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 0));
+            w2 = Funke.Components.Ref<W2Type>.FkBorrow((W2Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 1));
+            w3 = Funke.Components.Ref<W3Type>.FkBorrow((W3Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 2));
+            w4 = Funke.Components.Ref<W4Type>.FkBorrow((W4Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 3));
+            w5 = Funke.Components.Ref<W5Type>.FkBorrow((W5Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 4));
+            w6 = Funke.Components.Ref<W6Type>.FkBorrow((W6Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 5));
+            w7 = Funke.Components.Ref<W7Type>.FkBorrow((W7Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 6));
+            w8 = Funke.Components.Ref<W8Type>.FkBorrow((W8Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 7));
+        }
+    }
+    public class Enumerator {
+    public:
+        FkQueryRefCursor FkCursor;
+        bool MoveNext() { return FkCursor.MoveNext(); }
+        void Dispose() { FkCursor.Dispose(); }
+        Row Current { get { Row row; row.FkCursor = FkCursor; return row; } }
+    }
+    Enumerator GetEnumerator() {
+        Enumerator result;
+        result.FkCursor.Open(FkSpec, 8, false);
+        return result;
+    }
+}
+
+public class QueryRefEntityBuilder8<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type, W7Type, W8Type> {
+public:
+    FkQueryRefSpec FkSpec;
+    public class Row {
+    public:
+        FkQueryRefCursor FkCursor;
+        EntityRef Entity => FkCursor.Data.Get().EntityAt(FkCursor.Index);
+        W1Type& W1 { get { return *((W1Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 0)); } }
+        W2Type& W2 { get { return *((W2Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 1)); } }
+        W3Type& W3 { get { return *((W3Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 2)); } }
+        W4Type& W4 { get { return *((W4Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 3)); } }
+        W5Type& W5 { get { return *((W5Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 4)); } }
+        W6Type& W6 { get { return *((W6Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 5)); } }
+        W7Type& W7 { get { return *((W7Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 6)); } }
+        W8Type& W8 { get { return *((W8Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 7)); } }
+        void Deconstruct(EntityRef& entity, Funke.Components.Ref<W1Type>& w1, Funke.Components.Ref<W2Type>& w2, Funke.Components.Ref<W3Type>& w3, Funke.Components.Ref<W4Type>& w4, Funke.Components.Ref<W5Type>& w5, Funke.Components.Ref<W6Type>& w6, Funke.Components.Ref<W7Type>& w7, Funke.Components.Ref<W8Type>& w8) {
+            entity = Entity;
+            w1 = Funke.Components.Ref<W1Type>.FkBorrow((W1Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 0));
+            w2 = Funke.Components.Ref<W2Type>.FkBorrow((W2Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 1));
+            w3 = Funke.Components.Ref<W3Type>.FkBorrow((W3Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 2));
+            w4 = Funke.Components.Ref<W4Type>.FkBorrow((W4Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 3));
+            w5 = Funke.Components.Ref<W5Type>.FkBorrow((W5Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 4));
+            w6 = Funke.Components.Ref<W6Type>.FkBorrow((W6Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 5));
+            w7 = Funke.Components.Ref<W7Type>.FkBorrow((W7Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 6));
+            w8 = Funke.Components.Ref<W8Type>.FkBorrow((W8Type*)FkCursor.Data.Get().Cell(FkCursor.Index, 7));
+        }
+    }
+    public class Enumerator {
+    public:
+        FkQueryRefCursor FkCursor;
+        bool MoveNext() { return FkCursor.MoveNext(); }
+        void Dispose() { FkCursor.Dispose(); }
+        Row Current { get { Row row; row.FkCursor = FkCursor; return row; } }
+    }
+    Enumerator GetEnumerator() {
+        Enumerator result;
+        result.FkCursor.Open(FkSpec, 8, true);
+        return result;
+    }
+}
+
+public static class SceneQueryRows {
+public:
+    static void Deconstruct<T1, T2>(this QueryRow<T1, T2> row, Entity& entity, T1& c1, T2& c2) { entity = row.Entity; c1 = row.Get<T1>(); c2 = row.Get<T2>(); }
+    static void Deconstruct<T1, T2>(this QueryRow<T1, T2> row, T1& c1, T2& c2) { c1 = row.Get<T1>(); c2 = row.Get<T2>(); }
+    static void Deconstruct<T1, T2, T3>(this QueryRow<T1, T2, T3> row, Entity& entity, T1& c1, T2& c2, T3& c3) { entity = row.Entity; c1 = row.Get<T1>(); c2 = row.Get<T2>(); c3 = row.Get<T3>(); }
+    static void Deconstruct<T1, T2, T3>(this QueryRow<T1, T2, T3> row, T1& c1, T2& c2, T3& c3) { c1 = row.Get<T1>(); c2 = row.Get<T2>(); c3 = row.Get<T3>(); }
+    static void Deconstruct<T1, T2, T3, T4>(this QueryRow<T1, T2, T3, T4> row, Entity& entity, T1& c1, T2& c2, T3& c3, T4& c4) { entity = row.Entity; c1 = row.Get<T1>(); c2 = row.Get<T2>(); c3 = row.Get<T3>(); c4 = row.Get<T4>(); }
+    static void Deconstruct<T1, T2, T3, T4>(this QueryRow<T1, T2, T3, T4> row, T1& c1, T2& c2, T3& c3, T4& c4) { c1 = row.Get<T1>(); c2 = row.Get<T2>(); c3 = row.Get<T3>(); c4 = row.Get<T4>(); }
+    static void Deconstruct<T1, T2, T3, T4, T5>(this QueryRow<T1, T2, T3, T4, T5> row, Entity& entity, T1& c1, T2& c2, T3& c3, T4& c4, T5& c5) { entity = row.Entity; c1 = row.Get<T1>(); c2 = row.Get<T2>(); c3 = row.Get<T3>(); c4 = row.Get<T4>(); c5 = row.Get<T5>(); }
+    static void Deconstruct<T1, T2, T3, T4, T5>(this QueryRow<T1, T2, T3, T4, T5> row, T1& c1, T2& c2, T3& c3, T4& c4, T5& c5) { c1 = row.Get<T1>(); c2 = row.Get<T2>(); c3 = row.Get<T3>(); c4 = row.Get<T4>(); c5 = row.Get<T5>(); }
+    static void Deconstruct<T1, T2, T3, T4, T5, T6>(this QueryRow<T1, T2, T3, T4, T5, T6> row, Entity& entity, T1& c1, T2& c2, T3& c3, T4& c4, T5& c5, T6& c6) { entity = row.Entity; c1 = row.Get<T1>(); c2 = row.Get<T2>(); c3 = row.Get<T3>(); c4 = row.Get<T4>(); c5 = row.Get<T5>(); c6 = row.Get<T6>(); }
+    static void Deconstruct<T1, T2, T3, T4, T5, T6>(this QueryRow<T1, T2, T3, T4, T5, T6> row, T1& c1, T2& c2, T3& c3, T4& c4, T5& c5, T6& c6) { c1 = row.Get<T1>(); c2 = row.Get<T2>(); c3 = row.Get<T3>(); c4 = row.Get<T4>(); c5 = row.Get<T5>(); c6 = row.Get<T6>(); }
+    static void Deconstruct<T1, T2, T3, T4, T5, T6, T7>(this QueryRow<T1, T2, T3, T4, T5, T6, T7> row, Entity& entity, T1& c1, T2& c2, T3& c3, T4& c4, T5& c5, T6& c6, T7& c7) { entity = row.Entity; c1 = row.Get<T1>(); c2 = row.Get<T2>(); c3 = row.Get<T3>(); c4 = row.Get<T4>(); c5 = row.Get<T5>(); c6 = row.Get<T6>(); c7 = row.Get<T7>(); }
+    static void Deconstruct<T1, T2, T3, T4, T5, T6, T7>(this QueryRow<T1, T2, T3, T4, T5, T6, T7> row, T1& c1, T2& c2, T3& c3, T4& c4, T5& c5, T6& c6, T7& c7) { c1 = row.Get<T1>(); c2 = row.Get<T2>(); c3 = row.Get<T3>(); c4 = row.Get<T4>(); c5 = row.Get<T5>(); c6 = row.Get<T6>(); c7 = row.Get<T7>(); }
+    static void Deconstruct<T1, T2, T3, T4, T5, T6, T7, T8>(this QueryRow<T1, T2, T3, T4, T5, T6, T7, T8> row, Entity& entity, T1& c1, T2& c2, T3& c3, T4& c4, T5& c5, T6& c6, T7& c7, T8& c8) { entity = row.Entity; c1 = row.Get<T1>(); c2 = row.Get<T2>(); c3 = row.Get<T3>(); c4 = row.Get<T4>(); c5 = row.Get<T5>(); c6 = row.Get<T6>(); c7 = row.Get<T7>(); c8 = row.Get<T8>(); }
+    static void Deconstruct<T1, T2, T3, T4, T5, T6, T7, T8>(this QueryRow<T1, T2, T3, T4, T5, T6, T7, T8> row, T1& c1, T2& c2, T3& c3, T4& c4, T5& c5, T6& c6, T7& c7, T8& c8) { c1 = row.Get<T1>(); c2 = row.Get<T2>(); c3 = row.Get<T3>(); c4 = row.Get<T4>(); c5 = row.Get<T5>(); c6 = row.Get<T6>(); c7 = row.Get<T7>(); c8 = row.Get<T8>(); }
+}
+
+public static class SceneQueryRefExtensions {
+public:
+    static QueryRefBuilder1<W1Type> QueryRef<W1Type>(Scene scene) { return scene.QueryRef<W1Type>(); }
+    static QueryRefBuilder2<W1Type, W2Type> QueryRef<W1Type, W2Type>(Scene scene) { return scene.QueryRef<W1Type, W2Type>(); }
+    static QueryRefBuilder3<W1Type, W2Type, W3Type> QueryRef<W1Type, W2Type, W3Type>(Scene scene) { return scene.QueryRef<W1Type, W2Type, W3Type>(); }
+    static QueryRefBuilder4<W1Type, W2Type, W3Type, W4Type> QueryRef<W1Type, W2Type, W3Type, W4Type>(Scene scene) { return scene.QueryRef<W1Type, W2Type, W3Type, W4Type>(); }
+    static QueryRefBuilder5<W1Type, W2Type, W3Type, W4Type, W5Type> QueryRef<W1Type, W2Type, W3Type, W4Type, W5Type>(Scene scene) { return scene.QueryRef<W1Type, W2Type, W3Type, W4Type, W5Type>(); }
+    static QueryRefBuilder6<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type> QueryRef<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type>(Scene scene) { return scene.QueryRef<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type>(); }
+    static QueryRefBuilder7<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type, W7Type> QueryRef<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type, W7Type>(Scene scene) { return scene.QueryRef<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type, W7Type>(); }
+    static QueryRefBuilder8<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type, W7Type, W8Type> QueryRef<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type, W7Type, W8Type>(Scene scene) { return scene.QueryRef<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type, W7Type, W8Type>(); }
+}
+
+public static class QueryRefWithEntityExtensions {
+public:
+    static QueryRefEntityBuilder1<W1Type> WithEntity<W1Type>(QueryRefBuilder1<W1Type> query) { return query.WithEntity(); }
+    static QueryRefEntityBuilder1_RO1<W1Type, RType> WithEntity<W1Type, RType>(QueryRefBuilder1_RO1<W1Type, RType> query) { return query.WithEntity(); }
+    static QueryRefEntityBuilder2<W1Type, W2Type> WithEntity<W1Type, W2Type>(QueryRefBuilder2<W1Type, W2Type> query) { return query.WithEntity(); }
+    static QueryRefEntityBuilder3<W1Type, W2Type, W3Type> WithEntity<W1Type, W2Type, W3Type>(QueryRefBuilder3<W1Type, W2Type, W3Type> query) { return query.WithEntity(); }
+    static QueryRefEntityBuilder4<W1Type, W2Type, W3Type, W4Type> WithEntity<W1Type, W2Type, W3Type, W4Type>(QueryRefBuilder4<W1Type, W2Type, W3Type, W4Type> query) { return query.WithEntity(); }
+    static QueryRefEntityBuilder5<W1Type, W2Type, W3Type, W4Type, W5Type> WithEntity<W1Type, W2Type, W3Type, W4Type, W5Type>(QueryRefBuilder5<W1Type, W2Type, W3Type, W4Type, W5Type> query) { return query.WithEntity(); }
+    static QueryRefEntityBuilder6<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type> WithEntity<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type>(QueryRefBuilder6<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type> query) { return query.WithEntity(); }
+    static QueryRefEntityBuilder7<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type, W7Type> WithEntity<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type, W7Type>(QueryRefBuilder7<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type, W7Type> query) { return query.WithEntity(); }
+    static QueryRefEntityBuilder8<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type, W7Type, W8Type> WithEntity<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type, W7Type, W8Type>(QueryRefBuilder8<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type, W7Type, W8Type> query) { return query.WithEntity(); }
+}

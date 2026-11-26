@@ -3,6 +3,7 @@
 
 #include "Graphics/ParticleQualityPolicy.hpp"
 #include "Math/Random.hpp"
+#include "Jobs/ParallelFor.hpp"
 
 #if FUNKE_WITH_APPLICATION
 #include "Core/Application.hpp"
@@ -94,23 +95,34 @@ namespace Funke {
 			}
 		}
 		const float damping = std::max(0.0f, 1.0f - std::max(Drag, 0.0f) * deltaTime);
-		for (Particle& particle : m_Particles) {
-			particle.Velocity = (particle.Velocity + gravity * deltaTime) * damping;
-			particle.Position += particle.Velocity * deltaTime;
-			particle.Rotation += particle.AngularVelocity * deltaTime;
-			particle.LifeTime -= deltaTime;
+		auto integrate = [&](size_t begin, size_t end) {
+			for (Particle& particle : std::span(m_Particles).subspan(begin, end - begin)) {
+				particle.Velocity = (particle.Velocity + gravity * deltaTime) * damping;
+				particle.Position += particle.Velocity * deltaTime;
+				particle.Rotation += particle.AngularVelocity * deltaTime;
+				particle.LifeTime -= deltaTime;
 
-			if (ScaleOverLifetimeEnabled || ColorOverLifetimeEnabled) {
-				const float age01 = particle.StartLifeTime > 0.0f
-					? std::clamp(1.0f - particle.LifeTime / particle.StartLifeTime, 0.0f, 1.0f)
-					: 1.0f;
-				if (ScaleOverLifetimeEnabled) {
-					particle.Size = particle.StartSize * ScaleOverLifetime.Evaluate(age01);
-				}
-				if (ColorOverLifetimeEnabled) {
-					particle.Color = particle.StartColor * ColorOverLifetime.Evaluate(age01);
+				if (ScaleOverLifetimeEnabled || ColorOverLifetimeEnabled) {
+					const float age01 = particle.StartLifeTime > 0.0f
+						? std::clamp(1.0f - particle.LifeTime / particle.StartLifeTime, 0.0f, 1.0f)
+						: 1.0f;
+					if (ScaleOverLifetimeEnabled) {
+						particle.Size = particle.StartSize * ScaleOverLifetime.Evaluate(age01);
+					}
+					if (ColorOverLifetimeEnabled) {
+						particle.Color = particle.StartColor * ColorOverLifetime.Evaluate(age01);
+					}
 				}
 			}
+
+		};
+		const int workers = JobSystem::GetWorkerCount();
+		const size_t threshold = ScaleOverLifetimeEnabled || ColorOverLifetimeEnabled ? 8192 : 32768;
+		if (JobSystem::CanParallelize(ParallelWorkload::Particles) && m_Particles.size() >= threshold) {
+			const size_t grain = std::max<size_t>(2048, (m_Particles.size() + workers * 2 - 1) / (workers * 2));
+			ParallelFor(0, m_Particles.size(), integrate, grain);
+		} else {
+			integrate(0, m_Particles.size());
 		}
 
 		m_Particles.erase(std::remove_if(m_Particles.begin(), m_Particles.end(),

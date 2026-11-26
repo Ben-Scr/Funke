@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 
 #include "Gui/HierarchyGuides.hpp"
+#include "Gui/HierarchyDropPreview.hpp"
 #include "Gui/SceneHierarchyState.hpp"
 #include "Components/General/NameComponent.hpp"
 #include "Components/General/HierarchyComponent.hpp"
@@ -9,6 +10,37 @@
 #include <random>
 
 using namespace Funke;
+
+TEST_CASE("Hierarchy drop markers follow expanded subtrees and retain sibling depth") {
+	using namespace HierarchyDropUI;
+	// A -> B -> C, D; E -> F; G. Dropping after A must not look like a drop before B.
+	const std::vector<int> depths{ 0, 1, 2, 1, 0, 1, 0 };
+	CHECK(InsertionSlot(depths, 0, Placement::Before) == 0);
+	CHECK(InsertionSlot(depths, 0, Placement::After) == 4);
+	CHECK(InsertionSlot(depths, 0, Placement::Child) == 4);
+	CHECK(InsertionSlot(depths, 1, Placement::After) == 3);
+	CHECK(InsertionSlot(depths, 3, Placement::After) == 4);
+	CHECK(InsertionSlot(depths, 6, Placement::After) == 7);
+	CHECK(InsertionSlot(depths, 6, Placement::Child) == 7);
+	const std::vector<int> collapsed{ 0, 0, 1, 0 };
+	CHECK(InsertionSlot(collapsed, 0, Placement::Child) == 1);
+	CHECK(InsertionSlot(collapsed, 0, Placement::After) == 1);
+	CHECK(InsertionSlot({}, 0, Placement::Before) == -1);
+	CHECK(InsertionSlot(depths, -1, Placement::After) == -1);
+	CHECK(InsertionSlot(depths, 7, Placement::Before) == -1);
+}
+
+TEST_CASE("Hierarchy drop zones scale with rows and forbid prefab root siblings") {
+	using namespace HierarchyDropUI;
+	for (float height : { 13.0f, 26.0f, 39.0f }) {
+		const float top = 123.0f;
+		CHECK(RowPlacement(top + height * 0.1f, top, top + height) == Placement::Before);
+		CHECK(RowPlacement(top + height * 0.5f, top, top + height) == Placement::Child);
+		CHECK(RowPlacement(top + height * 0.9f, top, top + height) == Placement::After);
+		CHECK(RowPlacement(top + height * 0.1f, top, top + height, true) == Placement::Child);
+		CHECK(RowPlacement(top + height * 0.9f, top, top + height, true) == Placement::Child);
+	}
+}
 
 TEST_CASE("Hierarchy caches keep equal scene IDs and entity handles independent") {
 	auto first = Scene::CreateDetachedScene("First");

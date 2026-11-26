@@ -1,0 +1,185 @@
+import System
+import Math
+namespace Funke;
+
+public struct Vector3 {
+public:
+    float X;
+    float Y;
+    float Z;
+    static Vector3 Zero => Vector3(0.0f, 0.0f, 0.0f);
+    static Vector3 One => Vector3(1.0f, 1.0f, 1.0f);
+    static Vector3 Right => Vector3(1.0f, 0.0f, 0.0f);
+    static Vector3 Left => Vector3(-1.0f, 0.0f, 0.0f);
+    static Vector3 Up => Vector3(0.0f, 1.0f, 0.0f);
+    static Vector3 Down => Vector3(0.0f, -1.0f, 0.0f);
+    static Vector3 Forward => Vector3(0.0f, 0.0f, -1.0f);
+    static Vector3 Back => Vector3(0.0f, 0.0f, 1.0f);
+    Vector3(float scalar = 0.0f) { X = scalar; Y = scalar; Z = scalar; }
+    Vector3(float x, float y, float z) { X = x; Y = y; Z = z; }
+    Vector3(Vector2 v, float z = 0.0f) { X = v.X; Y = v.Y; Z = z; }
+    float Length() { return Mathf.Sqrt(X * X + Y * Y + Z * Z); }
+    float LengthSquared() { return X * X + Y * Y + Z * Z; }
+    Vector3 Normalized() {
+        float len = Length();
+        return len > Mathf.Epsilon ? Vector3(X / len, Y / len, Z / len) : Zero;
+    }
+    void Normalize() {
+        float len = Length();
+        if (len > Mathf.Epsilon) { X /= len; Y /= len; Z /= len; }
+    }
+    static float Dot(Vector3 a, Vector3 b) { return a.X * b.X + a.Y * b.Y + a.Z * b.Z; }
+    static Vector3 Cross(Vector3 a, Vector3 b) { return Vector3(
+        a.Y * b.Z - a.Z * b.Y,
+        a.Z * b.X - a.X * b.Z,
+        a.X * b.Y - a.Y * b.X
+    ); }
+    static float Distance(Vector3 a, Vector3 b) { return (a - b).Length(); }
+    static float DistanceSquared(Vector3 a, Vector3 b) { return (a - b).LengthSquared(); }
+    static Vector3 ClosestPointOnSegment(Vector3 point, Vector3 start, Vector3 end) {
+        FkValidateFinite(point, "point");
+        FkValidateFinite(start, "start");
+        FkValidateFinite(end, "end");
+        double x = (double)end.X - start.X, y = (double)end.Y - start.Y, z = (double)end.Z - start.Z;
+        double lengthSquared = x * x + y * y + z * z;
+        if (lengthSquared == 0) return start;
+        double dot = ((double)point.X - start.X) * x + ((double)point.Y - start.Y) * y + ((double)point.Z - start.Z) * z;
+        double t = Mathf.FkClampDouble(dot / lengthSquared, 0, 1);
+        return Vector3((float)(start.X + t * x), (float)(start.Y + t * y), (float)(start.Z + t * z));
+    }
+    static Vector3 LerpUnclamped(Vector3 a, Vector3 b, float t) { return Vector3(Mathf.LerpUnclamped(a.X, b.X, t), Mathf.LerpUnclamped(a.Y, b.Y, t), Mathf.LerpUnclamped(a.Z, b.Z, t)); }
+    static bool TryNormalize(Vector3 input, Vector3& result) {
+        double length = Math.Sqrt<double>((double)input.X * input.X + (double)input.Y * input.Y + (double)input.Z * input.Z);
+        if (length > 0 && Mathf.FkFinite(length))
+        {
+            result = Vector3((float)(input.X / length), (float)(input.Y / length), (float)(input.Z / length));
+            return true;
+        }
+        result = Zero;
+        return false;
+    }
+    static Vector3 Project(Vector3 vector, Vector3 normal) {
+        FkValidateFinite(vector, "vector");
+        FkValidateFinite(normal, "normal");
+        if (!TryNormalize(normal, normal)) return Zero;
+        double dot = (double)vector.X * normal.X + (double)vector.Y * normal.Y + (double)vector.Z * normal.Z;
+        return Vector3((float)(normal.X * dot), (float)(normal.Y * dot), (float)(normal.Z * dot));
+    }
+    static Vector3 ProjectOnPlane(Vector3 vector, Vector3 normal) { return vector - Project(vector, normal); }
+    static Vector3 Reflect(Vector3 vector, Vector3 normal) { return vector - 2 * Project(vector, normal); }
+    static float Angle(Vector3 from, Vector3 to) {
+        if (!TryNormalize(from, from) || !TryNormalize(to, to)) return 0;
+        return Mathf.Atan2(Cross(from, to).Length(), Dot(from, to)) * Mathf.Rad2Deg;
+    }
+    static float SignedAngle(Vector3 from, Vector3 to, Vector3 axis) {
+        if (!TryNormalize(axis, axis) || !TryNormalize(from, from) || !TryNormalize(to, to)) return 0;
+        return Dot(axis, Cross(from, to)) < 0 ? -Angle(from, to) : Angle(from, to);
+    }
+    static Vector3 Damp(Vector3 current, Vector3 target, float rate, float deltaTime) { return LerpUnclamped(current, target, Mathf.DampingFactor(rate, deltaTime)); }
+    static Vector3 MoveTowards(Vector3 current, Vector3 target, float maxDelta) {
+        FkValidateFinite(current, "current");
+        FkValidateFinite(target, "target");
+        if (!Mathf.FkFinite(maxDelta) || maxDelta < 0) throw System.ArgumentOutOfRangeException("maxDelta");
+        double x = (double)target.X - current.X, y = (double)target.Y - current.Y, z = (double)target.Z - current.Z;
+        double distance = Math.Sqrt<double>(x * x + y * y + z * z);
+        if (distance <= maxDelta) return target;
+        double scale = maxDelta / distance;
+        return Vector3((float)(current.X + x * scale), (float)(current.Y + y * scale), (float)(current.Z + z * scale));
+    }
+    static Vector3 ClampMagnitude(Vector3 vector, float maxLength) {
+        FkValidateFinite(vector, "vector");
+        if (!Mathf.FkFinite(maxLength) || maxLength < 0) throw System.ArgumentOutOfRangeException("maxLength");
+        double length = Math.Sqrt<double>((double)vector.X * vector.X + (double)vector.Y * vector.Y + (double)vector.Z * vector.Z);
+        if (length <= maxLength) return vector;
+        double scale = maxLength / length;
+        return Vector3((float)(vector.X * scale), (float)(vector.Y * scale), (float)(vector.Z * scale));
+    }
+    static Vector3 SmoothDamp(Vector3 current, Vector3 target, Vector3& velocity,
+        float smoothTime, float deltaTime) {
+        return SmoothDamp(current, target, velocity, smoothTime, deltaTime, Mathf.Infinity);
+    }
+    static Vector3 SmoothDamp(Vector3 current, Vector3 target, Vector3& velocity,
+        float smoothTime, float deltaTime, float maxSpeed) {
+        FkValidateFinite(current, "current");
+        FkValidateFinite(target, "target");
+        FkValidateFinite(velocity, "velocity");
+        if (!Mathf.FkFinite(smoothTime) || smoothTime < 0) throw System.ArgumentOutOfRangeException("smoothTime");
+        if (!Mathf.FkFinite(deltaTime) || deltaTime < 0) throw System.ArgumentOutOfRangeException("deltaTime");
+        if (maxSpeed != maxSpeed || maxSpeed < 0) throw System.ArgumentOutOfRangeException("maxSpeed");
+        if (deltaTime == 0) return current;
+
+        double time = Math.Max<double>(smoothTime, 0.0001), omega = 2 / time;
+        double decay = Math.Exp<double>(-omega * deltaTime);
+        double x = (double)current.X - target.X, y = (double)current.Y - target.Y, z = (double)current.Z - target.Z;
+        double length = Math.Sqrt<double>(x * x + y * y + z * z);
+        double limit = maxSpeed == Mathf.Infinity ? double.MaxValue : maxSpeed * time;
+        if (length > limit) { double scale = limit / length; x *= scale; y *= scale; z *= scale; }
+        double tx = (velocity.X + omega * x) * deltaTime;
+        double ty = (velocity.Y + omega * y) * deltaTime;
+        double tz = (velocity.Z + omega * z) * deltaTime;
+        double rx = current.X - x + (x + tx) * decay;
+        double ry = current.Y - y + (y + ty) * decay;
+        double rz = current.Z - z + (z + tz) * decay;
+        Vector3 nextVelocity = Vector3((float)((velocity.X - omega * tx) * decay),
+            (float)((velocity.Y - omega * ty) * decay), (float)((velocity.Z - omega * tz) * decay));
+        Vector3 result = Vector3((float)rx, (float)ry, (float)rz);
+        if (((double)target.X - current.X) * (rx - target.X)
+            + ((double)target.Y - current.Y) * (ry - target.Y)
+            + ((double)target.Z - current.Z) * (rz - target.Z) > 0)
+        {
+            result = target;
+            nextVelocity = Zero;
+        }
+        FkValidateFinite(result, "result");
+        FkValidateFinite(nextVelocity, "velocity");
+        velocity = nextVelocity;
+        return result;
+    }
+    static bool FkIsFinite(Vector3 value) { return Mathf.FkFinite(value.X) && Mathf.FkFinite(value.Y) && Mathf.FkFinite(value.Z); }
+    static void FkValidateFinite(Vector3 value, string name) {
+        if (!FkIsFinite(value)) throw System.ArgumentOutOfRangeException(name);
+    }
+    static Vector3 Lerp(Vector3 a, Vector3 b, float t) {
+        t = Mathf.Clamp01(t);
+        return Vector3(a.X + (b.X - a.X) * t, a.Y + (b.Y - a.Y) * t, a.Z + (b.Z - a.Z) * t);
+    }
+    Vector2 XY => Vector2(X, Y);
+    static Vector3 operator +(Vector3 a, Vector3 b) { return Vector3(a.X + b.X, a.Y + b.Y, a.Z + b.Z); }
+    static Vector3 operator -(Vector3 a, Vector3 b) { return Vector3(a.X - b.X, a.Y - b.Y, a.Z - b.Z); }
+    static Vector3 operator *(Vector3 a, Vector3 b) { return Vector3(a.X * b.X, a.Y * b.Y, a.Z * b.Z); }
+    static Vector3 operator *(Vector3 v, float s) { return Vector3(v.X * s, v.Y * s, v.Z * s); }
+    static Vector3 operator *(float s, Vector3 v) { return Vector3(s * v.X, s * v.Y, s * v.Z); }
+    static Vector3 operator /(Vector3 v, float s) { return Vector3(v.X / s, v.Y / s, v.Z / s); }
+    static Vector3 operator -(Vector3 v) { return Vector3(-v.X, -v.Y, -v.Z); }
+    static bool operator ==(Vector3 a, Vector3 b) { return a.Equals(b); }
+    static bool operator !=(Vector3 a, Vector3 b) { return !a.Equals(b); }
+    bool Equals(Vector3 other) { return X == other.X && Y == other.Y && Z == other.Z; }
+    ulong LowBits() { return Vector2(X, Y).Bits(); }
+    ulong HighBits() { return Vector2(Z, 0.0f).Bits(); }
+    static Vector3 FromParts(ulong low, ulong high) {
+        Vector2 a = Vector2.FromBits(low); Vector2 b = Vector2.FromBits(high);
+        return Vector3(a.X, a.Y, b.X);
+    }
+    explicit Vector2() { return Vector2(X, Y); }
+    implicit Vector4() { return Vector4(X, Y, Z, 0f); }
+    explicit Vector2Int() { return Vector2Int((int)X, (int)Y); }
+    explicit Vector3Int() { return Vector3Int((int)X, (int)Y, (int)Z); }
+    explicit Vector4Int() { return Vector4Int((int)X, (int)Y, (int)Z, 0); }
+    int GetHashCode() {
+        int hash = -2128831035;
+        hash = FkNumberFormat.Hash(hash, X);
+        hash = FkNumberFormat.Hash(hash, Y);
+        hash = FkNumberFormat.Hash(hash, Z);
+        return hash;
+    }
+    string ToString() { return ToString(""); }
+    string ToString(string format) {
+        return "Vector3(" + FkNumberFormat.Number(X,format) + ", " + FkNumberFormat.Number(Y,format) + ", " + FkNumberFormat.Number(Z,format) + ")";
+    }
+    bool TryFormat(System.Span<char> destination, int& charsWritten, string format = "") {
+        return FkNumberFormat.Write(destination, charsWritten, ToString(format));
+    }
+    bool TryFormat(System.Span<char> destination, int& charsWritten, System.ReadOnlySpan<char> format) {
+        return TryFormat(destination, charsWritten, FkNumberFormat.ReadFormat(format));
+    }
+}

@@ -10,6 +10,21 @@ static_assert(sizeof(Funke::RectTransform2DComponent) > 0);
 #if FUNKE_WITH_SCRIPTING
 static_assert(sizeof(Funke::NativeScript) > 0);
 static_assert(sizeof(Funke::ScriptComponent) > 0);
+struct HeaderValue { int Value = 0; };
+struct HeaderTag {};
+class HeaderScript : public Funke::NativeScript {};
+void CompileConvenienceAccess(Funke::NativeScript& script, Funke::Entity& entity) {
+    (void)script.GetEntity();
+    (void)script.TryGetComponent<HeaderValue>();
+    (void)std::as_const(script).TryGetComponent<HeaderValue>();
+    (void)entity.TryGetComponent<HeaderValue>();
+    (void)std::as_const(entity).TryGetComponent<HeaderValue>();
+    (void)script.GetOrAddComponent<HeaderValue>();
+    entity.GetOrAddComponent<HeaderTag>();
+    (void)script.GetOrAddComponent<HeaderScript>();
+    (void)entity.GetOrAddComponent<HeaderScript>();
+    script.RemoveComponent<HeaderScript>();
+}
 #endif
 #if FUNKE_WITH_RENDER
 static_assert(sizeof(Funke::ButtonComponent) > 0);

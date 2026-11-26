@@ -1,0 +1,20 @@
+import System
+import System.Threading
+import System.Threading.Tasks
+namespace Funke.Jobs;
+
+public class AtomicBool {
+    private: System.Threading.Atomic<int> bits;
+    static int Encode(bool v) { return v ? 1 : 0; }
+    static bool Decode(int v) { return v != 0; }
+    public: AtomicBool() {}
+    AtomicBool(bool initialValue) { Store(initialValue); }
+    bool Value {get { return Load(); } set { Store(value); } }
+    bool Load() {return Decode(bits.Load());}
+    void Store(bool v) {bits.Store(Encode(v));}
+    bool Exchange(bool v) {return Decode(bits.Exchange(Encode(v)));}
+    bool CompareExchange(bool v,bool comparand) { int old=Encode(comparand); bits.CompareExchange(old,Encode(v));return Decode(old); }
+    bool TrySet() {return !CompareExchange(true,false);}
+    bool TryClear() {return CompareExchange(false,true);}
+    string ToString() { return Load() ? "true" : "false"; }
+}

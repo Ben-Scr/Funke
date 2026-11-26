@@ -43,6 +43,7 @@ namespace Funke {
 		// False when prefab contains internal entity refs or a component with unwired writeBytes; callers must use the slow path.
 		bool bakeable = true;
 		std::string unbakeableReason;
+		std::vector<uint64_t> InheritanceDependencies;
 
 		uint32_t EntityCount() const { return static_cast<uint32_t>(entities.size()); }
 	};

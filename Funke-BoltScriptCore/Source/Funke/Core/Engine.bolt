@@ -1,0 +1,50 @@
+import System
+namespace Funke;
+
+public enum BuildConfiguration { Editor = 0, Development = 1, Release = 2, Debug = 3 }
+
+public enum Platform { Unknown = 0, Windows, Linux, MacOS, Android, iOS, WebGL, VisionOS }
+
+public enum GraphicsApi { Unknown = 0, Direct3D11, Direct3D12, Vulkan, Metal, OpenGL, OpenGLES, WebGPU }
+
+public enum CpuVendor { Unknown = 0, Intel, AMD, Apple, ARM, Qualcomm }
+
+public enum GpuVendor { Unknown = 0, NVIDIA, AMD, Intel, Apple, Qualcomm, ARM, Microsoft }
+
+public static class Engine {
+public:
+    static string Version => FunkeText.Read(FkEngine_GetVersionBuffer(0ul, 0ul));
+    static string VersionLong => FunkeText.Read(FkEngine_GetVersionLongBuffer(0ul, 0ul));
+    static string PlatformName => FunkeText.Read(FkEngine_GetPlatformBuffer(0ul, 0ul));
+    static string GraphicsApiName => FunkeText.Read(FkEngine_GetGraphicsApiBuffer(0ul, 0ul));
+    static string GpuVendorName => FunkeText.Read(FkEngine_GetGpuVendorBuffer(0ul, 0ul));
+    static string GpuRenderer => FunkeText.Read(FkEngine_GetGpuRendererBuffer(0ul, 0ul));
+
+    static string CpuVendorName => FunkeText.Read(FkEngine_CpuVendorName(0ul, 0ul));
+    static Funke.CpuVendor CpuVendor => (Funke.CpuVendor)FkEngine_CpuVendor(0ul, 0ul);
+    static Funke.GpuVendor GpuVendor => (Funke.GpuVendor)FkEngine_GpuVendor(0ul, 0ul);
+    static Funke.GraphicsApi GraphicsApi => (Funke.GraphicsApi)FkEngine_GraphicsApi(0ul, 0ul);
+    static Funke.BuildConfiguration BuildConfiguration => (Funke.BuildConfiguration)FkEngine_GetBuildConfiguration(0ul, 0ul);
+    static string ConfigurationName {
+        get {
+            Funke.BuildConfiguration config = BuildConfiguration;
+            if (config == Funke.BuildConfiguration.Editor) return "Editor";
+            if (config == Funke.BuildConfiguration.Release) return "Release";
+            if (config == Funke.BuildConfiguration.Debug) return "Debug";
+            return "Development";
+        }
+    }
+    static Funke.Platform Platform {
+        get {
+            string name = PlatformName;
+            if (name == "Windows") return Funke.Platform.Windows;
+            if (name == "Linux") return Funke.Platform.Linux;
+            if (name == "MacOS" || name == "macOS" || name == "OSX") return Funke.Platform.MacOS;
+            if (name == "Android") return Funke.Platform.Android;
+            if (name == "iOS") return Funke.Platform.iOS;
+            if (name == "Web" || name == "WebGL") return Funke.Platform.WebGL;
+            if (name == "visionOS") return Funke.Platform.VisionOS;
+            return Funke.Platform.Unknown;
+        }
+    }
+}

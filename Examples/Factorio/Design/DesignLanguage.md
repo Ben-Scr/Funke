@@ -1,11 +1,13 @@
 # Rust & Steel
 
-Weathered orange steel machinery, charcoal rubber belts, pale iron, glowing furnace interiors and muted olive-brown earth. Nearly top-down orthographic sprites, subtle vertical faces and light from the upper left. ImageGen supplies the machine/resource atlas. No copied Factorio artwork.
+Weathered orange steel machinery, charcoal rubber belts, pale iron, copper-orange plates, glowing furnace interiors and muted olive-brown earth. Nearly top-down orthographic sprites, subtle vertical faces and light from the upper left. The original ImageGen machine/resource atlas and terrain are reused unmodified.
 
-World: square two-unit cells; machines occupy one cell, item visuals are small enough to remain distinguishable on belts. East is default output; rotate by quarter turns. Conveyors follow direction, buildings retain their upright rendered silhouette with a separate output arrow.
+Square two-unit cells. Belt geometry is generated at exact edge midpoints, so adjoining tiles meet without gaps. Each tile's input/output mask chooses a straight, corner or merging shape. Rubber slats, steel rims and rust edges use the palette tokens. Inserter bases use the same steel/rust/amber family; a separate arm rotates between pickup and delivery, carrying the actual item.
 
-UI: Rubik, steel frames with restrained bevels and rivets, amber selected state, pale warm text. Text and values remain live. A compact top contract strip shows gears delivered, budget and time. The bottom construction tray reuses actual machine silhouettes and shows costs. A contextual hover panel describes the selected machine or deposit. Controls are in an optional help panel. No permanent control wall.
+UI uses Rubik, steel frames, restrained bevels/rivets, amber selection and warm text. The top toolbar shows mode, active craft and inventory/help/pause access. The bottom quickbar uses machine icons and owned counts. Notices expire; context describes only the hovered object or selected building. Controls live in on-demand help.
 
-Panels use 9-slice frames, icons preserve square proportions, spacing uses eight-unit increments. Reference 1600 × 900, responsive edge anchors and Fit scaling. Status is represented by a compact machine indicator (working/blocked/waiting) and a short tooltip, not color alone. Placement uses a translucent preview and validity tint. Menu, pause and outcome screens share the same steel frame family.
+Inventory: 8 x 5 stack grid on the left, 4 x 3 recipe grid on the right. Recipe cards show the item and output count, with material/time details on hover. Unaﬀordable recipes dim their icons. Both modes share this entire layout; Creative replaces costs and time with an instant/free label. Machine contents and transfer buttons sit below; selecting a stack determines what Insert selected sends.
 
-The palette JSON is authoritative for authored terrain, UI, indicators and effects. Painterly generated art may contain intermediate material colors. No pixel-art palette restriction is claimed.
+Reference 1600 x 900, Fit scaling and edge anchors. Panels use 9-slice frames; icons preserve aspect ratios. Placement uses a translucent validity tint. Deposits fade when exhausted. Machine status combines an indicator with contextual status text.
+
+Design/palette.json remains authoritative for authored UI, mechanical art and indicators. Painterly source sprites contain intermediate material colors; no strict pixel-art palette is claimed.

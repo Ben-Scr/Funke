@@ -71,6 +71,7 @@ namespace Funke {
         void OnDown(int64_t id, Vec2 position);
         void OnMove(int64_t id, Vec2 position);
         void OnUp(int64_t id, Vec2 position);
+        void OnCancel(int64_t id);
         void Clear() { m_Touches.clear(); }
 
         int GetCount() const { return static_cast<int>(m_Touches.size()); }

@@ -1,0 +1,19 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public class QueryRow<First, Rest...> {
+public:
+    ulong ID;
+    Entity Entity => FunkeApiTypes.MakeEntity(ID);
+
+    T Get<T>() {
+        T component;
+        if (!Entity.HasComponent<T>()) throw System.InvalidOperationException("Missing query component.");
+        component.ID = ID;
+        return component;
+    }
+    void Deconstruct<T>(Funke.Entity& entity, T& first) { entity = Entity; first = Get<T>(); }
+}

@@ -30,6 +30,7 @@ namespace Funke {
 		int Protocol = 0;
 		// Editor host OSes the builder runs on ("windows,macos,linux"); empty means all.
 		std::string Hosts;
+		bool BoltAot = false;
 
 		bool SupportsHost(std::string_view host) const {
 			return Hosts.empty() || Hosts.find(host) != std::string::npos;

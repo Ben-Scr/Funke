@@ -1,0 +1,12 @@
+import System
+import System.Threading
+import System.Threading.Tasks
+namespace Funke.Coroutines;
+
+public struct WaitForFrames {
+    private int saved;
+    private CancellationToken cancellation;
+    public WaitForFrames(int frames, System.Threading.CancellationToken token=default) {saved=frames;cancellation=token;}
+    public Task<void> AsTask(){return CoroutineContext.Wait(saved,0.0f,false,null,cancellation);}
+    public CoroutineAwaiter GetAwaiter() { return CoroutineAwaiter(saved,0.0f,false,null,cancellation); }
+}

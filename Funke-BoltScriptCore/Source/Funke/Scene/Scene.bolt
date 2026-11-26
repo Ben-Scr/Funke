@@ -1,0 +1,130 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public class Scene {
+public:
+    string Name;
+    ulong Guid;
+    Funke.Jobs.JobHandle Schedule<T>(T job, System.Threading.CancellationToken cancellationToken = default) { return FkSchedule<T>(job,0,false,cancellationToken); }
+    Funke.Jobs.JobHandle ScheduleParallel<T>(T job,int batchSize=0,System.Threading.CancellationToken cancellationToken=default) { return FkSchedule<T>(job,batchSize,true,cancellationToken); }
+    private Funke.Jobs.JobHandle FkSchedule<T>(T job,int batchSize,bool parallel,System.Threading.CancellationToken token) {
+        /* begin job adapter */
+        ulong handle=job.FkOpenPlan(Name);
+        if(handle==0ul) throw System.InvalidOperationException("Could not acquire ECS job access.");
+        bool dispatched=false;
+        try {
+            int count=(int)FkJobRowCount(handle,0ul);
+            if(count==0)return default;
+            Funke.Jobs.FkQueryWork<T> work;
+            work.handle=handle; work.count=count; work.parallel=parallel; work.batchSize=batchSize; work.token=token; work.job=job;
+            work.Completion=System.Threading.Tasks.Task<void>.CreatePending();
+            var result=Funke.Jobs.Job.FkSubmit<Funke.Jobs.FkQueryWork<T>>(work,work.Completion);
+            dispatched=true;
+            return result;
+        } finally {if(!dispatched) FkCloseJobView(handle,0ul);}
+        /* end job adapter */
+    }
+
+    bool EnableSystem<T>() { T system; return FkToggleSceneSystem(FunkeText.Put(Name + "\n" + system.FkSystemName()), 1ul) != 0ul; }
+    bool DisableSystem<T>() { T system; return FkToggleSceneSystem(FunkeText.Put(Name + "\n" + system.FkSystemName()), 2ul) != 0ul; }
+    bool IsSystemEnabled<T>() { T system; return FkToggleSceneSystem(FunkeText.Put(Name + "\n" + system.FkSystemName()), 0ul) != 0ul; }
+    ulong FkKind() { return 3ul; }
+    void FkSetGuid(ulong guid) { Guid = guid; Name = FunkeText.Read(FkAsset_GetDisplayNameBuffer(guid, 0ul)); }
+    string Path => Guid == 0ul ? "" : FunkeText.Read(FkAsset_GetPathBuffer(Guid, 0ul));
+    bool IsLoaded => FkSceneInfo(FunkeText.Put(Name),0ul) != 0ul;
+    int EntityCount => (int)FkSceneInfo(FunkeText.Put(Name),1ul);
+    private Entity? Singleton<T>(bool report) {
+        if (Name.Length == 0) return null;
+        FkQuerySpec spec;
+        spec.SceneName = Name;
+        spec.Filter = 0;
+        spec.Require<T>();
+        ulong[] ids = spec.Ids();
+        if (ids.Length == 0) {
+            if (report) Log.Error("Singleton component '" + Type.Name<T>() + "' not found in scene '" + Name + "'");
+            return null;
+        }
+        if (ids.Length > 1 && report)
+            Log.Warn("Multiple (" + (string)ids.Length + ") instances of singleton component '" + Type.Name<T>() + "' in scene '" + Name + "', returning first");
+        return FunkeApiTypes.MakeEntity(ids[0]);
+    }
+    Entity? GetSingletonEntity<T>() { return Singleton<T>(true); }
+    T? GetSingleton<T>() {
+        Entity? entity = Singleton<T>(true);
+        return entity == null ? null : entity.Value.GetComponent<T>();
+    }
+    bool TryGetSingleton<T>(T?& component) {
+        Entity? entity = Singleton<T>(false);
+        component = entity == null ? null : entity.Value.GetComponent<T>();
+        return component != null;
+    }
+    bool TryGetSingletonEntity<T>(Entity?& entity) {
+        entity = Singleton<T>(false);
+        return entity != null;
+    }
+    QueryBuilder<T> Query<T>() {
+        QueryBuilder<T> result;
+        result.Spec.SceneName = Name;
+        result.Spec.Require<T>();
+        return result;
+    }
+
+    QueryBuilder<A, B, Rest...> Query<A, B, Rest...>() {
+        QueryBuilder<A, B, Rest...> result;
+        result.Spec.SceneName = Name;
+        result.Spec.Require<A, B, Rest...>();
+        return result;
+    }
+
+    QueryRefBuilder1<W1Type> QueryRef<W1Type>() {
+        QueryRefBuilder1<W1Type> result;
+        result.FkSpec.SceneName = Name;
+        result.FkSpec.Writes = FkQueryRefSpec.Key<W1Type>();
+        return result;
+    }
+    QueryRefBuilder2<W1Type, W2Type> QueryRef<W1Type, W2Type>() {
+        QueryRefBuilder2<W1Type, W2Type> result;
+        result.FkSpec.SceneName = Name;
+        result.FkSpec.Writes = FkQueryRefSpec.Key<W1Type>() + FkQueryRefSpec.Key<W2Type>();
+        return result;
+    }
+    QueryRefBuilder3<W1Type, W2Type, W3Type> QueryRef<W1Type, W2Type, W3Type>() {
+        QueryRefBuilder3<W1Type, W2Type, W3Type> result;
+        result.FkSpec.SceneName = Name;
+        result.FkSpec.Writes = FkQueryRefSpec.Key<W1Type>() + FkQueryRefSpec.Key<W2Type>() + FkQueryRefSpec.Key<W3Type>();
+        return result;
+    }
+    QueryRefBuilder4<W1Type, W2Type, W3Type, W4Type> QueryRef<W1Type, W2Type, W3Type, W4Type>() {
+        QueryRefBuilder4<W1Type, W2Type, W3Type, W4Type> result;
+        result.FkSpec.SceneName = Name;
+        result.FkSpec.Writes = FkQueryRefSpec.Key<W1Type>() + FkQueryRefSpec.Key<W2Type>() + FkQueryRefSpec.Key<W3Type>() + FkQueryRefSpec.Key<W4Type>();
+        return result;
+    }
+    QueryRefBuilder5<W1Type, W2Type, W3Type, W4Type, W5Type> QueryRef<W1Type, W2Type, W3Type, W4Type, W5Type>() {
+        QueryRefBuilder5<W1Type, W2Type, W3Type, W4Type, W5Type> result;
+        result.FkSpec.SceneName = Name;
+        result.FkSpec.Writes = FkQueryRefSpec.Key<W1Type>() + FkQueryRefSpec.Key<W2Type>() + FkQueryRefSpec.Key<W3Type>() + FkQueryRefSpec.Key<W4Type>() + FkQueryRefSpec.Key<W5Type>();
+        return result;
+    }
+    QueryRefBuilder6<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type> QueryRef<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type>() {
+        QueryRefBuilder6<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type> result;
+        result.FkSpec.SceneName = Name;
+        result.FkSpec.Writes = FkQueryRefSpec.Key<W1Type>() + FkQueryRefSpec.Key<W2Type>() + FkQueryRefSpec.Key<W3Type>() + FkQueryRefSpec.Key<W4Type>() + FkQueryRefSpec.Key<W5Type>() + FkQueryRefSpec.Key<W6Type>();
+        return result;
+    }
+    QueryRefBuilder7<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type, W7Type> QueryRef<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type, W7Type>() {
+        QueryRefBuilder7<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type, W7Type> result;
+        result.FkSpec.SceneName = Name;
+        result.FkSpec.Writes = FkQueryRefSpec.Key<W1Type>() + FkQueryRefSpec.Key<W2Type>() + FkQueryRefSpec.Key<W3Type>() + FkQueryRefSpec.Key<W4Type>() + FkQueryRefSpec.Key<W5Type>() + FkQueryRefSpec.Key<W6Type>() + FkQueryRefSpec.Key<W7Type>();
+        return result;
+    }
+    QueryRefBuilder8<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type, W7Type, W8Type> QueryRef<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type, W7Type, W8Type>() {
+        QueryRefBuilder8<W1Type, W2Type, W3Type, W4Type, W5Type, W6Type, W7Type, W8Type> result;
+        result.FkSpec.SceneName = Name;
+        result.FkSpec.Writes = FkQueryRefSpec.Key<W1Type>() + FkQueryRefSpec.Key<W2Type>() + FkQueryRefSpec.Key<W3Type>() + FkQueryRefSpec.Key<W4Type>() + FkQueryRefSpec.Key<W5Type>() + FkQueryRefSpec.Key<W6Type>() + FkQueryRefSpec.Key<W7Type>() + FkQueryRefSpec.Key<W8Type>();
+        return result;
+    }
+}

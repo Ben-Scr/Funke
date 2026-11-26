@@ -1,0 +1,17 @@
+import System
+import System.Threading
+import System.Threading.Tasks
+namespace Funke.Jobs;
+
+public static class ParallelFor {
+public:
+    JobHandle Schedule(int length,Action<int> body,int batchSize=0,CancellationToken cancellationToken=default) {return Job.ScheduleParallelFor(length,body,batchSize,cancellationToken);}
+    JobHandle Schedule(int length,Action<int> body,int batchSize,JobHandle dependency,CancellationToken cancellationToken=default) {return Job.ScheduleParallelFor(length,body,batchSize,dependency,cancellationToken);}
+    JobHandle Schedule(int begin,int end,Action<int> body,int batchSize=0,CancellationToken cancellationToken=default) {return Job.ScheduleParallelFor(begin,end,body,batchSize,cancellationToken);}
+    JobHandle Schedule(int begin,int end,Action<int> body,int batchSize,JobHandle dependency,CancellationToken cancellationToken=default) {return Job.ScheduleParallelFor(begin,end,body,batchSize,dependency,cancellationToken);}
+    JobHandle Schedule<T>(T job,int length,int batchSize=0,CancellationToken cancellationToken=default) {return Job.ScheduleParallelFor<T>(job,length,batchSize,cancellationToken);}
+    JobHandle Schedule<T>(T job,int length,int batchSize,JobHandle dependency,CancellationToken cancellationToken=default) {return Job.ScheduleParallelFor<T>(job,length,batchSize,dependency,cancellationToken);}
+    void Run(int length,Action<int> body,int batchSize=0) {Job.ParallelFor(length,body,batchSize);}
+    void Run(int begin,int end,Action<int> body,int batchSize=0) {Job.ParallelFor(begin,end,body,batchSize);}
+    void Run<T>(T job,int length,int batchSize=0) {Job.ParallelFor<T>(job,length,batchSize);}
+}

@@ -1,0 +1,15 @@
+import Funke
+import Funke.UI
+
+float DistanceForFrame(float speed) { return speed * Time.DeltaTime; }
+
+public static class Program
+{
+    public int Main()
+    {
+        Image image;
+        Log.Info("Bolt procedural API");
+        return DistanceForFrame(0.0f) == 0.0f ? 0 : 1;
+    }
+}
+

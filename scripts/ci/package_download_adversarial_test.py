@@ -42,16 +42,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             else: self.wfile.write(self.payload)
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError): pass
 
-class PackageTransferTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
-        cls.server.daemon_threads = True
-        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
-        cls.thread.start()
-    @classmethod
-    def tearDownClass(cls):
-        cls.server.shutdown(); cls.server.server_close(); cls.thread.join()
+class PackageFixture(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='funke-package-negative-')
         self.root = Path(self.temp.name)
@@ -71,34 +62,9 @@ class PackageTransferTests(unittest.TestCase):
         self.assertEqual(result.returncode == 0, success, result.stderr.decode(errors='replace'))
         if not success: self.assertNotIn(b'"success":true', result.stdout)
         return result
-    def transfer(self, route='valid', mode='registry', success=False, digest=None):
-        url = f'http://127.0.0.1:{self.server.server_port}/{route}'
-        digest = hashlib.sha256(Handler.payload).hexdigest() if digest is None else digest
-        if mode == 'registry':
-            result = self.run_tool('registry-download', url, digest, self.packages, success=success)
-            if not success: self.assertEqual(sorted(p.name for p in self.packages.iterdir()), ['Existing'])
-        else:
-            output = self.root / 'download'; output.write_bytes(b'old download')
-            result = self.run_tool('github-download', url, output, digest, success=success)
-            self.assertEqual(output.read_bytes(), Handler.payload if success else b'old download')
-            self.assertFalse(list(self.root.glob('download.*.tmp')))
-        return result
-    def test_registry_valid_unknown_length(self): self.transfer('unknown', success=True)
-    def test_github_valid_unknown_length(self): self.transfer('unknown', 'github', True)
-    def test_registry_invalid_hash(self): self.transfer(digest='0'*64)
-    def test_github_invalid_hash_preserves_file(self): self.transfer(mode='github', digest='0'*64)
-    def test_registry_invalid_hash_syntax(self): self.transfer(digest='invalid')
-    def test_registry_truncated(self): self.transfer('truncated')
-    def test_github_truncated_preserves_file(self): self.transfer('truncated', 'github')
-    def test_registry_declared_limit(self): self.transfer('declared-limit')
-    def test_github_declared_limit(self): self.transfer('declared-limit', 'github')
-    def test_registry_streamed_limit(self): self.transfer('stream-limit')
-    def test_github_streamed_limit(self): self.transfer('stream-limit', 'github')
-    def test_registry_stall(self): self.transfer('stall')
-    def test_github_stall(self): self.transfer('stall', 'github')
+
+class ArchiveCases:
     def bad_archive(self, payload):
-        Handler.payload = payload
-        self.transfer()
         zipped = self.root / 'input.zip'; zipped.write_bytes(payload)
         output = self.root / 'extracted'
         self.run_tool('unzip', zipped, output)
@@ -124,8 +90,6 @@ class PackageTransferTests(unittest.TestCase):
     def test_symlink_entry(self):
         link=zipfile.ZipInfo('Probe/link');link.create_system=3;link.external_attr=0o120777<<16
         self.bad_archive(archive([('Probe/funke-package.lua','manifest'),(link,'../../sentinel')]))
-    def test_existing_install(self):
-        Handler.payload=archive([('Existing/funke-package.lua','new'),('Existing/keep','replace')]);self.transfer()
     def test_unzip_existing_directory(self):
         zipped=self.root/'input.zip';zipped.write_bytes(archive())
         self.run_tool('unzip',zipped,self.packages)
@@ -135,6 +99,8 @@ class PackageTransferTests(unittest.TestCase):
         output=self.root/'empty';output.mkdir()
         self.run_tool('unzip',zipped,output,success=True)
         self.assertEqual((output/'Probe/file').read_text(),'valid')
+
+class PackageFilesystemLinkTests(PackageFixture):
     def test_unzip_destination_junction(self):
         if os.name!='nt': self.skipTest('Windows junction boundary')
         destination=self.root/'linked'; outside=self.root/'outside';outside.mkdir()
@@ -143,5 +109,50 @@ class PackageTransferTests(unittest.TestCase):
         zipped=self.root/'input.zip';zipped.write_bytes(archive())
         self.run_tool('unzip',zipped,destination)
         self.assertEqual(list(outside.iterdir()),[])
+
+class PackageArchiveTests(ArchiveCases, PackageFixture):
+    """Offline extraction tests: no socket or HTTP server is needed."""
+
+class PackageTransferTests(ArchiveCases, PackageFixture):
+    @classmethod
+    def setUpClass(cls):
+        cls.server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        cls.server.daemon_threads = True
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown(); cls.server.server_close(); cls.thread.join()
+    def transfer(self, route='valid', mode='registry', success=False, digest=None):
+        url = f'http://127.0.0.1:{self.server.server_port}/{route}'
+        digest = hashlib.sha256(Handler.payload).hexdigest() if digest is None else digest
+        if mode == 'registry':
+            result = self.run_tool('registry-download', url, digest, self.packages, success=success)
+            if not success: self.assertEqual(sorted(p.name for p in self.packages.iterdir()), ['Existing'])
+        else:
+            output = self.root / 'download'; output.write_bytes(b'old download')
+            result = self.run_tool('github-download', url, output, digest, success=success)
+            self.assertEqual(output.read_bytes(), Handler.payload if success else b'old download')
+            self.assertFalse(list(self.root.glob('download.*.tmp')))
+        return result
+    def test_registry_valid_unknown_length(self): self.transfer('unknown', success=True)
+    def test_github_valid_unknown_length(self): self.transfer('unknown', 'github', True)
+    def test_registry_invalid_hash(self): self.transfer(digest='0'*64)
+    def test_github_invalid_hash_preserves_file(self): self.transfer(mode='github', digest='0'*64)
+    def test_registry_invalid_hash_syntax(self): self.transfer(digest='invalid')
+    def test_registry_truncated(self): self.transfer('truncated')
+    def test_github_truncated_preserves_file(self): self.transfer('truncated', 'github')
+    def test_registry_declared_limit(self): self.transfer('declared-limit')
+    def test_github_declared_limit(self): self.transfer('declared-limit', 'github')
+    def test_registry_streamed_limit(self): self.transfer('stream-limit')
+    def test_github_streamed_limit(self): self.transfer('stream-limit', 'github')
+    def test_registry_stall(self): self.transfer('stall')
+    def test_github_stall(self): self.transfer('stall', 'github')
+    def test_existing_install(self):
+        Handler.payload=archive([('Existing/funke-package.lua','new'),('Existing/keep','replace')]);self.transfer()
+    def bad_archive(self, payload):
+        Handler.payload = payload
+        self.transfer()
+        super().bad_archive(payload)
 
 if __name__ == '__main__': unittest.main()

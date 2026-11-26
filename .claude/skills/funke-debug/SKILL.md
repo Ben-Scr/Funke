@@ -1,33 +1,26 @@
 ---
 name: funke-debug
-description: Use when debugging Funke engine code — reading logs, adding logging or assertions, diagnosing crashes and crash dumps, or chasing a one-off performance problem. Triggers on "why is this crashing", "the editor crashed", "where are the logs", "crash dump", ".dmp", ".crash.txt", "CrashReporter", "add logging", "FNK_CORE_WARN_TAG", "FNK_ASSERT", "FNK_THROW", "FunkeException", "WebGPU validation error", "Device lost", "black screen", "nothing renders", "invalid entity handle", "memory leak", "attach debugger", "debug C# scripts", "ScopedTimer", "F6/F7 overlay". Covers where log lines land (Funke\Logs file, stdout, editor Console, runtime overlays), the FNK_* logging macros, assert behavior per config (live even in Release/Dist), exceptions and binding guards, CrashReporter dumps, common failure modes, memory tracking, Timer/ScopedTimer and the Visual Studio debugger. For profiler instrumentation use `funke-add-profiler`; for render-pipeline internals use `funke-rendering`.
+description: "Diagnose Funke crashes, rendering failures and performance regressions using tagged logs, assertions, dumps, memory tracking or a debugger."
 ---
 
 # Debugging Funke
 
-Read the log first; most failures are already explained there.
+Start with the failing session. [Funke logs](../ai-debug-logs/SKILL.md) lists platform paths, rotations, filters and run capture.
 
 ## Where output goes
 
 | Sink | What lands there |
 |---|---|
-| **Log file** `%LOCALAPPDATA%\Funke\Logs\<exe-stem>.log` on Windows (`Funke-Editor.log`, `Funke-Runtime.log`, `Funke-Launcher.log`, …) | Every logger, every level. Active file plus up to three rotated backups, 10 MiB each, flushed on Warn+. Best-effort (skipped if the path can't be opened); disabled on Web. Set up in `Funke-Engine/src/Core/Log.cpp`. |
-| stdout (console) | Same as the file, colored. |
-| Android / Web | Android also writes to logcat with tag `Funke` (`adb logcat -s Funke`). Web writes to the browser console and has no file sink. Non-Windows file logs use `Path::GetSpecialFolderPath(SpecialFolder::LocalAppData)/Funke/Logs` (platform user-data root). |
+| Native file and stdout | All loggers and levels. `Core/Log.cpp` sets up the file on a best-effort basis. The console uses color to indicate severity. |
 | Editor **Console** panel | Client (`APP`) and `EDITOR` loggers only. **`FNK_CORE_*` never appears there** (filtered by the `Log::OnLog` subscriber in `ImGuiEditorLayer::OnAttach`). |
-| Shipped runtime | F7 log overlay (`Funke-Runtime/src/RuntimeLogLayer.cpp`, when `showRuntimeLogs`), F6 stats overlay, Ctrl+F6 profiler (when `profiler.enableInRuntime`). |
+| Shipped runtime | Stats, logs and profiler visibility depend on `showRuntimeStats`, `showRuntimeLogs` and `profiler.enableInRuntime`. See Overlays below. |
 | `funke editor logs` (Editor Bridge) | The last 4000 lines of **one open editor** (core + game), per process: `--level warning`, `--contains <text>`, `--since <n>` (number from the previous answer), `--follow`. The shared `Funke-Editor.log` mixes every editor instance; this doesn't. Reproduce in that editor with `funke editor play` / `input` / `exec` (`funke-build-engine`). |
-
-File line format: `[HH:MM:SS] [FUNKE] [level] [Tag] message` — logger names `FUNKE` (core), `APP` (client), `EDITOR`; level is `trace|debug|info|warning|error|critical` (console omits the level and colors it instead). Problems only: pattern `\] \[(warning|error|critical)\] `. To reproduce and capture a clean slice of the log plus a screenshot, use `scripts\dev\Run.ps1` (see `funke-build-engine`). As an agent, `Grep` the log file instead of asking the user to paste console output, e.g. pattern `\[WebGPUApi\]|\[CrashReporter\]|ASSERT failed|Exception:` on `C:\Users\<user>\AppData\Local\Funke\Logs\Funke-Editor.log`.
 
 ## Logging macros (`Core/Log.hpp`)
 
 ```cpp
-FNK_CORE_INFO_TAG("TextureManager", "Loaded {} textures", count);   // engine internals: stdout + file
-FNK_CORE_WARN_TAG("Renderer2D", "No pipeline for format {}", fmt);
-FNK_CORE_ERROR_TAG("WebGPUApi", "RequestAdapter failed: {}", err);
-FNK_WARN_TAG("Game", "Player spawned at ({}, {})", p.x, p.y);       // client: also editor Console
-FNK_CONSOLE_LOG_INFO("...");                                        // EDITOR logger (currently unused in-tree)
+FNK_CORE_WARN_TAG("Renderer2D", "No pipeline for format {}", fmt);  // engine
+FNK_WARN_TAG("Game", "Player {} spawned", id);                      // client
 ```
 
 - Levels: `TRACE`, `INFO`, `WARN`, `ERROR`, `FATAL` (→ spdlog critical). There is no `CRITICAL` macro.
@@ -41,9 +34,7 @@ FNK_CONSOLE_LOG_INFO("...");                                        // EDITOR lo
 `Core/Assert.hpp` / `Core/Assert.cpp`:
 
 ```cpp
-FNK_CORE_ASSERT(Application::IsMainThread(), FunkeErrorCode::Undefined, "AudioManager::Update must be called on the main thread");
-FNK_VERIFY(Window::IsInitialized(), "preserved window requires initialized SDL video");
-FNK_ASSERT(ptr, FunkeErrorCode::NullReference, fmt::format("Widget {} was null", id)); // message is NOT a format string
+FNK_ASSERT(ptr, FunkeErrorCode::NullReference, fmt::format("Widget {} was null", id));
 ```
 
 - `FNK_ASSERT`, `FNK_CORE_ASSERT`, `FNK_VERIFY`, `FNK_CORE_VERIFY` are all compiled in all configurations and behave the same: log `<KIND> failed: (expr) | [Code] msg @ file:line (function)` as a core error, then
@@ -107,4 +98,4 @@ For anything that should stay in the code or show in the Profiler panel / Tracy,
 1. Open `Funke.sln` in VS2022. Startup project `Funke-Editor`; Debugging > Command Arguments: `--project="C:\path\to\MyGame"` (without it the editor logs `No project specified` and runs on fallback paths). `Funke-Runtime` takes the same `--project=`; `Funke-Launcher` needs none.
 2. Debug = unoptimized; Release = optimized **with** symbols (best for perf issues); Dist = fully optimized, symbols only for Engine/Runtime.
 3. C# scripts run on CoreCLR inside the editor process: attach to `Funke-Editor.exe` with the **Managed (.NET Core)** code type (or Native + Managed for mixed stacks).
-4. Repro in tests where possible: `scripts\dev\Test.ps1 [-Filter "*Name*"] [-Suite CSharp|All]` (`funke-build-engine`). Not `scripts\RunTests.bat` locally: it picks MSBuild via `vswhere -latest`, which is VS "18" on this machine (PCH clash with v143), and builds serially; it's the CI entry point.
+4. Reproduce in the smallest relevant suite with `scripts\dev\Test.ps1`. See [engine builds and tests](../funke-build-engine/SKILL.md) for filters and CI equivalents.

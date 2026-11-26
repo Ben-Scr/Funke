@@ -2,11 +2,16 @@
 #include "Core/Export.hpp"
 #include "Assets/AssetGuid.hpp"
 #include "Graphics/PrimitiveMesh.hpp"
+#include "Graphics/Material.hpp"
+#include "Graphics/ImageData.hpp"
+#include "Graphics/Filter.hpp"
+#include "Graphics/Wrap.hpp"
 #include "Serialization/FileStamp.hpp"
 
 #include <glm/glm.hpp>
 
 #include <chrono>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -17,9 +22,31 @@
 namespace Funke {
 	struct SkinnedMeshData;
 
+	struct MeshSubmesh {
+		uint32_t FirstIndex = 0;
+		uint32_t IndexCount = 0;
+		uint32_t MaterialIndex = 0;
+	};
+	struct ImportedMeshTexture {
+		std::shared_ptr<const ImageData> Image;
+		Filter Filtering = Filter::Trilinear;
+		Wrap WrapU = Wrap::Repeat;
+		Wrap WrapV = Wrap::Repeat;
+	};
+	struct ImportedMeshMaterial {
+		std::string Name;
+		std::string Key; // Stable unique-name key, or source index when no unambiguous name exists.
+		Material Surface;
+		// Base color, normal, metallic/roughness, emissive, occlusion; -1 = no texture.
+		std::array<int32_t, 5> Textures{ -1, -1, -1, -1, -1 };
+	};
+
 	// Geometry of a mesh asset in its authored units, with its object-space bounds.
 	struct FUNKE_API MeshAsset {
 		PrimitiveMeshData Data;
+		std::vector<MeshSubmesh> Submeshes;
+		std::vector<ImportedMeshMaterial> Materials;
+		std::vector<ImportedMeshTexture> Textures;
 		glm::vec3 BoundsMin{ 0.0f };
 		glm::vec3 BoundsMax{ 0.0f };
 		// Skeleton, bind pose and clips of an animated model (glTF with skins or node animation); null for static meshes.

@@ -3,6 +3,7 @@
 #include "Serialization/SceneSerializer.hpp"
 #include "Serialization/SceneSerializerShared.hpp"
 #include "Serialization/PrefabTemplateCache.hpp"
+#include "Serialization/EntityReferenceSerialization.hpp"
 #include "Serialization/File.hpp"
 #include "Serialization/FileStamp.hpp"
 #include "Serialization/Json.hpp"
@@ -686,7 +687,9 @@ namespace Funke {
 				return false;
 			}
 
-			return ReadPrefabEntityValuesFromRoot(root, outEntities);
+			if (ReadPrefabEntityValuesFromRoot(root, outEntities)) return true;
+			Value expanded;
+			return SceneSerializer::ResolvePrefabSource(prefabGuid, expanded) && ReadPrefabEntityValuesFromRoot(expanded, outEntities);
 		}
 
 		bool LoadPrefabEntityValue(uint64_t prefabGuid, Value& outEntityValue) {
@@ -851,10 +854,13 @@ namespace Funke {
 			auto& registry = scene.GetRegistry();
 			std::unordered_map<uint32_t, uint64_t> sourceIds;
 			sourceIds.reserve(subtree.size());
+			std::unordered_map<uint64_t, uint64_t> referenceIds;
 			for (EntityHandle entity : subtree) {
 				sourceIds[static_cast<uint32_t>(entity)] = GetPrefabSourceEntityId(scene, entity);
+				referenceIds.emplace(scene.GetEntityPersistentID(entity), sourceIds[static_cast<uint32_t>(entity)]);
 			}
 
+			const Detail::EntityReferenceWriteScope referenceScope(referenceIds);
 			for (EntityHandle entity : subtree) {
 				Value entityValue = SerializeEntity(scene, entity);
 				RemovePrefabRuntimeIdentityMembers(entityValue);
@@ -1049,6 +1055,7 @@ namespace Funke {
 			};
 
 			for (const ScriptInstance& instance : scriptComponent.Scripts) {
+				if (instance.GetType() == ScriptType::Bolt) continue;
 				if (instance.GetType() == ScriptType::Native) {
 					addPendingOnly(instance.GetClassName());
 					continue;
@@ -1191,6 +1198,7 @@ namespace Funke {
 					rows->Append(std::move(row));
 				}
 			}
+			Detail::RemapWrittenScriptEntityReferences(fieldsByClass);
 			return fieldsByClass;
 		}
 
@@ -1202,10 +1210,10 @@ namespace Funke {
 					if (!info.serialize || !info.has || info.serializedName.empty()) return;
 					if (!info.has(entityWrapper)) return;
 					// The ScriptComponent list is the authored source of truth for managed component rows.
-					if (info.isDynamic) {
+					if (info.isDynamic && !info.IsBoltStruct()) {
 						if (!scene.HasComponent<ScriptComponent>(entity)) return;
 						ScriptComponent sc = scene.GetComponent<ScriptComponent>(entity);
-				sc.MigrateManagedIdentities(ScriptEngine::ResolveManagedTypeName);
+						sc.MigrateManagedIdentities(ScriptEngine::ResolveManagedTypeName);
 						if (!sc.HasScript(info.serializedName) && !sc.HasManagedComponent(info.serializedName)) return;
 					}
 					try {
@@ -1760,6 +1768,37 @@ namespace Funke {
 		return root;
 	}
 
+	Json::Value SceneSerializer::SerializePrefabVariant(Scene& scene, EntityHandle entity, uint64_t baseGuid,
+		uint64_t variantGuid, const Json::Value& baseSource) {
+		if (baseGuid == 0 || baseGuid == variantGuid || !scene.IsValid(entity)) return Value();
+		const Value current = SerializePrefabSource(scene, entity);
+		std::vector<Value> baseEntities, currentEntities;
+		if (!ReadPrefabEntityValuesFromRoot(baseSource, baseEntities) || !ReadPrefabEntityValuesFromRoot(current, currentEntities)
+			|| baseEntities.size() != currentEntities.size()) return Value();
+		Value result = Value::MakeObject(), rootOverrides = Value::MakeObject(), entityOverrides = Value::MakeObject();
+		for (size_t i = 0; i < baseEntities.size(); ++i) {
+			const uint64_t sourceId = GetUInt64Member(baseEntities[i], "uuid", 0);
+			const auto found = std::find_if(currentEntities.begin(), currentEntities.end(), [&](const Value& value) {
+				return GetUInt64Member(value, "uuid", 0) == sourceId;
+			});
+			if (found == currentEntities.end() || GetUInt64Member(*found, "parentUuid", 0) != GetUInt64Member(baseEntities[i], "parentUuid", 0)) return Value();
+			Value baseline = baseEntities[i], edited = *found, changes = Value::MakeObject();
+			RemoveEntityComparisonIdentityMembers(baseline); RemoveEntityComparisonIdentityMembers(edited);
+			NormalizeLegacyColliderKeysForDiff(baseline, edited);
+			BuildOverridePatch(baseline, edited, {}, changes);
+			for (const auto& [key, value] : baseline.GetObject()) if (!edited.FindMember(key)) changes.AddMember(key, Value());
+			if (i == 0) rootOverrides = std::move(changes);
+			else if (!changes.GetObject().empty()) entityOverrides.AddMember(std::to_string(sourceId), std::move(changes));
+		}
+		result.AddMember("version", Value(SceneSerializerInternal::k_SceneFormatVersion));
+		result.AddMember("type", Value("Prefab"));
+		result.AddMember("AssetGUID", Value(std::to_string(variantGuid)));
+		result.AddMember("PrefabRef", Value(std::to_string(baseGuid)));
+		result.AddMember("Overrides", std::move(rootOverrides));
+		if (!entityOverrides.GetObject().empty()) result.AddMember("EntityOverrides", std::move(entityOverrides));
+		return result;
+	}
+
 	Json::Value SceneSerializer::SerializeComponent(Scene& scene, EntityHandle entity, std::string_view componentName) {
 		if (entity == entt::null || !scene.IsValid(entity) || componentName.empty()) {
 			return Value();
@@ -1851,8 +1890,15 @@ namespace Funke {
 	}
 
 	bool SceneSerializer::ConvertFileFormat(const std::string& path, SceneSerializationFormat format) {
+		std::string error;
+		return ConvertFileFormat(path, format, error);
+	}
+
+	bool SceneSerializer::ConvertFileFormat(const std::string& path, SceneSerializationFormat format, std::string& error) {
+		error.clear();
 		try {
 			if (!File::Exists(path)) {
+				error = "File does not exist";
 				return false;
 			}
 
@@ -1860,14 +1906,15 @@ namespace Funke {
 			const bool stampWasCurrent = !KnownFileStamps::HasChangedOnDisk(path);
 			const FileStamp stampBefore = FileStamp::Read(path);
 			Value root;
-			std::string error;
 			if (!SceneSerializerStorage::ReadRootFromFile(path, root, &error) || !root.IsObject()) {
+				if (error.empty()) error = "Serialized asset root must be an object";
 				FNK_CORE_WARN_TAG("SceneSerializer", "Cannot convert serialized asset {}: {}", path, error);
 				return false;
 			}
-			if (!ValidateFormatVersion(root, path)) return false;
+			if (!ValidateFormatVersion(root, path)) { error = "Unsupported serialized asset format version"; return false; }
 
 			if (!SceneSerializerStorage::WriteRootToFile(path, root, format)) {
+				error = "Failed to write converted asset";
 				FNK_CORE_WARN_TAG("SceneSerializer", "Failed to rewrite serialized asset: {}", path);
 				return false;
 			}
@@ -1878,6 +1925,7 @@ namespace Funke {
 			return true;
 		}
 		catch (const std::exception& exception) {
+			error = exception.what();
 			FNK_CORE_WARN_TAG("SceneSerializer", "ConvertFileFormat failed for {}: {}", path, exception.what());
 			return false;
 		}

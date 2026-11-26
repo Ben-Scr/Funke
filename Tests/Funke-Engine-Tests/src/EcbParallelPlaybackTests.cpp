@@ -1147,6 +1147,71 @@ TEST_CASE("ECB parallel scratch remains reusable after fallback and nested playb
 	CHECK(scene->GetEntityCount() == 133);
 }
 
+TEST_CASE("ECB structural playback benchmark (opt-in)")
+{
+	const char* output = std::getenv("FUNKE_ECB_STRUCTURAL_BENCH_OUTPUT");
+	if (!output || !*output) return;
+	Application app;
+	const auto types = RegisterParallelTypes();
+	const NativeBindings bindings = ParallelBindings();
+	ScopedEcbWorkers workers(4);
+	std::ofstream csv(output);
+	REQUIRE(csv.is_open());
+	csv << "population,affected,operation,mode,sample,playback_ms\n" << std::setprecision(9);
+	for (const auto [population, affected] : { std::pair{1000u, 1000u}, {10000u, 10000u},
+		{100000u, 100000u}, {100000u, 512u} }) {
+		for (const std::string operation : { "add_default", "add_payload", "remove", "destroy" }) {
+			for (int mode : { 1, 0 }) {
+				auto scene = Scene::CreateDetachedScene("ECB Structural Benchmark");
+				SceneExecutionScope scope(*scene);
+				std::vector<uint64_t> ids(population);
+				std::vector<uint32_t> order(population);
+				std::iota(order.begin(), order.end(), 0u);
+				std::mt19937 random(3711);
+				std::shuffle(order.begin(), order.end(), random);
+				const bool adding = operation.starts_with("add_");
+				const auto creation = adding ? ParallelTestBuffer(population) : CreationBuffer(population, types, true);
+				for (int sample = -2; sample < 9; ++sample) {
+					REQUIRE(creation.Play(bindings, 0, ids) == population);
+					ParallelTestBuffer commands;
+					for (uint32_t n = 0; n < affected; ++n) {
+						const uint32_t index = order[n];
+						const auto id = ids[index];
+						if (operation == "destroy") commands.Live(Ecb_DestroyEntity, id);
+						else if (operation == "add_payload") {
+							const auto transform = ParallelTransform(index);
+							const auto sprite = ParallelSprite(index);
+							commands.Live(Ecb_AddComponent, id, types.Transform, &transform, sizeof(transform));
+							commands.Live(Ecb_AddComponent, id, types.Sprite, &sprite, types.SpriteBytes);
+						}
+						else {
+							const auto opcode = adding ? Ecb_DefaultConstructComponent : Ecb_RemoveComponent;
+							commands.Live(opcode, id, types.Transform);
+							commands.Live(opcode, id, types.Sprite);
+						}
+					}
+					const auto begin = std::chrono::steady_clock::now();
+					const int created = commands.Play(bindings, mode);
+					const auto end = std::chrono::steady_clock::now();
+					REQUIRE(created == 0);
+					REQUIRE(scene->GetEntityCount() == (operation == "destroy" ? population - affected : population));
+					const auto probe = order.front();
+					if (adding) CheckParallelValues(*scene, ResolveParallelEntity(*scene, ids[probe]), probe, operation == "add_payload");
+					else if (operation == "remove")
+						CHECK_FALSE(scene->GetRegistry().any_of<Transform2DComponent, SpriteRendererComponent>(ResolveParallelEntity(*scene, ids[probe])));
+					if (affected < population)
+						REQUIRE(scene->IsValid(ResolveParallelEntity(*scene, ids[order.back()])));
+					if (sample >= 0)
+						csv << population << ',' << affected << ',' << operation << ',' << mode << ',' << sample << ','
+							<< std::chrono::duration<double, std::milli>(end - begin).count() << '\n';
+					scene->ClearEntities();
+					REQUIRE(scene->GetEntityCount() == 0);
+				}
+			}
+		}
+	}
+}
+
 TEST_CASE("ECB creation playback benchmark (opt-in)")
 {
 	const char* output = std::getenv("FUNKE_ECB_CREATION_BENCH_OUTPUT");

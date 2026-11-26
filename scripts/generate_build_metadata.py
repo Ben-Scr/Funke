@@ -5,6 +5,7 @@ import argparse
 import hashlib
 import json
 import os
+import platform
 import re
 import subprocess
 import sys
@@ -266,8 +267,15 @@ def main() -> int:
             dirty_fingerprint = calculate_dirty_fingerprint(status, identity_paths)
             build_id += f".dirty.{dirty_fingerprint}"
 
-        archive_name = f"Funke-Editor-{version}-Windows-x64.zip"
-        symbols_name = f"Funke-Editor-{build_id}-Windows-x64-symbols.zip"
+        system = platform.system()
+        if system in ("Darwin", "Linux"):
+            label = "macOS" if system == "Darwin" else "Linux"
+            arch = "arm64" if platform.machine().lower() in ("aarch64", "arm64") else "x64"
+            archive_name = f"Funke-Editor-{version}-{label}-{arch}.tar.gz"
+            symbols_name = None
+        else:
+            archive_name = f"Funke-Editor-{version}-Windows-x64.zip"
+            symbols_name = f"Funke-Editor-{build_id}-Windows-x64-symbols.zip"
 
         native = (
             "#ifndef FNK_BUILD_METADATA_GENERATED\n"
@@ -337,7 +345,7 @@ def main() -> int:
                 f"build_id={build_id}\n"
                 f"commit={commit}\n"
                 f"archive_name={archive_name}\n"
-                f"symbols_archive_name={symbols_name}\n"
+                f"symbols_archive_name={symbols_name or ''}\n"
             )
             args.github_output.parent.mkdir(parents=True, exist_ok=True)
             with args.github_output.open("a", encoding="utf-8", newline="\n") as stream:

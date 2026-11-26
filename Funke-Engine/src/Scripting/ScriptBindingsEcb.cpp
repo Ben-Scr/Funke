@@ -1,4 +1,5 @@
 #include "pch.hpp"
+#include "Scene/ComponentAccess.hpp"
 #include "Scripting/ScriptBindingGuard.hpp"
 #include "Scripting/EntityCommandBufferWire.hpp"
 #include "Scripting/EntityCommandBufferParallel.hpp"
@@ -207,6 +208,7 @@ namespace Funke {
 		if (scene == nullptr) {
 			return kEcbErrorNoScene;
 		}
+		ComponentAccess::BeforeMutation(scene->GetRegistry());
 
 		EcbHeader header;
 		std::memcpy(&header, buffer, sizeof(EcbHeader));

@@ -1,0 +1,18 @@
+import System
+import System.Threading
+import System.Threading.Tasks
+namespace Funke.Jobs;
+
+class FkJobWork {
+public:
+    Task<void> Completion;
+    Action<>? Body;
+    JobHandle Dependency;
+    CancellationToken Token;
+    void Run() {
+        try { Dependency.Complete(); Token.ThrowIfCancellationRequested(); Body.Value.Invoke(); }
+        catch(System.OperationCanceledException& error){Completion.SetCanceled(error);}
+        catch(System.Exception& error){Completion.SetException(error);}
+        finally { Completion.Complete(); }
+    }
+}

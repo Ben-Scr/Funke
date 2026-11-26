@@ -38,9 +38,8 @@ tr.SetPosition({ 5.0f, 0.0f });
 The same idea in a C# script:
 
 ```csharp
-Entity e = Entity.Create("Player");
+Entity e = Entity.Create2D("Player", new Vector2(5f, 0f));
 e.AddComponent<SpriteRenderer>();
-e.Transform.Position = new Vector2(5f, 0f);
 ```
 
 The core entity operations are the same everywhere:
@@ -48,7 +47,7 @@ The core entity operations are the same everywhere:
 - `AddComponent<T>()` / `RemoveComponent<T>()`
 - `GetComponent<T>()` / `HasComponent<T>()`
 - `Create(...)` / `Destroy()`
-- parent/child: `SetParent(...)`, `GetParent()`, get children
+- In C#, `SetParent(...)`, `Parent` and `GetChildren()` manage hierarchy relationships.
 
 ### Entity identity
 
@@ -154,7 +153,14 @@ foreach (ref var t in Scene.QueryRef<NativeTransform2D>())
 }
 ```
 
+For retained component access, prefer `entity.GetHandle<T>()` and its checked
+`Read`/`Write` value methods. Handles fail after structural changes instead of
+silently following recycled storage. See [component access lifetimes](../Scripting/Component-Access-Lifetimes.md)
+for the precise scope, development QueryRef guard and Dist costs.
+
 For a single entity, `entity.TransformRef` (or `GetNativeComponent<T>()`) returns a writable `ref` straight into component memory. When you only **read** a transform, use `entity.TransformRefReadOnly` (or `GetNativeComponentReadOnly<T>()`): a writable transform ref makes the engine re-check every transform in the scene that frame, a read-only one does not.
+
+Native component access uses a checked `try_get` lookup instead of separate presence checks and retrieval. Flat 2D full-scene propagation iterates component references directly; 2D model matrices are assembled without general matrix multiplication. When only a 3D position changes, the engine retains the cached rotation/scale basis and updates the translation column. These paths benefit existing scripts without changing the public scripting API or reference-lifetime rules. See [entity movement measurements](Entity-Movement-Measurements.md) for the measured scope, results, and limitations.
 
 ```csharp
 ref readonly var self = ref Entity.TransformRefReadOnly;
@@ -245,7 +251,8 @@ Eligibility is checked for the entire batch before staged mutation. A single ine
 | Add default or byte-payload `Transform2D` / `SpriteRenderer` to live entities | Component absent, target valid, no component conflicts; Transform2D target has neither hierarchy nor Rigidbody2D | `component_already_present`, `stale_target`, `component_conflict`, `transform_lifecycle` |
 | Remove `Transform2D` / `SpriteRenderer` from live entities | Component present; each entity/component pair once; trusted managed invalidation | `component_missing`, `duplicate_component`, `component_invalidation_callback` |
 | Destroy live entities | Unique valid targets containing only entity metadata, UUID, Transform2D and SpriteRenderer; eligible signals and lifecycle/invalidation state | `duplicate_target`, `stale_target`, `destroy_lifecycle_or_storage` |
-| Add/remove any other component, including dynamic/custom types | Ordered; staged component construction/removal is certified only for the two types above | `uncertified_component` |
+| Native explicit Parallel: add/remove `Transform3D` on live entities | Narrow opt-in family described below; no creation, hierarchy, physics, custom hooks or mixed operations | Ordered fallback on any ineligible command |
+| Add/remove other components, including dynamic/custom types | Ordered; no broader certification | `uncertified_component` |
 | Set component (reserved wire opcode), enable/disable | Ordered | `unsupported_operation` |
 | Instantiate prefab | Ordered; existing prefab validation and hydration still apply | `prefab_loading` |
 | Add/remove/destroy mixed in one batch; destruction of newly created entities | Ordered, preserving recorded command order | `mixed_operations` |
@@ -254,6 +261,40 @@ Eligibility is checked for the entire batch before staged mutation. A single ine
 | Native default add/remove without a registered wire operation | Ordered typed fallback | `native_component_not_serializable` |
 
 Both staged component types must retain their native type/storage identity, native `has` operation, no dynamic storage, no `onAdd` callback and no declared dependencies. Default adds additionally certify `defaultEmplace` and `add`; payload adds certify `emplaceFromBytes` and its byte size; removes certify `remove`. Overrides fail with `uncertified_component`. Extra construct/update/destroy signal listeners fail with `component_signals`; the engine's known Transform2D/SpriteRenderer hooks remain supported. A declared conflict between the two component batches produces `batch_component_conflict`. Destroy's combined guard also excludes tags, hierarchy, physics, scripts and dynamic components on the targets, reentrant destruction, and untrusted invalidation callbacks. Unsupported storage on unrelated entities does not itself prevent a destroy batch.
+
+#### Native Transform3D opt-in batch
+
+Native `EntityCommandBufferPlaybackMode::Parallel` also accepts homogeneous
+Transform3D additions (defaults or certified byte payloads) or removals on existing
+entities. It preflights the entire batch before mutation: unique valid targets,
+correct component presence, canonical storage/callbacks, no declared dependencies,
+custom signals, hierarchy or Rigidbody3D, and no conflicting component on an add.
+Mixed commands, creation and custom native constructors retain ordered playback.
+The managed ECB planner and `Auto` do not select this new family.
+
+Registry planning, signal/lifecycle notification and identity/invalidation work
+remain serial. Only the existing bulk storage kernels can distribute independent
+payload work to workers. Small batches run inline. `EcbTransform3DTests` checks
+add/remove results, byte payload equivalence, rejection without partial mutation,
+and public-API fallback for mixed add/destroy commands.
+
+The concrete target is the Transform3D population used by FunkeBench's 3D workload.
+The following focused Windows Release measurement covers complete native playback
+including wire assembly, eligibility and storage, but excludes command recording,
+scene creation, meshes and rendering. It is not an end-to-end FunkeBench result.
+Four workers; one warmup and eight measured iterations; middle sorted sample:
+
+| Existing entities receiving default Transform3D | Sequential ms | Explicit Parallel ms |
+|---:|---:|---:|
+| 512 | 0.2695 | 0.0219 |
+| 8,192 | 4.4799 | 0.3999 |
+| 32,768 | 17.1477 | 1.2131 |
+
+Batching contributes to this difference; the 512-row workload is below the worker
+grain. These values do not imply that arbitrary parallel ECS work is faster.
+Reproduce with `FUNKE_ECB_3D_BENCH=1` and the native test filter
+`Transform3D ECB total planning and storage cost comparison` in Release.
+`Auto` remains unchanged pending an end-to-end target-project comparison.
 
 #### Diagnosing selection
 
@@ -369,9 +410,39 @@ Native commands use stable pages of 256 commands (16 KiB per allocated page); ca
 - [Scripting](../Scripting/Scripting.md) — writing C# logic over entities and components.
 - [Writing Packages](../Packages/Writing-Packages.md) — adding your own components.
 - [Job System](Job-System.md) — processing many entities in parallel.
+- [Structural change measurements](Entity-Structural-Measurements.md) - component addition/removal and entity destruction, including batch behavior and measured limits.
 
 ### Native component conflicts
 
 `Entity::AddComponent<T>`, `Scene::AddComponent<T>` and `ComponentUtils::AddComponent<T>` check the registered component conflicts before insertion. Adding a second, different 2D collider throws `FunkeException(InvalidArgument)` without allocating a body or shape or removing the existing collider. Adding the same component again still returns the existing component. A rigidbody and a single collider are supported in either insertion order.
 
 Native entity command buffers use the same metadata: default additions follow the existing playback rejection/reporting contract; conflicting configured/value additions throw before constructing the component or invoking the configuration callback. Components larger than the buffer's inline payload limit require a configure callback. Direct `entt::registry::emplace` is a lower-level operation and bypasses these API checks; callers using it must uphold the component invariants themselves.
+
+## Explicit job completion before structural playback
+
+`commands.Playback(producerHandle)` completes the supplied dependency before even
+counting the recorded commands. Call this on the main thread. A failed producer
+propagates its exception and no playback is attempted. Combine all relevant
+producer/reader/writer handles before passing the dependency: this overload does
+not discover unrelated jobs or make direct entity operations thread-safe.
+
+| Operation | Lifetime contract |
+|---|---|
+| Read-only transform reference | Does not mark the transform hierarchy dirty; still expires on structural changes. |
+| Writable transform reference | Conservatively dirties the whole scene because subsequent writes through the reference cannot be observed. |
+| Transform property setter | Uses the existing targeted dirty path; children still need propagation. |
+| Query job and ECB playback | Complete every borrowing job before playback; the explicit dependency overload enforces the supplied fence. |
+| Competing writers | Supply dependencies or partition disjoint storage; automatic conflict detection is not provided. |
+| Scene unload while query jobs borrow storage | Not supported: complete borrowers first. Global reload/shutdown draining is not a per-scene borrow guard. |
+
+The audit of `IJobQuery.ScheduleInternal` found raw pointer rows retained until job
+completion, without a per-scene lease. `SceneManager::ReleaseScene` does not itself
+drain these jobs. Do not infer scene lifetime safety from the assembly resource
+scope. A deterministic native scene-close regression and a scene-level ownership
+mechanism remain work items.
+
+Transform audit (2026-11-13): `NativeRefs.cs` and the benchmark origin capture use
+`TransformRefReadOnly`; the benchmark's writable pointer capture is intentional.
+The managed regression verifies that read-only access never requests writable
+storage and repeated writes update the same native bytes. Hierarchy measurements
+and their limitations are in [Entity movement measurements](Entity-Movement-Measurements.md).

@@ -1,0 +1,78 @@
+import Funke
+import Funke.Components
+import Funke.Native
+import System.Threading
+import System.Threading.Tasks
+
+public class BorrowedSceneQuery : EntityScript {
+public:
+    int Stage;
+    private Task<PreloadedScene?> prepare;
+    private Task<Scene?> activate;
+    private static bool ready, completed;
+    private static void CheckProgress(SceneLoadProgress progress) {
+        if (progress.Phase == SceneLoadPhase.Ready && progress.Progress == 1.0f) ready = true;
+        if (progress.Phase == SceneLoadPhase.Completed && progress.Progress == 1.0f) completed = true;
+    }
+    public override void OnUpdate() {
+        if (Stage == 4 && prepare.IsCompleted) {
+            var result = prepare.Result;
+            if (result == null || !ready) return;
+            var staged = result.Value;
+            System.Action<SceneLoadProgress> progress = CheckProgress;
+            activate = staged.ActivateAsync(LoadSceneMode.Additive, CancellationToken(), progress);
+            try { staged.ActivateAsync(); return; } catch (System.InvalidOperationException error) {}
+            Stage = 5;
+        }
+        if (Stage == 5 && activate.IsCompleted) {
+            var scene = activate.Result;
+            if (scene == null || scene.Value.Name != "Bolt staged target" || !completed) return;
+            Stage = 6;
+        }
+    }
+    public override void OnStart() {
+        ComponentHandle<NativeTransform2D> handle;
+        if (!Entity.TryGetHandle<NativeTransform2D>(handle)) return;
+        NativeTransform2D data = handle.Read();
+        data.Position = Vector2(4.0f, 2.0f);
+        handle.Write(data);
+        Stage = 1;
+
+        Entity.TransformRef.SetRotation(90.0f);
+        if (Mathf.Abs(Entity.TransformRefReadOnly.Rotation - 90.0f) > 0.001f) return;
+        var active = SceneManager.GetActiveScene();
+        if (active == null) return;
+        var cursor = active.Value.QueryRef<NativeTransform2D>().Readonly<NativeSpriteRenderer>().WithEntity().GetEnumerator();
+        if (!cursor.MoveNext()) return;
+        var row = cursor.Current;
+        if (row.Entity.ID != Entity.ID || row.R.SortingOrder != 0) return;
+        row.W.SetPosition(Vector2(8.0f, 3.0f));
+        Stage = 2;
+        cursor.Dispose();
+        try { var expired = row.R; return; } catch (System.InvalidOperationException error) {}
+        if (Entity.TransformRefReadOnly.Position != Vector2(8.0f, 3.0f)) return;
+        Stage = 3;
+
+        var child = Funke.Entity.Create3D("3D child", Vector3(1.0f, 2.0f, 3.0f));
+        var tr = child.Transform3D;
+        tr.Scale = Vector3(2.0f, 3.0f, 4.0f);
+        var point = tr.TransformPoint(Vector3(1.0f, 1.0f, 1.0f));
+        if ((point - Vector3(3.0f, 5.0f, 7.0f)).Length() > 0.001f) return;
+        if ((tr.InverseTransformPoint(point) - Vector3.One).Length() > 0.001f) return;
+        float time;
+        Vector3 intercept;
+        if (!Aiming3D.TryIntercept(Vector3.Zero, 2.0f, Vector3(3.0f, 0.0f, 0.0f), Vector3.Right, time, intercept)) return;
+        if (Mathf.Abs(time - 3.0f) > 0.001f) return;
+        var reference = GetScript("BorrowedSceneQuery");
+        if (reference == null || !reference.Value.IsValid || reference.Value.Entity.ID != Entity.ID) return;
+        if (Entity.GetScript("MissingScript") != null) return;
+        var found = Entity.GetComponent("Transform2D");
+        if (found == null || found.Value.As<Transform2D>() == null) return;
+        CancellationTokenSource canceled;
+        canceled.Cancel();
+        if (!SceneManager.LoadSceneAsync("Bolt staged target", LoadSceneMode.Additive, canceled.Token).IsCanceled) return;
+        System.Action<SceneLoadProgress> progress = CheckProgress;
+        prepare = SceneManager.PreloadSceneAsync("Bolt staged target", CancellationToken(), progress);
+        Stage = 4;
+    }
+}

@@ -1,0 +1,869 @@
+diff --git a/include/bolt/Ast.hpp b/include/bolt/Ast.hpp
+--- a/include/bolt/Ast.hpp
++++ b/include/bolt/Ast.hpp
+@@ -33,7 +33,7 @@
+     };
+     struct Expr {
+         enum class Kind {
+-            Literal, Name, Member, Call, Unary, Binary, Assign, Postfix, Index, Array, New, Delete, Pack, Default, Conditional, Let, OptionalHas, OptionalValue, SizeOf, Lambda
++            Literal, Name, Member, Call, Unary, Binary, Assign, Postfix, Index, Array, New, Delete, Pack, Default, Conditional, Let, OptionalHas, OptionalValue, SizeOf, Lambda, RuntimeOperand
+         }
+         kind;
+         enum class Binding {
+diff --git a/include/bolt/native/IR.hpp b/include/bolt/native/IR.hpp
+--- a/include/bolt/native/IR.hpp
++++ b/include/bolt/native/IR.hpp
+@@ -72,6 +72,12 @@
+     bool runtime_free_entry = false;
+     std::string runtime_requirement;
+ };
++struct EditData {
++    struct Slot {std::string symbol; std::uint64_t bits; bool emitted=false;};
++    std::unordered_map<const Expr*,Slot> slots;
++    struct Site {std::string symbol; int column,length; std::size_t capacity;};
++    std::unordered_map<std::string,std::unordered_map<int,std::vector<Site>>> sites;
++};
+ struct LowerOptions {
+     bool instrument_budget = false;
+     // Embedding may explicitly replace standard I/O with C++ streams. Ordinary
+@@ -83,6 +89,7 @@
+     // A closed executable may use the OS ABI even when no Bolt runtime is installed.
+     bool try_runtime_free_entry = false;
+     bool source_core = false;
++    EditData* edit_data = nullptr;
+ };
+ Module lower(const Program&, LowerOptions = {});
+ void verify(const Module&);
+@@ -111,6 +118,11 @@
+ std::unique_ptr<JitImage> llvm_jit(const ir::Module&, const std::vector<Symbol>&, const Options& = {});
+ std::vector<std::uint8_t> fast_object(const ir::Module&, const Options& = {});
+ std::unique_ptr<JitImage> fast_jit(const ir::Module&, const std::vector<Symbol>&, const Options& = {});
++struct FastRecipe {
++    virtual ~FastRecipe() = default;
++    virtual std::unique_ptr<JitImage> link() const = 0;
++};
++std::shared_ptr<const FastRecipe> fast_recipe(const ir::Module&,const std::vector<Symbol>&,const Options&);
+ bool fast_supported();
+ bool fast_target_supported(const std::string& target);
+ } // namespace bolt::native_backend
+diff --git a/include/bolt/native/Jit.hpp b/include/bolt/native/Jit.hpp
+--- a/include/bolt/native/Jit.hpp
++++ b/include/bolt/native/Jit.hpp
+@@ -2,6 +2,7 @@
+ #include <bolt/API.hpp>
+ #include <bolt/native/IR.hpp>
+ namespace bolt {
++namespace host { class FastEditTemplate; }
+ using HostFunction = std::uint64_t(*)(std::uint64_t,std::uint64_t);
+ using HostFunctions = std::unordered_map<std::string,HostFunction>;
+ struct JitOptions {
+@@ -26,6 +27,13 @@
+ public:
+     explicit NativeProgram(const Program&,JitOptions = {});
+     NativeProgram(const Program&,JitOptions,const HostFunctions&);
++    // Internal constructors for independent generations of a source-set compilation.
++    NativeProgram(const Program&,JitOptions,const HostFunctions&,ir::EditData&,std::shared_ptr<const native_backend::FastRecipe>&);
++    NativeProgram(JitOptions,std::unordered_map<std::string,std::string>,const native_backend::FastRecipe&);
++private:
++    friend class host::FastEditTemplate;
++    void* data_symbol(const std::string&) const;
++public:
+     ~NativeProgram();
+     NativeProgram(NativeProgram&&) noexcept;
+     NativeProgram& operator=(NativeProgram&&) noexcept;
+diff --git a/src/CompilerHost.cpp b/src/CompilerHost.cpp
+--- a/src/CompilerHost.cpp
++++ b/src/CompilerHost.cpp
+@@ -6,6 +6,7 @@
+ 
+ #include "IncrementalFrontend.hpp"
+ #include "HostLayouts.hpp"
++#include "FastEditTemplate.hpp"
+ #include <bolt/Tooling.hpp>
+ #include <chrono>
+ #include <algorithm>
+@@ -46,7 +47,11 @@
+ }
+ }
+ 
++using LayoutTable = std::shared_ptr<const std::unordered_map<std::string,bolt::host::Layout>>;
++
+ struct BoltCompiler {
++    std::unique_ptr<bolt::host::FastEditTemplate> edit_template;
++    LayoutTable edit_layouts;
+     std::shared_ptr<Owner> owner = std::make_shared<Owner>();
+     bolt::JitOptions options;
+     bolt::HostFunctions bindings;
+@@ -61,7 +66,7 @@
+     std::shared_ptr<Owner> owner;
+     Image image;
+     BoltCompileStats stats;
+-    std::unordered_map<std::string,bolt::host::Layout> layouts;
++    LayoutTable layouts;
+ };
+ 
+ using Clock = std::chrono::steady_clock;
+@@ -88,7 +93,6 @@
+ 
+ template<class Frontend, class Consumer>
+ static void with_program(BoltCompiler& compiler, Frontend frontend, Consumer consume) {
+-    std::lock_guard lock(compiler.compile_mutex);
+     bolt::ParseCacheScope use_cache(compiler.cache);
+     const auto start = Clock::now();
+     auto& program = compiler.frontend.check(frontend(), compiler.cache);
+@@ -100,11 +104,12 @@
+ 
+ template<class Frontend>
+ static void compile_program(BoltCompiler& compiler, Frontend frontend, BoltCompiledModule **out) {
++    std::lock_guard lock(compiler.compile_mutex);
+     with_program(compiler, frontend, [&](auto& program, BoltCompileStats stats) {
+         const auto start = Clock::now();
+         auto image = std::make_shared<bolt::NativeProgram>(program, compiler.options, compiler.bindings);
+         stats.native_codegen_ns = nanoseconds(Clock::now() - start);
+-        *out = new BoltCompiledModule{compiler.owner, std::move(image), stats, bolt::host::layouts(program)};
++        *out = new BoltCompiledModule{compiler.owner, std::move(image), stats, std::make_shared<const std::unordered_map<std::string,bolt::host::Layout>>(bolt::host::layouts(program))};
+     });
+ }
+ 
+@@ -113,6 +118,7 @@
+     if (stats) *stats = {};
+     return invoke(error, capacity, [&] {
+         if (!compiler || !path || !*path) throw std::invalid_argument("Invalid project path or compiler handle");
++        std::lock_guard lock(compiler->compile_mutex);
+         with_program(*compiler, [&] {return bolt::load_project(bolt::path_from_utf8(path), {}, true, false,
+                      compiler->options.preprocessing);}, [&](auto&, const BoltCompileStats& info) {
+             if (stats) *stats = info;
+@@ -159,6 +165,7 @@
+         std::lock_guard lock(compiler->compile_mutex);
+         if (compiler->bindings.contains(name) || compiler->options.pointer_bindings.contains(name)) throw std::invalid_argument("Conflicting host binding");
+         const auto [it, inserted] = compiler->options.submit_bindings.emplace(name, function);
++        if (inserted) compiler->edit_template.reset();
+         if (!inserted && it->second != function) throw std::invalid_argument("Conflicting submission binding");
+         return BOLT_HOST_OK;
+     });
+@@ -170,6 +177,7 @@
+         std::lock_guard lock(compiler->compile_mutex);
+         if (compiler->bindings.contains(name) || compiler->options.submit_bindings.contains(name)) throw std::invalid_argument("Conflicting host binding");
+         const auto [it, inserted] = compiler->options.pointer_bindings.emplace(name, function);
++        if (inserted) compiler->edit_template.reset();
+         if (!inserted && it->second != function) throw std::invalid_argument("Conflicting pointer binding");
+         return BOLT_HOST_OK;
+     });
+@@ -179,8 +187,8 @@
+     BoltLayoutVisitor visit,void* user,char* error,size_t capacity) {
+     return invoke(error,capacity,[&]{
+         if(!module || !type || !visit)throw std::invalid_argument("Missing struct or layout visitor");
+-        auto it=module->layouts.find(type);
+-        if(it==module->layouts.end())throw std::invalid_argument("No native ABI layout for "+std::string(type));
++        auto it=module->layouts->find(type);
++        if(it==module->layouts->end())throw std::invalid_argument("No native ABI layout for "+std::string(type));
+         const auto& layout=it->second;
+         if(!layout.error.empty())throw std::invalid_argument(layout.error);
+         std::vector<BoltLayoutField> fields;
+@@ -191,13 +199,48 @@
+ }
+ extern "C" void bolt_module_release(BoltCompiledModule *module) { delete module; }
+ 
++template<class Frontend>
++static void compile_memory(BoltCompiler* compiler,const BoltSource* sources,std::size_t count,const char* entry,
++                           BoltCompiledModule** out,Frontend parse) {
++    if(compiler->options.release || !bolt::native_backend::fast_supported()) {
++        compile_program(*compiler,parse,out);
++        return;
++    }
++    std::lock_guard lock(compiler->compile_mutex);
++    BoltCompileStats info{};
++    if(compiler->edit_template) {
++        if(auto image=compiler->edit_template->instantiate(compiler->options,sources,count,entry,info)) {
++            *out=new BoltCompiledModule{compiler->owner,std::move(image),info,compiler->edit_layouts};
++            return;
++        }
++    }
++    with_program(*compiler,parse,[&](auto& program,BoltCompileStats stats) {
++        const auto start=Clock::now();
++        auto candidate=std::make_unique<bolt::host::FastEditTemplate>(program,sources,count,stats.parsed_files+stats.reused_files);
++        Image image;
++        try {
++            image=candidate->compile(program,compiler->options,compiler->bindings,compiler->cache);
++        } catch(const std::runtime_error&) {
++            candidate.reset();
++            image=std::make_shared<bolt::NativeProgram>(program,compiler->options,compiler->bindings);
++        }
++        auto layouts=std::make_shared<const std::unordered_map<std::string,bolt::host::Layout>>(bolt::host::layouts(program));
++        stats.native_codegen_ns=nanoseconds(Clock::now()-start);
++        *out=new BoltCompiledModule{compiler->owner,std::move(image),stats,layouts};
++        compiler->edit_template=std::move(candidate);
++        compiler->edit_layouts=std::move(layouts);
++    });
++}
++
+ extern "C" int bolt_compiler_compile(BoltCompiler *compiler, const char *name, const char *source,
+                                      size_t length, BoltCompiledModule **out, char *error, size_t capacity) {
+     if (out) *out = nullptr;
+     return invoke(error, capacity, [&] {
+         if (!compiler || !out || !name || !source) throw std::invalid_argument("Invalid source or compiler handle");
+-        compile_program(*compiler, [&] {return bolt::parse_memory_source({source, length}, name,
+-                        compiler->options.preprocessing);}, out);
++        const BoltSource unit{name,source,length};
++        compile_memory(compiler,&unit,1,nullptr,out,[&] {
++            return bolt::parse_memory_source({source,length},name,compiler->options.preprocessing);
++        });
+         return BOLT_HOST_OK;
+     });
+ }
+@@ -238,17 +281,17 @@
+     if (out) *out = nullptr;
+     return invoke(error, capacity, [&] {
+         if (!compiler || !out || !count || !sources) throw std::invalid_argument("Missing source units");
+-        compile_program(*compiler, [&] {
++        for(std::size_t i=0;i<count;++i)
++            if(!sources[i].name || !*sources[i].name || !sources[i].source) throw std::invalid_argument("Invalid source unit");
++        auto parse=[&] {
+             bolt::Program program;
+-            program.preprocessor = compiler->options.preprocessing;
+-            if (entry) program.selected_entry = entry;
+-            for (size_t i = 0; i < count; ++i) {
+-                const auto& unit = sources[i];
+-                if (!unit.name || !*unit.name || !unit.source) throw std::invalid_argument("Invalid source unit");
+-                bolt::append_memory_source(program, {unit.source, unit.length}, unit.name);
+-            }
++            program.preprocessor=compiler->options.preprocessing;
++            if(entry) program.selected_entry=entry;
++            for(std::size_t i=0;i<count;++i)
++                bolt::append_memory_source(program,{sources[i].source,sources[i].length},sources[i].name);
+             return program;
+-        }, out);
++        };
++        compile_memory(compiler,sources,count,entry,out,parse);
+         return BOLT_HOST_OK;
+     });
+ }
+diff --git a/src/FastEditTemplate.hpp b/src/FastEditTemplate.hpp
+new file mode 100644
+--- /dev/null
++++ b/src/FastEditTemplate.hpp
+@@ -0,0 +1,232 @@
++#pragma once
++#include "ParseCache.hpp"
++#include <bolt/CompilerHost.h>
++#include <bolt/Value.hpp>
++#include <bolt/Types.hpp>
++#include <bolt/native/Jit.hpp>
++#include <algorithm>
++#include <bit>
++#include <chrono>
++#include <cstring>
++#include <unordered_set>
++
++namespace bolt::host {
++// A source-set compilation can retain a relocatable Fast image. Only checked,
++// same-type runtime operands become data slots. All other bytes are part of
++// the cache key, including declarations, inactive text and source order.
++class FastEditTemplate {
++    struct Slot {
++        std::size_t offset, length;
++        std::string symbol, type;
++        int line, column;
++    };
++    struct Unit { std::string name; std::vector<Slot> slots; };
++    std::vector<Unit> units;
++    std::unordered_map<std::string,std::string> original;
++    std::string entry;
++    std::size_t files_checked;
++    using Sites=decltype(ir::EditData::sites);
++    Sites sites;
++    std::shared_ptr<const native_backend::FastRecipe> recipe;
++
++    static bool digit(char c) { return c>='0' && c<='9'; }
++    static bool decimal(std::string_view s) {
++        return !s.empty() && digit(s.front()) &&
++            std::all_of(s.begin(),s.end(),[](char c){return digit(c)||c=='.'||c=='u'||c=='l'||c=='f';});
++    }
++    // Only decimal digit groups may change. Keep punctuation and suffixes so
++    // the lexer sees the same token boundaries and the literal parser checks
++    // the actual numeric type and overflow again.
++    static std::size_t decimal_extent(std::string_view original,std::string_view input) {
++        std::size_t a=0,b=0;
++        while(a<original.size()) {
++            if(b==input.size()) return 0;
++            if(digit(original[a])) {
++                if(!digit(input[b])) return 0;
++                while(a<original.size() && digit(original[a])) ++a;
++                while(b<input.size() && digit(input[b])) ++b;
++            } else if(original[a++]!=input[b++]) return 0;
++        }
++        return b;
++    }
++    static std::uint64_t bits(const Value& v) {
++        if(auto n=std::get_if<float>(&v.data)) return std::bit_cast<std::uint32_t>(*n);
++        if(auto n=std::get_if<double>(&v.data)) return std::bit_cast<std::uint64_t>(*n);
++        if(auto n=std::get_if<std::uint64_t>(&v.data)) return *n;
++        return static_cast<std::uint64_t>(v.as_int());
++    }
++    struct Operands {
++        ir::EditData data;
++        std::vector<Expr*> expressions;
++        std::unordered_set<std::size_t> syntax_literals;
++
++        void syntax(const Stmt& stmt) {
++            if(stmt.kind==Stmt::Kind::Block || stmt.kind==Stmt::Kind::Declarations) {
++                for(const auto& child:stmt.statements) syntax(*child);
++                return;
++            }
++            if(!stmt.expression) return;
++            const auto& e=*stmt.expression;
++            auto record=[&](const Expr& operand) {
++                if(operand.kind==Expr::Kind::Literal && operand.token.kind==Token::Kind::Number)
++                    syntax_literals.insert(operand.token.at.offset);
++            };
++            if(stmt.kind==Stmt::Kind::Variable && !stmt.constant) record(e);
++            if(stmt.kind==Stmt::Kind::Expression && e.kind==Expr::Kind::Assign && e.args.size()==2) record(*e.args[1]);
++            if((stmt.kind==Stmt::Kind::Expression || stmt.kind==Stmt::Kind::Variable) && e.kind==Expr::Kind::Call)
++                for(std::size_t i=1;i<e.args.size();++i) record(*e.args[i]);
++        }
++        void add(Expr& expr,Unit& unit,const std::string& source,const std::string& expected) {
++            if(expr.kind!=Expr::Kind::Literal || expr.token.kind!=Token::Kind::Number ||
++               expr.type!=expected || expr.token.at.file!=unit.name || expr.token.text!=expr.text ||
++               !syntax_literals.contains(expr.token.at.offset) || !expr.constant_owner.empty() ||
++               !decimal(expr.text) || expr.token.at.offset>=source.size() || source.compare(expr.token.at.offset,expr.text.size(),expr.text)!=0) return;
++            auto value=literal_value(expr);
++            if(value.type!=expected) return;
++            const auto name="b_edit_value_"+std::to_string(expressions.size());
++            expressions.push_back(&expr);
++            data.slots.emplace(&expr,ir::EditData::Slot{name,bits(value)});
++            data.sites[unit.name][expr.token.at.line];
++            unit.slots.push_back({expr.token.at.offset,expr.text.size(),name,expr.type,expr.token.at.line,expr.token.at.column});
++        }
++        void collect(const Program& p,Stmt& stmt,Unit& unit,const std::string& source) {
++            if(stmt.kind==Stmt::Kind::Block || stmt.kind==Stmt::Kind::Declarations) {
++                for(auto& child:stmt.statements) collect(p,*child,unit,source);
++                return;
++            }
++            if(!stmt.expression) return;
++            auto& e=*stmt.expression;
++            if(stmt.kind==Stmt::Kind::Expression && e.kind==Expr::Kind::Assign && e.args.size()==2 &&
++               e.binding==Expr::Binding::None && (e.text=="="||e.text=="+="||e.text=="-="||e.text=="*=")) {
++                auto& dest=*e.args[0];
++                if(dest.binding==Expr::Binding::Field || dest.binding==Expr::Binding::Local)
++                    add(*e.args[1],unit,source,dest.type);
++            }
++            if(stmt.kind==Stmt::Kind::Variable && !stmt.constant) add(e,unit,source,stmt.type);
++            if((stmt.kind!=Stmt::Kind::Variable && stmt.kind!=Stmt::Kind::Expression) ||
++               e.kind!=Expr::Kind::Call || e.binding!=Expr::Binding::Method || e.is_extension) return;
++            auto* owner=p.find_class(e.owner);
++            auto* method=owner?method_by_id(*owner,e.resolved):nullptr;
++            if(!method || method->native_abi!="C" || !method->is_static || method->parameters.size()+1!=e.args.size()) return;
++            if(std::count_if(owner->methods.begin(),owner->methods.end(),[&](const Method& m){return m.name==method->name;})!=1) return;
++            for(std::size_t i=0;i<method->parameters.size();++i) add(*e.args[i+1],unit,source,method->parameters[i].type);
++        }
++        // Hide these literals from constant-folding and loop-pattern recognition
++        // for the entire lowering pass. The analyzed AST remains reusable.
++        struct Scope {
++            Operands& operands;
++            explicit Scope(Operands& o):operands(o){for(auto* e:o.expressions)e->kind=Expr::Kind::RuntimeOperand;}
++            ~Scope(){for(auto* e:operands.expressions)e->kind=Expr::Kind::Literal;}
++        };
++    };
++public:
++    FastEditTemplate(const Program& p,const BoltSource* inputs,std::size_t count,std::size_t checked)
++        :original(p.sources),entry(p.selected_entry),files_checked(checked) {
++        for(std::size_t i=0;i<count;++i) units.push_back({inputs[i].name,{}});
++    }
++    std::shared_ptr<NativeProgram> compile(Program& p,const JitOptions& options,const HostFunctions& bindings,const ParseCache& cache) {
++        Operands operands;
++        std::unordered_map<std::string,std::unordered_map<std::size_t,std::size_t>> origins;
++        for(const auto& c:p.classes) for(const auto& m:c.methods)
++            if(m.body) ++origins[m.token.at.file][m.token.at.offset];
++        for(auto& unit:units) {
++            const auto& source=original.at(unit.name);
++            if(source.find('#')!=source.npos || source!=p.active_sources.at(unit.name)) continue;
++            const auto* syntax=cache.syntax(unit.name);
++            if(!syntax) continue;
++            operands.syntax_literals.clear();
++            for(const auto& c:syntax->classes) for(const auto& m:c.methods)
++                if(m.body && !m.is_constant_template && !m.is_async && !c.is_interface &&
++                   c.generic_parameters.empty() && c.pack_parameter.empty() && m.generic_parameters.empty() && m.pack_parameter.empty())
++                    operands.syntax(*m.body);
++            for(auto& c:p.classes) {
++                if(c.token.at.file!=unit.name || c.is_template_member || c.is_interface ||
++                   !c.generic_parameters.empty() || !c.pack_parameter.empty() || c.name.find('<')!=c.name.npos) continue;
++                for(auto& m:c.methods) if(m.body && m.token.at.file==unit.name && origins.at(unit.name).at(m.token.at.offset)==1 && m.analyzed && !m.is_constant_template && !m.is_async &&
++                    !m.is_default_implementation && !m.is_specialization && m.generic_parameters.empty() && m.pack_parameter.empty())
++                    operands.collect(p,*m.body,unit,source);
++            }
++            std::sort(unit.slots.begin(),unit.slots.end(),[](const Slot& a,const Slot& b){return a.offset<b.offset;});
++        }
++        Operands::Scope scope(operands);
++        auto image=std::make_shared<NativeProgram>(p,options,bindings,operands.data,recipe);
++        std::unordered_set<std::string> used;
++        for(const auto& [operand,slot]:operands.data.slots) if(slot.emitted) used.insert(slot.symbol);
++        for(auto& unit:units) std::erase_if(unit.slots,[&](const Slot& s){return !used.contains(s.symbol);});
++        sites=std::move(operands.data.sites);
++        return image;
++    }
++    std::shared_ptr<NativeProgram> instantiate(const JitOptions& options,const BoltSource* inputs,std::size_t count,
++                                                const char* selected,BoltCompileStats& stats) const {
++        if(count!=units.size() || entry!=(selected?selected:"")) return {};
++        const auto start=std::chrono::steady_clock::now();
++        struct Replacement { const Slot* slot; std::uint64_t value; std::size_t length; };
++        struct DiagnosticText { const std::string* symbol; std::string text; };
++        std::vector<Replacement> values;
++        std::vector<DiagnosticText> diagnostics;
++        auto sources=original;
++        for(std::size_t i=0;i<count;++i) {
++            const auto& unit=units[i];
++            if(unit.name!=inputs[i].name) return {};
++            const std::string_view after(inputs[i].source,inputs[i].length);
++            auto& before=sources.at(unit.name);
++            if(before==after) continue;
++            std::size_t a=0,b=0;
++            std::unordered_map<int,std::vector<Replacement>> changes;
++            for(const auto& s:unit.slots) {
++                if(s.offset<a || after.substr(b,s.offset-a)!=std::string_view(before).substr(a,s.offset-a)) return {};
++                b+=s.offset-a;
++                const auto old=std::string_view(before).substr(s.offset,s.length);
++                const auto length=decimal_extent(old,after.substr(b));
++                if(!length) return {};
++                const auto text=after.substr(b,length);
++                a=s.offset+s.length;
++                b+=length;
++                if(text==old) continue;
++                Expr literal(Expr::Kind::Literal,Token{Token::Kind::Number,std::string(text),{}},std::string(text));
++                try {
++                    auto value=literal_value(literal);
++                    if(value.type!=s.type) return {};
++                    Replacement change{&s,bits(value),length};
++                    values.push_back(change);
++                    changes[s.line].push_back(change);
++                } catch(const Error&) { return {}; }
++            }
++            if(after.substr(b)!=std::string_view(before).substr(a)) return {};
++            for(const auto& [line,edits]:changes) {
++                auto map_column=[&](std::int64_t column) {
++                    auto result=column;
++                    for(const auto& e:edits) {
++                        const auto start=static_cast<std::int64_t>(e.slot->column);
++                        const auto end=start+static_cast<std::int64_t>(e.slot->length);
++                        if(column>=end) result+=static_cast<std::int64_t>(e.length)-(end-start);
++                        else if(column>start) return std::int64_t{-1};
++                    }
++                    return result;
++                };
++                const auto line_text=source_line_at(after,line);
++                for(const auto& site:sites.at(unit.name).at(line)) {
++                    const auto col=map_column(site.column);
++                    const auto stop=map_column(static_cast<std::int64_t>(site.column)+site.length);
++                    if(col<1 || stop<col || stop>INT32_MAX) return {};
++                    auto text=std::to_string(line)+":"+std::to_string(col)+":"+std::to_string(stop-col)+":"+
++                        std::to_string(unit.name.size())+":"+unit.name+line_text;
++                    if(text.size()+1>site.capacity) return {};
++                    diagnostics.push_back({&site.symbol,std::move(text)});
++                }
++            }
++            before.assign(after);
++        }
++        const auto checked=std::chrono::steady_clock::now();
++        auto result=std::make_shared<NativeProgram>(options,std::move(sources),*recipe);
++        for(const auto& change:values)
++            std::memcpy(result->data_symbol(change.slot->symbol),&change.value,sizeof(change.value));
++        for(const auto& change:diagnostics)
++            std::memcpy(result->data_symbol(*change.symbol),change.text.c_str(),change.text.size()+1);
++        using Ns=std::chrono::nanoseconds;
++        stats={0,files_checked,static_cast<uint64_t>(std::chrono::duration_cast<Ns>(checked-start).count()),
++            static_cast<uint64_t>(std::chrono::duration_cast<Ns>(std::chrono::steady_clock::now()-checked).count())};
++        return result;
++    }
++};
++}
+diff --git a/src/ParseCache.hpp b/src/ParseCache.hpp
+--- a/src/ParseCache.hpp
++++ b/src/ParseCache.hpp
+@@ -18,6 +18,10 @@
+     ParseCacheScope* active_scope=nullptr;
+     friend class ParseCacheScope;
+ public:
++    const Program* syntax(const std::string& name) const {
++        auto it=files.find(name);
++        return it==files.end()?nullptr:&it->second.tree;
++    }
+     void reuse_standard_library();
+     std::size_t reused=0, parsed=0;
+     const Program* lookup(const std::string& name,std::string_view bytes,const std::string& configuration);
+diff --git a/src/native/Fast.cpp b/src/native/Fast.cpp
+--- a/src/native/Fast.cpp
++++ b/src/native/Fast.cpp
+@@ -370,6 +370,23 @@
+         for(const auto& fn:module.functions)function(fn);return std::move(image);
+     }
+ };
++struct LinkTargets {
++    struct Address { unsigned section; std::uintptr_t value; };
++    std::unordered_map<std::string,Address> names;
++    std::vector<Address> relocations;
++
++    LinkTargets(const Image& image,const std::vector<Symbol>& externals) {
++        names.reserve(externals.size()+image.symbols.size());
++        for(const auto& s:externals) names[s.name]={0,reinterpret_cast<std::uintptr_t>(s.address)};
++        for(const auto& s:image.symbols) if(s.section) names[s.name]={s.section,static_cast<std::uintptr_t>(s.offset)};
++        relocations.reserve(image.fixups.size());
++        for(const auto& fixup:image.fixups) {
++            auto found=names.find(fixup.symbol);
++            if(found==names.end()) throw std::runtime_error("unresolved JIT symbol: "+fixup.symbol);
++            relocations.push_back(found->second);
++        }
++    }
++};
+ class FastImage final : public JitImage {
+     void* base=nullptr;std::size_t bytes=0;
+ #if defined(__APPLE__) && defined(__aarch64__)
+@@ -380,9 +397,15 @@
+     std::vector<RUNTIME_FUNCTION> unwind;
+     bool unwind_registered=false;
+ #endif
+-    std::map<std::string,void*> addresses;
++    std::shared_ptr<const LinkTargets> targets;
++    std::uintptr_t text_address=0,data_address=0;
++    std::uintptr_t resolve(LinkTargets::Address a) const {
++        return a.value+(a.section==1?text_address:a.section==2?data_address:0);
++    }
+ public:
+-    FastImage(const Image& image,const std::vector<Symbol>& external){
++    FastImage(const Image& image,const std::vector<Symbol>& external)
++        :FastImage(image,std::make_shared<LinkTargets>(image,external)) {}
++    FastImage(const Image& image,std::shared_ptr<const LinkTargets> links):targets(std::move(links)){
+ #ifdef _WIN32
+         SYSTEM_INFO info;GetSystemInfo(&info);const auto page=std::size_t(info.dwPageSize);
+ #else
+@@ -419,12 +442,13 @@
+             if(!image.text.empty())std::memcpy(text,image.text.data(),image.text.size());
+ #endif
+             if(!image.data.empty())std::memcpy(data,image.data.data(),image.data.size());
+-            for(const auto& e:external)addresses[e.name]=e.address;
+-            for(const auto& s:image.symbols)if(s.section)addresses[s.name]=(s.section==1?text:data)+s.offset;
+-            for(const auto& r:image.fixups){auto found=addresses.find(r.symbol);if(found==addresses.end())throw std::runtime_error("unresolved JIT symbol: "+r.symbol);
++            text_address=reinterpret_cast<std::uintptr_t>(text);
++            data_address=reinterpret_cast<std::uintptr_t>(data);
++            for(std::size_t index=0;index<image.fixups.size();++index) {
++                const auto& r=image.fixups[index];
+                 auto* at=(r.section==1?write_text:data)+r.offset;
+                 auto location=reinterpret_cast<std::uintptr_t>((r.section==1?text:data)+r.offset);
+-                auto target=reinterpret_cast<std::uintptr_t>(found->second);
++                auto target=resolve(targets->relocations[index]);
+                 if(r.kind==RelocKind::Absolute64){auto value=target+static_cast<std::uint64_t>(r.addend);std::memcpy(at,&value,8);}
+                 else if(r.kind==RelocKind::ArmPage21 || r.kind==RelocKind::ArmLo12)
+                     apply_arm_address_fixup(at,r.kind,target+static_cast<std::uintptr_t>(r.addend),location);
+@@ -477,7 +501,11 @@
+         base=nullptr;
+     }
+     ~FastImage()override{release();}
+-    void* symbol(const std::string& name)const override{auto i=addresses.find(name);if(i==addresses.end())throw std::runtime_error("JIT export not found: "+name);return i->second;}
++    void* symbol(const std::string& name) const override {
++        auto i=targets->names.find(name);
++        if(i==targets->names.end())throw std::runtime_error("JIT export not found: "+name);
++        return reinterpret_cast<void*>(resolve(i->second));
++    }
+ };
+ Image fast_image(const ir::Module& module,const std::string& target,[[maybe_unused]] bool jit=false,[[maybe_unused]] DebugRecorder* debug=nullptr) {
+ #ifdef BOLT_USE_WINDOWS_ARM64_FAST
+@@ -536,6 +564,21 @@
+     return elf_object(image);
+ #endif
+ }
++namespace {
++class RelocatableProgram final : public FastRecipe {
++    Image object;
++    std::shared_ptr<const LinkTargets> targets;
++public:
++    RelocatableProgram(Image value,const std::vector<Symbol>& symbols)
++        :object(std::move(value)),targets(std::make_shared<LinkTargets>(object,symbols)) {}
++    std::unique_ptr<JitImage> link() const override { return std::make_unique<FastImage>(object,targets); }
++};
++}
++std::shared_ptr<const FastRecipe> fast_recipe(const ir::Module& module,const std::vector<Symbol>& symbols,const Options& options) {
++    const auto target=checked_target(options);
++    if(target!=host_target())throw std::runtime_error("JIT compilation requires the host target");
++    return std::make_shared<RelocatableProgram>(fast_image(module,target,true),symbols);
++}
+ std::unique_ptr<JitImage> fast_jit(const ir::Module& module,const std::vector<Symbol>& symbols,const Options& options){
+     const auto target=checked_target(options);
+     if(target!=host_target())throw std::runtime_error("JIT compilation requires the host target");
+diff --git a/src/native/Jit.cpp b/src/native/Jit.cpp
+--- a/src/native/Jit.cpp
++++ b/src/native/Jit.cpp
+@@ -34,10 +34,12 @@
+     using Entry=std::int32_t(*)(BrContext*);
+     Initialize initialize=nullptr,finalize=nullptr;
+     Entry entry=nullptr;
+-    Impl(const Program& p,JitOptions o,const HostFunctions& bindings):options(std::move(o)),sources(p.sources){
++    Impl(const Program& p,JitOptions o,const HostFunctions& bindings,ir::EditData* edits=nullptr,std::shared_ptr<const native_backend::FastRecipe>* recipe=nullptr):options(std::move(o)),sources(p.sources){
+         if(options.execution.max_call_depth>std::numeric_limits<std::uint32_t>::max())throw std::runtime_error("native call-depth limit exceeds uint capacity");
+-        auto module=ir::lower(p,{true,options.input&&options.input!=&std::cin,
+-                                     options.output&&options.output!=&std::cout,options.release});
++        ir::LowerOptions lowering{true,options.input&&options.input!=&std::cin,
++                                     options.output&&options.output!=&std::cout,options.release};
++        lowering.edit_data=edits;
++        auto module=ir::lower(p,lowering);
+         native_backend::Options settings;settings.release=options.release;settings.debug_symbols=!options.release;settings.llvm_library=options.llvm_library;
+         auto backend=options.backend;
+         if(backend=="auto")backend=options.release||!native_backend::fast_supported()?"llvm":"fast";
+@@ -92,9 +94,17 @@
+             symbols.push_back({foreign_names.back().c_str(),address});
+ #endif
+         }
+-        if(backend=="fast")image=native_backend::fast_jit(module,symbols,settings);
++        if(recipe) {
++            *recipe=native_backend::fast_recipe(module,symbols,settings);
++            image=(*recipe)->link();
++        } else if(backend=="fast")image=native_backend::fast_jit(module,symbols,settings);
+         else if(backend=="llvm")image=native_backend::llvm_jit(module,symbols,settings);
+         else throw std::runtime_error("JIT backend must be auto, fast, or llvm");
++        resolve_entries();
++    }
++    Impl(JitOptions o,std::unordered_map<std::string,std::string> text,const native_backend::FastRecipe& recipe)
++        :options(std::move(o)),image(recipe.link()),sources(std::move(text)){resolve_entries();}
++    void resolve_entries() {
+         initialize=reinterpret_cast<Initialize>(image->symbol("bolt_module_initialize"));
+         finalize=reinterpret_cast<Initialize>(image->symbol("bolt_module_finalize"));
+         entry=reinterpret_cast<Entry>(image->symbol("bolt_entry"));
+@@ -143,6 +153,11 @@
+ NativeProgram::NativeProgram(const Program& p,JitOptions options):NativeProgram(p,std::move(options),{}){}
+ NativeProgram::NativeProgram(const Program& p,JitOptions options,const HostFunctions& bindings)
+     :impl_(std::make_unique<Impl>(p,std::move(options),bindings)){}
++NativeProgram::NativeProgram(const Program& p,JitOptions o,const HostFunctions& b,ir::EditData& edits,std::shared_ptr<const native_backend::FastRecipe>& recipe)
++    :impl_(std::make_unique<Impl>(p,std::move(o),b,&edits,&recipe)){}
++NativeProgram::NativeProgram(JitOptions o,std::unordered_map<std::string,std::string> sources,const native_backend::FastRecipe& recipe)
++    :impl_(std::make_unique<Impl>(std::move(o),std::move(sources),recipe)){}
++void* NativeProgram::data_symbol(const std::string& name) const {return impl_->image->symbol(name);}
+ NativeProgram::~NativeProgram()=default;
+ NativeProgram::NativeProgram(NativeProgram&&)noexcept=default;
+ NativeProgram& NativeProgram::operator=(NativeProgram&&)noexcept=default;
+diff --git a/src/native/Lower.cpp b/src/native/Lower.cpp
+--- a/src/native/Lower.cpp
++++ b/src/native/Lower.cpp
+@@ -122,7 +122,33 @@
+ 
+ std::string Lower::literal(const std::string& s) {auto i=strings.find(s);if(i!=strings.end())return i->second;auto name="b_string_"+std::to_string(strings.size());strings[s]=name;std::vector<std::uint8_t> bytes(s.begin(),s.end());bytes.push_back(0);module.globals.push_back({name,std::move(bytes),false,1,{}});return name;}
+ 
+-void Lower::external(const std::string& name,Type result,const std::vector<Type>& parameters) {for(const auto& e:module.externals)if(e.name==name){if(e.result!=result||e.parameters!=parameters)throw std::runtime_error("inconsistent native ABI declaration for "+name);return;}module.externals.push_back({name,result,parameters});}
++void Lower::external(const std::string& name,Type result,const std::vector<Type>& parameters) {
++    const auto [index,added]=external_indices.try_emplace(name,module.externals.size());
++    if(added) {
++        module.externals.push_back({name,result,parameters});
++        return;
++    }
++    const auto& previous=module.externals[index->second];
++    if(previous.result!=result || previous.parameters!=parameters)
++        throw std::runtime_error("inconsistent native ABI declaration for "+name);
++}
++
++std::string_view Lower::source_line(const std::string& file,int line) {
++    auto source=program.sources.find(file);
++    if(source==program.sources.end() || line<1) return {};
++    const std::string_view bytes=source->second;
++    auto [it,added]=line_starts.try_emplace(file);
++    auto& starts=it->second;
++    if(added) {
++        starts.push_back(0);
++        for(auto pos=bytes.find('\n');pos!=bytes.npos;pos=bytes.find('\n',pos+1)) starts.push_back(pos+1);
++    }
++    const auto i=static_cast<std::size_t>(line-1);
++    if(i>=starts.size()) return {};
++    auto end=i+1<starts.size()?starts[i+1]-1:bytes.size();
++    if(end>starts[i] && bytes[end-1]=='\r') --end;
++    return bytes.substr(starts[i],end-starts[i]);
++}
+ 
+ Module Lower::run() {
+     for(const auto& c:program.classes)if(emitted_class(c)&&(c.generic_parameters.empty()&&c.pack_parameter.empty())&&!c.is_native){
+@@ -131,6 +157,11 @@
+         for(const auto& m:c.methods)if(concrete(m)&&m.is_virtual&&!virtual_slots.contains(m.id))virtual_slots[m.id]=static_cast<int>(virtual_slots.size());
+     }
+     for(const auto& c:program.classes)if(c.is_native&&layouts.contains(c.name))for(const auto& m:c.methods)if(m.is_virtual&&concrete(m)&&!virtual_slots.contains(m.id))virtual_slots[m.id]=static_cast<int>(virtual_slots.size());
++    if(options.edit_data) for(const auto& [expr,slot]:options.edit_data->slots) {
++        std::vector<std::uint8_t> bytes(8);
++        for(unsigned i=0;i<8;++i) bytes[i]=static_cast<std::uint8_t>(slot.bits>>(8*i));
++        module.globals.push_back({slot.symbol,std::move(bytes),false,8,{}});
++    }
+     methods();static_initializers();initializers();metadata();
+     // A catch materializes native failures as typed objects. A finally
+     // alone just preserves and restores the existing error state.
+diff --git a/src/native/lowering/Builder.cpp b/src/native/lowering/Builder.cpp
+--- a/src/native/lowering/Builder.cpp
++++ b/src/native/lowering/Builder.cpp
+@@ -65,9 +65,17 @@
+ Reg Builder::site(){
+     auto& symbol = lower.site_symbols[at.file][{at.line,at.column,at.length}];
+     if (!symbol.empty()) return address(symbol);
+-    std::string line;const auto found=lower.program.sources.find(at.file);
+-    if(found!=lower.program.sources.end())line=source_line_at(found->second,at.line);
+-    symbol = lower.literal(std::to_string(at.line)+":"+std::to_string(at.column)+":"+std::to_string(at.length)+":"+std::to_string(at.file.size())+":"+at.file+line);
++    const auto line=lower.source_line(at.file,at.line);
++    auto header=std::to_string(at.line)+":"+std::to_string(at.column)+":"+std::to_string(at.length)+":"+std::to_string(at.file.size())+":"+at.file;
++    auto* edits=lower.options.edit_data;
++    if(edits && edits->sites.contains(at.file) && edits->sites.at(at.file).contains(at.line)) {
++        symbol="b_edit_site_"+std::to_string(lower.module.globals.size());
++        header+=line;
++        std::vector<std::uint8_t> bytes(header.begin(),header.end());
++        bytes.resize(bytes.size()+65);
++        edits->sites.at(at.file).at(at.line).push_back({symbol,at.column,at.length,bytes.size()});
++        lower.module.globals.push_back({symbol,std::move(bytes),false,1,{}});
++    } else {header+=line;symbol=lower.literal(header);}
+     return address(symbol);
+ }
+ Reg Builder::call(const std::string& name,Type result,std::vector<Reg> args,bool inspect,bool ext){
+diff --git a/src/native/lowering/Expressions.cpp b/src/native/lowering/Expressions.cpp
+--- a/src/native/lowering/Expressions.cpp
++++ b/src/native/lowering/Expressions.cpp
+@@ -19,6 +19,11 @@
+ }
+ 
+ Value Builder::expression(const Expr& e){
++    if(lower.options.edit_data && e.kind==K::RuntimeOperand) {
++        auto& slot=lower.options.edit_data->slots.at(&e);
++        slot.emitted=true;
++        return from_memory(e.type,address(slot.symbol));
++    }
+     if (e.kind == K::Call && !projected_calls.empty()) {
+         if (auto it = projected_calls.find(&e); it != projected_calls.end())
+             return projected_call(e,projected_lists.at(it->second));
+diff --git a/src/native/lowering/Lowering.hpp b/src/native/lowering/Lowering.hpp
+--- a/src/native/lowering/Lowering.hpp
++++ b/src/native/lowering/Lowering.hpp
+@@ -231,6 +231,9 @@
+     Module module;
+     std::map<std::string,Layout> layouts;
+     std::unordered_map<std::string,std::string> strings;
++    std::unordered_map<std::string,std::size_t> external_indices;
++    std::unordered_map<std::string,std::vector<std::size_t>> line_starts;
++    std::string_view source_line(const std::string& file,int line);
+     std::unordered_map<std::string,std::map<std::array<int,3>,std::string>> site_symbols;
+     std::map<std::string,int> virtual_slots;
+     std::unordered_set<std::string> dispatched;
+diff --git a/src/semantic/TypeResolution.cpp b/src/semantic/TypeResolution.cpp
+--- a/src/semantic/TypeResolution.cpp
++++ b/src/semantic/TypeResolution.cpp
+@@ -4,6 +4,7 @@
+ #include <bolt/Types.hpp>
+ #include <algorithm>
+ #include <functional>
++#include <optional>
+ 
+ namespace bolt::semantic {
+ 
+@@ -41,13 +42,14 @@
+     // Search lexical type scopes before namespace/global declarations. A
+     // nested type supplies names only; it never supplies an outer receiver.
+     std::unordered_set<std::string> visited;
+-    for(auto* scope=context;scope&&visited.insert(scope->name).second;) {
++    for(auto* scope=context;scope;) {
+         if(!scope->name.empty()) {
+             const auto candidate=fullname(scope->name,n);
+             if(exists(candidate))return candidate;
+             if(n==scope->short_name&&exists(scope->name))return scope->name;
+         }
+-        scope=scope->declaring_type.empty()?nullptr:find_class(scope->declaring_type);
++        if(scope->declaring_type.empty() || !visited.insert(scope->name).second) break;
++        scope=find_class(scope->declaring_type);
+     }
+     if(context&&!context->namespace_name.empty()&&exists(fullname(context->namespace_name,n)))return fullname(context->namespace_name,n);
+     if(exists(n))return n;
+@@ -85,8 +87,14 @@
+     for(const auto& source:program.source_types) {
+         if(is_primitive(source.name)||source.name=="void"||source.name=="Arena")continue;
+         if(scopes_known && dependent_source_types.contains({source.token.at.file,source.token.at.offset}))continue;
+-        Class scope;scope.namespace_name=source.namespace_name;scope.imports=source.imports;
+-        const auto* context=find_class(source.owner);if(!context)context=&scope;
++        const auto* context=find_class(source.owner);
++        std::optional<Class> scope;
++        if(!context) {
++            scope.emplace();
++            scope->namespace_name=source.namespace_name;
++            scope->imports=source.imports;
++            context=&*scope;
++        }
+         // Dependent parameters are resolved when their template is instantiated.
+         bool parameter=false;
+         for(auto* parent=context;parent;) {
+diff --git a/tests/compiler_host.py b/tests/compiler_host.py
+--- a/tests/compiler_host.py
++++ b/tests/compiler_host.py
+@@ -119,6 +119,71 @@
+             release(module)
+         assert run_code(compiler) == 0
+     finally:
++        destroy(compiler)
++
++
++def fast_edit_contract():
++    compiler = host(first, 0)
++    old, new = Handle(), Handle()
++    data = b"public static class Count { public: static int Hits = 0; }"
++    def compile_value(src, expected=0):
++        source = src.encode()
++        units = (Source * 2)(Source(b"data.bolt", data, len(data)), Source(b"step.bolt", source, len(source)))
++        module = Handle()
++        call(compile_sources, compiler, units, len(units), b"Entry", C.byref(module), expected=expected)
++        return module
++
++    def step():
++        value = C.c_int32()
++        call(run_persistent, compiler, C.byref(value))
++        return value.value
++
++    def info(module):
++        stats = Stats()
++        assert module_stats(module, C.byref(stats)) == 0
++        return stats
++
++    template = "public static class Entry { public: int Main() { Count.Hits += %s; int extra=%s; return Count.Hits + extra; } }"
++    try:
++        old = compile_value(template % (1, 2))
++        call(load, compiler, old)
++        assert [step(), step()] == [3, 4]
++        new = compile_value(template % (123, 45))
++        assert info(new).parsed_files == 0
++        call(load, compiler, new)
++        assert [step(), step()] == [168, 291]
++        call(load, compiler, old)
++        assert step() == 5
++        assert not compile_value(template % ("unknown", 45), expected=1)
++        assert step() == 6
++        other = compile_value(template.replace("+ extra", "- extra") % (123, 45))
++        assert info(other).parsed_files > 0
++        call(load, compiler, other)
++        release(other)
++        assert step() == 78
++
++        failing = "public static class Entry { public: int Main() { int[] a=new int[1]; int n=%s; return a[n]; } }"
++        base = compile_value(failing % 1)
++        release(base)
++        edited = compile_value(failing % 234)
++        assert info(edited).parsed_files == 0
++        call(load, compiler, edited)
++        message = call(run, compiler, C.byref(C.c_int32()), expected=1)
++        release(edited)
++        fresh = host(first, 0)
++        try:
++            raw = (failing % 234).encode()
++            units = (Source * 2)(Source(b"data.bolt", data, len(data)), Source(b"step.bolt", raw, len(raw)))
++            full = Handle()
++            call(compile_sources, fresh, units, 2, b"Entry", C.byref(full))
++            call(load, fresh, full)
++            release(full)
++            assert b"int n=234" in message and call(run, fresh, C.byref(C.c_int32()), expected=1) == message
++        finally:
++            destroy(fresh)
++    finally:
++        release(old)
++        release(new)
+         destroy(compiler)
+ 
+ 
+@@ -481,6 +546,7 @@
+     native_fixture_contract(0, "HostedTaskCompletion.bolt")
+     native_fixture_contract(0, "OwnedSlotLifetime.bolt")
+     persistent_sources_contract()
++    fast_edit_contract()
+     incremental_frontend_contract(0)
+     compare_incremental_with_fresh()
+     results = [exercise(0, int(os.environ.get("BOLT_RELOAD_CYCLES", 3)))]

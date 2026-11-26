@@ -7,7 +7,7 @@
 #include "Core/Time.hpp"
 #include "Scene/Scene.hpp"
 #if FUNKE_WITH_2D
-#include "Components/General/Transform2DComponent.hpp"
+#include "Scripting/ScriptTransform2D.hpp"
 #endif
 
 #include <chrono>
@@ -46,7 +46,7 @@ namespace Funke {
 		if (!scene) return;
 		auto handle = static_cast<EntityHandle>(entityID);
 		if (!scene->HasComponent<Transform2DComponent>(handle)) return;
-		scene->GetComponent<Transform2DComponent>(handle).Position = { x, y };
+		ScriptTransform2D::SetWorldPosition(*scene, handle, scene->GetComponent<Transform2DComponent>(handle), { x, y });
 	}
 	static float API_GetRotation(uint32_t entityID) {
 		Scene* scene = ScriptEngine::GetScene();
@@ -76,6 +76,8 @@ namespace Funke {
 		API_GetPosition, API_SetPosition,
 		API_GetRotation, API_SetRotation
 	};
+
+	const NativeEngineAPI& NativeScriptHost::GetEngineAPI() { return s_EngineAPI; }
 
 	namespace {
 		using NativeCreateFn = NativeScript* (*)(const char*);

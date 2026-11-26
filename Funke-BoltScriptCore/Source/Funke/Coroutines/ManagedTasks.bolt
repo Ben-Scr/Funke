@@ -1,0 +1,100 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public static class ManagedTasks {
+private:
+    System.Collections.Generic.Dictionary<ulong,System.Collections.Generic.List<FkManagedAwait>> pending;
+    ulong Handle(ulong entity,string key) {
+        string? raw=FunkeManagedStorage.Read(entity,key);
+        ulong id=0ul;
+        if(raw==null || !ulong.TryParse(raw.Value,id) || id==0ul) throw System.InvalidOperationException("Missing managed Task "+key);
+        return id;
+    }
+    public void Watch(System.Func<bool,bool> step) {
+        if(step.Invoke(false))return;
+        FkManagedAwait watch; watch.Owner=FunkeApiTypes.Attachment(); watch.Step=step;
+        if (!pending.ContainsKey(watch.Owner)) {
+            System.Collections.Generic.List<FkManagedAwait> list;
+            pending.Add(watch.Owner,list);
+        }
+        pending.GetRef(watch.Owner).Add(watch); FkCoroutineSchedule(2ul,0ul);
+    }
+    int State(ulong id){return (int)FkManagedTaskState(id,0ul);}
+    string Text(ulong id,bool error){return FunkeText.Read(FkManagedTaskText(id,error ? 1ul : 0ul));}
+    void Release(ulong id){FkManagedTaskRelease(id,0ul);}
+public:
+    bool Pump(bool cancel) {
+        if (pending.Count==0) return false;
+        ulong owner=FunkeApiTypes.Attachment();
+        bool waiting=false;
+        if (!pending.ContainsKey(owner)) return false;
+        for(int i=pending.GetRef(owner).Count-1;i>=0;i--) {
+            FkManagedAwait item=pending.GetRef(owner).ItemAt(i);
+            if(item.Step.Value.Invoke(cancel)) pending.GetRef(owner).RemoveAt(i); else waiting=true;
+        }
+        if (pending.GetRef(owner).Count==0) {pending.Remove(owner); FkCoroutineSchedule(3ul,0ul);}
+        return waiting;
+    }
+    bool HasPending() {
+        if (pending.Count==0) return false;
+        ulong owner=FunkeApiTypes.Attachment();
+        return pending.ContainsKey(owner);
+    }
+    bool TokenState(ulong id,bool release){return FkManagedToken(id,release?1ul:0ul)!=0ul;}
+    System.Threading.CancellationToken OpenToken(ulong entity,string key) {
+        string? raw=FunkeManagedStorage.Read(entity,key);
+        ulong id=0ul;
+        if(raw==null || !ulong.TryParse(raw.Value,id) || id==0ul)return default;
+        System.Threading.CancellationTokenSource source;
+        System.Func<bool,bool> check=(bool cancel) => {
+            if(!cancel && !Funke.ManagedTasks.TokenState(id,false))return false;
+            source.Cancel();Funke.ManagedTasks.TokenState(id,true); return true;
+        };
+        Watch(check);return source.Token;
+    }
+    void ObserveRoutine(System.Threading.Tasks.Task<void> task) {
+        System.Func<bool,bool> check=(bool cancel) => {
+            if(!task.IsCompleted)return cancel;
+            try {task.Wait();}
+            catch(System.OperationCanceledException& canceled){}
+            catch(System.Exception& error){Funke.Log.Error(error.Message);}
+            return true;
+        };
+        Watch(check);
+    }
+    void Track<T>(ulong id,System.Threading.Tasks.Task<T> task,System.Action<> success) {
+        System.Func<bool,bool> step=(bool cancel) => {
+            int state=Funke.ManagedTasks.State(id);
+            if(!cancel && state==0)return false;
+            try {
+                if(cancel || state==2) throw System.OperationCanceledException("Managed task canceled.");
+                if(state!=1) throw System.InvalidOperationException(Funke.ManagedTasks.Text(id,true));
+                success.Invoke();
+            } catch(System.OperationCanceledException& error) {task.SetCanceled(error);}
+            catch(System.Exception& error) {task.SetException(error);}
+            finally {Funke.ManagedTasks.Release(id);task.Complete();}
+            return true;
+        };
+        Watch(step);
+    }
+    System.Threading.Tasks.Task<void> OpenVoid(ulong entity,string key) {
+        ulong id=Handle(entity,key); var task=System.Threading.Tasks.Task<void>.CreatePending();
+        Track<void>(id,task,() => {});return task;
+    }
+    System.Threading.Tasks.Task<T> Open<T>(ulong entity,string key,System.Func<string,T> decode) {
+        ulong id=Handle(entity,key); var task=System.Threading.Tasks.Task<T>.CreatePending();
+        Track<T>(id,task,() => {task.SetResult(decode.Invoke(Funke.ManagedTasks.Text(id,false)));});
+        return task;
+    }
+    int Decodeint(string value){int result; if(int.TryParse(value,result))return result; throw System.InvalidOperationException("Invalid managed Task result.");}
+    uint Decodeuint(string value){uint result; if(uint.TryParse(value,result))return result; throw System.InvalidOperationException("Invalid managed Task result.");}
+    long Decodelong(string value){long result; if(long.TryParse(value,result))return result; throw System.InvalidOperationException("Invalid managed Task result.");}
+    ulong Decodeulong(string value){ulong result; if(ulong.TryParse(value,result))return result; throw System.InvalidOperationException("Invalid managed Task result.");}
+    float Decodefloat(string value){float result; if(float.TryParse(value,result))return result; throw System.InvalidOperationException("Invalid managed Task result.");}
+    double Decodedouble(string value){double result; if(double.TryParse(value,result))return result; throw System.InvalidOperationException("Invalid managed Task result.");}
+    bool Decodebool(string value){return value=="True" || value=="true";}
+    string Decodestring(string value){return value;}
+}

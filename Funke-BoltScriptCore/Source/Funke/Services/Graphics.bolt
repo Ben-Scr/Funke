@@ -1,0 +1,234 @@
+import System
+import Funke
+namespace Funke.Graphics;
+
+extern "C" ulong FkWriteImage(ulong bytes, void* path, void* data);
+
+public class Renderer2D {}
+
+public static class Gizmo {
+public:
+
+
+
+    static bool IsEnabled
+    {
+        get { return FkService.Gizmo_GetEnabled() != 0; }
+        set { FkService.Gizmo_SetEnabled(value ? 1 : 0); }
+    }
+
+    static Funke.Color Color
+    {
+        get { return GetColor(); }
+        set { FkService.Gizmo_SetColor(value.R, value.G, value.B, value.A); }
+    }
+
+    private static Funke.Color GetColor()
+    {
+        float r, g, b, a;
+        FkService.Gizmo_GetColor(&r, &g, &b, &a);
+        return Funke.Color(r, g, b, a);
+    }
+
+    static float LineWidth
+    {
+        get { return FkService.Gizmo_GetLineWidth(); }
+        set { FkService.Gizmo_SetLineWidth(value); }
+    }
+
+
+
+
+
+
+
+    static int MaxVertices
+    {
+        get { return FkService.Gizmo_GetMaxVertices(); }
+        set { FkService.Gizmo_SetMaxVertices(value); }
+    }
+
+
+
+    static int RegisteredVertices => FkService.Gizmo_GetRegisteredVertices();
+
+    static void DrawLine(Vector2 start, Vector2 end) { FkService.Gizmo_DrawLine(start.X, start.Y, end.X, end.Y); }
+
+    static void DrawLine(Vector3 start, Vector3 end) { FkService.Gizmo_DrawLine3D(start.X, start.Y, start.Z, end.X, end.Y, end.Z); }
+
+    static void DrawRay(Ray ray, float distance) { DrawLine(ray.Origin, ray.Direction, distance); }
+
+    static void DrawAxes(Vector3 origin, Quaternion rotation, float length)
+    {
+        DrawLine(origin, rotation * Vector3.Right, length);
+        DrawLine(origin, rotation * Vector3.Up, length);
+        DrawLine(origin, rotation * Vector3.Forward, length);
+    }
+
+    static void DrawArrow(Vector3 start, Vector3 end, float headLength)
+    {
+        if (!(Mathf.Abs(headLength) < Mathf.Infinity) || headLength < 0) throw InvalidOperationException("headLength is out of range");
+        Vector3 displacement = end - start;
+        Vector3 direction;
+        if (!Vector3.TryNormalize(displacement, direction)) return;
+        DrawLine(start, end);
+        float size = Mathf.Min(headLength, displacement.Length());
+        if (size == 0) return;
+        Vector3 side = Perpendicular(direction) * (size * 0.5f);
+        Vector3 baseCenter = end - size * direction;
+        DrawLine(end, baseCenter + side);
+        DrawLine(end, baseCenter - side);
+    }
+
+    static void DrawCapsule(Vector3 a, Vector3 b, float radius, int segments = 24)
+    {
+        if (!(Mathf.Abs(radius) < Mathf.Infinity) || radius < 0) throw InvalidOperationException("radius is out of range");
+        if (segments < 4 || segments > 128) throw InvalidOperationException("segments is out of range");
+        Vector3 axis;
+        if (!Vector3.TryNormalize(b - a, axis)) { DrawSphere(a, radius, segments); return; }
+        if (radius == 0) { DrawLine(a, b); return; }
+        Vector3 u = Perpendicular(axis), v = Vector3.Cross(axis, u);
+        Vector3 last = radius * u;
+        for (int i = 1; i <= segments; i++)
+        {
+            float t = Mathf.TwoPI * i / segments;
+            Vector3 next = radius * (u * Mathf.Cos(t) + v * Mathf.Sin(t));
+            DrawLine(a + last, a + next);
+            DrawLine(b + last, b + next);
+            last = next;
+        }
+        for (int side = 0; side < 2; side++) {
+            Vector3 radial = side == 0 ? u : v;
+            DrawLine(a + radius * radial, b + radius * radial);
+            DrawLine(a - radius * radial, b - radius * radial);
+            Vector3 previousA = a + radius * radial, previousB = b + radius * radial;
+            for (int i = 1; i <= segments / 2; i++)
+            {
+                float t = Mathf.PI * i / (segments / 2);
+                Vector3 offset = (radius * Mathf.Cos(t)) * radial;
+                Vector3 cap = (radius * Mathf.Sin(t)) * axis;
+                Vector3 nextA = a + offset - cap, nextB = b + offset + cap;
+                DrawLine(previousA, nextA);
+                DrawLine(previousB, nextB);
+                previousA = nextA;
+                previousB = nextB;
+            }
+        }
+    }
+
+    private static Vector3 Perpendicular(Vector3 axis) { return Vector3.Cross(axis, Mathf.Abs(axis.Y) < 0.9f ? Vector3.Up : Vector3.Right).Normalized(); }
+
+    static void DrawFrustum(ReadOnlySpan<Vector3> nearCorners, ReadOnlySpan<Vector3> farCorners)
+    {
+        if (nearCorners.Length != 4 || farCorners.Length != 4) throw InvalidOperationException("Four corners per plane are required.");
+        for (int i = 0; i < 4; i++)
+        {
+            int next = (i + 1) % 4;
+            DrawLine(nearCorners[i], nearCorners[next]);
+            DrawLine(farCorners[i], farCorners[next]);
+            DrawLine(nearCorners[i], farCorners[i]);
+        }
+    }
+
+    static void DrawLine(Vector3 start, Vector3 direction, float distance)
+    {
+        float length = direction.Length();
+        if (length <= 0.0f || !(Mathf.Abs(length) < Mathf.Infinity) || !(Mathf.Abs(distance) < Mathf.Infinity)) return;
+        DrawLine(start, start + direction * (distance / length));
+    }
+
+    static void DrawBox(Vector3 center, Vector3 size, Vector3 rotation = default) { FkService.Gizmo_DrawBox(center.X, center.Y, center.Z, size.X, size.Y, size.Z, rotation.X, rotation.Y, rotation.Z); }
+
+    static void DrawSphere(Vector3 center, float radius, int segments = 32) { FkService.Gizmo_DrawSphere(center.X, center.Y, center.Z, radius, segments); }
+
+    static void DrawLine(Vector2 start, Vector2 direction, float distance)
+    {
+        float length = direction.Length();
+        if (length <= 0.0f || length != length) return;
+        DrawLine(start, start + direction * (distance / length));
+    }
+
+    static void DrawWireSquare(Vector2 center, Vector2 size, float degrees = 0.0f) { FkService.Gizmo_DrawWireSquare(center.X, center.Y, size.X, size.Y, degrees); }
+
+    static void DrawWireCircle(Vector2 center, float radius, int segments = 32) { FkService.Gizmo_DrawWireCircle(center.X, center.Y, radius, segments); }
+
+    static void DrawSquare(Vector2 center, Vector2 size, float degrees = 0.0f) { FkService.Gizmo_DrawSquare(center.X, center.Y, size.X, size.Y, degrees); }
+
+    static void DrawCircle(Vector2 center, float radius, int segments = 32) { FkService.Gizmo_DrawCircle(center.X, center.Y, radius, segments); }
+
+
+
+
+    static void DrawText(Vector2 position, string text, float rotation = 0.0f, float size = 28.0f) { FkService.Gizmo_DrawText(text, position.X, position.Y, rotation, size); }
+}
+
+
+public static class Png {
+private:
+    static void Put32(byte[]& output, int offset, uint value) {
+        output[offset] = (byte)(value >> 24);
+        output[offset + 1] = (byte)((value >> 16) & 255u);
+        output[offset + 2] = (byte)((value >> 8) & 255u);
+        output[offset + 3] = (byte)(value & 255u);
+    }
+    static int WriteChunk(byte[]& output, int offset, string type, byte[] data) {
+        Put32(output, offset, (uint)data.Length);
+        offset += 4;
+        byte[] name = type.ToUtf8();
+        uint crc = 4294967295u;
+        for (int i = 0; i < 4 + data.Length; i++) {
+            byte v = i < 4 ? name[i] : data[i - 4];
+            output[offset++] = v;
+            crc = crc ^ (uint)v;
+            for (int bit = 0; bit < 8; bit++) crc = (crc >> 1) ^ ((crc & 1u) != 0u ? 3988292384u : 0u);
+        }
+        Put32(output, offset, ~crc);
+        return offset + 4;
+    }
+public:
+    static byte[] Encode(int width, int height, System.ReadOnlySpan<byte> rgba) {
+        if (width <= 0 || height <= 0 || width > rgba.Length / 4 / height)
+            throw System.InvalidOperationException("Invalid PNG dimensions or RGBA buffer.");
+        int stride = width * 4;
+        long rawSize = ((long)stride + 1l) * (long)height;
+        long blockCount = 1l + (rawSize - 1l) / 65535l;
+        if (rawSize + blockCount * 5l + 63l > (long)int.MaxValue)
+            throw System.ArgumentOutOfRangeException("PNG exceeds the maximum array length.");
+        byte[] raw = new byte[(int)rawSize];
+        for (int y = 0; y < height; y++)
+            for (int x = 0; x < stride; x++) raw[y * (stride + 1) + 1 + x] = rgba[y * stride + x];
+        uint a = 1u, b = 0u;
+        for (int i = 0; i < raw.Length; i++) { a = (a + (uint)raw[i]) % 65521u; b = (b + a) % 65521u; }
+        int blocks = 1 + (raw.Length - 1) / 65535;
+        byte[] zlib = new byte[raw.Length + blocks * 5 + 6];
+        zlib[0] = 120; zlib[1] = 1;
+        int source = 0, target = 2;
+        while (source < raw.Length) {
+            int size = raw.Length - source;
+            if (size > 65535) size = 65535;
+            int inverse = 65535 - size;
+            zlib[target++] = (byte)(source + size == raw.Length ? 1 : 0);
+            zlib[target++] = (byte)(size & 255); zlib[target++] = (byte)(size >> 8);
+            zlib[target++] = (byte)(inverse & 255); zlib[target++] = (byte)(inverse >> 8);
+            for (int i = 0; i < size; i++) zlib[target++] = raw[source++];
+        }
+        Put32(zlib, target, (b << 16) | a);
+        byte[] output = new byte[57 + zlib.Length];
+        byte[] signature = {137, 80, 78, 71, 13, 10, 26, 10};
+        for (int i = 0; i < 8; i++) output[i] = signature[i];
+        byte[] ihdr = new byte[13];
+        Put32(ihdr, 0, (uint)width);
+        Put32(ihdr, 4, (uint)height);
+        ihdr[8] = 8; ihdr[9] = 6;
+        int cursor = WriteChunk(output, 8, "IHDR", ihdr);
+        cursor = WriteChunk(output, cursor, "IDAT", zlib);
+        WriteChunk(output, cursor, "IEND", new byte[0]);
+        return output;
+    }
+    static void Save(string path, int width, int height, System.ReadOnlySpan<byte> rgba) {
+        byte[] data = Encode(width, height, rgba);
+        byte[] target = Funke.FkService.CString(path);
+        if (FkWriteImage((ulong)data.Length, &target[0], &data[0]) == 0ul)
+            throw System.InvalidOperationException("Could not save PNG to " + path);
+    }
+}

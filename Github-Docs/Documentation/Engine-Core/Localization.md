@@ -249,7 +249,7 @@ Outside Play, right-click the Game View toolbar and open **Language Preview** (a
 
 Preview uses separate display tables and a transient Text Renderer display value. It does not change `Localization.CurrentLanguage`, `Localization.Get`, the game's change callbacks, PlayerPrefs, or serialized scene/prefab text. The inspector's Translation row continues to describe the game language. Starting Play, loading another project, and restarting or closing the editor clear preview. Stop restores the authored scene; preview is not resumed automatically. Reloading language files refreshes an active preview, or clears it if that language disappears.
 
-Missing translations use the project's fallback; keys missing from both tables appear as their identifiers. The preview menu counts these keys and the Console records each once per preview table set. Fonts still need the requested glyphs; the existing font diagnostics and replacement glyph behavior apply. Preview does not automatically localize script-generated labels, dropdown options, or placeholders.
+Missing translations use the project's fallback; keys missing from both tables appear as their identifiers. The preview menu counts these keys and the Console records each once per preview table set. Fonts still need the requested glyphs; the existing font diagnostics and replacement glyph behavior apply. LocalizedUI bindings also use this preview. Text without a localization binding remains literal.
 
 Windows Release verification: nine native localization/serialization cases (121 assertions), plus a rendered English/German fixture, a wrapped German label, fallback and missing-key diagnostics, Play/Stop, and editor restart. A real isolated PlayerPrefs file containing an English preference and the authored scene remained byte-identical after a German preview and Play/Stop. Project-table replacement and unload reset are covered by the native lifecycle test; no additional platform certification is implied.
 
@@ -311,3 +311,41 @@ Call it from the main thread (scripts, systems), not from jobs.
 - [Startup Processes](Startup-Processes.md) — the runtime boot sequence; Launcher localization is initialized by its own application.
 - [Third-Party Libraries](../Reference/Third-Party-Libraries.md) — the bundled OFL fonts and the on-demand Noto Sans CJK font.
 - [Known Limitations](../Known-Limitations.md) — remaining font, text-shaping and localization-editor limits.
+
+
+### Widget labels, options and placeholders
+
+Add **LocalizedUI** (UI category) to the widget and configure its optional keys:
+
+| Inspector field | Display target |
+|---|---|
+| Label Entity / Label Key | A Button's text child (or another Text Renderer). Leaving Label Entity unset targets the widget itself. |
+| Option Keys | Keys aligned by index with Dropdown Options. A missing or empty key keeps that row literal; extra keys do not create options. |
+| Placeholder Key | The Input Field's placeholder while its input is empty and not focused during Play. |
+
+The normal Text Renderer text, Dropdown Options and Input Field Placeholder stay
+authored literals. LocalizedUI uses display overrides and the existing
+GameLocalization service, including language reload and the editor preview.
+Dropdown popups and selected labels use the same option resolver. Changing
+language does not change SelectedIndex or dispatch a selection change, and
+never translates user-entered Input Field text, caret or selection.
+
+An empty key disables a binding; a translated empty string is a valid empty
+display. Missing translations use the existing language fallback and then the
+key itself. Clearing a binding restores the authored display. If a widget target
+also has Localized Text, its LocalizedUI display binding takes precedence while
+active. Prefer one owner per text target.
+
+Keys and the label entity reference serialize as the `LocalizedUI` component
+and participate in scene/prefab entity-reference remapping. Translated display
+values are never serialized into those keys or literal option/input values.
+No script is needed for configured bindings; procedural text can still call
+`Localization.Get` explicitly.
+
+## Game string-table authoring
+
+Use the dockable [String Tables editor](../Editor/String-Tables.md) to edit project translations, diagnose missing/duplicate keys and save with conflict-aware file history. This edits game tables, not the editor/launcher UI language files. For mixed-script glyph coverage configure [font fallback families](../Assets/Font-Fallbacks.md).
+
+### Game View preview acceptance
+
+The Windows Release editor was checked on 26 November 2026 with one authored label and two translation tables. English preview displayed “Play”. German preview displayed “Grüße für große Bühnen und für alle Gäste” across two lines, including its umlauts and ß. Starting Play from English preview selected the German system language. Stop restored the authored label. Closing the editor with German preview active and reopening the same project also restored the authored label. The scene file had the same SHA-256 before and after these checks.

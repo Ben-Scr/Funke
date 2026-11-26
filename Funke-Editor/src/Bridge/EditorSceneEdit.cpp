@@ -109,6 +109,24 @@ namespace Funke::EditorSceneEdit {
 		const auto* dry = request.FindMember("dryRun");
 		if (dry && !dry->IsBool()) return Fail("invalid_arguments", "dryRun must be a boolean", 0);
 		const bool dryRun = dry && dry->AsBoolOr(false);
+		if (operations->GetArray().size() == 1 && Text(operations->GetArray()[0], "op") == "history.recover") {
+			if (!dryRun && !history.Recover(scene)) return Fail("recovery_failed", history.GetLastError(), 0);
+			Json::Value recovered = Json::Value::MakeObject();
+			recovered.AddMember("ok", true); recovered.AddMember("dryRun", dryRun);
+			recovered.AddMember("recoveryRequired", history.NeedsRecovery());
+			return recovered;
+		}
+		if (history.NeedsRecovery()) return Fail("recovery_required", history.RecoveryReason(), 0);
+		const uint64_t validatedRevision = scene.GetRevision();
+		const uint64_t validatedSchema = SceneManager::GetComponentRegistryOrBuiltIn().GetGeneration();
+		for (const auto& expected : {std::pair{"expectedRevision", validatedRevision}, std::pair{"expectedSchema", validatedSchema}}) {
+			if (const auto* value = request.FindMember(expected.first)) {
+				const bool matches = value->IsString() ? value->AsStringOr() == std::to_string(expected.second)
+					: value->IsNumber() && *value == Json::Value(expected.second);
+				if (!matches)
+					return Fail("revision_conflict", "Scene or component schema changed since validation", 0);
+			}
+		}
 		if (operations->GetArray().size() == 1) {
 			const std::string op = Text(operations->GetArray()[0], "op");
 			if (op == "history.undo" || op == "history.redo") {
@@ -297,8 +315,12 @@ namespace Funke::EditorSceneEdit {
 		result.AddMember("ok", true);
 		result.AddMember("dryRun", dryRun);
 		result.AddMember("operations", static_cast<uint64_t>(plan.size()));
+		result.AddMember("validatedRevision", validatedRevision);
+		result.AddMember("validatedSchema", validatedSchema);
 		if (dryRun) return result;
 		if (beforeApply) beforeApply();
+		if (scene.GetRevision() != validatedRevision || SceneManager::GetComponentRegistryOrBuiltIn().GetGeneration() != validatedSchema)
+			return Fail("revision_conflict", "Scene or component schema changed before commit", 0);
 		const bool dirty = scene.IsDirty(), uiDirty = scene.IsUIDirty();
 		StructureEditRecorder recorder(scene, roots, "Agent scene batch");
 		std::map<std::string, Entity> actual;
@@ -373,14 +395,17 @@ namespace Funke::EditorSceneEdit {
 			return result;
 		}
 		catch (const std::exception& error) {
+			std::unique_ptr<EditCommand> rollback;
 			try {
 				roots = afterRoots();
-				if (auto rollback = recorder.Finish(scene, roots)) rollback->Undo(scene);
+				rollback = recorder.Finish(scene, roots);
+				if (rollback) rollback->Undo(scene);
 				if (!dirty) scene.ClearDirty();
 				if (!uiDirty) scene.ClearUIDirty();
 				return Fail("apply_failed", error.what(), index);
 			}
 			catch (const std::exception& rollbackError) {
+				history.RequireRecovery(std::move(rollback), std::string("Apply failed: ") + error.what() + "; scene recovery required: " + rollbackError.what());
 				return Fail("rollback_failed", std::string(error.what()) + "; recovery failed: " + rollbackError.what(), index);
 			}
 		}

@@ -15,7 +15,7 @@ namespace Funke {
 
 	class NativeScript;
 
-	inline constexpr uint32_t k_NativeScriptAbiVersion = 7;
+	inline constexpr uint32_t k_NativeScriptAbiVersion = 8;
 
 	// Strings and callbacks remain owned by the script DLL. Get copies into a caller-owned buffer.
 	struct NativeScriptField {

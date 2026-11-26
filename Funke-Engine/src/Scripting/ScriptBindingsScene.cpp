@@ -966,8 +966,41 @@ namespace Funke {
 		if (ResolveEntityReference(id, scene, handle)) scene->GetEntity(handle).SetLayer(mask);
 	}
 
+	static int Funke_RuntimePoints_Create(uint64_t* ids, int count)
+	{
+		Scene* scene = Application::IsMainThread() ? GetScene() : nullptr;
+		if (!scene || !ids || count <= 0) return 0;
+		scene->CreateRuntimePoints({ids, static_cast<size_t>(count)});
+		return count;
+	}
+
+	static int Funke_RuntimePoints_Translate(const uint64_t* ids, int count, float dx, float dy)
+	{
+		Scene* scene = Application::IsMainThread() ? GetScene() : nullptr;
+		if (!scene || !ids || count <= 0) return 0;
+		return scene->TranslateRuntimePoints({ids, static_cast<size_t>(count)}, dx, dy);
+	}
+
+	static int Funke_RuntimePoints_Read(const uint64_t* ids, int count, float* positions)
+	{
+		Scene* scene = Application::IsMainThread() ? GetScene() : nullptr;
+		if (!scene || !ids || count <= 0) return 0;
+		return scene->ReadRuntimePoints({ids, static_cast<size_t>(count)}, positions);
+	}
+
+	static int Funke_RuntimePoints_Destroy(const uint64_t* ids, int count)
+	{
+		Scene* scene = Application::IsMainThread() ? GetScene() : nullptr;
+		if (!scene || !ids || count <= 0) return 0;
+		return scene->DestroyRuntimePoints({ids, static_cast<size_t>(count)});
+	}
+
 	void PopulateNonComponentBindings(NativeBindings& b)
 	{
+		b.RuntimePoints_Create = FNK_GUARDED_BINDING(Funke_RuntimePoints_Create);
+		b.RuntimePoints_Translate = FNK_GUARDED_BINDING(Funke_RuntimePoints_Translate);
+		b.RuntimePoints_Read = FNK_GUARDED_BINDING(Funke_RuntimePoints_Read);
+		b.RuntimePoints_Destroy = FNK_GUARDED_BINDING(Funke_RuntimePoints_Destroy);
 		b.PhysicsLayer_GetName = FNK_GUARDED_BINDING(Funke_PhysicsLayer_GetName);
 		b.PhysicsLayer_GetIndex = FNK_GUARDED_BINDING(Funke_PhysicsLayer_GetIndex);
 		b.Entity_GetLayer = FNK_GUARDED_BINDING(Funke_Entity_GetLayer);

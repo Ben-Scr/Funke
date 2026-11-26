@@ -1,0 +1,17 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public struct FkEcbRequest {
+public:
+    ulong Op,Ticket,Live,Argument;
+    uint Size,NameLength;
+    void* Name;
+    ulong Call(ulong buffer,void* payload){
+        ulong result=FkEcb(buffer,&this,payload);
+        if(result==ulong.MaxValue)throw System.InvalidOperationException("Invalid ECB operation, component layout or target.");
+        return result;
+    }
+}

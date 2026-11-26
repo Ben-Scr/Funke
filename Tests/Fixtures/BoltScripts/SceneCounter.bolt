@@ -1,0 +1,51 @@
+import Funke
+import Funke.Coroutines
+import System.Threading.Tasks
+public class SceneCounter : SceneSystem {
+    public int Count = 1;
+    private static int Registrations;
+    public int Registration;
+    public int Pulses;
+    private async Task<void> Pulse() {
+        await WaitForFixedUpdate();
+        Pulses++;
+    }
+    public override void OnAwake() { Count += 2; Registration = ++Registrations; }
+    public override void OnStart() {
+        RunCoroutine(Pulse);
+        var active = SceneManager.GetActiveScene();
+        if (active != null && active.Value.Name == Scene.Name)
+            Count += 4;
+        int minPoints=0;
+        var rows = Query<Transform2D, Health>().IncludeDisabled()
+            .WithCondition<Health>((Health h) => h.Points > minPoints)
+            .WithCondition((Health h) => h.Points != minPoints).WithEntity();
+        if (Query<Health>().WithCondition((Health h) => h.Points < minPoints).WithEntity().Length != 0) return;
+        var wide = Query<Transform2D, Transform2D, Transform2D, Transform2D, Transform2D,
+                         Transform2D, Transform2D, Transform2D, Health>().WithEntity();
+        if (wide.Length != 1 || wide[0].Get<Transform2D>().ID != wide[0].Get<Health>().ID) return;
+        int pairs = 0;
+        for (var row : Query<Transform2D, Health>()) {
+            if (row.Get<Transform2D>().ID == row.Entity.ID && row.Get<Health>().ID == row.Entity.ID) pairs++;
+        }
+        if (pairs != 1) return;
+        var required = Query<Transform2D>().With<Transform2D, Transform2D, Transform2D, Transform2D, Health>();
+        if (required.WithEntity().Length != 1) return;
+        var excluded = Query<Transform2D>().Without<AudioSource, Camera3D, SpriteRenderer, Transform3D, Health>();
+        if (excluded.WithEntity().Length != 1) return;
+        int singles = 0;
+        for (Transform2D item : Query<Transform2D>()) singles++;
+        Health? singleton = Scene.GetSingleton<Health>();
+        if (singleton == null || singles != 2) return;
+        for (int i = 0; i < rows.Length; i++) {
+            var row = rows[i];
+            var transform = row.Get<Transform2D>();
+            transform.Position = Vector2((float)row.Get<Health>().Points, (float)Query<Transform2D>().Without<Health>().WithEntity().Length);
+        }
+    }
+    public override void OnUpdate() { Count += 8; }
+    public override void OnFixedUpdate() {
+        Count += 16;
+        SceneManager.DisableGlobalSystem<GlobalCounter>();
+    }
+}

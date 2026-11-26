@@ -1,0 +1,96 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public class Material {
+private:
+    ulong guid;
+public:
+    ulong UUID => guid;
+    ulong FkKind() { return 10ul; }
+    void FkSetGuid(ulong value) { guid = value; }
+    string Path => FunkeText.Read(FkAsset_GetPathBuffer(UUID,0ul));
+    string Name => FunkeText.Read(FkAsset_GetDisplayNameBuffer(UUID,0ul));
+    static Material? FromAssetUUID(ulong guid) { if (guid == 0ul) return null; Material value; value.FkSetGuid(guid); return value; }
+    bool IsValid => UUID != 0ul && FkService.Material_Get(UUID, null, 0) != 0;
+    private float[] Read() {
+        float[] values = new float[16];
+        FkService.Material_Get(UUID, &values[0], values.Length);
+        return values;
+    }
+    private void Write(float[] values) { FkService.Material_Set(UUID, &values[0], values.Length); }
+    Funke.Texture? BaseColorTexture {
+        get { return Funke.Texture.FromAssetUUID(FkService.Material_GetTexture(UUID)); }
+        set { ulong id = 0ul; if (value != null) id = value.Value.UUID; FkService.Material_SetTexture(UUID, id); }
+    }
+    Color BaseColor {
+        get { float[] v = Read(); return Color(v[0], v[1], v[2], v[3]); }
+        set { float[] v = Read(); v[0] = value.R; v[1] = value.G; v[2] = value.B; v[3] = value.A; Write(v); }
+    }
+    float Metallic {
+        get { float[] v = Read(); return v[4]; }
+        set { float[] v = Read(); v[4] = value; Write(v); }
+    }
+    float Roughness {
+        get { float[] v = Read(); return v[5]; }
+        set { float[] v = Read(); v[5] = value; Write(v); }
+    }
+    Color EmissiveColor {
+        get { float[] v = Read(); return Color(v[6], v[7], v[8], 1.0f); }
+        set { float[] v = Read(); v[6] = value.R; v[7] = value.G; v[8] = value.B; Write(v); }
+    }
+    float EmissiveIntensity {
+        get { float[] v = Read(); return v[9]; }
+        set { float[] v = Read(); v[9] = value; Write(v); }
+    }
+    bool Lit {
+        get { float[] v = Read(); return v[10] > 0.5f; }
+        set { float[] v = Read(); v[10] = value ? 1.0f : 0.0f; Write(v); }
+    }
+    Vector2 Tiling {
+        get { float[] v = Read(); return Vector2(v[11], v[12]); }
+        set { float[] v = Read(); v[11] = value.X; v[12] = value.Y; Write(v); }
+    }
+    Vector2 Offset {
+        get { float[] v = Read(); return Vector2(v[13], v[14]); }
+        set { float[] v = Read(); v[13] = value.X; v[14] = value.Y; Write(v); }
+    }
+    MaterialSurface Surface {
+        get { float[] v = Read(); return (MaterialSurface)(int)v[15]; }
+        set { float[] v = Read(); v[15] = (float)(int)value; Write(v); }
+    }
+    Funke.Texture? NormalTexture { get { return GetTexture("__funke.normalTexture"); } set { SetTexture("__funke.normalTexture", value); } }
+    Funke.Texture? MetallicRoughnessTexture { get { return GetTexture("__funke.metallicRoughnessTexture"); } set { SetTexture("__funke.metallicRoughnessTexture", value); } }
+    Funke.Texture? EmissiveTexture { get { return GetTexture("__funke.emissiveTexture"); } set { SetTexture("__funke.emissiveTexture", value); } }
+    Funke.Texture? OcclusionTexture { get { return GetTexture("__funke.occlusionTexture"); } set { SetTexture("__funke.occlusionTexture", value); } }
+    float NormalScale { get { return GetFloat("__funke.normalScale"); } set { SetFloat("__funke.normalScale", value); } }
+    float OcclusionStrength { get { return GetFloat("__funke.occlusionStrength"); } set { SetFloat("__funke.occlusionStrength", value); } }
+    float AlphaCutoff { get { return GetFloat("__funke.alphaCutoff"); } set { SetFloat("__funke.alphaCutoff", value); } }
+    bool DoubleSided { get { return GetFloat("__funke.doubleSided") != 0.0f; } set { SetFloat("__funke.doubleSided", value ? 1.0f : 0.0f); } }
+    ulong ShaderUUID { get { return FkService.Material_GetShader(UUID); } set { FkService.Material_SetShader(UUID, value); } }
+    bool HasProperty(string name) { Vector4 v; ulong texture; return FkService.Material_GetProperty(UUID, name, &v.X, &texture) != 0; }
+    Vector4 GetVector(string name) { Vector4 v; ulong texture; FkService.Material_GetProperty(UUID, name, &v.X, &texture); return v; }
+    float GetFloat(string name) { return GetVector(name).X; }
+    Color GetColor(string name) { Vector4 v = GetVector(name); return Color(v.X, v.Y, v.Z, v.W); }
+    Funke.Texture? GetTexture(string name) { Vector4 v; ulong texture; FkService.Material_GetProperty(UUID, name, &v.X, &texture); return Funke.Texture.FromAssetUUID(texture); }
+    private void SetValue(string name, int kind, Vector4 v, ulong texture) {
+        if (FkService.Material_SetProperty(UUID, name, kind, &v.X, texture) == 0) Log.Warn("Material property has a different type: " + name);
+    }
+    void SetFloat(string name, float v) { SetValue(name, 0, Vector4(v, 0.0f, 0.0f, 0.0f), 0ul); }
+    void SetVector(string name, Vector2 v) { SetValue(name, 1, Vector4(v.X, v.Y, 0.0f, 0.0f), 0ul); }
+    void SetVector(string name, Vector3 v) { SetValue(name, 2, Vector4(v.X, v.Y, v.Z, 0.0f), 0ul); }
+    void SetVector(string name, Vector4 v) { SetValue(name, 3, v, 0ul); }
+    void SetColor(string name, Color v) { SetValue(name, 4, Vector4(v.R, v.G, v.B, v.A), 0ul); }
+    void SetTexture(string name, Funke.Texture? v) { ulong id = 0ul; if (v != null) id = v.Value.UUID; SetValue(name, 5, Vector4.Zero, id); }
+    bool Equals(Material? other) { return other.HasValue && UUID == other.Value.UUID; }
+    int GetHashCode() { return Reinterpret<int>((uint)((UUID ^ (UUID >> 32)) & 4294967295ul)); }
+
+    static bool operator ==(Material a, Material b) { return a.UUID == b.UUID; }
+    static bool operator !=(Material a, Material b) { return a.UUID != b.UUID; }
+    static bool operator ==(Material a, Material? b) { return b.HasValue && a.UUID == b.Value.UUID; }
+    static bool operator !=(Material a, Material? b) { return !b.HasValue || a.UUID != b.Value.UUID; }
+    static bool operator ==(Material? a, Material b) { return a.HasValue && a.Value.UUID == b.UUID; }
+    static bool operator !=(Material? a, Material b) { return !a.HasValue || a.Value.UUID != b.UUID; }
+}

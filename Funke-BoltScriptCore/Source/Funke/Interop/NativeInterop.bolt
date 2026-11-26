@@ -1,0 +1,41 @@
+import System
+import Funke.Collections.Native
+namespace Funke.Interop;
+
+public static class NativeInterop {
+public:
+    static void WithPinned<T>(T& value, Action<void*> action) { action.Invoke((void*)&value); }
+
+    static T[] FromNativeArray<T>(void* pointer, int count) {
+        if (pointer == null || count <= 0) return new T[0];
+        T* source = (T*)pointer;
+        T[] values = new T[count];
+        for (int i = 0; i < count; i++) values[i] = source[i];
+        return values;
+    }
+
+    static byte* StringToNativeUtf8(string? value) {
+        if (value == null) return null;
+        byte[] bytes = value.Value.ToUtf8();
+        if (bytes.Length == int.MaxValue) throw System.OutOfMemoryException("UTF-8 buffer is too large.");
+        byte* result = NativeMemoryPool.Rent<byte>(bytes.Length + 1);
+        for (int i = 0; i < bytes.Length; i++) result[i] = bytes[i];
+        result[bytes.Length] = 0;
+        return result;
+    }
+    static string? NativeUtf8ToString(void* pointer) {
+        if (pointer == null) return null;
+        byte* source = (byte*)pointer;
+        int length = 0;
+        while (source[length] != 0) {
+            if (length == int.MaxValue) throw System.ArgumentOutOfRangeException("pointer");
+            length++;
+        }
+        return string.FromUtf8(FromNativeArray<byte>(pointer,length));
+    }
+
+    // Releases a buffer returned by StringToNativeUtf8, including empty strings.
+    static void FreeNativeUtf8(void* pointer) {
+        NativeMemoryPool.Release<byte>((byte*)pointer,0,false);
+    }
+}

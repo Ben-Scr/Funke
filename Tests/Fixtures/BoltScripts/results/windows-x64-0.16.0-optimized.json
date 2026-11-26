@@ -1,0 +1,359 @@
+{
+  "version": "Bolt 0.16.0 (x86_64-pc-windows-msvc)",
+  "system": "Windows-11-10.0.26300-SP0",
+  "dotnet_sdk": "10.0.403",
+  "compiler": "BoltCompiler.dll",
+  "compiler_sha256": "483e9b299e3dff31fc4cfa27d86420ed43c10094385d632e637b182072e642f4",
+  "llvm": "LLVM-C.dll",
+  "llvm_sha256": "19ebfb8901720344d237068f3015b9d07fb3420c7767f9f2bd666b8654638b3e",
+  "runs": [
+    {
+      "round": 1,
+      "workload": "compile",
+      "profile": "cs",
+      "cold_ms": 1615.5791,
+      "edit_ms": 9.6004,
+      "reload_ms": 32.763
+    },
+    {
+      "round": 1,
+      "workload": "compile",
+      "profile": "fast",
+      "cold_ms": 352.6801,
+      "edit_ms": 276.0714,
+      "reload_ms": 276.2485
+    },
+    {
+      "round": 1,
+      "workload": "compile",
+      "profile": "llvm",
+      "cold_ms": 1209.2842,
+      "edit_ms": 1159.0759,
+      "reload_ms": 1159.2654
+    },
+    {
+      "round": 1,
+      "workload": "move",
+      "profile": "fast",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 304.7532,
+      "update_ms": 0.870025,
+      "startup_ms": 304.7532
+    },
+    {
+      "round": 1,
+      "workload": "move",
+      "profile": "llvm",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 1172.9152,
+      "update_ms": 0.587494,
+      "startup_ms": 1172.9152
+    },
+    {
+      "round": 1,
+      "workload": "move",
+      "profile": "cs",
+      "core_ms": 61.1786,
+      "assembly_ms": 67.7021,
+      "first_ms": 14.3889,
+      "update_ms": 0.346237,
+      "startup_ms": 143.2696
+    },
+    {
+      "round": 1,
+      "workload": "compute",
+      "profile": "llvm",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 1148.6177,
+      "update_ms": 1.378031,
+      "startup_ms": 1148.6177
+    },
+    {
+      "round": 1,
+      "workload": "compute",
+      "profile": "cs",
+      "core_ms": 61.1458,
+      "assembly_ms": 67.0548,
+      "first_ms": 15.2848,
+      "update_ms": 0.9876,
+      "startup_ms": 143.4854
+    },
+    {
+      "round": 1,
+      "workload": "compute",
+      "profile": "fast",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 313.9933,
+      "update_ms": 2.761613,
+      "startup_ms": 313.9933
+    },
+    {
+      "round": 2,
+      "workload": "compile",
+      "profile": "fast",
+      "cold_ms": 335.199,
+      "edit_ms": 267.5693,
+      "reload_ms": 267.7165
+    },
+    {
+      "round": 2,
+      "workload": "compile",
+      "profile": "llvm",
+      "cold_ms": 1157.9746,
+      "edit_ms": 1119.823,
+      "reload_ms": 1119.9819
+    },
+    {
+      "round": 2,
+      "workload": "compile",
+      "profile": "cs",
+      "cold_ms": 1549.4708,
+      "edit_ms": 6.997,
+      "reload_ms": 29.4044
+    },
+    {
+      "round": 2,
+      "workload": "move",
+      "profile": "llvm",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 1120.3191,
+      "update_ms": 0.569612,
+      "startup_ms": 1120.3191
+    },
+    {
+      "round": 2,
+      "workload": "move",
+      "profile": "cs",
+      "core_ms": 60.5212,
+      "assembly_ms": 41.6251,
+      "first_ms": 14.6214,
+      "update_ms": 0.34015,
+      "startup_ms": 116.76769999999999
+    },
+    {
+      "round": 2,
+      "workload": "move",
+      "profile": "fast",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 306.7295,
+      "update_ms": 0.885138,
+      "startup_ms": 306.7295
+    },
+    {
+      "round": 2,
+      "workload": "compute",
+      "profile": "cs",
+      "core_ms": 59.3898,
+      "assembly_ms": 42.4341,
+      "first_ms": 14.7764,
+      "update_ms": 0.949063,
+      "startup_ms": 116.6003
+    },
+    {
+      "round": 2,
+      "workload": "compute",
+      "profile": "fast",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 319.2914,
+      "update_ms": 2.717406,
+      "startup_ms": 319.2914
+    },
+    {
+      "round": 2,
+      "workload": "compute",
+      "profile": "llvm",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 1112.7323,
+      "update_ms": 1.375037,
+      "startup_ms": 1112.7323
+    },
+    {
+      "round": 3,
+      "workload": "compile",
+      "profile": "llvm",
+      "cold_ms": 1154.2192,
+      "edit_ms": 1117.5518,
+      "reload_ms": 1117.7186
+    },
+    {
+      "round": 3,
+      "workload": "compile",
+      "profile": "cs",
+      "cold_ms": 1547.9013,
+      "edit_ms": 7.031,
+      "reload_ms": 29.7194
+    },
+    {
+      "round": 3,
+      "workload": "compile",
+      "profile": "fast",
+      "cold_ms": 330.7593,
+      "edit_ms": 268.076,
+      "reload_ms": 268.2209
+    },
+    {
+      "round": 3,
+      "workload": "move",
+      "profile": "cs",
+      "core_ms": 59.4752,
+      "assembly_ms": 41.9973,
+      "first_ms": 14.5555,
+      "update_ms": 0.33775,
+      "startup_ms": 116.02799999999999
+    },
+    {
+      "round": 3,
+      "workload": "move",
+      "profile": "fast",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 307.7233,
+      "update_ms": 0.897088,
+      "startup_ms": 307.7233
+    },
+    {
+      "round": 3,
+      "workload": "move",
+      "profile": "llvm",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 1116.9028,
+      "update_ms": 0.5894,
+      "startup_ms": 1116.9028
+    },
+    {
+      "round": 3,
+      "workload": "compute",
+      "profile": "fast",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 307.8834,
+      "update_ms": 2.718669,
+      "startup_ms": 307.8834
+    },
+    {
+      "round": 3,
+      "workload": "compute",
+      "profile": "llvm",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 1145.5874,
+      "update_ms": 1.406275,
+      "startup_ms": 1145.5874
+    },
+    {
+      "round": 3,
+      "workload": "compute",
+      "profile": "cs",
+      "core_ms": 61.0277,
+      "assembly_ms": 42.8818,
+      "first_ms": 14.7319,
+      "update_ms": 0.951675,
+      "startup_ms": 118.6414
+    }
+  ],
+  "medians": {
+    "compile": {
+      "cs": {
+        "cold_ms": 1549.4708,
+        "edit_ms": 7.031,
+        "reload_ms": 29.7194
+      },
+      "fast": {
+        "cold_ms": 335.199,
+        "edit_ms": 268.076,
+        "reload_ms": 268.2209
+      },
+      "llvm": {
+        "cold_ms": 1157.9746,
+        "edit_ms": 1119.823,
+        "reload_ms": 1119.9819
+      }
+    },
+    "move": {
+      "fast": {
+        "core_ms": 0.0,
+        "assembly_ms": 0.0,
+        "first_ms": 306.7295,
+        "update_ms": 0.885138,
+        "startup_ms": 306.7295
+      },
+      "llvm": {
+        "core_ms": 0.0,
+        "assembly_ms": 0.0,
+        "first_ms": 1120.3191,
+        "update_ms": 0.587494,
+        "startup_ms": 1120.3191
+      },
+      "cs": {
+        "core_ms": 60.5212,
+        "assembly_ms": 41.9973,
+        "first_ms": 14.5555,
+        "update_ms": 0.34015,
+        "startup_ms": 116.76769999999999
+      }
+    },
+    "compute": {
+      "llvm": {
+        "core_ms": 0.0,
+        "assembly_ms": 0.0,
+        "first_ms": 1145.5874,
+        "update_ms": 1.378031,
+        "startup_ms": 1145.5874
+      },
+      "cs": {
+        "core_ms": 61.0277,
+        "assembly_ms": 42.8818,
+        "first_ms": 14.7764,
+        "update_ms": 0.951675,
+        "startup_ms": 118.6414
+      },
+      "fast": {
+        "core_ms": 0.0,
+        "assembly_ms": 0.0,
+        "first_ms": 313.9933,
+        "update_ms": 2.718669,
+        "startup_ms": 313.9933
+      }
+    }
+  },
+  "profile_and_controls": {
+    "baseline_compiler_sha256": "cfcc1c1a15fa2f5ba392ad825db465c06a18a443b86f4a9e1ef5cdfa11064dd2",
+    "main_thread_samples": 1767,
+    "samples_including_drop_or_drop_class": 1449,
+    "window_ms_after_process_start": [
+      2250,
+      4770
+    ],
+    "workload": "1,000 EntityMove updates",
+    "control_description": "Same compiler objects and Release movement fixture. The control disables owned aggregate liveness tracking. Both builds use the original type membership scan.",
+    "controls": {
+      "control": {
+        "compiler_sha256": "d6fb741985af06909eae1d08a088f5edac975135654470c34d9ea1f650de3a9a",
+        "movement_ms_per_frame": [
+          4.402031,
+          4.423712,
+          4.447963
+        ],
+        "median_ms_per_frame": 4.423712
+      },
+      "guard": {
+        "compiler_sha256": "ad2b463541bc636fcf63091452aee10877e4fba8147d118e7787f74054078e28",
+        "movement_ms_per_frame": [
+          0.63895,
+          0.62535,
+          0.649281
+        ],
+        "median_ms_per_frame": 0.63895
+      }
+    }
+  }
+}

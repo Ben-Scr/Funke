@@ -1,0 +1,99 @@
+import Funke
+import Bolt.Runtime
+import BoltScriptBench
+
+public class LifecycleBench : EntityScript
+{
+    private void MeasurePoints(BenchState state, int count)
+    {
+        ulong[] ids = new ulong[count];
+        float[] xy = new float[count * 2];
+        long start = Clock.MonotonicTicks();
+        int created = RuntimePoints2D.Create(ids);
+        long createTicks = Clock.MonotonicTicks() - start;
+        try {
+            bool valid = created == count && RuntimePoints2D.CountAlive(ids) == count;
+            start = Clock.MonotonicTicks();
+            int moved = RuntimePoints2D.Translate(ids, 1.0f, 2.0f);
+            long moveTicks = Clock.MonotonicTicks() - start;
+
+            start = Clock.MonotonicTicks();
+            int read = RuntimePoints2D.ReadPositions(ids, xy);
+            float checksum = 0.0f;
+            float* position = &xy[0];
+            for (int i = 0; i < count; i++) {
+                checksum += position[i * 2] + position[i * 2 + 1];
+            }
+            long readTicks = Clock.MonotonicTicks() - start;
+
+            start = Clock.MonotonicTicks();
+            int destroyed = RuntimePoints2D.Destroy(ids);
+            long destroyTicks = Clock.MonotonicTicks() - start;
+            state.Valid = valid && moved == count && read == count && checksum == (float)(3 * count)
+                && destroyed == count && RuntimePoints2D.CountAlive(ids) == 0;
+            state.CreateTicks = createTicks;
+            state.MoveTicks = moveTicks;
+            state.ReadTicks = readTicks;
+            state.DestroyTicks = destroyTicks;
+        } finally {
+            if (RuntimePoints2D.CountAlive(ids) != 0) RuntimePoints2D.Destroy(ids);
+        }
+    }
+
+    public override void OnUpdate()
+    {
+        BenchState? component = GetComponent<BenchState>();
+        if (component == null) return;
+        BenchState state = component.Value;
+        if (!state.Ready) state.Ready = true;
+        if (!state.Requested) return;
+
+        int count = state.Count;
+        if (state.PointIds) {
+            MeasurePoints(state, count);
+            state.Requested = false;
+            return;
+        }
+        Entity[] entities = new Entity[count];
+        long start = Clock.MonotonicTicks();
+        for (int i = 0; i < count; i++)
+            entities[i] = Create();
+        long createTicks = Clock.MonotonicTicks() - start;
+
+        bool valid = true;
+        for (int i = 0; i < count; i++) {
+            if (!entities[i].IsValid) valid = false;
+            else if (!entities[i].HasComponent<Transform2D>())
+                entities[i].AddComponent<Transform2D>();
+        }
+
+        Vector2 step = Vector2(1.0f, 2.0f);
+        start = Clock.MonotonicTicks();
+        for (int i = 0; i < count; i++)
+            entities[i].Transform2D.Position = entities[i].Transform2D.Position + step;
+        long moveTicks = Clock.MonotonicTicks() - start;
+
+        float checksum = 0.0f;
+        start = Clock.MonotonicTicks();
+        for (int i = 0; i < count; i++) {
+            Vector2 position = entities[i].Transform2D.Position;
+            checksum += position.X + position.Y;
+        }
+        long readTicks = Clock.MonotonicTicks() - start;
+
+        start = Clock.MonotonicTicks();
+        for (int i = 0; i < count; i++)
+            entities[i].Destroy();
+        long destroyTicks = Clock.MonotonicTicks() - start;
+
+        for (int i = 0; i < count; i++)
+            if (entities[i].IsValid) valid = false;
+
+        state.CreateTicks = createTicks;
+        state.MoveTicks = moveTicks;
+        state.ReadTicks = readTicks;
+        state.DestroyTicks = destroyTicks;
+        state.Valid = valid && checksum == (float)(3 * count);
+        state.Requested = false;
+    }
+}

@@ -1,0 +1,343 @@
+{
+  "platform": "Windows x64",
+  "project": "Examples/BoltScriptBench",
+  "configuration": "Release, Windows AOT",
+  "entityCount": 10000,
+  "units": "100 ns ticks per batch",
+  "protocol": "Four fresh processes per version and workload. Alternate before/after order across rounds. Within each process the UI runs one warm-up and seven timed samples per language, alternating Bolt and C# first. Compare medians of the four process medians.",
+  "workloads": {
+    "create": "Unmodified LifecycleBench.bolt and ManagedLifecycle.cs.",
+    "clone": "Each language creates one unparented live entity before the timer. The Create loop stores Entity.Instantiate(prototype) in the same array; the prototype is destroyed after the timer. Movement, reads, destruction and validation use the original loops."
+  },
+  "compilerPatch": "scripts/bolt/patches/0008-small-value-class-copies.patch",
+  "compilerHostSha256": {
+    "before": "16da43c6760ac983d5009e5ac2f5c923c1df192a7e1ac2a7a7205522d887ac11",
+    "after": "be01bde68bd9a3c63b54db63f5e8e9fd9fe2ca0203b58e99228684cbbfe2459a"
+  },
+  "player": {
+    "create": {
+      "before": {
+        "engineSha256": "5ed181652bb4402d683cfc19c60bb737d9714ad052cbe3b832db73579b80a853",
+        "boltRuntimeSha256": "37b5706c6f7fc4cf84c39432f4d9fe9d500b91f71378f4bdef0aaf3a030ad206",
+        "aotModuleSha256": "5752b00c4497a1dbc50658d84ff7ac436ff34e723ffb2e691a0791c9999e405a",
+        "processMedians": [
+          {
+            "Bolt": {
+              "Create": 70094,
+              "Move": 9493,
+              "Read": 4200,
+              "Destroy": 24360
+            },
+            "C#": {
+              "Create": 21803,
+              "Move": 46315,
+              "Read": 14484,
+              "Destroy": 34393
+            }
+          },
+          {
+            "Bolt": {
+              "Create": 74277,
+              "Move": 10059,
+              "Read": 4272,
+              "Destroy": 25356
+            },
+            "C#": {
+              "Create": 24123,
+              "Move": 47886,
+              "Read": 15770,
+              "Destroy": 36602
+            }
+          },
+          {
+            "Bolt": {
+              "Create": 70886,
+              "Move": 9134,
+              "Read": 4004,
+              "Destroy": 24342
+            },
+            "C#": {
+              "Create": 22471,
+              "Move": 44871,
+              "Read": 14148,
+              "Destroy": 33222
+            }
+          },
+          {
+            "Bolt": {
+              "Create": 66119,
+              "Move": 8993,
+              "Read": 3972,
+              "Destroy": 23423
+            },
+            "C#": {
+              "Create": 20727,
+              "Move": 44765,
+              "Read": 14113,
+              "Destroy": 30512
+            }
+          }
+        ],
+        "medianMs": {
+          "Bolt": {
+            "Create": 7.049,
+            "Move": 0.93135,
+            "Read": 0.4102,
+            "Destroy": 2.4351
+          },
+          "C#": {
+            "Create": 2.2137,
+            "Move": 4.5593,
+            "Read": 1.4316,
+            "Destroy": 3.38075
+          }
+        }
+      },
+      "after": {
+        "engineSha256": "a71c8280b7fbaf4958f7d8eb7980e27fb199aec1dbe3bc96bc5004d14695b08e",
+        "boltRuntimeSha256": "d6d98e6ceb9875b4177d79446bdfa579e7967bbf4472ef73825a53c0f700b4b7",
+        "aotModuleSha256": "30bdec976140c4b8f6c735ee0532788e46046e2dfdf3bdd8b062029c06672d8a",
+        "processMedians": [
+          {
+            "Bolt": {
+              "Create": 22140,
+              "Move": 8920,
+              "Read": 4043,
+              "Destroy": 23537
+            },
+            "C#": {
+              "Create": 21359,
+              "Move": 45234,
+              "Read": 13831,
+              "Destroy": 33653
+            }
+          },
+          {
+            "Bolt": {
+              "Create": 22028,
+              "Move": 9062,
+              "Read": 4063,
+              "Destroy": 22530
+            },
+            "C#": {
+              "Create": 21572,
+              "Move": 46847,
+              "Read": 14078,
+              "Destroy": 32386
+            }
+          },
+          {
+            "Bolt": {
+              "Create": 21551,
+              "Move": 9021,
+              "Read": 4006,
+              "Destroy": 22578
+            },
+            "C#": {
+              "Create": 20453,
+              "Move": 45050,
+              "Read": 13757,
+              "Destroy": 31274
+            }
+          },
+          {
+            "Bolt": {
+              "Create": 23217,
+              "Move": 9058,
+              "Read": 4056,
+              "Destroy": 23519
+            },
+            "C#": {
+              "Create": 21318,
+              "Move": 46404,
+              "Read": 14625,
+              "Destroy": 34786
+            }
+          }
+        ],
+        "medianMs": {
+          "Bolt": {
+            "Create": 2.2084,
+            "Move": 0.90395,
+            "Read": 0.40495,
+            "Destroy": 2.30485
+          },
+          "C#": {
+            "Create": 2.13385,
+            "Move": 4.5819,
+            "Read": 1.39545,
+            "Destroy": 3.30195
+          }
+        }
+      }
+    },
+    "clone": {
+      "before": {
+        "engineSha256": "283e05ee5b02feca21639c805aa169d65b9a97e435cdfa0f6572c8b671621228",
+        "boltRuntimeSha256": "37b5706c6f7fc4cf84c39432f4d9fe9d500b91f71378f4bdef0aaf3a030ad206",
+        "aotModuleSha256": "8f419a82afbfbc96df1954b8bc97d3335eb32a69b8366689412aabd135ab2616",
+        "processMedians": [
+          {
+            "Bolt": {
+              "Create": 771322,
+              "Move": 9606,
+              "Read": 4180,
+              "Destroy": 34927
+            },
+            "C#": {
+              "Create": 615574,
+              "Move": 42029,
+              "Read": 12764,
+              "Destroy": 38534
+            }
+          },
+          {
+            "Bolt": {
+              "Create": 789377,
+              "Move": 9153,
+              "Read": 4162,
+              "Destroy": 34847
+            },
+            "C#": {
+              "Create": 629261,
+              "Move": 42953,
+              "Read": 12505,
+              "Destroy": 37344
+            }
+          },
+          {
+            "Bolt": {
+              "Create": 775762,
+              "Move": 9489,
+              "Read": 4130,
+              "Destroy": 33778
+            },
+            "C#": {
+              "Create": 624330,
+              "Move": 41404,
+              "Read": 12307,
+              "Destroy": 37757
+            }
+          },
+          {
+            "Bolt": {
+              "Create": 857498,
+              "Move": 9574,
+              "Read": 4307,
+              "Destroy": 37779
+            },
+            "C#": {
+              "Create": 671753,
+              "Move": 47074,
+              "Read": 12966,
+              "Destroy": 47402
+            }
+          }
+        ],
+        "medianMs": {
+          "Bolt": {
+            "Create": 78.25695,
+            "Move": 0.95315,
+            "Read": 0.4171,
+            "Destroy": 3.4887
+          },
+          "C#": {
+            "Create": 62.67955,
+            "Move": 4.2491,
+            "Read": 1.26345,
+            "Destroy": 3.81455
+          }
+        }
+      },
+      "after": {
+        "engineSha256": "a71c8280b7fbaf4958f7d8eb7980e27fb199aec1dbe3bc96bc5004d14695b08e",
+        "boltRuntimeSha256": "d6d98e6ceb9875b4177d79446bdfa579e7967bbf4472ef73825a53c0f700b4b7",
+        "aotModuleSha256": "5c80ac14b65598de9b82f2dd1d68b309a955f10394f9393702e9fcb446d4207f",
+        "processMedians": [
+          {
+            "Bolt": {
+              "Create": 428183,
+              "Move": 9341,
+              "Read": 4127,
+              "Destroy": 34748
+            },
+            "C#": {
+              "Create": 404438,
+              "Move": 42613,
+              "Read": 12544,
+              "Destroy": 38386
+            }
+          },
+          {
+            "Bolt": {
+              "Create": 399212,
+              "Move": 9251,
+              "Read": 4049,
+              "Destroy": 33849
+            },
+            "C#": {
+              "Create": 373921,
+              "Move": 40480,
+              "Read": 12469,
+              "Destroy": 37079
+            }
+          },
+          {
+            "Bolt": {
+              "Create": 399576,
+              "Move": 9346,
+              "Read": 4040,
+              "Destroy": 36435
+            },
+            "C#": {
+              "Create": 396921,
+              "Move": 42225,
+              "Read": 12755,
+              "Destroy": 38546
+            }
+          },
+          {
+            "Bolt": {
+              "Create": 418196,
+              "Move": 9306,
+              "Read": 4143,
+              "Destroy": 34482
+            },
+            "C#": {
+              "Create": 393207,
+              "Move": 42712,
+              "Read": 12730,
+              "Destroy": 38507
+            }
+          }
+        ],
+        "medianMs": {
+          "Bolt": {
+            "Create": 40.8886,
+            "Move": 0.93235,
+            "Read": 0.4088,
+            "Destroy": 3.4615
+          },
+          "C#": {
+            "Create": 39.5064,
+            "Move": 4.2419,
+            "Read": 1.2637,
+            "Destroy": 3.84465
+          }
+        }
+      }
+    }
+  },
+  "editorFastJit": {
+    "create": {
+      "suite": "Lifecycle.test.json",
+      "status": "passed",
+      "scriptErrors": 0
+    },
+    "clone": {
+      "suite": "Lifecycle.test.json",
+      "status": "passed",
+      "scriptErrors": 0
+    }
+  }
+}

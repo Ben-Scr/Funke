@@ -264,6 +264,12 @@ class StandaloneTests(unittest.TestCase):
                 "import sys; print('interop mismatch', file=sys.stderr); print('{\"succeeded\":true}')"])
         self.assertEqual(0, harness.evidence["phases"][-1]["exitCode"])
 
+    def test_invalid_utf8_in_json_string_is_rejected(self):
+        harness = self.harness()
+        with self.assertRaisesRegex(RuntimeError, "invalid UTF-8"):
+            harness.run("bad-json", [sys.executable, "-c",
+                """import sys; sys.stdout.buffer.write(b'{"key":"' + bytes([255]) + b'"}')""", "--json"])
+
     def test_nonzero_child_and_timeout_preserve_structured_evidence(self):
         harness = self.harness()
         with self.assertRaisesRegex(RuntimeError, "failed"):

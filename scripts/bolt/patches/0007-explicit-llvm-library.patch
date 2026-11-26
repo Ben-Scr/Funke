@@ -1,0 +1,69 @@
+diff --git a/include/bolt/CompilerHost.h b/include/bolt/CompilerHost.h
+--- a/include/bolt/CompilerHost.h
++++ b/include/bolt/CompilerHost.h
+@@ -39,6 +39,9 @@
+    caller. Destruction requires the caller to finish all uses of that handle. */
+ BOLT_HOST_API uint32_t bolt_compiler_host_abi(void);
+ BOLT_HOST_API const char *bolt_compiler_version(void);
++BOLT_HOST_API int bolt_compiler_create_with_llvm(uint32_t abi, int profile,
++    const BoltHostBinding *bindings, size_t count, const char *llvm_library, BoltCompiler **out,
++    char *error, size_t capacity);
+ BOLT_HOST_API int bolt_compiler_create(uint32_t abi, int profile,
+     const BoltHostBinding *bindings, size_t count, BoltCompiler **out,
+     char *error, size_t capacity);
+diff --git a/src/CompilerHost.cpp b/src/CompilerHost.cpp
+--- a/src/CompilerHost.cpp
++++ b/src/CompilerHost.cpp
+@@ -143,6 +143,11 @@
+ 
+ extern "C" int bolt_compiler_create(uint32_t abi, int profile, const BoltHostBinding *bindings,
+                                     size_t count, BoltCompiler **out, char *error, size_t capacity) {
++    return bolt_compiler_create_with_llvm(abi, profile, bindings, count, nullptr, out, error, capacity);
++}
++
++extern "C" int bolt_compiler_create_with_llvm(uint32_t abi, int profile, const BoltHostBinding *bindings,
++    size_t count, const char *llvm_library, BoltCompiler **out, char *error, size_t capacity) {
+     if (out) *out = nullptr;
+     return invoke(error, capacity, [&] {
+         if (!out || (count && !bindings)) throw std::invalid_argument("Invalid host binding table or output");
+@@ -150,6 +155,7 @@
+         if (profile != BOLT_HOST_DEBUG && profile != BOLT_HOST_RELEASE) throw std::invalid_argument("Unknown build profile");
+         auto compiler = std::make_unique<BoltCompiler>();
+         compiler->options.release = profile == BOLT_HOST_RELEASE;
++        if (llvm_library) compiler->options.llvm_library = llvm_library;
+         compiler->options.preprocessing.configuration = compiler->options.release ? "Release" : "Debug";
+         for (size_t i = 0; i < count; ++i) {
+             const auto& value = bindings[i];
+diff --git a/tests/compiler_host.py b/tests/compiler_host.py
+--- a/tests/compiler_host.py
++++ b/tests/compiler_host.py
+@@ -68,6 +68,21 @@
+ 
+ FieldVisitor = C.CFUNCTYPE(None, Handle, C.POINTER(FieldInfo))
+ visit_fields = bind("bolt_compiler_visit_fields", C.c_int, C.POINTER(Source), C.c_int, FieldVisitor, Handle, *errargs)
++
++
++def explicit_llvm_path_contract():
++    with tempfile.TemporaryDirectory() as temp:
++        missing = str(Path(temp) / "missing-llvm-library").encode("utf-8")
++        configured = bind("bolt_compiler_create_with_llvm", C.c_int, C.c_uint32, C.c_int,
++                          C.POINTER(Binding), C.c_size_t, C.c_char_p, C.POINTER(Handle), *errargs)
++        host, module, error = Handle(), Handle(), C.create_string_buffer(4096)
++        assert configured(abi(), 1, None, 0, missing, C.byref(host), error, len(error)) == 0
++        try:
++            source = b"public static class Program { public: int Main() { return 1; } }"
++            status = compile_text(host, b"explicit.bolt", source, len(source), C.byref(module), error, len(error))
++            assert status != 0 and not module.value and b"LLVM" in error.value, error.value
++        finally:
++            destroy(host)
+ 
+ 
+ def field_metadata_contract():
+@@ -640,6 +655,7 @@
+     compare_incremental_with_fresh()
+     results = [exercise(0, int(os.environ.get("BOLT_RELOAD_CYCLES", 3)))]
+     if os.environ.get("BOLT_TEST_LLVM_HOST") == "1":
++        explicit_llvm_path_contract()
+         native_fixture_contract(1, "HostedTaskCompletion.bolt")
+         native_fixture_contract(1, "OwnedSlotLifetime.bolt")
+         results.append(exercise(1, 1))

@@ -1,0 +1,8 @@
+import Funke
+namespace Funke.UI;
+
+public enum ScrollRectMovementType {
+    Unrestricted = 0,
+    Elastic      = 1,
+    Clamped      = 2,
+}

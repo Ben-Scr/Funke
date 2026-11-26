@@ -1,0 +1,54 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public class GlobalSystem {
+public:
+    virtual string FkSystemName() { return ""; }
+    Entity Create2D(string name = "", Vector2 localPosition = Vector2(), float localRotationDegrees = 0.0f, Entity? parent = null) { return FunkeApiTypes.Create2D(name, localPosition, localRotationDegrees, parent); }
+    Entity Instantiate2D(Entity source, Vector2 localPosition = Vector2(), float localRotationDegrees = 0.0f, Entity? parent = null) { return FunkeApiTypes.Instantiate2D(source, localPosition, localRotationDegrees, parent); }
+    Entity Create3D(string name = "", Vector3 localPosition = Vector3(), Vector3 localRotationDegrees = Vector3(), Entity? parent = null) { return FunkeApiTypes.Create3D(name, localPosition, localRotationDegrees, parent); }
+    Entity Instantiate3D(Entity source, Vector3 localPosition = Vector3(), Vector3 localRotationDegrees = Vector3(), Entity? parent = null) { return FunkeApiTypes.Instantiate3D(source, localPosition, localRotationDegrees, parent); }
+    Entity Instantiate(Entity source, Entity? parent = null) { return FunkeApiTypes.Clone(source, parent); }
+    Entity Instantiate(Entity source, Vector3 position, float rotation = 0.0f, Entity? parent = null) { return FunkeApiTypes.Clone(source, position, rotation, parent); }
+    Entity Create(string name, Entity? parent) { return FunkeApiTypes.Create(name, parent); }
+    Entity Create(Entity source) { return FunkeApiTypes.Clone(source, null); }
+    [Inline]
+    Entity Create() { return Funke.Entity(FkCreateUnnamedEntity(0ul, 0ul)); }
+    Entity Create(string name) { return Funke.Entity.Create(name); }
+    void Destroy(Entity entity) { entity.Destroy(); }
+    void Print(string message) { Log.Print(message); }
+    public System.Threading.Tasks.Task<void> WaitForNextFrame(System.Threading.CancellationToken token=default) {return Funke.Coroutines.CoroutineContext.Wait(1,0.0f,false,null,token);}
+    public System.Threading.Tasks.Task<void> WaitForFrames(int frames, System.Threading.CancellationToken token=default) {return Funke.Coroutines.CoroutineContext.Wait(frames,0.0f,false,null,token);}
+    public System.Threading.Tasks.Task<void> WaitForSeconds(float seconds, System.Threading.CancellationToken token=default) {return Funke.Coroutines.CoroutineContext.Wait(0,seconds,false,null,token);}
+    public System.Threading.Tasks.Task<void> WaitForFixedUpdate(System.Threading.CancellationToken token=default) {return Funke.Coroutines.CoroutineContext.Wait(0,0.0f,true,null,token);}
+    public System.Threading.Tasks.Task<void> WaitUntil(System.Func<bool> predicate, System.Threading.CancellationToken token=default) {return Funke.Coroutines.CoroutineContext.Wait(0,0.0f,false,predicate,token);}
+    void RunCoroutine(System.Func<System.Threading.Tasks.Task<void>> routine) { ManagedTasks.ObserveRoutine(routine.Invoke()); }
+    private System.Threading.CancellationTokenSource? fkDestroySource;
+    protected bool fkOwnerCanceled;
+    public System.Threading.CancellationToken DestroyToken {
+        get {
+            if(fkDestroySource==null){
+                System.Threading.CancellationTokenSource source;
+                if(fkOwnerCanceled)source.Cancel();
+                fkDestroySource=source;
+            }
+            return fkDestroySource.Value.Token;
+        }
+    }
+    protected void FkCancelOwner(){fkOwnerCanceled=true; if(fkDestroySource!=null)fkDestroySource.Value.Cancel();}
+    virtual void FkCancel() { FkCancelOwner(); }
+    virtual bool FkPump(bool fixedStep, float deltaTime, ulong epoch) { return false; }
+    virtual void FkReadFields() {}
+    virtual void FkApplyFields() {}
+    virtual void OnEnable() {}
+    virtual void OnInitialize() {}
+    virtual void OnUpdate() {}
+    virtual void OnFixedUpdate() {}
+    virtual void OnDisable() {}
+    virtual void OnApplicationPaused() {}
+    virtual void OnApplicationQuit() {}
+    virtual void OnFocusChanged(bool focused) {}
+}

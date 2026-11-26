@@ -1,0 +1,11 @@
+import Funke
+import Gameplay
+
+public class ComponentTicks : EntityScript {
+    public override void OnStart() { Entity.AddNativeComponent<MotionData>(); }
+
+    public override void OnUpdate() {
+        MotionData& data = Entity.GetRefOrThrow<MotionData>();
+        data.Count += (int)data.Mode;
+    }
+}

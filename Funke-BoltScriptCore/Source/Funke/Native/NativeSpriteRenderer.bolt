@@ -1,0 +1,21 @@
+import Funke
+import Funke.Components
+namespace Funke.Native;
+
+// This type is shared with SpriteRendererComponent. Keep field order and sizes identical.
+public struct NativeSpriteRenderer : IComponent {
+public:
+    short SortingOrder;
+    byte SortingLayer;
+private:
+    byte padding;
+public:
+    Funke.Components.TextureHandle TextureHandle;
+    ulong TextureAssetId;
+    Funke.Color Color = Funke.Color(1.0f, 1.0f, 1.0f, 1.0f);
+    Funke.TextureFilter FilterMode = Funke.TextureFilter.Default;
+    ulong Material;
+    float PixelsPerUnit;
+    bool FlipX, FlipY;
+    string FkQueryKey() { return "Sprite Renderer"; }
+}

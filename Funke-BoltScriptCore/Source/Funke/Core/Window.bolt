@@ -1,0 +1,47 @@
+import System
+namespace Funke;
+
+public static class Window {
+public:
+    static event Action Resized;
+    static event Action<bool> FocusChanged;
+    static event Action Maximized;
+    static event Action Minimized;
+    static event Action Restored;
+    static void FkRaiseEvent(ulong id) {
+        if (id == 34ul) Resized.Invoke();
+        if (id == 35ul || id == 36ul) FocusChanged.Invoke(id == 35ul);
+        if (id == 37ul) Maximized.Invoke();
+        if (id == 38ul) Minimized.Invoke();
+        if (id == 39ul) Restored.Invoke();
+    }
+    static int Width => (int)FkWindow_GetWidth(0ul, 0ul);
+    static int Height => (int)FkWindow_GetHeight(0ul, 0ul);
+    static Vector2 Size => Vector2((float)Width, (float)Height);
+    static string Title {
+        get { return FunkeText.Read(FkWindow_GetTitleBuffer(0ul, 0ul)); }
+        set { FkWindow_SetTitle(FunkeText.Put(value), 0ul); }
+    }
+    static Color TitlebarColor {
+        get { ulong xy = FkWindow_GetTitlebarColor(0ul, 0ul); return Color.FromParts(xy, FkReadExtra(0ul, 0ul)); }
+        set { FkWindow_SetTitlebarColor(value.LowBits(), value.HighBits()); }
+    }
+    static void Minimize() { FkWindow_Minimize(0ul, 0ul); }
+    static void Maximize() { FkWindow_Maximize(0ul, 0ul); }
+    static void Restore() { FkWindow_Restore(0ul, 0ul); }
+    static void Focus() { FkWindow_Focus(0ul, 0ul); }
+    static bool IsMaximized => FkWindow_IsMaximized(0ul, 0ul) != 0ul;
+    static bool IsFullScreen {
+        get { return FkWindow_IsFullScreen(0ul, 0ul) != 0ul; }
+        set { FkWindow_SetFullScreen(value ? 1ul : 0ul, 0ul); }
+    }
+    private static Vector2Int DecodePosition(ulong bits) {
+        return Vector2Int(Reinterpret<int>((uint)(bits & 4294967295ul)), Reinterpret<int>((uint)(bits >> 32)));
+    }
+    static Vector2Int Position {
+        get { return DecodePosition(FkWindow_GetPosition(0ul, 0ul)); }
+        set { FkWindow_SetPosition((ulong)Reinterpret<uint>(value.X), (ulong)Reinterpret<uint>(value.Y)); }
+    }
+    static Vector2Int WindowCenter => Vector2Int(Width / 2, Height / 2);
+    static Vector2Int ScreenCenter => DecodePosition(FkWindow_GetScreenSize(0ul, 0ul)) / 2;
+}

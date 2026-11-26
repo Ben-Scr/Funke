@@ -1,0 +1,9 @@
+namespace Funke;
+
+extern "C" ulong FkPolygonPoints(ulong entity, void* request, void* points);
+
+public struct FkPolygonRequest {
+public:
+    int Operation, Index, Count, Paths;
+    int* Counts;
+}

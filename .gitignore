@@ -72,11 +72,15 @@ Funke-Engine/src/Core/.EngineAbi.generated.hpp.*
 *.vcxproj.user
 *.lastbuildstate
 *.tlog
-# Agent skills are shared with every clone; everything else in these folders stays local.
+# Share agent skills and backlog Markdown. Keep local evidence and agent settings private.
 .claude/*
 !.claude/skills/
 .agents/*
 !.agents/skills/
+!.agents/backlogs/
+.agents/backlogs/**
+!.agents/backlogs/**/
+!.agents/backlogs/**/*.md
 .scratch/
 scripts/funke-build-env.bat
 

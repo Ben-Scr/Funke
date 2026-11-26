@@ -1,0 +1,5 @@
+import Funke
+public class GlobalCounter : GlobalSystem {
+    public override void OnInitialize() { Log.Info("Bolt global initialized"); }
+    public override void OnUpdate() { Log.Info("Bolt global update"); }
+}

@@ -1,4 +1,5 @@
 using Funke.Interop;
+using System;
 
 namespace Funke.Graphics;
 
@@ -63,6 +64,81 @@ public static class Gizmo
     /// <summary>World-space 3D line, depth-tested against scene meshes.</summary>
     public static void DrawLine(Vector3 start, Vector3 end)
         => InternalCalls.Gizmo_DrawLine3D(start.X, start.Y, start.Z, end.X, end.Y, end.Z);
+
+    public static void DrawRay(Ray ray, float distance) => DrawLine(ray.Origin, ray.Direction, distance);
+
+    public static void DrawAxes(Vector3 origin, Quaternion rotation, float length)
+    {
+        DrawLine(origin, rotation * Vector3.Right, length);
+        DrawLine(origin, rotation * Vector3.Up, length);
+        DrawLine(origin, rotation * Vector3.Forward, length);
+    }
+
+    public static void DrawArrow(Vector3 start, Vector3 end, float headLength)
+    {
+        if (!float.IsFinite(headLength) || headLength < 0) throw new ArgumentOutOfRangeException(nameof(headLength));
+        Vector3 displacement = end - start;
+        if (!Vector3.TryNormalize(displacement, out Vector3 direction)) return;
+        DrawLine(start, end);
+        float size = Math.Min(headLength, displacement.Length());
+        if (size == 0) return;
+        Vector3 side = Perpendicular(direction) * (size * 0.5f);
+        Vector3 baseCenter = end - size * direction;
+        DrawLine(end, baseCenter + side);
+        DrawLine(end, baseCenter - side);
+    }
+
+    /// <summary>Wire capsule between the centers of its two hemispheres.</summary>
+    public static void DrawCapsule(Vector3 a, Vector3 b, float radius, int segments = 24)
+    {
+        if (!float.IsFinite(radius) || radius < 0) throw new ArgumentOutOfRangeException(nameof(radius));
+        if (segments < 4 || segments > 128) throw new ArgumentOutOfRangeException(nameof(segments));
+        if (!Vector3.TryNormalize(b - a, out Vector3 axis)) { DrawSphere(a, radius, segments); return; }
+        if (radius == 0) { DrawLine(a, b); return; }
+        Vector3 u = Perpendicular(axis), v = Vector3.Cross(axis, u);
+        Vector3 last = radius * u;
+        for (int i = 1; i <= segments; i++)
+        {
+            float t = MathF.Tau * i / segments;
+            Vector3 next = radius * (u * MathF.Cos(t) + v * MathF.Sin(t));
+            DrawLine(a + last, a + next);
+            DrawLine(b + last, b + next);
+            last = next;
+        }
+        foreach (Vector3 radial in (ReadOnlySpan<Vector3>)[u, v])
+        {
+            DrawLine(a + radius * radial, b + radius * radial);
+            DrawLine(a - radius * radial, b - radius * radial);
+            Vector3 previousA = a + radius * radial, previousB = b + radius * radial;
+            for (int i = 1; i <= segments / 2; i++)
+            {
+                float t = MathF.PI * i / (segments / 2);
+                Vector3 offset = (radius * MathF.Cos(t)) * radial;
+                Vector3 cap = (radius * MathF.Sin(t)) * axis;
+                Vector3 nextA = a + offset - cap, nextB = b + offset + cap;
+                DrawLine(previousA, nextA);
+                DrawLine(previousB, nextB);
+                previousA = nextA;
+                previousB = nextB;
+            }
+        }
+    }
+
+    private static Vector3 Perpendicular(Vector3 axis) =>
+        Vector3.Cross(axis, MathF.Abs(axis.Y) < 0.9f ? Vector3.Up : Vector3.Right).Normalized();
+
+    /// <summary>Near and far loops consist of four matching world-space corners in cyclic order.</summary>
+    public static void DrawFrustum(ReadOnlySpan<Vector3> nearCorners, ReadOnlySpan<Vector3> farCorners)
+    {
+        if (nearCorners.Length != 4 || farCorners.Length != 4) throw new ArgumentException("Four corners per plane are required.");
+        for (int i = 0; i < 4; i++)
+        {
+            int next = (i + 1) % 4;
+            DrawLine(nearCorners[i], nearCorners[next]);
+            DrawLine(farCorners[i], farCorners[next]);
+            DrawLine(nearCorners[i], farCorners[i]);
+        }
+    }
 
     /// <summary>Draws a 3D line of the given distance along direction (need not be normalized). A zero direction draws nothing.</summary>
     public static void DrawLine(Vector3 start, Vector3 direction, float distance)

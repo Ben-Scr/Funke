@@ -1,0 +1,17 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public class AnimationClip {
+private:
+    ulong guid;
+public:
+    ulong UUID => guid;
+    ulong FkKind() { return 12ul; }
+    void FkSetGuid(ulong value) { guid = value; }
+    static AnimationClip? FromAssetUUID(ulong guid) { if (guid == 0ul) return null; AnimationClip value; value.FkSetGuid(guid); return value; }
+    bool Equals(AnimationClip? other) { return other != null && UUID == other.Value.UUID; }
+    int GetHashCode() { return Reinterpret<int>((uint)((guid ^ (guid >> 32)) & 4294967295ul)); }
+}

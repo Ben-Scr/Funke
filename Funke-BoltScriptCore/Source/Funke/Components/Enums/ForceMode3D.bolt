@@ -1,0 +1,16 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public enum ForceMode3D {
+    
+    Force = 0,
+    
+    Impulse = 1,
+    
+    Acceleration = 2,
+    
+    VelocityChange = 3,
+}

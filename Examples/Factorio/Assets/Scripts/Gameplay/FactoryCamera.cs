@@ -11,7 +11,7 @@ public sealed class FactoryCamera : EntityScript
     public override void OnUpdate()
     {
         var s = FactorySession.Instance;
-        if (s?.Rules == null || s.Paused || Camera == null || Transform == null) return;
+        if (s?.Rules == null || s.Paused || FactoryInventoryPanel.Instance?.IsOpen == true || Camera == null || Transform == null) return;
         var p = Transform.Position + Input.GetAxis() * (PanSpeed * Time.UnscaledDeltaTime);
         if (UIPointer.HoveredEntity == null)
         {

@@ -91,7 +91,13 @@ namespace Funke {
 		// Created before the worker so Stop() can signal it to break WaitForMultipleObjects at once.
 		m_NativeStopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
 #endif
+#if FNK_PLATFORM_HAS_THREADS
 		m_Worker = std::thread(&FileWatcher::WorkerMain, this);
+#else
+		// Browser builds use the editor's Poll calls instead of a native worker.
+		m_FileTimestamps = BuildSnapshot();
+		m_NextPoll = std::chrono::steady_clock::now() + std::chrono::milliseconds(m_PollIntervalMs.load());
+#endif
 		FNK_CORE_INFO_TAG("FileWatcher", "Watching {} for {} pattern(s)", m_WatchDescription, patterns.size());
 	}
 
@@ -128,6 +134,14 @@ namespace Funke {
 	void FileWatcher::Poll(float pollIntervalSeconds) {
 		const int pollIntervalMs = std::max(50, static_cast<int>(pollIntervalSeconds * 1000.0f));
 		m_PollIntervalMs.store(pollIntervalMs);
+
+#if !FNK_PLATFORM_HAS_THREADS
+		const auto now = std::chrono::steady_clock::now();
+		if (m_Watching.load() && now >= m_NextPoll) {
+			m_NextPoll = now + std::chrono::milliseconds(pollIntervalMs);
+			PublishSnapshot(BuildSnapshot());
+		}
+#endif
 
 		if (!m_PendingChanges.load()) {
 			return;

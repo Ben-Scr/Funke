@@ -1,0 +1,18 @@
+import Funke
+namespace Funke.UI;
+
+public enum UITransitionMode {
+    
+    
+    
+    ColorSwap  = 0,
+
+    
+    
+    
+    
+    SpriteSwap = 1,
+
+    
+    None       = 2,
+}

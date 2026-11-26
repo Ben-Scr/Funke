@@ -84,6 +84,7 @@ namespace Funke {
 		ApplyPhysicsDefaults();
 #if FUNKE_WITH_APPLICATION
 		// Pure static setters, safe even before FontManager::Initialize.
+        FontManager::SetFallbackFonts(s_CurrentProject ? s_CurrentProject->FontFallbackAssets : std::vector<uint64_t>{});
 		if (s_CurrentProject) {
 			FontManager::SetBakeStep(s_CurrentProject->FontBakeStep);
 			FontManager::SetAtlasMemoryBudgetMB(s_CurrentProject->FontAtlasBudgetMB);

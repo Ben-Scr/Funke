@@ -1,0 +1,21 @@
+import System
+import System.Threading
+import System.Threading.Tasks
+namespace Funke.Jobs;
+
+public struct JobContext {
+public:
+    Funke.EntityCommandBuffer.ParallelWriter Ecb;
+    float DeltaTime;
+    int FrameNumber;
+    uint BaseSeed;
+    JobContext(Funke.EntityCommandBuffer.ParallelWriter ecb,float deltaTime,int frameNumber,uint baseSeed){
+        Ecb=ecb;DeltaTime=deltaTime;FrameNumber=frameNumber;BaseSeed=baseSeed;
+    }
+    JobRandom GetRng(){return JobRandom.ForCurrentWorker(BaseSeed,FrameNumber);}
+    static JobContext ForFrame(Funke.EntityCommandBuffer.ParallelWriter ecb,uint baseSeed=0u){
+        int frame=Funke.Time.FrameCount;
+        uint seed=baseSeed==0u?(uint)frame*2654435761u:baseSeed;
+        return JobContext(ecb,Funke.Time.DeltaTime,frame,seed==0u?1u:seed);
+    }
+}

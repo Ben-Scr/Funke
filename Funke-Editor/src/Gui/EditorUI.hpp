@@ -77,8 +77,7 @@ namespace Funke::EditorUI {
 	bool BeginTabItem(const char* label, bool* open = nullptr, ImGuiTabItemFlags flags = 0);
 	void EndTabItem();
 
-	// Call before Begin() of a floating tool window: centers it and sizes it to `screenFraction` of the main
-	// viewport at the given aspect ratio each time it appears (user resizes hold while it stays open).
+	// Set the initial floating size and position before Begin(). Saved layouts take precedence.
 	void NextWindowDefaultSize(float screenFraction = 0.6f, float aspect = 16.0f / 9.0f);
 
 	// Panel toolbar strip: consistent padding, frame-height items laid out with SameLine, hairline below.
@@ -115,6 +114,8 @@ namespace Funke::EditorUI {
 
 	// Wrapped status/validation line in a tone colour.
 	void StatusText(Tone tone, const char* text);
+
+	void DrawToast(const char* text, const char* iconName, float elapsed, const ImVec2& topCenter);
 
 	// ── Dialogs ─────────────────────────────────────────────────────
 

@@ -859,6 +859,43 @@ internal static unsafe class InternalCalls
         fixed (byte* ptr = buf) return NativeCallbacks.Bindings.Entity_GetComponentSize(ptr);
     }
 
+    internal static ulong Scene_BeginJobQueryBorrow(string scene, string writes, string reads)
+    {
+        if (NativeCallbacks.Bindings.Scene_BeginJobQueryBorrow == null)
+            throw new InvalidOperationException("Query jobs require matching engine bindings. " + Funke.Components.ComponentTypes.RebuildWorkflow);
+        byte[] s = EncodeUtf8Z(scene), w = EncodeUtf8Z(writes), r = EncodeUtf8Z(reads);
+        fixed (byte* ps = s, pw = w, pr = r) return NativeCallbacks.Bindings.Scene_BeginJobQueryBorrow(ps, pw, pr);
+    }
+
+    internal static void Scene_EndJobQueryBorrow(ulong token) => NativeCallbacks.Bindings.Scene_EndJobQueryBorrow(token);
+
+    internal static ulong Scene_BeginQueryBorrow(string? sceneName)
+    {
+        if (NativeCallbacks.Bindings.Scene_BeginQueryBorrow == null)
+            throw new InvalidOperationException("QueryRef requires matching engine bindings. " + Funke.Components.ComponentTypes.RebuildWorkflow);
+        byte[] name = EncodeUtf8Z(sceneName ?? "");
+        fixed (byte* p = name) return NativeCallbacks.Bindings.Scene_BeginQueryBorrow(p);
+    }
+
+    internal static void Scene_EndQueryBorrow(ulong token)
+    {
+        if (token > 1) NativeCallbacks.Bindings.Scene_EndQueryBorrow(token);
+    }
+
+    internal static bool Entity_CaptureComponent(ulong id, string name, ulong* identity)
+    {
+        if (NativeCallbacks.Bindings.Entity_CaptureComponent == null) return false;
+        byte[] encoded = EncodeUtf8Name(name);
+        fixed (byte* p = encoded) return NativeCallbacks.Bindings.Entity_CaptureComponent(id, p, identity) != 0;
+    }
+
+    internal static bool Entity_TransferComponent(ulong id, string name, ulong* identity, void* value, int size, bool write)
+    {
+        if (NativeCallbacks.Bindings.Entity_TransferComponent == null) return false;
+        byte[] encoded = EncodeUtf8Name(name);
+        fixed (byte* p = encoded) return NativeCallbacks.Bindings.Entity_TransferComponent(id, p, identity, value, size, write ? 1 : 0) != 0;
+    }
+
     internal static int Scene_OpenQueryView(
         string? sceneName,
         string? writeNames,
@@ -2323,6 +2360,26 @@ internal static unsafe class InternalCalls
     internal static Vector3 Transform3D_GetScale(ulong id) => ReadVector3(id, NativeCallbacks.Bindings.Transform3D_GetScale);
     internal static void Transform3D_SetScale(ulong id, Vector3 v) => NativeCallbacks.Bindings.Transform3D_SetScale(id, v.X, v.Y, v.Z);
     internal static Vector3 Transform3D_GetWorldPosition(ulong id) => ReadVector3(id, NativeCallbacks.Bindings.Transform3D_GetWorldPosition);
+    internal static ulong CameraFollowRig_GetTarget(ulong id) => NativeCallbacks.Bindings.CameraFollowRig_GetTarget(id);
+    internal static bool CameraFollowRig_SetTarget(ulong id, ulong target) => NativeCallbacks.Bindings.CameraFollowRig_SetTarget(id, target) != 0;
+    internal static Vector3 CameraFollowRig_GetOffset(ulong id) => ReadVector3(id, NativeCallbacks.Bindings.CameraFollowRig_GetOffset);
+    internal static void CameraFollowRig_SetOffset(ulong id, Vector3 v) => NativeCallbacks.Bindings.CameraFollowRig_SetOffset(id, v.X, v.Y, v.Z);
+    internal static float CameraFollowRig_GetDamping(ulong id) => NativeCallbacks.Bindings.CameraFollowRig_GetDamping(id);
+    internal static void CameraFollowRig_SetDamping(ulong id, float value) => NativeCallbacks.Bindings.CameraFollowRig_SetDamping(id, value);
+    internal static bool CameraFollowRig_GetOrbit(ulong id) => NativeCallbacks.Bindings.CameraFollowRig_GetOrbit(id) != 0;
+    internal static void CameraFollowRig_SetOrbit(ulong id, bool value) => NativeCallbacks.Bindings.CameraFollowRig_SetOrbit(id, value ? 1 : 0);
+    internal static float CameraFollowRig_GetYaw(ulong id) => NativeCallbacks.Bindings.CameraFollowRig_GetYaw(id);
+    internal static void CameraFollowRig_SetYaw(ulong id, float value) => NativeCallbacks.Bindings.CameraFollowRig_SetYaw(id, value);
+    internal static float CameraFollowRig_GetPitch(ulong id) => NativeCallbacks.Bindings.CameraFollowRig_GetPitch(id);
+    internal static void CameraFollowRig_SetPitch(ulong id, float value) => NativeCallbacks.Bindings.CameraFollowRig_SetPitch(id, value);
+    internal static float CameraFollowRig_GetDistance(ulong id) => NativeCallbacks.Bindings.CameraFollowRig_GetDistance(id);
+    internal static void CameraFollowRig_SetDistance(ulong id, float value) => NativeCallbacks.Bindings.CameraFollowRig_SetDistance(id, value);
+    internal static bool CameraFollowRig_GetLookAtTarget(ulong id) => NativeCallbacks.Bindings.CameraFollowRig_GetLookAtTarget(id) != 0;
+    internal static void CameraFollowRig_SetLookAtTarget(ulong id, bool value) => NativeCallbacks.Bindings.CameraFollowRig_SetLookAtTarget(id, value ? 1 : 0);
+    internal static void CameraFollowRig_Reset(ulong id) => NativeCallbacks.Bindings.CameraFollowRig_Reset(id);
+
+    internal static Vector3 Transform3D_GetRight(ulong id) => ReadVector3(id, NativeCallbacks.Bindings.Transform3D_GetRight);
+    internal static Vector3 Transform3D_GetUp(ulong id) => ReadVector3(id, NativeCallbacks.Bindings.Transform3D_GetUp);
     internal static Vector3 Transform3D_GetForward(ulong id) => ReadVector3(id, NativeCallbacks.Bindings.Transform3D_GetForward);
 
     internal static bool Camera3D_GetPostProcessingEnabled(ulong id) => NativeCallbacks.Bindings.Camera3D_GetPostProcessingEnabled(id) != 0;
@@ -2582,7 +2639,10 @@ internal static unsafe class InternalCalls
     internal static bool Camera3D_ScreenPointToRay(ulong id, Vector2 screenPoint, out Ray ray)
     {
         float* v = stackalloc float[6];
-        if (NativeCallbacks.Bindings.Camera3D_ScreenPointToRay(id, screenPoint.X, screenPoint.Y, v, 6) == 0)
+        if (NativeCallbacks.Bindings.Camera3D_ScreenPointToRay(id, screenPoint.X, screenPoint.Y, v, 6) == 0
+            || !Vector3.IsFinite(new Vector3(v[0], v[1], v[2]))
+            || !Vector3.IsFinite(new Vector3(v[3], v[4], v[5]))
+            || !(new Vector3(v[3], v[4], v[5]).LengthSquared() > Mathf.Epsilon * Mathf.Epsilon))
         {
             ray = new Ray(new Vector3(0f), new Vector3(0f, 0f, -1f));
             return false;
@@ -2598,4 +2658,19 @@ internal static unsafe class InternalCalls
         screen = new Vector3(v[0], v[1], v[2]);
         return inFront != 0;
     }
+
+    internal static int MeshRenderer_GetMaterialSlotCount(ulong id, int kind)
+        => NativeCallbacks.Bindings.MeshRenderer_GetMaterialSlotCount(id, kind);
+    internal static string MeshRenderer_GetMaterialSlotName(ulong id, int kind, int slot)
+    {
+        int required = NativeCallbacks.Bindings.MeshRenderer_GetMaterialSlotName(id, kind, slot, null, 0);
+        if (required <= 0) return "";
+        byte[] buffer = new byte[required + 1];
+        fixed (byte* p = buffer)
+            return DecodeNativeString(buffer, NativeCallbacks.Bindings.MeshRenderer_GetMaterialSlotName(id, kind, slot, p, buffer.Length));
+    }
+    internal static ulong MeshRenderer_GetMaterialSlotOverride(ulong id, int kind, int slot)
+        => NativeCallbacks.Bindings.MeshRenderer_GetMaterialSlotOverride(id, kind, slot);
+    internal static bool MeshRenderer_SetMaterialSlotOverride(ulong id, int kind, int slot, ulong guid)
+        => NativeCallbacks.Bindings.MeshRenderer_SetMaterialSlotOverride(id, kind, slot, guid) != 0;
 }

@@ -1,0 +1,102 @@
+import System
+namespace Funke;
+
+public static class Application {
+public:
+    static event Action Started;
+    static event Action OnStart;
+    static event Action Paused;
+    static event Action OnPaused;
+    static event Action Quitting;
+    static event Action OnQuit;
+    static event Action PlayModeExited;
+    static event Action OnPlayModeExited;
+
+    static void FkRaiseEvent(ulong eventId) {
+        if (eventId == 30ul) { Started.Invoke(); OnStart.Invoke(); }
+        if (eventId == 31ul) { Paused.Invoke(); OnPaused.Invoke(); }
+        if (eventId == 32ul) { Quitting.Invoke(); OnQuit.Invoke(); }
+        if (eventId == 33ul) { PlayModeExited.Invoke(); OnPlayModeExited.Invoke(); }
+    }
+    static float Fps => Reinterpret<float>((uint)FkApplication_GetFps(0ul, 0ul));
+    static float TargetFrameRate {
+        get { return Reinterpret<float>((uint)FkApplication_GetTargetFrameRate(0ul, 0ul)); }
+        set { FkApplication_SetTargetFrameRate((ulong)Reinterpret<uint>(value), 0ul); }
+    }
+    static bool VsyncEnabled {
+        get { return FkApplication_GetVsyncEnabled(0ul, 0ul) != 0ul; }
+        set { FkApplication_SetVsyncEnabled(value ? 1ul : 0ul, 0ul); }
+    }
+    static bool RunningInBackground {
+        get { return FkApplication_GetRunInBackground(0ul, 0ul) != 0ul; }
+        set { FkApplication_SetRunInBackground(value ? 1ul : 0ul, 0ul); }
+    }
+    static bool IsEditor => FkApplication_IsEditor(0ul, 0ul) != 0ul;
+    static bool IsAutomatedRun => FkApplication_IsAutomatedRun(0ul, 0ul) != 0ul;
+    static Funke.Platform Platform => (Funke.Platform)FkApplication_GetPlatform(0ul, 0ul);
+    static bool IsSimulatingPlatform => IsEditor && Platform != Engine.Platform;
+    static int ProcessorCount => (int)FkApplication_GetProcessorCount(0ul, 0ul);
+    static int ScreenWidth => (int)FkApplication_GetScreenWidth(0ul, 0ul);
+    static int ScreenHeight => (int)FkApplication_GetScreenHeight(0ul, 0ul);
+    static float AspectRatio {
+        get { int height = ScreenHeight; return height > 0 ? (float)ScreenWidth / (float)height : 1.0f; }
+    }
+    static SafeAreaInsets SafeArea {
+        get {
+            Vector2 first = Vector2.FromBits(FkApplication_GetSafeAreaInsets(0ul, 0ul));
+            Vector2 last = Vector2.FromBits(FkReadExtra(0ul, 0ul));
+            return SafeAreaInsets(first.X, first.Y, last.X, last.Y);
+        }
+    }
+    static string ClipboardString {
+        get { return FunkeText.Read(FkApplication_GetClipboardStringBuffer(0ul, 0ul)); }
+        set { FkApplication_SetClipboardString(FunkeText.Put(value), 0ul); }
+    }
+    static void RequestPermission(string permission) { FkApplication_RequestPermission(FunkeText.Put(permission), 0ul); }
+    static PermissionState GetPermissionState(string permission) {
+        return (PermissionState)FkApplication_GetPermissionState(FunkeText.Put(permission), 0ul);
+    }
+    static string PersistentDataPath => DataDirectory(0ul);
+    static string TemporaryCachePath => DataDirectory(1ul);
+    private static string DataDirectory(ulong temporary) {
+        ulong size = FkApplicationDataDirectory(temporary, 0ul);
+        if (size == 0ul) throw System.InvalidOperationException("Could not open game data directory.");
+        return FunkeText.Read(size);
+    }
+    static string Name => FunkeText.Read(FkApplication_GetNameBuffer(0ul, 0ul));
+    static string Version => FunkeText.Read(FkApplication_GetVersionBuffer(0ul, 0ul));
+    static string Company => FunkeText.Read(FkApplication_GetCompanyBuffer(0ul, 0ul));
+    static string DataPath => FunkeText.Read(FkApplication_GetDataPathBuffer(0ul, 0ul));
+    static string PrefsProfile => FunkeText.Read(FkApplication_GetPrefsProfileBuffer(0ul, 0ul));
+    static void Quit() { FkApplication_Quit(0ul, 0ul); }
+    static void Reload() { FkApplication_Reload(0ul, 0ul); }
+    static void Restart() { FkApplication_Restart(0ul, 0ul); }
+}
+
+public enum PermissionState { Unknown, Pending, Granted, Denied }
+
+public struct SafeAreaInsets {
+public:
+    float Left, Top, Right, Bottom;
+    SafeAreaInsets(float left, float top, float right, float bottom) : Left(left), Top(top), Right(right), Bottom(bottom) {}
+    bool IsZero => Left <= 0.0f && Top <= 0.0f && Right <= 0.0f && Bottom <= 0.0f;
+    void Deconstruct(float& left, float& top, float& right, float& bottom) {
+        left = Left; top = Top; right = Right; bottom = Bottom;
+    }
+    bool Equals(SafeAreaInsets other) {
+        return (Left == other.Left || (Left != Left && other.Left != other.Left)) && (Top == other.Top || (Top != Top && other.Top != other.Top)) && (Right == other.Right || (Right != Right && other.Right != other.Right)) && (Bottom == other.Bottom || (Bottom != Bottom && other.Bottom != other.Bottom));
+    }
+    static bool operator ==(SafeAreaInsets a, SafeAreaInsets b) { return a.Equals(b); }
+    static bool operator !=(SafeAreaInsets a, SafeAreaInsets b) { return !a.Equals(b); }
+    int GetHashCode() {
+        int hash = -2128831035;
+        hash = FkNumberFormat.Hash(hash, Left != Left ? Reinterpret<float>(2143289344u) : Left);
+        hash = FkNumberFormat.Hash(hash, Top != Top ? Reinterpret<float>(2143289344u) : Top);
+        hash = FkNumberFormat.Hash(hash, Right != Right ? Reinterpret<float>(2143289344u) : Right);
+        hash = FkNumberFormat.Hash(hash, Bottom != Bottom ? Reinterpret<float>(2143289344u) : Bottom);
+        return hash;
+    }
+    string ToString() {
+        return "SafeAreaInsets { Left = " + (string)Left + ", Top = " + (string)Top + ", Right = " + (string)Right + ", Bottom = " + (string)Bottom + " }";
+    }
+}

@@ -16,15 +16,29 @@
 namespace Funke {
 	namespace {
 		namespace fs = std::filesystem;
+		// Recovery adds several UUID directories to the original project path.
+		// Use extended Windows paths only at the I/O boundary; registry identities
+		// and containment comparisons must keep their normal, unprefixed spelling.
+		fs::path IoPath(const fs::path& path) {
+#ifdef FNK_PLATFORM_WINDOWS
+			if (path.empty()) return path;
+			const auto native = fs::absolute(path).lexically_normal().make_preferred().native();
+			if (native.starts_with(L"\\\\?\\")) return fs::path(native);
+			if (native.starts_with(L"\\\\")) return fs::path(L"\\\\?\\UNC\\" + native.substr(2));
+			return fs::path(L"\\\\?\\" + native);
+#else
+			return path;
+#endif
+		}
 		bool Exists(const fs::path& path) {
 			std::error_code error;
-			const auto status = fs::symlink_status(path, error);
+			const auto status = fs::symlink_status(IoPath(path), error);
 			if (error && error != std::errc::no_such_file_or_directory) throw fs::filesystem_error("Inspect asset", path, error);
 			return fs::exists(status);
 		}
 		void RejectLinks(const fs::path& path) {
 			for (auto part = path; !part.empty(); part = part.parent_path()) {
-				if (Exists(part) && fs::is_symlink(fs::symlink_status(part))) {
+				if (Exists(part) && fs::is_symlink(fs::symlink_status(IoPath(part)))) {
 #ifdef FNK_PLATFORM_MACOS
 					// macOS system aliases are outside the asset tree and have fixed destinations.
 					if (part == "/var" || part == "/tmp" || part == "/etc") {
@@ -36,7 +50,7 @@ namespace Funke {
 					throw std::runtime_error("Asset undo does not follow links: " + Path::ToUtf8(part));
 				}
 #ifdef FNK_PLATFORM_WINDOWS
-				const auto attributes = GetFileAttributesW(part.c_str());
+				const auto attributes = GetFileAttributesW(IoPath(part).c_str());
 				if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_REPARSE_POINT)) throw std::runtime_error("Asset undo does not follow junctions: " + Path::ToUtf8(part));
 #endif
 				if (part == part.parent_path()) break;
@@ -46,7 +60,7 @@ namespace Funke {
 			RejectLinks(from);
 			RejectLinks(to.parent_path());
 #ifdef FNK_PLATFORM_WINDOWS
-			if (!MoveFileW(from.c_str(), to.c_str())) throw fs::filesystem_error("Move asset without replacing files", from, to, std::error_code(GetLastError(), std::system_category()));
+			if (!MoveFileW(IoPath(from).c_str(), IoPath(to).c_str())) throw fs::filesystem_error("Move asset without replacing files", from, to, std::error_code(GetLastError(), std::system_category()));
 #elif defined(FNK_PLATFORM_LINUX)
 			if (syscall(SYS_renameat2, AT_FDCWD, from.c_str(), AT_FDCWD, to.c_str(), 1) != 0) throw fs::filesystem_error("Move asset without replacing files", from, to, std::error_code(errno, std::generic_category()));
 #elif defined(FNK_PLATFORM_MACOS)
@@ -57,7 +71,7 @@ namespace Funke {
 		}
 		void Copy(const fs::path& from, const fs::path& to) {
 			if (!Exists(from)) return;
-			fs::copy(from, to, fs::copy_options::recursive);
+			fs::copy(IoPath(from), IoPath(to), fs::copy_options::recursive);
 		}
 		std::string Key(const fs::path& path) {
 			auto key = path.generic_string();
@@ -72,13 +86,14 @@ namespace Funke {
 		}
 		void CollectFiles(const fs::path& physical, const fs::path& logical, std::vector<std::string>& paths) {
 			if (!Exists(physical)) return;
-			if (fs::is_regular_file(physical)) {
+			if (fs::is_regular_file(IoPath(physical))) {
 				if (!AssetRegistry::IsMetaFilePath(Path::ToUtf8(logical))) paths.push_back(Path::ToUtf8(logical));
 				return;
 			}
-			for (const auto& entry : fs::recursive_directory_iterator(physical)) {
+			const auto ioRoot = IoPath(physical);
+			for (const auto& entry : fs::recursive_directory_iterator(ioRoot)) {
 				if (entry.is_regular_file()) {
-					const auto path = logical / entry.path().lexically_relative(physical);
+					const auto path = logical / entry.path().lexically_relative(ioRoot);
 					if (!AssetRegistry::IsMetaFilePath(Path::ToUtf8(path))) paths.push_back(Path::ToUtf8(path));
 				}
 			}
@@ -88,7 +103,7 @@ namespace Funke {
 	AssetFileHistory::Change::~Change() {
 		if (!Storage.empty() && !KeepRecoveryFiles) {
 			std::error_code error;
-			std::filesystem::remove_all(Storage, error);
+			std::filesystem::remove_all(IoPath(Storage), error);
 		}
 	}
 
@@ -124,14 +139,14 @@ namespace Funke {
 	std::string AssetFileHistory::Fingerprint(const std::filesystem::path& path) {
 		RejectLinks(path);
 		if (!Exists(path)) return {};
-		if (std::filesystem::is_regular_file(path)) {
+		if (std::filesystem::is_regular_file(IoPath(path))) {
 			std::string digest, error;
-			if (!Hash::Sha256OfFile(path, digest, error)) throw std::runtime_error(error);
+			if (!Hash::Sha256OfFile(IoPath(path), digest, error)) throw std::runtime_error(error);
 			return "F" + digest;
 		}
-		if (!std::filesystem::is_directory(path)) throw std::runtime_error("Unsupported asset file: " + Path::ToUtf8(path));
+		if (!std::filesystem::is_directory(IoPath(path))) throw std::runtime_error("Unsupported asset file: " + Path::ToUtf8(path));
 		std::vector<std::filesystem::path> children;
-		for (const auto& entry : std::filesystem::directory_iterator(path)) children.push_back(entry.path());
+		for (const auto& entry : std::filesystem::directory_iterator(IoPath(path))) children.push_back(path / entry.path().filename());
 		std::sort(children.begin(), children.end());
 		std::string contents;
 		for (const auto& child : children) {
@@ -144,7 +159,7 @@ namespace Funke {
 	void AssetFileHistory::Capture(Change& change, bool after) {
 		auto& signatures = after ? change.After : change.Before;
 		const auto directory = change.Storage / (after ? "after" : "before");
-		std::filesystem::create_directories(directory);
+		std::filesystem::create_directories(IoPath(directory));
 		for (size_t i = 0; i < change.Paths.size(); ++i) {
 			const auto signature = Fingerprint(change.Paths[i]);
 			const auto backup = directory / std::to_string(i);
@@ -190,8 +205,8 @@ namespace Funke {
 		auto change = Begin(paths, std::move(label));
 		change->After = std::move(change->Before);
 		change->Before.assign(change->Paths.size(), {});
-		std::filesystem::rename(change->Storage / "before", change->Storage / "after");
-		std::filesystem::create_directory(change->Storage / "before");
+		std::filesystem::rename(IoPath(change->Storage / "before"), IoPath(change->Storage / "after"));
+		std::filesystem::create_directory(IoPath(change->Storage / "before"));
 		m_Undo.push_back(std::move(change));
 		m_Redo.clear();
 		if (m_Undo.size() > 256) m_Undo.erase(m_Undo.begin());
@@ -215,8 +230,21 @@ namespace Funke {
 				+ Path::ToUtf8(change.Paths[i]) + ". Backup: " + Path::ToUtf8(snapshot / std::to_string(i)));
 		}
 		const auto transaction = change.Storage / std::to_string(static_cast<uint64_t>(UUID()));
-		std::filesystem::create_directories(transaction / "stage");
-		std::filesystem::create_directory(transaction / "parked");
+		struct TransactionDirectory {
+			std::filesystem::path Path;
+			bool Retain = false;
+			~TransactionDirectory() {
+				if (Retain) return;
+				std::error_code error;
+				std::filesystem::remove_all(Path, error);
+			}
+		};
+		auto directory = IoPath(transaction);
+		if (!std::filesystem::create_directory(directory))
+			throw std::runtime_error("Asset history transaction directory already exists: " + Path::ToUtf8(transaction));
+		TransactionDirectory cleanup{std::move(directory)};
+		std::filesystem::create_directory(IoPath(transaction / "stage"));
+		std::filesystem::create_directory(IoPath(transaction / "parked"));
 		std::vector<std::string> registryPaths;
 		for (size_t i = 0; i < change.Paths.size(); ++i) {
 			CollectFiles(change.Paths[i], change.Paths[i], registryPaths);
@@ -252,6 +280,7 @@ namespace Funke {
 				for (auto it = parked.rbegin(); it != parked.rend(); ++it) RenameExclusive(transaction / "parked" / std::to_string(*it), change.Paths[*it]);
 			}
 			catch (...) {
+				cleanup.Retain = true;
 				change.KeepRecoveryFiles = true;
 				FNK_ERROR_TAG("AssetUndo", "Recovery files retained at {}", Path::ToUtf8(transaction));
 				throw std::runtime_error("Asset history rollback could not complete. Recovery files retained at "
@@ -259,8 +288,6 @@ namespace Funke {
 			}
 			throw;
 		}
-		std::error_code error;
-		std::filesystem::remove_all(transaction, error);
 		if (change.Applied) {
 			try { change.Applied(redo); }
 			catch (const std::exception& callbackError) { FNK_ERROR_TAG("AssetUndo", "Files restored, editor refresh failed: {}", callbackError.what()); }

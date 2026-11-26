@@ -1,5 +1,6 @@
 #include "pch.hpp"
 #include "Graphics/Text/Font.hpp"
+#include "Graphics/Text/FontManager.hpp"
 
 #include "Core/Log.hpp"
 #include "Core/PlatformDetection.hpp"
@@ -16,6 +17,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <chrono>
 #include <cstring>
 #include <thread>
 #include <unordered_map>
@@ -206,6 +208,7 @@ namespace Funke {
 		std::vector<Page> Pages;
 		size_t Bytes = 0;
 		bool AtCapacity = false;
+		FontGlyphCacheStats Stats;
 
 		~FontUnicodeCache() {
 			for (const Page& page : Pages) DeregisterAtlas(page.Atlas);
@@ -575,7 +578,38 @@ namespace Funke {
 		return m_AsyncBake != nullptr;
 	}
 
-	const GlyphMetrics* Font::GetGlyph(uint32_t codepoint) const {
+	bool Font::HasGlyph(uint32_t cp) const {
+        if (!TextEncoding::IsScalar(cp) || m_StbFontInfoStorage.empty() || cp < 32 || (cp >= 127 && cp < 160)) return false;
+        if (cp < m_GlyphIndices.size()) return m_GlyphIndices[cp] != 0;
+        return stbtt_FindGlyphIndex(reinterpret_cast<const stbtt_fontinfo*>(m_StbFontInfoStorage.data()), static_cast<int>(cp)) != 0;
+    }
+
+    float Font::GetAscent() const { float a, d, h; FontManager::GetFamilyMetrics(*this, a, d, h); return a; }
+    float Font::GetDescent() const { float a, d, h; FontManager::GetFamilyMetrics(*this, a, d, h); return d; }
+    float Font::GetLineHeight() const { float a, d, h; FontManager::GetFamilyMetrics(*this, a, d, h); return h; }
+
+    const Font* Font::GetGlyphSource(uint32_t codepoint) const {
+        // Measurement/kerning must select the same replacement as GetGlyph at capacity.
+        if (m_FallbackGlyphs.size() >= k_MaxUnicodeCachedGlyphs && !m_FallbackGlyphs.contains(codepoint)) return this;
+        return FontManager::SelectGlyphFont(*this, codepoint);
+    }
+
+    const GlyphMetrics* Font::GetGlyph(uint32_t codepoint) const {
+        if (!TextEncoding::IsScalar(codepoint)) codepoint = TextEncoding::k_ReplacementCodepoint;
+        const auto* source = GetGlyphSource(codepoint);
+        if (source == this) return GetOwnGlyph(codepoint);
+        const auto* glyph = source->GetOwnGlyph(codepoint);
+        if (!glyph) return GetOwnGlyph(codepoint);
+        // Bound per-primary copies just like the Unicode cache. Reused entries are refreshed after a font reload.
+        auto& scaled = m_FallbackGlyphs[codepoint];
+        scaled = *glyph;
+        const float ratio = m_PixelSize / source->m_PixelSize;
+        scaled.Width *= ratio; scaled.Height *= ratio;
+        scaled.XOffset *= ratio; scaled.YOffset *= ratio; scaled.XAdvance *= ratio;
+        return &scaled;
+    }
+
+    const GlyphMetrics* Font::GetOwnGlyph(uint32_t codepoint) const {
 		if (m_StbFontInfoStorage.empty() || codepoint < 32 || (codepoint >= 127 && codepoint < 160)) return nullptr;
 		if (codepoint < m_Glyphs.size() && IsBakedCodepoint(codepoint) && m_GlyphIndices[codepoint] != 0) return &m_Glyphs[codepoint];
 		if (!TextEncoding::IsScalar(codepoint)) codepoint = TextEncoding::k_ReplacementCodepoint;
@@ -598,8 +632,18 @@ namespace Funke {
 		constexpr size_t k_MaxUnicodeAtlasBytes = 16 * 1024 * 1024;
 		if (cache.AtCapacity || cache.Glyphs.size() >= k_MaxUnicodeCachedGlyphs || !m_TtfBuffer) return fallback;
 		FontRaster::Glyph glyph;
-		if (!FontRaster::Rasterize(*m_TtfBuffer, m_PixelSize, codepoint, glyph)) return fallback;
+		const auto rasterStart = std::chrono::steady_clock::now();
+		const bool rasterized = FontRaster::Rasterize(*m_TtfBuffer, m_PixelSize, codepoint, glyph);
+		++cache.Stats.RasterizationAttempts;
+		cache.Stats.RasterizationMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - rasterStart).count();
+		if (!rasterized) return fallback;
 		if (!glyph.Bitmap.empty()) {
+			// Includes atlas allocation, row padding and CPU submission, even on early failure.
+			struct UploadTimer {
+				double& Total;
+				std::chrono::steady_clock::time_point Start = std::chrono::steady_clock::now();
+				~UploadTimer() { Total += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - Start).count(); }
+			} uploadTimer{ cache.Stats.UploadSubmissionMs };
 			wgpu::Device device = WebGPUBackend::GetDevice();
 			wgpu::Queue queue = WebGPUBackend::GetQueue();
 			if (!device || !queue) return fallback;
@@ -649,6 +693,7 @@ namespace Funke {
 			layout.rowsPerImage = static_cast<uint32_t>(glyph.Height);
 			wgpu::Extent3D size{ static_cast<uint32_t>(glyph.Width), static_cast<uint32_t>(glyph.Height), 1 };
 			queue.WriteTexture(&destination, upload.data(), upload.size(), &layout, &size);
+			++cache.Stats.UploadedGlyphs;
 			const float side = static_cast<float>(page->Shelf.GetSide());
 			glyph.Metrics.U0 = x / side;
 			glyph.Metrics.V0 = y / side;
@@ -659,12 +704,20 @@ namespace Funke {
 		return &cache.Glyphs.emplace(codepoint, glyph.Metrics).first->second;
 	}
 
+	FontGlyphCacheStats Font::GetGlyphCacheStats() const {
+		return m_UnicodeCache ? m_UnicodeCache->Stats : FontGlyphCacheStats{};
+	}
+
 	size_t Font::GetAtlasByteSize() const {
 		return static_cast<size_t>(m_AtlasWidth) * m_AtlasHeight
 			+ (m_UnicodeCache ? m_UnicodeCache->Bytes : 0);
 	}
 
 	float Font::GetKerning(uint32_t a, uint32_t b) const {
+        const auto* left = GetGlyphSource(a);
+        const auto* right = GetGlyphSource(b);
+        if (left != right) return 0.0f;
+        if (left != this) return left->GetKerning(a, b) * (m_PixelSize / left->m_PixelSize);
 		if (!m_HasKerning || m_StbFontInfoStorage.empty() || m_StbScale == 0.0f) return 0.0f;
 		if (a - k_KernFirst < k_KernSpan && b - k_KernFirst < k_KernSpan
 			&& m_GlyphIndices[a] != 0 && m_GlyphIndices[b] != 0) {
@@ -690,6 +743,7 @@ namespace Funke {
 	}
 
 	void Font::Cleanup() {
+        m_FallbackGlyphs.clear();
 		// Join the worker before teardown to avoid an unjoined thread if Font is destroyed mid-bake (worker holds shared_ptr to its result, but join makes teardown deterministic).
 		if (m_AsyncBake) {
 			if (m_AsyncBake->Worker.joinable()) m_AsyncBake->Worker.join();

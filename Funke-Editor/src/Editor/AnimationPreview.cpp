@@ -68,7 +68,7 @@ namespace Funke {
 	std::vector<AnimatableProperty> CollectAnimatableProperties(Scene& scene, EntityHandle root) {
 		std::vector<AnimatableProperty> out;
 		if (!scene.GetRegistry().valid(root)) return out;
-		CollectRecursive(scene, SceneManager::GetComponentRegistry(), root, {}, out);
+		CollectRecursive(scene, SceneManager::GetComponentRegistryOrBuiltIn(), root, {}, out);
 		return out;
 	}
 
@@ -154,6 +154,7 @@ namespace Funke {
 			m_ClipRuntime.reset();
 		}
 		m_Scene = scene;
+		m_FrameRegistryGeneration = SceneManager::GetComponentRegistryOrBuiltIn().GetGeneration();
 
 		ApplyEditModeAnimators(*scene);
 		if (clipRequested && m_ClipScene == scene) {
@@ -180,6 +181,11 @@ namespace Funke {
 
 	void AnimationPreview::EndFrame() {
 		if (!m_Scene) return;
+		// Recording retains descriptor pointers too. A reload between the two frame phases invalidates them.
+		if (m_FrameRegistryGeneration != SceneManager::GetComponentRegistryOrBuiltIn().GetGeneration()) {
+			Reset();
+			return;
+		}
 		Scene& scene = *m_Scene;
 		auto& registry = scene.GetRegistry();
 

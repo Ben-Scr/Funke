@@ -1,0 +1,60 @@
+import System
+import Funke
+namespace Funke.Editor;
+
+public static class EditorGUI {
+public:
+    static bool IsPlaying => FkService.EditorGUI_Query(0) != 0.0f;
+    static float AvailableWidth => FkService.EditorGUI_Query(1);
+    static float LineHeight => FkService.EditorGUI_Query(2);
+    static void Label(string text) { FkService.EditorGUI_Text(text, 0); }
+    static void HintLabel(string text) { FkService.EditorGUI_Text(text, 1); }
+    static void Heading(string text) { FkService.EditorGUI_Text(text, 2); }
+    static void WrappedLabel(string text) { FkService.EditorGUI_Text(text, 3); }
+    static bool Button(string label, float width = 0.0f, float height = 0.0f) { return FkService.EditorGUI_Button(label, width, height) != 0; }
+    static bool Toggle(string label, bool value) { return FkService.EditorGUI_Toggle(label, value ? 1 : 0) != 0; }
+    static bool Selectable(string label, bool selected = false) { return FkService.EditorGUI_Selectable(label, selected ? 1 : 0) != 0; }
+    static int Popup(string label, int selectedIndex, string[] options) {
+        string packed = "";
+        for (int i = 0; i < options.Length; i++) {
+            byte[] bytes = options[i].ToUtf8();
+            for (int j = 0; j < bytes.Length; j++)
+                if (bytes[j] == 0) throw ArgumentException("Popup options cannot contain a null character.");
+            if (i > 0) packed += "\0";
+            packed += options[i];
+        }
+        return FkService.EditorGUI_Popup(label, selectedIndex, packed, packed.ByteLength + 1);
+    }
+    static float Slider(string label, float value, float min, float max, string format = "") {
+        return FkService.EditorGUI_Slider(label, value, min, max, format);
+    }
+    static float VerticalSlider(string label, float value, float min, float max, float width = 0.0f, float height = 0.0f, string format = "") {
+        return FkService.EditorGUI_VerticalSlider(label, width, height, value, min, max, format);
+    }
+    static float FloatField(string label, float value, float dragSpeed = 0.1f) { return FkService.EditorGUI_FloatField(label, value, dragSpeed); }
+    static bool TextField(string label, string& text, int maxBytes = 256) {
+        byte[] original = text.ToUtf8();
+        int max = original.Length > maxBytes ? original.Length : maxBytes;
+        byte[] buffer = new byte[max + 1];
+        for (int i = 0; i < original.Length; i++) buffer[i] = original[i];
+        if (FkService.EditorGUI_TextField(label, &buffer[0], buffer.Length) == 0) return false;
+        int length = 0;
+        while (length < buffer.Length && buffer[length] != 0) length++;
+        text = FkService.ReadText(buffer, length);
+        return true;
+    }
+    static void ProgressBar(float fraction, string overlay = "", float width = 0.0f, float height = 0.0f) {
+        FkService.EditorGUI_ProgressBar(fraction, width, height, overlay);
+    }
+    static void Separator() { FkService.EditorGUI_Layout(0, 0.0f); }
+    static void SameLine(float spacing = -1.0f) { FkService.EditorGUI_Layout(1, spacing); }
+    static void Space(float pixels = 0.0f) { FkService.EditorGUI_Layout(2, pixels); }
+    static void BeginGroup() { FkService.EditorGUI_Layout(3, 0.0f); }
+    static void EndGroup() { FkService.EditorGUI_Layout(4, 0.0f); }
+    static void Indent(float pixels = 0.0f) { FkService.EditorGUI_Layout(5, pixels); }
+    static void Unindent() { FkService.EditorGUI_Layout(6, 0.0f); }
+    static void PopID() { FkService.EditorGUI_Layout(7, 0.0f); }
+    static void BeginDisabled(bool disabled = true) { FkService.EditorGUI_Layout(8, disabled ? 1.0f : 0.0f); }
+    static void EndDisabled() { FkService.EditorGUI_Layout(9, 0.0f); }
+    static void PushID(string id) { FkService.EditorGUI_PushId(id); }
+}

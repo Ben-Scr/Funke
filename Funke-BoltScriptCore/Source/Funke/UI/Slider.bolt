@@ -1,0 +1,52 @@
+import Funke
+namespace Funke.UI;
+
+public class Slider : Component {
+public:
+    protected override ulong FkType() { return 38ul; }
+    float Value { get { return Reinterpret<float>((uint)FkSlider_GetValue(ID, 0ul)); } set { FkSlider_SetValue(ID, (ulong)Reinterpret<uint>(value)); } }
+    float MinValue { get { return Reinterpret<float>((uint)FkSlider_GetMinValue(ID, 0ul)); } set { FkSlider_SetMinValue(ID, (ulong)Reinterpret<uint>(value)); } }
+    float MaxValue { get { return Reinterpret<float>((uint)FkSlider_GetMaxValue(ID, 0ul)); } set { FkSlider_SetMaxValue(ID, (ulong)Reinterpret<uint>(value)); } }
+    bool WholeNumbers { get { return (FkSlider_GetWholeNumbers(ID, 0ul) != 0ul); } set { FkSlider_SetWholeNumbers(ID, (value ? 1ul : 0ul)); } }
+    bool IsReadOnly { get { return (FkSlider_GetIsReadOnly(ID, 0ul) != 0ul); } set { FkSlider_SetIsReadOnly(ID, (value ? 1ul : 0ul)); } }
+    UITransitionMode TransitionMode { get { return (UITransitionMode)FkSlider_GetTransitionMode(ID, 0ul); } set { FkSlider_SetTransitionMode(ID, (ulong)value); } }
+    Vector4 NormalColor { get { return FunkeApiTypes.DecodeVector4(FkSlider_GetNormalColor(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkSlider_SetNormalColor(ID, value.LowBits()); } }
+    Vector4 HoveredColor { get { return FunkeApiTypes.DecodeVector4(FkSlider_GetHoveredColor(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkSlider_SetHoveredColor(ID, value.LowBits()); } }
+    Vector4 PressedColor { get { return FunkeApiTypes.DecodeVector4(FkSlider_GetPressedColor(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkSlider_SetPressedColor(ID, value.LowBits()); } }
+    Vector4 DisabledColor { get { return FunkeApiTypes.DecodeVector4(FkSlider_GetDisabledColor(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkSlider_SetDisabledColor(ID, value.LowBits()); } }
+    Vector4 FocusedColor { get { return FunkeApiTypes.DecodeVector4(FkSlider_GetFocusedColor(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkSlider_SetFocusedColor(ID, value.LowBits()); } }
+    Funke.Entity? BackgroundEntity { get { return Funke.Entity.FromId(FkSlider_GetBackgroundEntity(ID, 0ul)); } set { ulong id = 0ul; if (value != null) id = value.Value.ID; FkSlider_SetBackgroundEntity(ID, id); } }
+    Funke.Entity? FillEntity { get { return Funke.Entity.FromId(FkSlider_GetFillEntity(ID, 0ul)); } set { ulong id = 0ul; if (value != null) id = value.Value.ID; FkSlider_SetFillEntity(ID, id); } }
+    Funke.Entity? HandleEntity { get { return Funke.Entity.FromId(FkSlider_GetHandleEntity(ID, 0ul)); } set { ulong id = 0ul; if (value != null) id = value.Value.ID; FkSlider_SetHandleEntity(ID, id); } }
+    Funke.Texture? NormalSprite { get { return Funke.Texture.FromAssetUUID(FkSlider_GetNormalSprite(ID, 0ul)); } set { ulong guid = 0ul; if (value != null) guid = value.Value.UUID; FkSlider_SetNormalSprite(ID, guid); } }
+    Funke.Texture? HoveredSprite { get { return Funke.Texture.FromAssetUUID(FkSlider_GetHoveredSprite(ID, 0ul)); } set { ulong guid = 0ul; if (value != null) guid = value.Value.UUID; FkSlider_SetHoveredSprite(ID, guid); } }
+    Funke.Texture? PressedSprite { get { return Funke.Texture.FromAssetUUID(FkSlider_GetPressedSprite(ID, 0ul)); } set { ulong guid = 0ul; if (value != null) guid = value.Value.UUID; FkSlider_SetPressedSprite(ID, guid); } }
+    Funke.Texture? DisabledSprite { get { return Funke.Texture.FromAssetUUID(FkSlider_GetDisabledSprite(ID, 0ul)); } set { ulong guid = 0ul; if (value != null) guid = value.Value.UUID; FkSlider_SetDisabledSprite(ID, guid); } }
+    Funke.Texture? FocusedSprite { get { return Funke.Texture.FromAssetUUID(FkSlider_GetFocusedSprite(ID, 0ul)); } set { ulong guid = 0ul; if (value != null) guid = value.Value.UUID; FkSlider_SetFocusedSprite(ID, guid); } }
+    float NormalizedValue {
+        get {
+            float min = MinValue;
+            float range = MaxValue - min;
+            return range != 0.0f ? (Value - min) / range : 0.0f;
+        }
+    }
+    void SetValue(float value, bool notifyEvent = true) {
+        float previous = Value;
+        Value = value;
+        FkSlider_MarkValueObserved(ID, 0ul);
+        float applied = Value;
+        if (notifyEvent && applied != previous) Events.FkChanged(applied);
+    }
+    SliderEvents& Events { get { return FkUiStore<Slider, SliderEvents>.For(ID).Get(); } }
+    WidgetEvent<float> ValueChanged {
+        get {
+            Shared<SliderEvents> state = FkUiStore<Slider, SliderEvents>.For(ID);
+            WidgetEvent<float> signal;
+            signal.FkAdd = (Action<float> h) => { state.Get().ValueChanged += h; };
+            signal.FkRemove = (Action<float> h) => { state.Get().ValueChanged -= h; };
+            return signal;
+        }
+        set {}
+    }
+    WidgetEvent<float> OnValueChanged { get { return ValueChanged; } set {} }
+}

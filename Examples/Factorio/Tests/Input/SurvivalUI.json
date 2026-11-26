@@ -1,0 +1,78 @@
+{
+  "fixedStep": 60,
+  "steps": [
+    {
+      "at": ".5s",
+      "command": "factory.assert menu"
+    },
+    {
+      "at": "1s",
+      "mouse": [
+        0.5,
+        0.433
+      ],
+      "button": "left"
+    },
+    {
+      "at": "2s",
+      "command": "factory.assert normal; factory.assert fresh"
+    },
+    {
+      "at": "2.2s",
+      "mouse": [
+        0.179,
+        0.5
+      ]
+    },
+    {
+      "at": "2.4s",
+      "key": "F",
+      "action": "down"
+    },
+    {
+      "at": "4s",
+      "key": "F",
+      "action": "up"
+    },
+    {
+      "at": "4.2s",
+      "command": "factory.assert mined"
+    },
+    {
+      "at": "4.4s",
+      "key": "E"
+    },
+    {
+      "at": "4.7s",
+      "screenshot": "survival-inventory"
+    },
+    {
+      "at": "5s",
+      "command": "factory.assert inventory; factory.assert ui-blocked"
+    },
+    {
+      "at": "5.2s",
+      "key": "Escape"
+    },
+    {
+      "at": "5.5s",
+      "command": "factory.assert closed"
+    },
+    {
+      "at": "5.7s",
+      "key": "F1"
+    },
+    {
+      "at": "6s",
+      "screenshot": "controls"
+    },
+    {
+      "at": "6.2s",
+      "command": "factory.assert paused"
+    },
+    {
+      "at": "6.5s",
+      "quit": true
+    }
+  ]
+}

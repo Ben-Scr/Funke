@@ -1,11 +1,9 @@
 ---
 name: ai-debug-logs
-description: Read the Funke engine's own log files and crash dumps instead of asking the user to paste console output. Use when the user reports a bug, crash or unexpected behaviour in the Editor, Launcher or a shipped Runtime — "check the logs", "the editor crashed", "I see a warning but can't read the console", "what went wrong". For a full debugging workflow see `funke-debug`; to launch an app and capture its log yourself see `funke-build-engine` (scripts/dev/Run.ps1).
+description: "Find the latest Funke Editor, Launcher or Runtime log and crash dump for a reported failure, including rotated logs and per-editor sessions."
 ---
 
 # Funke logs for agents
-
-Funke writes plain-text logs:
 
 | What | Where |
 |---|---|
@@ -16,12 +14,6 @@ Funke writes plain-text logs:
 
 Line format: `[HH:MM:SS] [<logger>] [<level>] [<Tag>] message` — logger is `FUNKE` (engine), `APP` (client) or `EDITOR`; level is `trace|debug|info|warning|error|critical`. Warn and above flush immediately; info may lag until shutdown.
 
-## Recipes
+## Isolate one session
 
-- Problems only: Grep `\] \[(warning|error|critical)\] ` in the log file.
-- One subsystem: Grep `\[Tag\]`, e.g. `\[AssetRegistry\]`, `\[SceneSerializer\]`, `\[ScriptSystem\]`.
-- Only the latest session: start from the last `Funke Engine <version>` / `Initializing...` line.
-- Reproduce and capture cleanly: `scripts\dev\Run.ps1` — it records only the run's lines into `bin-int\_agent\run\<App>.log` and lists new crash dumps.
-- Several editors open: `scripts\dev\Editor.ps1 logs --level warning -Project <dir>` selects one editor's process-local log buffer; the shared file can mix sessions from multiple processes.
-
-Read logs proactively when the user reports a runtime bug or after you changed code and need proof a path executed. Not needed for pure code questions.
+Start at the last `Funke Engine <version>` or `Initializing...` marker. Search for `\] \[(warning|error|critical)\] ` and narrow by tag, such as `[SceneSerializer]`. For a fresh reproduction, `scripts\dev\Run.ps1` saves just that run in `bin-int\_agent\run\<App>.log` and lists new dumps. With multiple editors open, select the process with `scripts\dev\Editor.ps1 logs --level warning -Project <dir>`.

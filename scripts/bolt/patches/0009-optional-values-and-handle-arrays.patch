@@ -1,0 +1,325 @@
+diff --git a/src/native/lowering/Layout.cpp b/src/native/lowering/Layout.cpp
+--- a/src/native/lowering/Layout.cpp
++++ b/src/native/lowering/Layout.cpp
+@@ -47,6 +47,14 @@
+             value.class_field_bytes = 0;
+             value.class_headers.clear();
+         }
++    }
++    // Class copy plans must be complete before classifying optional payloads.
++    for (const auto& name : pending_layouts) {
++        auto& value = layouts.at(name);
++        if (value.kind != native_abi::Optional || target_layouts.get("null").size != 8) continue;
++        const auto& payload = layouts.at(referred(element_type(name)));
++        value.inline_optional = payload.size <= 64 && (native_abi::scalar_storage_kind(payload.kind) ||
++            payload.plain_struct || payload.padded_field_bytes || !payload.class_headers.empty());
+     }
+     pending_layouts.clear();
+ }
+diff --git a/src/native/lowering/Lowering.hpp b/src/native/lowering/Lowering.hpp
+--- a/src/native/lowering/Lowering.hpp
++++ b/src/native/lowering/Lowering.hpp
+@@ -37,6 +37,7 @@
+     // Small value classes copy scalar fields and rebuild each static class header.
+     std::uint64_t class_field_bytes=0;
+     std::vector<std::pair<std::size_t,std::string>> class_headers;
++    bool inline_optional=false;
+     bool zero_default=false;
+     std::vector<FieldLayout> fields;
+ };
+@@ -139,6 +140,7 @@
+     void assign(const std::string&,Reg,Value);
+     void take_handle(Reg destination, Value source);
+     void copy_value(const std::string&,Reg destination,Reg source);
++    void copy_small_value(const Layout&,Reg destination,Reg source);
+     void clear_value(const std::string&,Reg address,const char* runtime_operation);
+     Value arithmetic(const std::string&,Value,Value,bool known_finite=false);
+     std::set<const Expr*> finite_operations;
+diff --git a/src/native/lowering/Values.cpp b/src/native/lowering/Values.cpp
+--- a/src/native/lowering/Values.cpp
++++ b/src/native/lowering/Values.cpp
+@@ -53,14 +53,12 @@
+ }
+ void Builder::copy_value(const std::string& t,Reg destination,Reg source) {
+     const auto& layout = lower.layout(t);
+-    const bool small_class = !layout.class_headers.empty();
+-    const bool fieldwise = small_class || layout.padded_field_bytes;
+-    const auto field_bytes = small_class ? layout.class_field_bytes : layout.padded_field_bytes;
++    const bool fieldwise = !layout.class_headers.empty() || layout.padded_field_bytes || layout.inline_optional;
+     if (!layout.plain_struct && !fieldwise) {
+         call("br_copy",Type::Void,{context,site(),type(t),destination,source});
+         return;
+     }
+-    if (layout.size > 64) {
++    if (layout.size > 64 && !layout.inline_optional) {
+         const auto whole_element = [&](Reg address) {
+             const auto it=element_tags.find(address);
+             return it!=element_tags.end() && it->second.type==t;
+@@ -83,6 +81,31 @@
+         branch(cmp("eq",destination,source),done,distinct);
+         current = distinct;
+     }
++    if (layout.inline_optional) {
++        const auto present = block(), absent = block();
++        branch(cmp("ne",load(Type::I8,source),integer(Type::I8,0)),present,absent);
++        current = present;
++        const auto& payload = lower.layout(element_type(t));
++        // Snapshot the payload before changing the tag: references can partially overlap.
++        copy_small_value(payload,offset(destination,8),offset(source,8));
++        store(destination,integer(Type::I64,1));
++        const auto end = 8 + payload.size;
++        if (end < layout.size) instruction(Op::Zero,Type::Void,{offset(destination,end)},layout.size-end);
++        jump(done);
++        current = absent;
++        instruction(Op::Zero,Type::Void,{destination},layout.size);
++    } else {
++        copy_small_value(layout,destination,source);
++    }
++    if (fieldwise) {
++        jump(done);
++        current = done;
++    }
++}
++void Builder::copy_small_value(const Layout& layout,Reg destination,Reg source) {
++    const bool small_class = !layout.class_headers.empty();
++    const auto field_bytes = small_class ? layout.class_field_bytes : layout.padded_field_bytes;
++    const bool fieldwise = small_class || layout.padded_field_bytes;
+     // Load the whole source before writing. References to overlapping storage
+     // must observe the same snapshot as a runtime value copy.
+     std::vector<std::pair<std::size_t,Reg>> parts;
+@@ -98,17 +121,14 @@
+         parts.emplace_back(pos,load(word,offset(source,pos)));
+         pos += width(word);
+     }
+-    if (fieldwise) instruction(Op::Zero,Type::Void,{destination},layout.size);
++    if (fieldwise && std::popcount(field_bytes) + layout.class_headers.size() * lower.target_layouts.get("null").size < layout.size)
++        instruction(Op::Zero,Type::Void,{destination},layout.size);
+     for (auto [pos,value] : parts) store(offset(destination,pos),value);
+     for (const auto& [pos,name] : layout.class_headers) store(offset(destination,pos),type(name));
+-    if (fieldwise) {
+-        jump(done);
+-        current = done;
+-    }
+ }
+ void Builder::clear_value(const std::string& t,Reg address,const char* operation) {
+     const auto& layout = lower.layout(t);
+-    if (layout.plain_struct || layout.padded_field_bytes || !layout.class_headers.empty()) {
++    if (layout.plain_struct || layout.padded_field_bytes || !layout.class_headers.empty() || layout.inline_optional) {
+         instruction(Op::Zero,Type::Void,{address},layout.size);
+         return;
+     }
+diff --git a/src/native/ABI.cpp b/src/native/ABI.cpp
+--- a/src/native/ABI.cpp
++++ b/src/native/ABI.cpp
+@@ -318,6 +318,18 @@
+     }
+     return covered == t->size;
+ }
++bool needs_element_drop(const BrType* t, unsigned depth = 0) noexcept {
++    if (scalar_storage(t)) return false;
++    if (depth >= 64 || t->destructor) return true;
++    if (t->kind == Optional) return !t->key || needs_element_drop(t->key, depth + 1);
++    if (t->kind != Class && t->kind != Struct) return true;
++    if (t->base && needs_element_drop(t->base, depth + 1)) return true;
++    // Class field tables include the base fields already visited above.
++    const auto inherited = t->kind == Class && t->base ? t->base->fields.size() : 0;
++    for (auto i = inherited; i < t->fields.size(); ++i)
++        if (needs_element_drop(t->fields[i].second, depth + 1)) return true;
++    return false;
++}
+ // Sequence elements are contiguous raw native values, not interpreter Values.
+ struct Sequence : BrSequenceHeader {
+     BrType* element;
+@@ -327,7 +339,7 @@
+     std::pmr::vector<std::size_t> dimensions;
+     explicit Sequence(BrType* t,bolt::memory::Arena* a=nullptr):element(t),bitwise(bitwise_sequence_element(t)),owner(a),dimensions(bolt::memory::resource(a)){}
+     ~Sequence() {
+-        clear();
++        clear(false);
+         release_storage();
+     }
+     Sequence(const Sequence& o,bolt::memory::Arena* a):element(o.element),bitwise(o.bitwise),owner(a),dimensions(o.dimensions,bolt::memory::resource(a)){
+@@ -409,16 +421,29 @@
+         if (required > capacity)
+             reserve(bolt::memory::detail::buffer_growth_capacity(capacity, required), Spare::Overwritten);
+     }
+-    void clear() noexcept {
+-        if (!bitwise)
+-            for (std::size_t i = count; i > 0; --i) drop(element, at(i - 1));
++    void clear(bool reuse = true) noexcept {
++        if (count && !bitwise) {
++            if (needs_element_drop(element)) {
++                for (std::size_t i = count; i > 0; --i) drop(element, at(i - 1));
++            } else if (reuse) {
++                std::memset(data, 0, count * element->size);
++            }
++        }
+         count = 0;
+     }
+     void truncate(std::size_t retained) noexcept {
+         // Only [0, count) is live. Add, Insert and AppendRange initialize each
+         // new element before exposing it, like the typed C++ Buffer<T>.
+-        if (bitwise) count = retained;
+-        else while (count > retained) drop(element, at(--count));
++        if (count <= retained) return;
++        if (!bitwise) {
++            if (needs_element_drop(element)) {
++                while (count > retained) drop(element, at(--count));
++                return;
++            }
++            // Clear reusable slots, including padding and inactive optional payloads.
++            std::memset(at(retained), 0, (count - retained) * element->size);
++        }
++        count = retained;
+     }
+     void add(const void* src) {
+         if (count < capacity && bitwise) {
+diff --git a/src/native/Fast.cpp b/src/native/Fast.cpp
+--- a/src/native/Fast.cpp
++++ b/src/native/Fast.cpp
+@@ -264,6 +264,14 @@
+             }
+             if(i.op==Op::Call||i.op==Op::CallIndirect){std::vector<Type> types;for(std::size_t j=i.op==Op::Call?0:1;j<i.args.size();++j)types.push_back(type(i.args[j]));std::size_t n=0;(void)arguments(types,n,windows_abi);outgoing=std::max(outgoing,n);}
+         }
++        // Field addresses of stack values can use the same frame-relative addressing as the local itself.
++        for (const auto& block : fn.blocks) for (const auto& i : block.code) {
++            if (i.op != Op::Offset || i.args.size() != 1 || i.immediate > INT32_MAX) continue;
++            const auto& base = slots[i.args[0]];
++            if (base.kind != Slot::LocalAddress) continue;
++            const auto displacement = static_cast<std::int64_t>(base.offset) + static_cast<std::int64_t>(i.immediate);
++            if (displacement <= INT32_MAX) slots[i.result] = {Slot::LocalAddress,static_cast<std::int32_t>(displacement)};
++        }
+         for (std::size_t r=1;r<slots.size();++r) {
+             if (slots[r].kind!=Slot::Value || !uses[r]) continue;
+             frame+=8;
+@@ -309,7 +317,16 @@
+             case Op::Constant:if(slots[i.result].kind==Slot::Value){immediate(ax,i.immediate);save(i.result);}break;
+             case Op::Address:address(ax,i.text);save(i.result);break;
+             case Op::Alloca:break;
+-            case Op::Offset:load(ax,i.args[0]);if(i.args.size()>1)load(cx,i.args[1]);else immediate(cx,i.immediate);byte(0x48);byte(0x01);byte(0xc8);save(i.result);break;
++            case Op::Offset:
++                if (slots[i.result].kind == Slot::LocalAddress) break;
++                load(ax,i.args[0]);
++                if (i.args.size() == 1 && i.immediate <= INT32_MAX) {
++                    lea(ax,ax,static_cast<std::int32_t>(i.immediate));
++                } else {
++                    if (i.args.size()>1) load(cx,i.args[1]); else immediate(cx,i.immediate);
++                    byte(0x48);byte(0x01);byte(0xc8);
++                }
++                save(i.result);break;
+             case Op::AtomicAdd:
+                 load(cx,i.args[0]);load(ax,i.args[1]);
+                 byte(0xf0);byte(0x48);byte(0x0f);byte(0xc1);memory(ax,cx,0);save(i.result);break;
+diff --git a/src/native/FastAarch64.cpp b/src/native/FastAarch64.cpp
+--- a/src/native/FastAarch64.cpp
++++ b/src/native/FastAarch64.cpp
+@@ -304,8 +304,13 @@
+         case Op::Alloca: address_offset(result,sp,allocations.at(i.result));save(i.result);break;
+         case Op::Offset:
+             load(left,i.args[0]);
+-            if (i.args.size()>1) load(right,i.args[1]);else immediate(right,i.immediate);
+-            emit(registers(0x8b000000u,result,left,right));save(i.result);break;
++            if (i.args.size()==1 && i.immediate < (1u<<24)) {
++                address_offset(result,left,i.immediate);
++            } else {
++                if (i.args.size()>1) load(right,i.args[1]);else immediate(right,i.immediate);
++                emit(registers(0x8b000000u,result,left,right));
++            }
++            save(i.result);break;
+         case Op::AtomicAdd: case Op::AtomicCompareExchange: {
+             load(left,i.args[0]);load(right,i.args[1]);
+             const bool cas=i.op==Op::AtomicCompareExchange;
+diff --git a/tests/NativeTests.cpp b/tests/NativeTests.cpp
+--- a/tests/NativeTests.cpp
++++ b/tests/NativeTests.cpp
+@@ -609,6 +609,51 @@
+         output("parentheses-not-casts","int a=4; int b=2; Print((a)+b); Print((a)-b); Print((a)*b);", "6\n2\n8\n");
+         output("bits-32-64","Print(Reinterpret<uint>(1.0f)); Print(Reinterpret<float>(1065353216u)); Print(Reinterpret<ulong>(1.0)); Print(Reinterpret<double>(4607182418800017408ul));", "1065353216\n1\n4607182418800017408\n1\n");
+         output("bits-signed-small","Print(Reinterpret<ushort>(short(-1))); Print(Reinterpret<short>(ushort(65535))); Print(Reinterpret<short>(ushort(65535))); Print(Reinterpret<int>(4294967295u));", "65535\n-1\n-1\n-1\n");
++        test(prefix+"sequence-drops-inherited-field-in-reverse-order",[&]{
++            check(execute(R"(
++                class Base { public: static bool Recording; static int History; int Id;
++                    ~Base() { if (Recording) History = History * 10 + Id; }
++                }
++                class Derived : Base { public: ulong Other; }
++                struct Record { public: Derived Value; }
++                static class Program { public: void Main() {
++                    Record[] records = new Record[3];
++                    for (int i=0; i<3; i++) records[i].Value.Id = i+1;
++                    Base.Recording = true;
++                    records = new Record[0];
++                    Base.Recording = false;
++                    Print(Base.History);
++                } }
++            )") == "321\n","sequence cleanup skipped or reordered inherited destructors");
++        });
++        test(prefix+"small-optional-value-copy",[&]{
++            check(execute(R"(
++                class Handle { public: ulong Id; }
++                class Owned { public: string Text; }
++                static class Program { public:
++                    void Copy(byte?& dest, const byte?& src) { dest = src; }
++                    void CopyHandle(Handle?& dest, const Handle?& src) { dest = src; }
++                    void Main() {
++                        byte? x = (byte)17; byte? y = (byte)3;
++                        byte* raw = (byte*)&x; raw[1] = (byte)99;
++                        Copy(x,x); Print(raw[1] == (byte)99);
++                        Copy(y,x); Print(y.Value == (byte)17 && ((byte*)&y)[1] == (byte)0);
++                        Handle h; h.Id = 135ul;
++                        Handle? item = h; Handle? copied; CopyHandle(copied,item);
++                        Print(copied.Value.Id == 135ul);
++                        if (sizeof(ulong*) == 8) {
++                            ulong[] words = {1ul, 37ul, 88ul};
++                            byte?& first = *((byte?*)&words[0]); byte?& next = *((byte?*)&words[1]);
++                            Copy(next,first); Print(words[1] == 1ul && words[2] == 37ul);
++                            words[2] = 51ul; Copy(first,next); Print(words[0] == 1ul && words[1] == 51ul);
++                            words[0] = 0ul; Copy(next,first); Print(words[1] == 0ul && words[2] == 0ul);
++                        } else { Print(true); Print(true); Print(true); }
++                        Owned a; a.Text = "kept"; Owned? a1 = a; Owned? a2 = a1; a1 = null;
++                        Print(a2.Value.Text);
++                    }
++                }
++            )") == "true\ntrue\ntrue\ntrue\ntrue\ntrue\nkept\n","optional tag, ownership or overlapping payload changed");
++        });
+         test(prefix+"small-class-value-copy",[&]{
+             check(execute(R"(
+                 class Base { public: byte Tag; virtual int Kind() { return 1; } }
+diff --git a/tests/ArmJitAddresses.cpp b/tests/ArmJitAddresses.cpp
+--- a/tests/ArmJitAddresses.cpp
++++ b/tests/ArmJitAddresses.cpp
+@@ -45,6 +45,27 @@
+     }
+ }
+ 
++void verify_field_offset() {
++    Module module;
++    Function fn;
++    fn.name="field_address";fn.result=Type::Ptr;fn.parameters={Type::Ptr};
++    fn.registers={Type::Void,Type::Ptr,Type::Ptr};
++    fn.blocks.emplace_back();
++    fn.blocks[0].code={{.op=Op::Offset,.result=2,.args={1},.immediate=0x123456},
++                       {.op=Op::Return,.args={2}}};
++    module.functions.push_back(std::move(fn));
++    const auto image=aarch64_image(module,ArmABI::Apple,ArmAddressing::JitLiteral);
++    for (std::size_t i=0; i+8<=image.text.size(); i+=4) {
++        std::uint32_t high,low;
++        std::memcpy(&high,image.text.data()+i,4);
++        std::memcpy(&low,image.text.data()+i+4,4);
++        if ((high & 0xfffffc00u)==(0x91400000u|(0x123u<<10)) &&
++            (low & 0xfffffc00u)==(0x91000000u|(0x456u<<10)) &&
++            ((low>>5)&31u)==(high&31u)) return;
++    }
++    throw std::runtime_error("field offset lost its high or low immediate");
++}
++
+ #if defined(__aarch64__) && defined(__linux__)
+ extern "C" int add_two(int value) {return value+2;}
+ 
+@@ -86,6 +107,7 @@
+ int main() {
+     const auto image=make_image();
+     verify_literals(image);
++    verify_field_offset();
+ #if defined(__aarch64__) && defined(__linux__)
+     execute(image);
+ #endif

@@ -1,0 +1,60 @@
+import System
+namespace Funke;
+
+public static class PlayerPrefs {
+private:
+    static int Access(int op, string key, ulong& number, byte[]& buffer) {
+        if (op < 8 && key.Length == 0) throw ArgumentException("PlayerPrefs key must not be empty.");
+        byte[] path = FkService.CString(Application.PersistentDataPath + "/prefs.json");
+        byte[] name = key.ToUtf8();
+        ulong[] args = new ulong[7];
+        args[0] = FkNativeSlot.Pointer(&path[0]);
+        args[1] = (ulong)op;
+        if (name.Length > 0) args[2] = FkNativeSlot.Pointer(&name[0]);
+        args[3] = (ulong)name.Length;
+        args[4] = FkNativeSlot.Pointer(&number);
+        if (buffer.Length > 0) args[5] = FkNativeSlot.Pointer(&buffer[0]);
+        args[6] = (ulong)buffer.Length;
+        int result = Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.PlayerPrefs_Access, &args[0], null) & 4294967295ul));
+        if (result < -1) throw InvalidOperationException("Could not access player preferences.");
+        return result;
+    }
+    static int Numeric(int op, string key, ulong& bits) {
+        byte[] empty;
+        return Access(op, key, bits, empty);
+    }
+public:
+    static void SetInt(string key, long value) { ulong bits = Reinterpret<ulong>(value); Numeric(3, key, bits); }
+    static void SetFloat(string key, double value) { ulong bits = Reinterpret<ulong>(value); Numeric(4, key, bits); }
+    static void SetString(string key, string value) { byte[] buffer = value.ToUtf8(); ulong bits = 0ul; Access(5, key, bits, buffer); }
+    static void SetBool(string key, bool value) { SetInt(key, value ? 1l : 0l); }
+    static long GetLong(string key, long defaultValue = 0l) {
+        ulong bits = 0ul;
+        return Numeric(0, key, bits) < 0 ? defaultValue : Reinterpret<long>(bits);
+    }
+    static int GetInt(string key, int defaultValue = 0) {
+        long value = GetLong(key, (long)defaultValue);
+        if (value < (long)int.MinValue) return int.MinValue;
+        if (value > (long)int.MaxValue) return int.MaxValue;
+        return (int)value;
+    }
+    static double GetDouble(string key, double defaultValue = 0.0) {
+        ulong bits = 0ul;
+        return Numeric(1, key, bits) < 0 ? defaultValue : Reinterpret<double>(bits);
+    }
+    static float GetFloat(string key, float defaultValue = 0.0f) { return (float)GetDouble(key, (double)defaultValue); }
+    static string GetString(string key, string defaultValue = "") {
+        ulong unused = 0ul;
+        byte[] buffer;
+        int length = Access(2, key, unused, buffer);
+        while (length > buffer.Length) { buffer = new byte[length]; length = Access(2, key, unused, buffer); }
+        if (length < 0) return defaultValue;
+        return FkService.ReadText(buffer, length);
+    }
+    static bool GetBool(string key, bool defaultValue = false) { return GetLong(key, defaultValue ? 1l : 0l) != 0l; }
+    static bool HasKey(string key) { ulong unused = 0ul; return Numeric(6, key, unused) != 0; }
+    static void DeleteKey(string key) { ulong unused = 0ul; Numeric(7, key, unused); }
+    static void DeleteAll() { ulong unused = 0ul; Numeric(8, "", unused); }
+    static void Save() { ulong unused = 0ul; Numeric(9, "", unused); }
+}
+

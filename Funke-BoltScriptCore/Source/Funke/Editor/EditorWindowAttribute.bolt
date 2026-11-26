@@ -1,0 +1,13 @@
+import System
+namespace Funke.Editor;
+
+public class EditorWindowAttribute : Attribute {
+private:
+    string title;
+public:
+    EditorWindowAttribute(string title, string menu = "", float width = 0.0f, float height = 0.0f)
+        : title(title), Menu(menu), Width(width), Height(height) {}
+    string Title => title;
+    string? Menu;
+    float Width, Height;
+}

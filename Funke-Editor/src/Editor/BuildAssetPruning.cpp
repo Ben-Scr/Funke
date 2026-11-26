@@ -1,5 +1,6 @@
 #include "pch.hpp"
 #include "BuildAssetPruning.hpp"
+#include "Scripting/Bolt/EntityScriptSource.hpp"
 
 #include "Assets/AssetRegistry.hpp"
 #include "Graphics/Text/FontHandle.hpp"
@@ -12,6 +13,7 @@
 #include <deque>
 #include <fstream>
 #include <iterator>
+#include <sstream>
 #include <unordered_map>
 
 namespace Funke::BuildAssetPruning {
@@ -345,6 +347,28 @@ namespace Funke::BuildAssetPruning {
 						}
 						text = text.substr(20, u32(12));
 					}
+					if (ext == ".obj" || ext == ".mtl") {
+						const auto directory = Path::FromUtf8(file.Key).parent_path();
+						std::istringstream lines(text);
+						for (std::string line; std::getline(lines, line);) {
+							line.resize(std::min(line.size(), line.find('#')));
+							std::istringstream tokens(line);
+							std::string directive, name;
+							tokens >> directive;
+							if (directive != (ext == ".obj" ? "mtllib" : "map_Kd")) continue;
+							std::getline(tokens >> std::ws, name);
+							name.erase(name.find_last_not_of(" \t\r") + 1);
+							if (name.size() >= 2 && name.front() == '"' && name.back() == '"') name = name.substr(1, name.size() - 2);
+							if (directive == "map_Kd" && name.starts_with('-')) continue;
+							const auto relative = Path::FromUtf8(name);
+							const auto dependency = RelKey((directory / relative).lexically_normal());
+							if (relative.has_root_path() || !m_ByExactKey.contains(dependency)) {
+								error = "unresolved Wavefront dependency '" + name + "' in " + file.Key;
+								return false;
+							}
+							KeepKey(dependency);
+						}
+					}
 					ScanText(text);
 					if (ext == ".gltf" || ext == ".glb") {
 						Json::Value root;
@@ -644,11 +668,19 @@ namespace Funke::BuildAssetPruning {
 				plan.Error = "native source or package dependencies require conservative asset retention";
 				return plan;
 			}
-			if (extension != ".cs") continue;
+			if (extension != ".cs" && extension != ".bolt") continue;
+			if (extension == ".bolt" && it->path().lexically_relative(inputs.AssetsRoot).generic_string().starts_with("..")) continue;
 			std::string source;
 			if (!ReadFile(it->path(), source)) {
 				plan.Error = "could not scan " + Path::ToUtf8(it->path());
 				return plan;
+			}
+			if (extension == ".bolt") {
+				auto kind = BoltScriptHost::ScriptBase::Procedural;
+				BoltScriptHost::ScriptClass(source, kind);
+				if (kind == BoltScriptHost::ScriptBase::Component || kind == BoltScriptHost::ScriptBase::NativeStruct
+                    || kind == BoltScriptHost::ScriptBase::Job)
+					reach.KeepKey(RelKey(it->path().lexically_relative(inputs.AssetsRoot)));
 			}
 			reach.ScanCSharp(source);
 		}

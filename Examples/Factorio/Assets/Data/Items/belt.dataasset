@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "type": "ItemDefinition",
+  "fields": {
+    "Id": "belt",
+    "DisplayName": "Conveyor",
+    "Icon": "3799167722807270014",
+    "SpriteName": "belt",
+    "StackSize": "100"
+  }
+}

@@ -1,0 +1,61 @@
+import Funke
+import Funke.Components
+namespace Funke.Native;
+
+// Keep this storage in the same order as Transform2DComponent. Rotation uses radians internally.
+public struct NativeTransform2D : IComponent {
+private:
+    Vector2 position;
+    Vector2 scale = Vector2(1.0f, 1.0f);
+    float rotation;
+    Vector2 localPosition;
+    Vector2 localScale = Vector2(1.0f, 1.0f);
+    float localRotation;
+    bool dirty = true;
+    void* ownerScene;
+    uint ownerEntity;
+public:
+    string FkQueryKey() { return "Transform 2D"; }
+    Vector2 Position {
+        get { return position; }
+        set { position = value; localPosition = position; dirty = true; }
+    }
+    Vector2 Scale {
+        get { return scale; }
+        set { scale = value; localScale = scale; dirty = true; }
+    }
+    float Rotation {
+        get { return rotation * Mathf.Rad2Deg; }
+        set { rotation = value * Mathf.Deg2Rad; localRotation = rotation; dirty = true; }
+    }
+    Vector2 LocalPosition {
+        get { return localPosition; }
+        set { position = value; localPosition = position; dirty = true; }
+    }
+    Vector2 LocalScale {
+        get { return localScale; }
+        set { scale = value; localScale = scale; dirty = true; }
+    }
+    float LocalRotation {
+        get { return localRotation * Mathf.Rad2Deg; }
+        set { rotation = value * Mathf.Deg2Rad; localRotation = rotation; dirty = true; }
+    }
+    bool Dirty { get { return dirty; } set { dirty = value; } }
+    Vector2 Up => Vector2(-Mathf.Sin(rotation), Mathf.Cos(rotation));
+    Vector2 Down => -Up;
+    Vector2 Right => Vector2(Mathf.Cos(rotation), Mathf.Sin(rotation));
+    Vector2 Left => -Right;
+    float RotationDegrees => Rotation;
+
+    static NativeTransform2D FromPosition(Vector2 value) { NativeTransform2D data; data.Position = value; return data; }
+    static NativeTransform2D FromScale(Vector2 value) { NativeTransform2D data; data.Scale = value; return data; }
+    static NativeTransform2D FromRotation(float degrees) { NativeTransform2D data; data.Rotation = degrees; return data; }
+    static NativeTransform2D FromPositionScaleRotation(Vector2 position, Vector2 scale, float degrees) {
+        NativeTransform2D data;
+        data.Position = position; data.Scale = scale; data.Rotation = degrees;
+        return data;
+    }
+    void SetPosition(Vector2 value) { Position = value; }
+    void SetScale(float value) { Scale = Vector2(value, value); }
+    void SetRotation(float degrees) { Rotation = degrees; }
+}

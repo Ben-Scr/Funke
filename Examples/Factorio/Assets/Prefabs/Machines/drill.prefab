@@ -1,0 +1,117 @@
+{
+  "version": 1,
+  "type": "Prefab",
+  "Entities": [
+    {
+      "uuid": "1001",
+      "name": "Mining drill",
+      "Transform2D": {
+        "posX": 0.0,
+        "posY": 0.0,
+        "rotation": 0.0,
+        "scaleX": 2,
+        "scaleY": 2
+      },
+      "SpriteRenderer": {
+        "textureAsset": "3799167722807270014",
+        "sortOrder": 10,
+        "sortLayer": 0,
+        "r": 1.0,
+        "g": 1.0,
+        "b": 1.0,
+        "a": 1.0,
+        "spriteName": "drill"
+      },
+      "Scripts": [
+        {
+          "className": "MachineNode",
+          "type": "Managed"
+        },
+        {
+          "className": "MachineVisual",
+          "type": "Managed"
+        }
+      ],
+      "ScriptFields": {
+        "MachineNode": [
+          {
+            "name": "Definition",
+            "type": "dataasset:MachineDefinition",
+            "value": "5078228165625467748"
+          },
+          {
+            "name": "GridX",
+            "type": "int",
+            "value": "0"
+          },
+          {
+            "name": "GridY",
+            "type": "int",
+            "value": "0"
+          },
+          {
+            "name": "Direction",
+            "type": "int",
+            "value": "0"
+          }
+        ],
+        "MachineVisual": [
+          {
+            "name": "Arrow",
+            "type": "entity",
+            "value": "1002"
+          },
+          {
+            "name": "Indicator",
+            "type": "component:SpriteRenderer",
+            "value": "1003:SpriteRenderer"
+          }
+        ]
+      }
+    },
+    {
+      "uuid": "1002",
+      "name": "Output direction",
+      "parentUuid": "1001",
+      "Transform2D": {
+        "posX": 0.0,
+        "posY": -0.32,
+        "rotation": 0.0,
+        "scaleX": 0.34,
+        "scaleY": 0.34
+      },
+      "SpriteRenderer": {
+        "textureAsset": "3799167722807270014",
+        "sortOrder": 15,
+        "sortLayer": 0,
+        "r": 1.0,
+        "g": 1.0,
+        "b": 1.0,
+        "a": 1.0,
+        "spriteName": "arrow"
+      }
+    },
+    {
+      "uuid": "1003",
+      "name": "Machine status",
+      "parentUuid": "1001",
+      "Transform2D": {
+        "posX": 0.33,
+        "posY": 0.33,
+        "rotation": 0.0,
+        "scaleX": 0.13,
+        "scaleY": 0.13
+      },
+      "SpriteRenderer": {
+        "textureAsset": "3799167722807270014",
+        "sortOrder": 16,
+        "sortLayer": 0,
+        "r": 1.0,
+        "g": 1.0,
+        "b": 1.0,
+        "a": 1.0,
+        "spriteName": "lamp"
+      }
+    }
+  ]
+}

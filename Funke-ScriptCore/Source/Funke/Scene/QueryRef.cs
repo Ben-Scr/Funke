@@ -51,6 +51,37 @@ internal struct QueryRefFilters
     }
 }
 
+
+// Shared by copied ref-struct enumerators: Dispose is exactly-once, and a disposed copy cannot use a recycled buffer.
+internal sealed class QueryRefLease
+{
+    private ulong token;
+    private readonly int ownerThread = Environment.CurrentManagedThreadId;
+    private bool disposed;
+    internal bool HasScene => token != 0;
+    internal void Begin(string scene) => token = InternalCalls.Scene_BeginQueryBorrow(scene);
+    internal void Check()
+    {
+        if (disposed) throw new ObjectDisposedException("QueryRef enumerator");
+        if (ownerThread != Environment.CurrentManagedThreadId)
+            throw new InvalidOperationException("QueryRef must be used and disposed on its scene thread.");
+    }
+    internal IntPtr Pointer(IntPtr[] buffer, int index) { Check(); return buffer[index]; }
+    internal bool MoveNext(ref int index, int count) { Check(); return ++index < count; }
+    internal void Dispose(IntPtr[] buffer, ulong[]? ids = null)
+    {
+        if (disposed) return;
+        Check();
+        disposed = true;
+        try { InternalCalls.Scene_EndQueryBorrow(token); }
+        finally
+        {
+            if (ids == null) QueryRefBuffers.Return(buffer);
+            else QueryRefBuffers.ReturnWithEntities(buffer, ids);
+        }
+    }
+}
+
 internal static class QueryRefBuffers
 {
     // Per-thread POOL of buffers (not a single shared array). Each active enumerator
@@ -92,54 +123,51 @@ internal static class QueryRefBuffers
         (s_EntityPool ??= new Stack<ulong[]>()).Push(entityIds);
     }
 
-    // Two-call growth: open the view with the checked-out buffer; if the native
-    // side reports more rows than fit, grow once and retry. The caller (enumerator)
-    // owns the returned buffer until its Dispose() returns it to the pool.
-    internal static unsafe (IntPtr[] buffer, int rowCount) Open(
-        ref QueryRefFilters filters, int poolCount)
+    internal static (IntPtr[] buffer, int rowCount, QueryRefLease lease) Open(ref QueryRefFilters filters, int poolCount)
     {
-        IntPtr[] buf = CheckoutPtr(64 * poolCount);
-        while (true)
+        var result = OpenCore(ref filters, poolCount, false);
+        return (result.buffer, result.rowCount, result.lease);
+    }
+
+    internal static (IntPtr[] buffer, ulong[] entityIds, int rowCount, QueryRefLease lease) OpenWithEntities(ref QueryRefFilters filters, int poolCount)
+        => OpenCore(ref filters, poolCount, true);
+
+    private static unsafe (IntPtr[] buffer, ulong[] entityIds, int rowCount, QueryRefLease lease) OpenCore(
+        ref QueryRefFilters filters, int poolCount, bool withEntities)
+    {
+        if (poolCount <= 0) throw new ArgumentOutOfRangeException(nameof(poolCount));
+        IntPtr[] buffer = CheckoutPtr(checked(64 * poolCount));
+        ulong[] ids = withEntities ? CheckoutEntityIds(64) : Array.Empty<ulong>();
+        var lease = new QueryRefLease();
+        try
         {
-            int rowCap = buf.Length / poolCount;
-            int rowCount;
-            fixed (IntPtr* p = buf)
+            lease.Begin(filters.SceneName);
+            if (!lease.HasScene) return (buffer, ids, 0, lease);
+            while (true)
             {
-                rowCount = InternalCalls.Scene_OpenQueryView(
-                    filters.SceneName, filters.WriteNames, filters.ReadonlyNames,
-                    filters.MustHaveNames, filters.WithoutNames, filters.EnableFilter,
-                    (void**)p, rowCap);
+                int capacity = buffer.Length / poolCount;
+                if (withEntities) capacity = Math.Min(capacity, ids.Length);
+                int rows;
+                fixed (IntPtr* p = buffer)
+                fixed (ulong* e = ids)
+                    rows = withEntities
+                        ? InternalCalls.Scene_OpenQueryViewWithEntities(filters.SceneName, filters.WriteNames, filters.ReadonlyNames,
+                            filters.MustHaveNames, filters.WithoutNames, filters.EnableFilter, (void**)p, e, capacity)
+                        : InternalCalls.Scene_OpenQueryView(filters.SceneName, filters.WriteNames, filters.ReadonlyNames,
+                            filters.MustHaveNames, filters.WithoutNames, filters.EnableFilter, (void**)p, capacity);
+                if (rows < 0) throw new InvalidOperationException("Native QueryRef view failed.");
+                if (rows <= capacity) return (buffer, ids, rows, lease);
+                buffer = new IntPtr[checked(rows * poolCount)];
+                if (withEntities) ids = new ulong[rows];
             }
-            if (rowCount <= rowCap) return (buf, rowCount);
-            // Grow and retry — rare path. The small checked-out buffer is dropped
-            // (GC'd); the grown buffer is what Dispose() returns to the pool, so the
-            // pool's checkout/return count stays balanced.
-            buf = new IntPtr[rowCount * poolCount];
+        }
+        catch
+        {
+            lease.Dispose(buffer, withEntities ? ids : null);
+            throw;
         }
     }
 
-    internal static unsafe (IntPtr[] buffer, ulong[] entityIds, int rowCount) OpenWithEntities(
-        ref QueryRefFilters filters, int poolCount)
-    {
-        IntPtr[] buf = CheckoutPtr(64 * poolCount);
-        ulong[] entityIds = CheckoutEntityIds(64);
-        while (true)
-        {
-            int rowCap = Math.Min(buf.Length / poolCount, entityIds.Length);
-            int rowCount;
-            fixed (IntPtr* p = buf)
-            fixed (ulong* e = entityIds)
-            {
-                rowCount = InternalCalls.Scene_OpenQueryViewWithEntities(
-                    filters.SceneName, filters.WriteNames, filters.ReadonlyNames,
-                    filters.MustHaveNames, filters.WithoutNames, filters.EnableFilter,
-                    (void**)p, e, rowCap);
-            }
-            if (rowCount <= rowCap) return (buf, entityIds, rowCount);
-            buf = new IntPtr[rowCount * poolCount];
-            entityIds = new ulong[rowCount];
-        }
-    }
 }
 
 // ── Single-component query ───────────────────────────────────────────
@@ -174,23 +202,24 @@ public ref struct QueryRefBuilder1<TW1> where TW1 : unmanaged, IComponent
     public ref struct Enumerator
     {
         private readonly IntPtr[] m_Buffer;
+        private readonly QueryRefLease? m_Lease;
         private readonly int      m_Count;
         private int               m_Index;
 
         internal Enumerator(QueryRefFilters filters)
         {
-            (m_Buffer, m_Count) = QueryRefBuffers.Open(ref filters, poolCount: 1);
+            (m_Buffer, m_Count, m_Lease) = QueryRefBuffers.Open(ref filters, poolCount: 1);
             m_Index = -1;
         }
 
-        public bool MoveNext() => ++m_Index < m_Count;
+        public bool MoveNext() => m_Lease?.MoveNext(ref m_Index, m_Count) ?? false;
 
         // foreach disposes ref-struct enumerators — return our buffer to the
         // per-thread pool so a sibling/outer query can reuse it without aliasing.
-        public void Dispose() => QueryRefBuffers.Return(m_Buffer);
+        public void Dispose() => m_Lease?.Dispose(m_Buffer);
 
         public unsafe ref TW1 Current
-            => ref Unsafe.AsRef<TW1>((void*)m_Buffer[m_Index]);
+            => ref Unsafe.AsRef<TW1>((void*)m_Lease!.Pointer(m_Buffer, m_Index));
     }
 }
 
@@ -225,20 +254,21 @@ public ref struct QueryRefBuilder1_RO1<TW1, TRO1>
     public ref struct Enumerator
     {
         private readonly IntPtr[] m_Buffer;
+        private readonly QueryRefLease? m_Lease;
         private readonly int      m_Count;
         private int               m_Index;
 
         internal Enumerator(QueryRefFilters filters)
         {
-            (m_Buffer, m_Count) = QueryRefBuffers.Open(ref filters, poolCount: 2);
+            (m_Buffer, m_Count, m_Lease) = QueryRefBuffers.Open(ref filters, poolCount: 2);
             m_Index = -1;
         }
 
-        public bool MoveNext() => ++m_Index < m_Count;
+        public bool MoveNext() => m_Lease?.MoveNext(ref m_Index, m_Count) ?? false;
 
         // foreach disposes ref-struct enumerators — return our buffer to the
         // per-thread pool so a sibling/outer query can reuse it without aliasing.
-        public void Dispose() => QueryRefBuffers.Return(m_Buffer);
+        public void Dispose() => m_Lease?.Dispose(m_Buffer);
 
         public unsafe Row Current
         {
@@ -246,8 +276,8 @@ public ref struct QueryRefBuilder1_RO1<TW1, TRO1>
             {
                 int baseIdx = m_Index * 2;
                 return new Row(
-                    (TW1*)m_Buffer[baseIdx + 0],
-                    (TRO1*)m_Buffer[baseIdx + 1]);
+                    (TW1*)m_Lease!.Pointer(m_Buffer, baseIdx + 0),
+                    (TRO1*)m_Lease!.Pointer(m_Buffer, baseIdx + 1));
             }
         }
     }
@@ -301,20 +331,21 @@ public ref struct QueryRefBuilder2<TW1, TW2>
     public ref struct Enumerator
     {
         private readonly IntPtr[] m_Buffer;
+        private readonly QueryRefLease? m_Lease;
         private readonly int      m_Count;
         private int               m_Index;
 
         internal Enumerator(QueryRefFilters filters)
         {
-            (m_Buffer, m_Count) = QueryRefBuffers.Open(ref filters, poolCount: 2);
+            (m_Buffer, m_Count, m_Lease) = QueryRefBuffers.Open(ref filters, poolCount: 2);
             m_Index = -1;
         }
 
-        public bool MoveNext() => ++m_Index < m_Count;
+        public bool MoveNext() => m_Lease?.MoveNext(ref m_Index, m_Count) ?? false;
 
         // foreach disposes ref-struct enumerators — return our buffer to the
         // per-thread pool so a sibling/outer query can reuse it without aliasing.
-        public void Dispose() => QueryRefBuffers.Return(m_Buffer);
+        public void Dispose() => m_Lease?.Dispose(m_Buffer);
 
         public unsafe Row Current
         {
@@ -322,8 +353,8 @@ public ref struct QueryRefBuilder2<TW1, TW2>
             {
                 int baseIdx = m_Index * 2;
                 return new Row(
-                    (TW1*)m_Buffer[baseIdx + 0],
-                    (TW2*)m_Buffer[baseIdx + 1]);
+                    (TW1*)m_Lease!.Pointer(m_Buffer, baseIdx + 0),
+                    (TW2*)m_Lease!.Pointer(m_Buffer, baseIdx + 1));
             }
         }
     }
@@ -383,20 +414,21 @@ public ref struct QueryRefBuilder3<TW1, TW2, TW3>
     public ref struct Enumerator
     {
         private readonly IntPtr[] m_Buffer;
+        private readonly QueryRefLease? m_Lease;
         private readonly int      m_Count;
         private int               m_Index;
 
         internal Enumerator(QueryRefFilters filters)
         {
-            (m_Buffer, m_Count) = QueryRefBuffers.Open(ref filters, poolCount: 3);
+            (m_Buffer, m_Count, m_Lease) = QueryRefBuffers.Open(ref filters, poolCount: 3);
             m_Index = -1;
         }
 
-        public bool MoveNext() => ++m_Index < m_Count;
+        public bool MoveNext() => m_Lease?.MoveNext(ref m_Index, m_Count) ?? false;
 
         // foreach disposes ref-struct enumerators — return our buffer to the
         // per-thread pool so a sibling/outer query can reuse it without aliasing.
-        public void Dispose() => QueryRefBuffers.Return(m_Buffer);
+        public void Dispose() => m_Lease?.Dispose(m_Buffer);
 
         public unsafe Row Current
         {
@@ -404,9 +436,9 @@ public ref struct QueryRefBuilder3<TW1, TW2, TW3>
             {
                 int baseIdx = m_Index * 3;
                 return new Row(
-                    (TW1*)m_Buffer[baseIdx + 0],
-                    (TW2*)m_Buffer[baseIdx + 1],
-                    (TW3*)m_Buffer[baseIdx + 2]);
+                    (TW1*)m_Lease!.Pointer(m_Buffer, baseIdx + 0),
+                    (TW2*)m_Lease!.Pointer(m_Buffer, baseIdx + 1),
+                    (TW3*)m_Lease!.Pointer(m_Buffer, baseIdx + 2));
             }
         }
     }
@@ -472,20 +504,21 @@ public ref struct QueryRefBuilder4<TW1, TW2, TW3, TW4>
     public ref struct Enumerator
     {
         private readonly IntPtr[] m_Buffer;
+        private readonly QueryRefLease? m_Lease;
         private readonly int      m_Count;
         private int               m_Index;
 
         internal Enumerator(QueryRefFilters filters)
         {
-            (m_Buffer, m_Count) = QueryRefBuffers.Open(ref filters, poolCount: 4);
+            (m_Buffer, m_Count, m_Lease) = QueryRefBuffers.Open(ref filters, poolCount: 4);
             m_Index = -1;
         }
 
-        public bool MoveNext() => ++m_Index < m_Count;
+        public bool MoveNext() => m_Lease?.MoveNext(ref m_Index, m_Count) ?? false;
 
         // foreach disposes ref-struct enumerators — return our buffer to the
         // per-thread pool so a sibling/outer query can reuse it without aliasing.
-        public void Dispose() => QueryRefBuffers.Return(m_Buffer);
+        public void Dispose() => m_Lease?.Dispose(m_Buffer);
 
         public unsafe Row Current
         {
@@ -493,10 +526,10 @@ public ref struct QueryRefBuilder4<TW1, TW2, TW3, TW4>
             {
                 int baseIdx = m_Index * 4;
                 return new Row(
-                    (TW1*)m_Buffer[baseIdx + 0],
-                    (TW2*)m_Buffer[baseIdx + 1],
-                    (TW3*)m_Buffer[baseIdx + 2],
-                    (TW4*)m_Buffer[baseIdx + 3]);
+                    (TW1*)m_Lease!.Pointer(m_Buffer, baseIdx + 0),
+                    (TW2*)m_Lease!.Pointer(m_Buffer, baseIdx + 1),
+                    (TW3*)m_Lease!.Pointer(m_Buffer, baseIdx + 2),
+                    (TW4*)m_Lease!.Pointer(m_Buffer, baseIdx + 3));
             }
         }
     }
@@ -568,20 +601,21 @@ public ref struct QueryRefBuilder5<TW1, TW2, TW3, TW4, TW5>
     public ref struct Enumerator
     {
         private readonly IntPtr[] m_Buffer;
+        private readonly QueryRefLease? m_Lease;
         private readonly int      m_Count;
         private int               m_Index;
 
         internal Enumerator(QueryRefFilters filters)
         {
-            (m_Buffer, m_Count) = QueryRefBuffers.Open(ref filters, poolCount: 5);
+            (m_Buffer, m_Count, m_Lease) = QueryRefBuffers.Open(ref filters, poolCount: 5);
             m_Index = -1;
         }
 
-        public bool MoveNext() => ++m_Index < m_Count;
+        public bool MoveNext() => m_Lease?.MoveNext(ref m_Index, m_Count) ?? false;
 
         // foreach disposes ref-struct enumerators — return our buffer to the
         // per-thread pool so a sibling/outer query can reuse it without aliasing.
-        public void Dispose() => QueryRefBuffers.Return(m_Buffer);
+        public void Dispose() => m_Lease?.Dispose(m_Buffer);
 
         public unsafe Row Current
         {
@@ -589,11 +623,11 @@ public ref struct QueryRefBuilder5<TW1, TW2, TW3, TW4, TW5>
             {
                 int baseIdx = m_Index * 5;
                 return new Row(
-                    (TW1*)m_Buffer[baseIdx + 0],
-                    (TW2*)m_Buffer[baseIdx + 1],
-                    (TW3*)m_Buffer[baseIdx + 2],
-                    (TW4*)m_Buffer[baseIdx + 3],
-                    (TW5*)m_Buffer[baseIdx + 4]);
+                    (TW1*)m_Lease!.Pointer(m_Buffer, baseIdx + 0),
+                    (TW2*)m_Lease!.Pointer(m_Buffer, baseIdx + 1),
+                    (TW3*)m_Lease!.Pointer(m_Buffer, baseIdx + 2),
+                    (TW4*)m_Lease!.Pointer(m_Buffer, baseIdx + 3),
+                    (TW5*)m_Lease!.Pointer(m_Buffer, baseIdx + 4));
             }
         }
     }
@@ -671,20 +705,21 @@ public ref struct QueryRefBuilder6<TW1, TW2, TW3, TW4, TW5, TW6>
     public ref struct Enumerator
     {
         private readonly IntPtr[] m_Buffer;
+        private readonly QueryRefLease? m_Lease;
         private readonly int      m_Count;
         private int               m_Index;
 
         internal Enumerator(QueryRefFilters filters)
         {
-            (m_Buffer, m_Count) = QueryRefBuffers.Open(ref filters, poolCount: 6);
+            (m_Buffer, m_Count, m_Lease) = QueryRefBuffers.Open(ref filters, poolCount: 6);
             m_Index = -1;
         }
 
-        public bool MoveNext() => ++m_Index < m_Count;
+        public bool MoveNext() => m_Lease?.MoveNext(ref m_Index, m_Count) ?? false;
 
         // foreach disposes ref-struct enumerators — return our buffer to the
         // per-thread pool so a sibling/outer query can reuse it without aliasing.
-        public void Dispose() => QueryRefBuffers.Return(m_Buffer);
+        public void Dispose() => m_Lease?.Dispose(m_Buffer);
 
         public unsafe Row Current
         {
@@ -692,12 +727,12 @@ public ref struct QueryRefBuilder6<TW1, TW2, TW3, TW4, TW5, TW6>
             {
                 int baseIdx = m_Index * 6;
                 return new Row(
-                    (TW1*)m_Buffer[baseIdx + 0],
-                    (TW2*)m_Buffer[baseIdx + 1],
-                    (TW3*)m_Buffer[baseIdx + 2],
-                    (TW4*)m_Buffer[baseIdx + 3],
-                    (TW5*)m_Buffer[baseIdx + 4],
-                    (TW6*)m_Buffer[baseIdx + 5]);
+                    (TW1*)m_Lease!.Pointer(m_Buffer, baseIdx + 0),
+                    (TW2*)m_Lease!.Pointer(m_Buffer, baseIdx + 1),
+                    (TW3*)m_Lease!.Pointer(m_Buffer, baseIdx + 2),
+                    (TW4*)m_Lease!.Pointer(m_Buffer, baseIdx + 3),
+                    (TW5*)m_Lease!.Pointer(m_Buffer, baseIdx + 4),
+                    (TW6*)m_Lease!.Pointer(m_Buffer, baseIdx + 5));
             }
         }
     }
@@ -781,20 +816,21 @@ public ref struct QueryRefBuilder7<TW1, TW2, TW3, TW4, TW5, TW6, TW7>
     public ref struct Enumerator
     {
         private readonly IntPtr[] m_Buffer;
+        private readonly QueryRefLease? m_Lease;
         private readonly int      m_Count;
         private int               m_Index;
 
         internal Enumerator(QueryRefFilters filters)
         {
-            (m_Buffer, m_Count) = QueryRefBuffers.Open(ref filters, poolCount: 7);
+            (m_Buffer, m_Count, m_Lease) = QueryRefBuffers.Open(ref filters, poolCount: 7);
             m_Index = -1;
         }
 
-        public bool MoveNext() => ++m_Index < m_Count;
+        public bool MoveNext() => m_Lease?.MoveNext(ref m_Index, m_Count) ?? false;
 
         // foreach disposes ref-struct enumerators — return our buffer to the
         // per-thread pool so a sibling/outer query can reuse it without aliasing.
-        public void Dispose() => QueryRefBuffers.Return(m_Buffer);
+        public void Dispose() => m_Lease?.Dispose(m_Buffer);
 
         public unsafe Row Current
         {
@@ -802,13 +838,13 @@ public ref struct QueryRefBuilder7<TW1, TW2, TW3, TW4, TW5, TW6, TW7>
             {
                 int baseIdx = m_Index * 7;
                 return new Row(
-                    (TW1*)m_Buffer[baseIdx + 0],
-                    (TW2*)m_Buffer[baseIdx + 1],
-                    (TW3*)m_Buffer[baseIdx + 2],
-                    (TW4*)m_Buffer[baseIdx + 3],
-                    (TW5*)m_Buffer[baseIdx + 4],
-                    (TW6*)m_Buffer[baseIdx + 5],
-                    (TW7*)m_Buffer[baseIdx + 6]);
+                    (TW1*)m_Lease!.Pointer(m_Buffer, baseIdx + 0),
+                    (TW2*)m_Lease!.Pointer(m_Buffer, baseIdx + 1),
+                    (TW3*)m_Lease!.Pointer(m_Buffer, baseIdx + 2),
+                    (TW4*)m_Lease!.Pointer(m_Buffer, baseIdx + 3),
+                    (TW5*)m_Lease!.Pointer(m_Buffer, baseIdx + 4),
+                    (TW6*)m_Lease!.Pointer(m_Buffer, baseIdx + 5),
+                    (TW7*)m_Lease!.Pointer(m_Buffer, baseIdx + 6));
             }
         }
     }
@@ -898,20 +934,21 @@ public ref struct QueryRefBuilder8<TW1, TW2, TW3, TW4, TW5, TW6, TW7, TW8>
     public ref struct Enumerator
     {
         private readonly IntPtr[] m_Buffer;
+        private readonly QueryRefLease? m_Lease;
         private readonly int      m_Count;
         private int               m_Index;
 
         internal Enumerator(QueryRefFilters filters)
         {
-            (m_Buffer, m_Count) = QueryRefBuffers.Open(ref filters, poolCount: 8);
+            (m_Buffer, m_Count, m_Lease) = QueryRefBuffers.Open(ref filters, poolCount: 8);
             m_Index = -1;
         }
 
-        public bool MoveNext() => ++m_Index < m_Count;
+        public bool MoveNext() => m_Lease?.MoveNext(ref m_Index, m_Count) ?? false;
 
         // foreach disposes ref-struct enumerators — return our buffer to the
         // per-thread pool so a sibling/outer query can reuse it without aliasing.
-        public void Dispose() => QueryRefBuffers.Return(m_Buffer);
+        public void Dispose() => m_Lease?.Dispose(m_Buffer);
 
         public unsafe Row Current
         {
@@ -919,14 +956,14 @@ public ref struct QueryRefBuilder8<TW1, TW2, TW3, TW4, TW5, TW6, TW7, TW8>
             {
                 int baseIdx = m_Index * 8;
                 return new Row(
-                    (TW1*)m_Buffer[baseIdx + 0],
-                    (TW2*)m_Buffer[baseIdx + 1],
-                    (TW3*)m_Buffer[baseIdx + 2],
-                    (TW4*)m_Buffer[baseIdx + 3],
-                    (TW5*)m_Buffer[baseIdx + 4],
-                    (TW6*)m_Buffer[baseIdx + 5],
-                    (TW7*)m_Buffer[baseIdx + 6],
-                    (TW8*)m_Buffer[baseIdx + 7]);
+                    (TW1*)m_Lease!.Pointer(m_Buffer, baseIdx + 0),
+                    (TW2*)m_Lease!.Pointer(m_Buffer, baseIdx + 1),
+                    (TW3*)m_Lease!.Pointer(m_Buffer, baseIdx + 2),
+                    (TW4*)m_Lease!.Pointer(m_Buffer, baseIdx + 3),
+                    (TW5*)m_Lease!.Pointer(m_Buffer, baseIdx + 4),
+                    (TW6*)m_Lease!.Pointer(m_Buffer, baseIdx + 5),
+                    (TW7*)m_Lease!.Pointer(m_Buffer, baseIdx + 6),
+                    (TW8*)m_Lease!.Pointer(m_Buffer, baseIdx + 7));
             }
         }
     }

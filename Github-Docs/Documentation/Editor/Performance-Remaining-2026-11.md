@@ -88,7 +88,7 @@ Across the three phases (ordinary motion, 5% teleports, all teleports), normal f
 
 Publication remains nonpreemptible within one operation. A time budget is checked between publications; zero allowed publications prevents publishing, while a zero time budget with one allowed publication still permits progress. The finite-queue test now drains **24 requests with a zero-ms / one-publication-per-pump budget**, with more queued items than workers and no starvation. Existing cancel/error/registry/shutdown tests also pass. These results identify the soft budget's limits; they do not claim an exact hard frame deadline.
 
-Implementation of scene materialization/activation remains [EDT-022](../../../.agents/backlogs/Assets_und_Szenen/Backlog.md#task-edt-022); upload scheduling remains [EDT-021](../../../.agents/backlogs/Assets_und_Szenen/Backlog.md#task-edt-021). This closes the performance investigation without creating duplicate implementation tasks.
+Scene activation and texture publication now have [documented implementations and focused tests](../Engine-Core/Cooperative-Loading.md). The Windows editor passed the [cooperative scene-loading checks](../Engine-Core/Cooperative-Loading.md). GPU acceptance remains in [EDT-021](../../Funke_Agenten_Backlog.md#task-edt-021). This closes the performance investigation without creating duplicate implementation tasks.
 
 ## PERF-12: interactive Editor and cache boundaries
 
@@ -101,6 +101,12 @@ In the final refresh run, Hierarchy Panel median/P95/P99/max and Editor.AssetBro
 A real automation defect was fixed during this check: SDL text events pointed at strings in the temporary TakeDueSteps result. A queue now owns the strings until the following frame, after event polling. The successful real searches verify the corrected path. Synthetic modifier combinations and immediate clearing of the search field were not used as a correctness assertion; the actual visible search results are retained.
 
 ## PERF-13: bones, shared assets and real GPU work
+
+Together with the [1/10/100-model comparison](Performance-Verification-2026-11.md),
+this completes the GFX-027 hardware investigation on the tested Windows
+configuration. All 27 GPU/CPU image pairs matched. Unchanged poses incurred
+zero CPU fallback calls or pose recomputations. The timed work, frozen model
+and hardware scope are recorded in the two reports.
 
 `three-d-lights-casters` combines 100 animated Worm models (6,192 vertices / 16 joints each), two models holding the same unchanged local pose, static cubes, variable lights and shadows. All use the existing model asset; no geometry was edited. The light selector records 1 / 5 / 16 selected lights (the last stage offers 17). One unchanged-pose model is outside the camera but retained as a shadow caster in the shadow stages; the diagnostic count is one rather than zero.
 

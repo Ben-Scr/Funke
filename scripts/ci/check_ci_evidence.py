@@ -76,7 +76,10 @@ def capture_lane(lane: str, steps: dict, core_only: bool, results: Path | None) 
             if suite["failed"] or not suite["executed"]:
                 raise ValueError("Test report has failures or no executed cases")
         except (OSError, ValueError, KeyError, TypeError, ET.ParseError) as error:
-            checks[0].update(status="failed", reason=f"Invalid/missing test evidence: {error}")
+            if checks[0]["status"] == "passed":
+                checks[0].update(status="failed", reason=f"Invalid/missing test evidence: {error}")
+            else:
+                checks[0]["reason"] += f"; test evidence unavailable or invalid: {error}"
     return report
 
 
@@ -125,7 +128,8 @@ def aggregate(needs: dict, platforms: str, core_only: bool, directory: Path, run
                 lane_suites = record["suites"]
                 if not isinstance(lane_suites, list) or any(not isinstance(s, dict) for s in lane_suites):
                     raise ValueError("Suites must be an array of objects")
-                if (spec["job"] in {"script-tests", "managed-tests"} or lane == "linux-instrumentation/sanitize") and len(lane_suites) != 1:
+                suite_required = spec["job"] in {"script-tests", "managed-tests"} or lane == "linux-instrumentation/sanitize"
+                if suite_required and (len(lane_suites) > 1 or (not lane_suites and checks[0]["status"] == "passed")):
                     raise ValueError("Expected one test suite report")
                 for raw_suite in lane_suites:
                     suite = suite_report(raw_suite["name"], raw_suite["cases"])
@@ -161,6 +165,12 @@ def detailed_summary(report: dict) -> str:
     lines = ["", "### Per-lane evidence", "", "| Lane | Status |", "|---|---|"]
     for lane in report["lanes"]:
         lines.append(f"| {lane['lane']} | {lane['status']} |")
+    incomplete = [(lane["lane"], check) for lane in report["lanes"] for check in lane["checks"]
+                  if check["status"] != "passed"]
+    if incomplete:
+        lines += ["", "### Incomplete checks", "", "| Lane | Step | Status |", "|---|---|---|"]
+        for lane, check in incomplete:
+            lines.append(f"| {lane} | {check['step']} | {check['status']} |")
     lines += ["", "### Suite counts", "", "| Suite | Unique cases | Suite executions | Executed cases | Assertions |",
               "|---|---:|---:|---:|---|"]
     for suite in report["suites"]:

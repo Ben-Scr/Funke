@@ -2,7 +2,7 @@
 
 For Development-only frame timings, geometry, memory, scene counters and loaded assets, see [Debug statistics](../Engine-Core/Debug-Statistics.md).
 
-Funke supports game scripting in **C# and native C++**, and a project can use both. Write scripts to move the player, spawn enemies, handle UI and manage game state in the language that fits your project. The native engine's C++20 implementation does not restrict game development to C++.
+Funke supports **C#, native C++ and Bolt** gameplay scripts in the same desktop project. New Bolt assets derive from `EntityScript` and attach to an entity by asset GUID. See [Bolt setup, scripting API and benchmarks](Bolt.md). Write scripts to move the player, spawn enemies, handle UI and manage game state in the language that fits your project. The native engine's C++20 implementation does not restrict game development to C++.
 
 The first sections cover C# with `EntityScript`, `SceneSystem` and `GlobalSystem` (.NET 10 on desktop). For C++ gameplay in the editor, jump to [Native C++ scripts](#native-c-scripts), which covers `NativeScript`, Inspector fields and native compilation/reload. C++ is a supported gameplay workflow, not limited to performance optimizations. For a C++ application using the SDK directly, see the [native application guide](../../../Funke-Engine/README.md). Platform runtime differences are documented in [Known Limitations](../Known-Limitations.md).
 
@@ -30,7 +30,7 @@ Pick the smallest scope that fits. Most gameplay is `EntityScript`; reach for `S
 
 ## Your first script
 
-Here's a complete `EntityScript` that moves its entity with WASD:
+In the Asset Browser, choose **Create > C# Scripting > EntityScript**. This example moves an entity with a Transform 2D using WASD.
 
 ```csharp
 using Funke;
@@ -55,7 +55,7 @@ public class PlayerController : EntityScript
 
         if (velocity == Vector2.Zero) return;
 
-        var transform = Entity.Transform;
+        var transform = Entity.Transform2D;
         if (transform == null) return;
         transform.Position += velocity.Normalized() * speed * Time.DeltaTime;
     }
@@ -129,7 +129,7 @@ Static fields and static classes keep their values across Play sessions in the e
 
 ## Exposing fields to the Inspector
 
-Public fields can be shown and edited in the editor's Inspector using **attributes**. This lets designers tweak values without touching code:
+Public fields of supported types appear in the Inspector automatically. Use `[ShowInEditor]` to expose a supported private field or set a custom label. Other attributes group fields or constrain input.
 
 ```csharp
 using Funke;
@@ -176,17 +176,15 @@ The `Funke` namespace gives you a broad API. The main categories:
 **Entities & components**
 
 ```csharp
-Entity e = Entity.FindByName("Boss");
-e.GetComponent<SpriteRenderer>();
-e.AddComponent<Rigidbody2D>();
-Entity copy = Entity.Instantiate(prefab);
-e.Destroy();
+if (Entity.FindByName("Boss") is { } boss && !boss.HasComponent<Rigidbody2D>())
+    boss.AddComponent<Rigidbody2D>();
 ```
 
 **Transform** — position, rotation, scale:
 
 ```csharp
-Entity.Transform.Position += Vector2.Up * Time.DeltaTime;
+if (Entity.Transform2D is { } transform)
+    transform.WorldPosition += Vector2.Up * Time.DeltaTime;
 ```
 
 **Hierarchy** — parenting lives on the entity, not the transform:
@@ -205,7 +203,7 @@ The examples below use the core's direct input API. Named actions, control maps 
 Input.GetKey(KeyCode.Space);        // held
 Input.GetKeyDown(KeyCode.Space);    // pressed this frame
 Input.GetAxis();                    // WASD/arrows, else first gamepad's stick/D-pad, -1..1
-Input.MousePosition;
+var pointer = Input.MousePosition;
 
 // Mouse look: hide the cursor and read the motion. A locked or hidden cursor stays at the centre of the game view,
 // so UI under the crosshair receives hover and clicks.
@@ -244,8 +242,8 @@ The sensors are switched on by the first read (so the first frame can still be z
 **Time**:
 
 ```csharp
-Time.DeltaTime;        // seconds since last frame (scaled)
-Time.FixedDeltaTime;   // physics step length
+float frameSeconds = Time.DeltaTime;       // seconds since last frame (scaled)
+float stepSeconds = Time.FixedDeltaTime;   // physics step length
 Time.TimeScale = 0.5f; // slow motion (or 0 to pause game time); clamped to [0, 100]
 ```
 
@@ -332,6 +330,8 @@ Effects: `ColorGrading`, `Vignette`, `ChromaticAberration`, `Grain`, `Bloom`, `L
 
 **Saving data** — per game, stored under `Application.PersistentDataPath` (`%LOCALAPPDATA%/<Company>/<Name>`, from Project Settings):
 
+On desktop, an explicit absolute `FUNKE_USER_DATA_ROOT` also redirects managed `Application.PersistentDataPath`, `PlayerPrefs` and `SaveData`, matching the native engine's data root. Company, product and optional `Profiles/<prefs-profile>` remain appended. Set it before launching for portable or isolated tests; relative or whitespace-only overrides fail rather than silently writing to the default folder. Leaving it unset preserves the OS default.
+
 ```csharp
 PlayerPrefs.SetInt("HighScore", 1200);          // small settings and progress values
 int best = PlayerPrefs.GetInt("HighScore");     // saved automatically on quit / when Play stops; PlayerPrefs.Save() to force
@@ -340,7 +340,7 @@ SaveData.Save("slot1", myInventory);            // any class or struct, written 
 if (SaveData.TryLoad("slot1", out Inventory? inv)) { ... }
 ```
 
-Writes are atomic: a crash while saving leaves the previous file intact.
+Writes are atomic: a crash while saving leaves the previous file intact. Each write uses its own uniquely named sibling temporary file. A handled publication failure attempts to remove only that private file; another writer's staging file is never reused or deleted. An abrupt process termination can still leave a private temporary file. Concurrent successful writes have last-publication-wins semantics; this is not a compare-and-swap transaction.
 
 For an opt-in game-specific schema, use `SaveData.SaveVersioned("slot1", inventory, schemaVersion: 2)` and `TryLoadVersioned`. Existing `Save` / `TryLoad` slots stay plain JSON and are never automatically upgraded. The envelope has `$funkeSave: 1`, `schemaVersion`, and `payload`; the application schema version is independent of the engine version.
 
@@ -457,7 +457,7 @@ foreach (ref var t in Scene.QueryRef<NativeTransform2D>())
     t.LocalRotation += Time.DeltaTime;      // spin everything
 ```
 
-**Math** — `Vector2/3/4`, `Quaternion`, `Color`, `Mathf` (sin, cos, clamp, lerp…), and `Random`. Palette colors go in as written: `Color.FromHex("#3A7BD5")` (also `#RRGGBBAA`, `#RGB`, `#RGBA`; `TryFromHex` doesn't throw, `ToHex()` writes one back).
+**Math** — `Vector2/3/4`, `Quaternion`, `Color`, `Mathf` (sin, cos, clamp, lerp…), and `Random`. `Vector3` includes `MoveTowards`, `ClampMagnitude` and `SmoothDamp(current, target, ref velocity, smoothTime, deltaTime, maxSpeed)`. See [3D movement and coordinate utilities](../Engine-Core/3D.md#c-movement-and-coordinate-utilities) for current-world transforms, local/world movement and [mouse picking](../Engine-Core/3D.md#c-mouse-picking). Palette colors go in as written: `Color.FromHex("#3A7BD5")` (also `#RRGGBBAA`, `#RGB`, `#RGBA`; `TryFromHex` doesn't throw, `ToHex()` writes one back).
 
 **UI text:** labels use `Funke.TextRenderer` (`using Funke;`), the same component used for world text. Import `using Funke.UI;` for widgets such as `Button` and `InputField`.
 
@@ -514,9 +514,19 @@ Data that several scripts share belongs in a component of its own. Both kinds be
 **Class components** derive from `Component`: Inspector-editable data with strings, references and lists, but no lifecycle (pair them with an `EntityScript` or `SceneSystem` that reads them).
 
 ```csharp
-public class Health : Component { public int Max = 10; [ShowInEditor] private int current; }
+using Funke;
 
-var h = Entity.GetComponent<Health>() ?? Entity.AddComponent<Health>();
+public class Health : Component
+{
+    public int Max = 10;
+    public int Current = 10;
+}
+```
+
+Access the component inside an `EntityScript` callback.
+
+```csharp
+var health = Entity.GetComponent<Health>() ?? Entity.AddComponent<Health>();
 ```
 
 **Struct components** implement `IComponent`: blittable data in the engine's own component storage, the fastest option for many entities and usable in `Scene.QueryRef<T>()` and jobs. Allowed fields: `bool`, the integer types, `float`, `double`, enums and structs built from those (`Vector2`, `Vector3`).
@@ -528,7 +538,11 @@ using Funke.Components;
 
 [StructLayout(LayoutKind.Sequential)]
 public struct Velocity : IComponent { public Vector2 Value; public float Drag; }
+```
 
+From a script callback, add the component to its entity or iterate the scene’s existing components.
+
+```csharp
 Entity.AddNativeComponent<Velocity>();
 ref var v = ref Entity.GetNativeComponent<Velocity>();     // writes go straight to the component
 foreach (ref var vel in Scene.QueryRef<Velocity>()) vel.Value *= 0.99f;
@@ -598,11 +612,43 @@ Specialized APIs still use explicit headers, for example `<Physics/Physics2D.hpp
 
 Call `Print("Started")` inside a native script to log an Info message to the editor Console and engine log. `Update()` and `FixedUpdate()` take no arguments. `Time::GetDeltaTime()` and `Time::GetFixedDeltaTime()` are available through the umbrella. Existing overrides with a `float` parameter must be updated and the native scripts recompiled.
 
+`GetEntity()` returns the script's owning, scene-aware `Entity`, for example `GetEntity().GetParent()`. It throws `FunkeException(InvalidHandle)` before host binding or after entity destruction. Like `GetScene()`, a const script can obtain a writable entity handle; const component access uses the const overloads below. Scene interaction belongs in lifecycle callbacks, not metadata-only constructors.
+
+`NativeScript` and `Entity` both support pointer-returning `TryGetComponent<T>()`. It returns null for a missing component or invalid entity; on a const receiver it returns `const T*`. The existing `TryGetComponent(pointer)` overload remains available and clears the output on failure. Empty tags have no component address: use `HasComponent<Tag>()` instead.
+
+```cpp
+if (auto* transform = TryGetComponent<Transform2DComponent>()) {
+    transform->SetPosition({2.0f, 3.0f});
+}
+auto& audio = GetOrAddComponent<AudioSourceComponent>();
+```
+
+`GetOrAddComponent<T>(args...)` returns the existing ECS component without modifying it or logging a duplicate-add warning; otherwise it uses the normal `AddComponent` path, including mutation guards, construction hooks and conflict validation. It returns a reference for data components and `void` for empty tags. Constructor arguments are forwarded only on insertion, but C++ still evaluates argument expressions before the call. An invalid entity throws for these ECS operations.
+
+For a registered class derived from `NativeScript`, `AddComponent<T>`, `GetComponent<T>`, `HasComponent<T>`, `TryGetComponent<T>`, `GetOrAddComponent<T>` and `RemoveComponent<T>` use the native script host on both APIs. They never store a script object as an EnTT data component. Get/add operations return a nullable script pointer; const get/try operations return `const T*`. Missing registration, an invalid entity or creation failure returns null. `GetOrAddComponent` reuses a live script without calling `Start()` again, or follows the existing attach/start lifecycle when absent. These APIs do not resolve C# script types. Borrowed native script pointers expire on removal or reload.
+
+Native project setup also creates `.vscode/funke-cpp.code-snippets` if it is absent. Open the game project folder in VS Code and use the prefix through completion or **Insert Snippet**. Existing snippet files are preserved, including user edits. These snippets expand to ordinary C++ and add no runtime machinery:
+
+| Prefix | Expansion |
+|---|---|
+| `fnkscript` | Script class, lifecycle callbacks and `REGISTER_SCRIPT` |
+| `fnklifecycle` | Choice of `Start`, `Update`, `FixedUpdate` or `OnDestroy` override |
+| `fnktry` | Null-checked pointer access to a component or native script |
+| `fnkensure` | Reference to an existing or newly added ECS component |
+| `fnkensurescript` | Null-checked existing or newly attached native script |
+| `fnkref` | Retained `ComponentRef<T>` |
+| `fnkfields` | `FNK_NATIVE_FIELDS` with an existing member's descriptor |
+| `fnkfield` | One descriptor to insert into an existing field list |
+
+Field snippets keep the persistent key as a separate placeholder; retain that key when renaming the C++ member. They use the existing static descriptors, without introducing another reflection or serialization format.
+
+The convenience methods add no instance fields, virtual slots, automatic caches or per-frame work. Component helpers access the registry directly; only an explicit `GetEntity()` constructs an entity handle with its existing lifetime bookkeeping. Native script lookup retains its existing type/name lookup and cast costs. `python scripts/ci/native_convenience_codegen.py --output <directory>` compares 13 representative helpers with explicit operations using MSVC x64 `/O2 /Ob2`, without whole-program optimization. On the tested Windows build their normalized instruction streams match, and compile-time checks verify unchanged `NativeScript` size/alignment. This is evidence for those optimized paths, not a performance guarantee for every compiler, component type or Debug build. The manual `GetEntity` comparison shares the unbound-error diagnostic and spells out the successful scene lookup.
+
 The generated CMake target already exports a compile database with Ninja/Makefiles (`NativeScripts/build/compile_commands.json`); Visual Studio uses the generated native solution. Both source roots, `Assets/` and `NativeScripts/Source/`, share the target's includes, C++20 standard and module/ABI definitions. Reconfigure after adding files; the editor's native rebuild does this automatically. Point clangd at that build directory or use the IDE's CMake integration. Completion and definition navigation for `Input`, `KeyCode`, `SceneManager` and `Transform2DComponent` were verified with clangd and VS Code's Microsoft C/C++ extension against generated Windows build configurations. The VS Code checks also covered a new source file and switching between Debug and Release compile databases. Other IDE interfaces were not exercised.
 
 PCH is optional and defaults to off: configure with `-DFUNKE_NATIVE_USE_PCH=ON` to precompile `Funke/Scripting.hpp`, or `OFF` to disable it. Keep the explicit include in each script. Add per-file exceptions after the generated module include in your custom `CMakeLists.txt`, for example `set_source_files_properties("${CMAKE_CURRENT_LIST_DIR}/../Assets/ThirdParty.cpp" PROPERTIES SKIP_PRECOMPILE_HEADERS ON)`. Scripts with per-source SDK macros should disable PCH. No PCH is shared across targets, and the generated build does not enable Unity/Jumbo compilation.
 
-The SDK integration check is `python scripts/ci/native_scripting_test.py --sdk <EngineSDK> --test-exe <Funke-Editor-Tests> --output <fresh-test-directory>`. It compiles actual generator output, mixes old and new include styles in one library, loads/reloads it, checks fields and component mutation, and compiles full/2D/3D/no-module/core headers without PCH. Add `--benchmark` for local baseline/no-PCH/PCH timings (four translation units, initial build, one source edit, public header edit). Use a fresh output directory for initial-build measurements. This does not replace editor Play Mode, Inspector save/reopen or desktop export validation.
+The SDK integration check is `python scripts/ci/native_scripting_test.py --sdk <EngineSDK> --test-exe <Funke-Editor-Tests> --output <fresh-test-directory>`. It compiles actual generator output and every generated snippet, mixes old and new include styles in one library, loads/reloads it, checks fields and component/script mutation, and compiles full/2D/3D/no-module/core headers without PCH. Add `--benchmark` for local baseline/no-PCH/PCH timings (five translation units, initial build, one source edit, public header edit). Use a fresh output directory for initial-build measurements. This does not replace editor Play Mode, Inspector save/reopen or desktop export validation.
 
 See [native scripting verification](Native-Scripting-Verification.md) for the Editor/export procedure, recorded Windows/Linux and IDE results, evidence locations and the measurements behind the optional PCH default.
 
@@ -626,6 +672,8 @@ Saving native source or header changes triggers an incremental CMake build and D
 C++ scripts provide `Start`, `Update`, `FixedUpdate` and `OnDestroy`; C# collision, enable/disable and application callbacks are not part of this native lifecycle. Put scene access, resource acquisition and other game initialization in `Start()`. The editor may construct a temporary instance to inspect its fields without invoking lifecycle callbacks.
 
 For component access kept between calls, use `ComponentRef<T>`. Raw pointers and references returned by `GetComponent`, `TryGetComponent` or `AddComponent` can become invalid after structural changes. EnTT owning groups may move components when another component is added, even while the original entity remains alive. A cached transform pointer can then refer to a different entity's transform.
+
+The same borrowing rule applies to `GetOrAddComponent`. ECS storage for user-defined component types compiled into a script DLL can retain that DLL's vtables even when empty. Such storage must be destroyed before unloading the DLL; these convenience methods do not add custom-component migration to native hot reload.
 
 `ComponentRef<T>` stores the entity and resolves its component on every access. This example acquires the handle **before** adding the sprite component and safely uses it afterwards:
 
@@ -695,7 +743,7 @@ dotnet build Examples/CSharpScripting/Examples.csproj -c Release
 
 | Existing API | Existing meaning, retained | Recommended explicit API |
 |---|---|---|
-| `Transform` | Nullable 2D wrapper | `Transform2D` or `Transform3D` |
+| `EntityScript.Transform` | Nullable 2D wrapper on the script | `Transform2D` or `Transform3D` |
 | `Transform2D.LocalTransform` | Local position | `Transform2D.LocalPosition` |
 | `Transform2D.Position` | World position | `Transform2D.WorldPosition` |
 | `Transform3D.Position` | Local position | `Transform3D.LocalPosition` |
@@ -705,6 +753,8 @@ dotnet build Examples/CSharpScripting/Examples.csproj -c Release
 Empty project templates remain small; examples are opt-in. For borrowed component storage, follow the [native reference contracts](#component-access-and-native-references).
 
 ## Script identities and Inspector limits
+
+Inspector script/component headings and script picker labels omit the internal `type:` prefix while keeping the namespace, for example `Benchmark (C# Script)` or `Game.Benchmark (C# Script)`. Saved identities and type resolution still use the canonical name.
 
 Project pickers use actual types from the **active compiled assembly**, including indirect inheritance, namespaces and multiple types per file. Abstract, open generic and nonconstructible classes are excluded. Failed compilation or rejected preflight keeps the active catalog. Project identities are stored as `type:<FullName>`; the prefix distinguishes them from unmarked legacy names, including global classes with no namespace. The same identities apply to generic and string-based Entity APIs, managed components, references and systems. Native built-in names and existing package catalog names keep their contracts.
 
@@ -726,6 +776,11 @@ The new fields use a version 1 JSON envelope inside the existing script-field st
 
 ```json
 {"version":1,"kind":"nestedList","leaf":"int","items":[null,[],["1","2"]]}
+```
+
+A dictionary field stores its own envelope.
+
+```json
 {"version":1,"kind":"dictionary","leaf":"float","comparer":"ordinal","items":[["","1.25"],["speed","3.5"]]}
 ```
 
@@ -745,6 +800,8 @@ C# scripts can reload **without restarting** the editor. The defaults are **Auto
 | Failure after the swap boundary | The exchange failed. Keeping an assembly does not guarantee that old instances or their state survived. |
 
 A successful exchange cancels old coroutines and recreates script instances; their normal Awake/Enable/Start lifecycle runs again (Start can be deferred to the next update). Tasks, call stacks and arbitrary resources are not resumed. Inspector values and running instance fields are different kinds of state: Edit-mode exposed values can be restored, but Play-mode runtime edits are discarded on Stop.
+
+For example, an authored `Health = 100` changed to `34` during Play stays `100` in the saved scene and pre-Play snapshot. An ordinary in-Play reload recreates the field from authored values (then runs the normal lifecycle). If the script explicitly captures/restores `Health` through `IHotReloadState`, the replacement instance can resume at `34`; Stop still restores the authored `100`. Removing the captured key or changing its exact scalar type makes `TryGet<T>` return false, so restore code must retain a suitable default.
 
 Static game fields can survive Stop and the next Play session when the assembly was not replaced. Use `Application.PlayModeExited` for an explicit cleanup/reset hook; no automatic reset of all statics is promised. An assembly replacement creates new game static state, but does not reset every external library.
 
@@ -800,6 +857,23 @@ You don't need this to write scripts, but it helps to know the shape:
 * A bridge connects the two worlds through matched **function-pointer tables**: `InternalCalls` invokes the native table, and the engine invokes managed callbacks (for example `OnUpdate`). Packages can additionally expose their own P/Invoke APIs.
 * This bridge is set up once during the scripting-host startup step described in [Startup Processes](../Engine-Core/Startup-Processes.md#start-scripting).
 
+### Component source organization
+
+Built-in C# component wrappers are grouped by area under `Funke-ScriptCore/Source/Funke/`:
+
+| File | Components |
+|---|---|
+| `Scene/Components.cs` | General entity components (`NameComponent`). |
+| `Scene/Components2D.cs` | 2D transform, sprite/text/terrain rendering, camera and particles, with their related enums. |
+| `Scene/Components3D.cs` | 3D transform, mesh rendering, camera, lights and particles, with their related enums. |
+| `Scene/ComponentsPhysics2D.cs` | 2D rigidbody, colliders and joints, with their related enums. |
+| `Scene/ComponentsPhysics3D.cs` | 3D rigidbody and colliders, with their related enums. |
+| `Scene/ComponentsAudio.cs` | Audio source. |
+| `UI/UIComponents.cs` | UI components (`Funke.UI` namespace). |
+| `Animation/Animator.cs` | Animator and its animation API. |
+
+Add wrappers to the matching area instead of creating individual files for terrain or joint types. This is source organization only: the scene component types remain in namespace `Funke`, with the same native names and bindings.
+
 ---
 
 ## Summary
@@ -808,6 +882,7 @@ You don't need this to write scripts, but it helps to know the shape:
 * Override lifecycle methods (`OnStart`, `OnUpdate`, `OnFixedUpdate`, …); attach scripts via a `ScriptComponent`.
 * Expose fields to the Inspector with attributes like `[ShowInEditor]` and `[ClampValue]`.
 * Use the rich API — `Input`, `Time`, `Physics2D`, `Audio`, `Log`, scene queries, math.
+* [Bolt scripts](Bolt.md) support entity, scene and global logic with a compatible desktop compiler host.
 * Write game logic in **C++** with `NativeScript`; create and attach native scripts in the editor, expose registered fields to the Inspector, and combine them with C# scripts as needed.
 * C# **hot reload** and C++ **native rebuild/reload** support iteration in the editor; see their respective sections for state-restoration behavior and toolchain requirements.
 
@@ -818,3 +893,48 @@ You don't need this to write scripts, but it helps to know the shape:
 * [Assets](../Assets/Assets.md) — referencing textures, audio, and fonts from scripts.
 * [Job System](../Engine-Core/Job-System.md) — parallelizing heavy script work.
 
+## Managed assembly commit failures
+
+Candidate loading, dependency/type validation, native mirror layout checks and
+project catalogue construction run before retiring the working assembly. Failure
+there returns `-1` when the previous assembly is retained, or `0` on an initial
+failed load. Resource draining must also succeed before retirement.
+
+After retirement, dynamic native component registration is a commit operation.
+A rejected registration now fails the load instead of merely logging and skipping
+the component. Partial reflection type loads also fail. The failure path unregisters
+partial dynamic registrations, clears catalogue/reload state and metadata caches,
+unloads the candidate and clears its assembly directory. It returns `0`; the old
+assembly is not resurrected. Fix the cause and load again. Success is logged only
+after registration and catalogue publication.
+
+The managed fault-injection regression covers native registration rejection on
+both first load and replacement, followed by a successful retry. Existing
+preflight/context-collection cases remain applicable. This does not certify every
+native teardown or user lifecycle callback as transactional; native lifecycle
+restart fault injection remains outstanding.
+
+
+## Lifecycle failures after assembly commit
+
+An exception in managed `OnStart` or `OnDestroy` is caught at the unmanaged
+callback boundary. It is an instance lifecycle failure, not a rollback of the
+already committed assembly. A failed start can be retried; a successful start is
+not repeated. Releasing an instance removes it even if its destruction callback
+failed, and a later assembly replacement can proceed.
+
+`ScriptAssemblyReloadTests` injects these failures into real generated assemblies
+and calls the unmanaged entry points directly. Together with handshake and query
+binding tests, 31 managed cases passed on 13 November 2026. This does not exercise
+the complete C++ ScriptEngine drain/teardown/recreate orchestration. EDT-012 keeps
+that native integration acceptance open.
+
+Physics3D declaration validation is described in [Binding contracts](Binding-Contracts.md).
+
+
+Contributor contracts: [ScriptHost lifecycle and source ownership](ScriptHost-Lifecycle.md)
+and [checked component handles / raw reference lifetimes](Component-Access-Lifetimes.md).
+
+### Play reload and authored values on Windows
+
+The 26 November 2026 Release editor acceptance changed an Inspector field from 73 to 91 before Play and set it to 137 in the running script. With `IHotReloadState`, revision two restored 137 while Play continued. Stop saved 91, Undo saved 73, Redo saved 91 and the next Play started at 91. The ordinary script without the opt-in interface restarted at its authored value on reload. The reproducible opt-in check is in `scripts/ci/backlog_editor_acceptance.py`.

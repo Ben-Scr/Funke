@@ -1,6 +1,6 @@
 ---
 name: funke-build-and-ship
-description: Use when turning a Funke GAME project into a distributable build or configuring how the shipped game behaves — build profiles (.build files), target platform and render backend, Development / Release / Debug builds, window, fullscreen, splash and icon settings, runtime stats and log overlays, and the editor-vs-shipped build defines. Triggers on "build the game", "ship / export the game", "Build panel", "build profile", "BuildPlatform", "Android / iOS / Web build", "APK / AAB", "render backend", "Dist config", "FUNKE_EDITOR / FUNKE_BUILD / FUNKE_BUILD_RELEASE", "FUNKE_ANDROID", "DefineConstants", "customDefines", "FunkeDefines.props", "Application.IsEditor", "Engine.BuildConfiguration", "buildScenes", "Funke-Editor --build", or "what does a build contain". The shipped game contains Funke-Runtime, scripts and pruned assets, loose or bundled. Sources of truth are `FunkeBuildProfile.cpp`, `FunkeProject.cpp` and `Build/GameBuilder.cpp`; general project.json fields are in `funke-project-structure`.
+description: "Export a Funke game for desktop, mobile or web. Configure build profiles, scene inclusion, platform packages and shipped runtime settings."
 ---
 
 # Building & Shipping a Funke Game
@@ -110,17 +110,6 @@ Editor preview **never** sees `FUNKE_BUILD_RELEASE`, whatever the project profil
 
 **Native C++ scripts** (generated `NativeScripts/CMakeLists.txt`) get a different set: `FNK_DEBUG;_DEBUG` / `FNK_RELEASE;NDEBUG` / `FNK_DIST;NDEBUG` per CMake config, `FUNKE_ALL_MODULES=1`, `FNK_PLATFORM_WINDOWS` / `FNK_PLATFORM_LINUX`, `FUNKE_BUILD_${FUNKE_BUILD_PROFILE}` (CMake default `DEVELOPMENT`; editor hot-reload passes `-DFUNKE_BUILD_PROFILE=DEVELOPMENT` explicitly), and `customDefines`. There is **no `FUNKE_EDITOR` / `FUNKE_BUILD` and no `FUNKE_WINDOWS`** for native code — branch with `Application::IsEditor()` instead. The Build panel rebuilds native scripts in `build-export` and stages their library; Dist exports use the RELEASE native profile (`funke-engine-scripting`).
 
-```csharp
-#if FUNKE_EDITOR
-    DrawDebugBounds();        // stripped from BOTH Development and Release ship builds
-#endif
-#if FUNKE_BUILD_RELEASE
-    UseFastPath();            // ship-Release only; never compiled in editor preview
-#else
-    UseValidatedPath();
-#endif
-```
-
 Generated files — **don't hand-edit**:
 - `Packages/FunkeDefines.props` — rewritten by every `FunkeProject::Save()` (`WriteManagedDefinesProps`) with `$(DefineConstants);FUNKE_EDITOR;<active profile define>;<platform>;<custom>` for VS IntelliSense; older `.csproj`s get the `<Import Project="Packages/FunkeDefines.props" …>` line patched in. Real compiles pass `-p:DefineConstants=` and override it, so with profile=Release IntelliSense greys out `#if FUNKE_BUILD_DEVELOPMENT` code that the editor actually compiles.
 - `NativeScripts/FunkeNativeScripts.cmake` — refreshed by `EnsureNativeScriptProjectFiles`, including project defines. The generated `CMakeLists.txt` includes it and permits project-specific additions; customized entry files are preserved, while recognized legacy generated files are migrated with source backups. Do not delete a customized CMake file to refresh defines. Pass an explicit `-DFUNKE_BUILD_PROFILE=` when configuring manually because CMake caches it.
@@ -135,31 +124,16 @@ Generated files — **don't hand-edit**:
   - `Engine.BuildConfiguration` (C#, `Core/Engine.cs`) → `Editor` (0, editor play mode) / `Development` (1) / `Release` (2) / `Debug` (3, Debug game build), resolved at runtime from the shipped `project.json`'s profile (`Funke_Engine_GetBuildConfiguration` in `ScriptBindingsScene.cpp`). `Engine.ConfigurationName` gives the string.
 - Designer-facing switches (stats overlay, logs) belong in `project.json` settings, not `#if`.
 
-```csharp
-public override void OnUpdate()
-{
-    if (Application.IsEditor) return;      // e.g. skip analytics while iterating
-    Analytics.Tick();
-}
-```
-
 ## Profile flip resets overlays
 
 Changing the **Configuration** combo in the Build panel (`ImGuiEditorLayerPanels.cpp`) resets `ShowRuntimeStats` and `ShowRuntimeLogs` to unset and saves the project, so they follow the new configuration (`FunkeProject::ResolveShowRuntimeStats/Logs`: off for Release, on otherwise) and a Release build doesn't ship the stats overlay by accident. Users can set them explicitly afterwards in Project Settings → Build (`RenderSettings_Build`). A new "should default differently in Release" toggle follows the same pattern: an `std::optional` on the project plus a `Resolve…()` default (like `DevConsole` / `ResolveDevConsole`), reset in that handler.
 
-## Build configurations
-
-The script `.csproj` defines `Debug` / `Release` / `Dist` (`funke-project-structure`). **`Dist`** is optimized, strips symbols, and is what a **Release-profile** build compiles; a Development-profile build uses the editor's own configuration (a Debug editor produces a Debug assembly). Don't ship a `Debug` assembly — set the profile to Release for public builds.
-
 ## Pitfalls
 
-- **Scene not in the game?** Check the staged file and pruning report. Enabled `buildScenes` entries are build roots; reachable asset references and C# literals can retain additional scenes, while computed names cannot. List every intended shipping scene explicitly.
-- **Ship the complete output folder**, whether assets are loose or bundled. Code using direct filesystem APIs needs loose content under `Assets/StreamingAssets/`; use the engine's `File`/asset APIs for bundled virtual paths.
-- **Backend coercion** — an invalid platform/backend pair (or `Auto`) in a `.build` is replaced by the first allowed backend when the profile loads, with only a log warning; verify the profile shows what you intended.
+- For a missing scene, inspect the staged output and pruning report. Add an explicit build root for computed scene names.
+- Distribute the complete output folder. Direct filesystem reads require loose files under `Assets/StreamingAssets/`. Use Funke's file or asset APIs for bundled paths. After loading a profile, check the resolved backend if the requested pair was invalid or set to Auto.
 - **`Packages/` is git-ignored**, but the *build* still needs the compiled assembly + `Funke-ScriptCore`; build from the editor (which restores them) rather than from a bare clone.
 - **Don't renumber `BuildPlatform`/serialized enums** — old `.build` and `project.json` files decode by value.
-- **`showRuntimeStats` / `showRuntimeLogs` follow the profile when unset** — on for Development, off for Release. An explicit `true` in `project.json` still ships them in Release.
-- **Don't conflate `FNK_DEBUG`/`FNK_RELEASE`/`FNK_DIST` with `FUNKE_BUILD_*`.** The first is the engine configuration, the second the game profile; C# sees both.
 - **"Works in the editor, broken in the Release build"** — usually logic inside `#if FUNKE_EDITOR` that the game needed at runtime (move it out, or use `Application.IsEditor`), or a Release-only `#if FUNKE_BUILD_RELEASE` path that editor preview never compiled. Test by building and running the output.
 - **Native scripts in a build** require the native SDK/toolchain. The Build panel compiles and stages them separately from editor hot reload. Native packages additionally need compatible `.funkeabi` sidecars and all transitive dependencies (`funke-author-package`).
 

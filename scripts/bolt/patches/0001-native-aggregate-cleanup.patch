@@ -1,0 +1,204 @@
+diff --git a/src/native/ABI.cpp b/src/native/ABI.cpp
+--- a/src/native/ABI.cpp
++++ b/src/native/ABI.cpp
+@@ -111,6 +111,7 @@
+ 
+     std::vector<std::weak_ptr<bolt::system::Worker::Handle>> workers;
+     std::vector<std::unique_ptr<BrType>> types;
++    std::unordered_set<const BrType*> type_addresses;
+     // Workers borrow their parent execution's type registry and heap lifetime.
+     // Entries are detached under the lock; user cleanup always runs after unlocking.
+     std::mutex allocation_mutex;
+@@ -1236,15 +1237,20 @@
+         if(expected!=t->size)
+             throw std::runtime_error("Bolt runtime library layout mismatch; rebuild/install compiler and runtime together");
+     }
+-    if(kind==Array)t->rank=std::max<std::size_t>(1,bolt::array_rank(t->name));out=t.get();impl(c).types.push_back(std::move(t));});return out;}
++    if(kind==Array)t->rank=std::max<std::size_t>(1,bolt::array_rank(t->name));
++    auto& state=impl(c);
++    state.types.push_back(std::move(t));
++    state.type_addresses.insert(state.types.back().get());
++    out=state.types.back().get();
++});return out;}
+ void br_field(BrContext* c,BrType* t,std::uint64_t offset,BrType* field)noexcept{checked(c,nullptr,[&]{if(!t||!field||offset>t->size||field->size>t->size-offset)throw std::runtime_error("invalid native field layout");t->fields.emplace_back(static_cast<std::size_t>(offset),field);});}
+ void br_elements(BrContext* c,BrType* t,BrType* key,BrType* value)noexcept{checked(c,nullptr,[&]{t->key=key;t->value=value;});}
+ void br_initializer(BrContext* c,BrType* t,void* fn)noexcept{checked(c,nullptr,[&]{t->initialize=reinterpret_cast<void(*)(BrContext*,void*)>(fn);});}
+ void br_virtual(BrContext* c,BrType* t,std::int32_t slot,void* fn)noexcept{checked(c,nullptr,[&]{if(slot<0)throw std::runtime_error("invalid native virtual slot");if(t->methods.size()<=static_cast<std::size_t>(slot))t->methods.resize(static_cast<std::size_t>(slot)+1);t->methods[static_cast<std::size_t>(slot)]=fn;});}
+ void* br_dispatch(BrContext* c,const char* site,void* self,std::int32_t slot)noexcept{void* result=nullptr;checked(c,site,[&]{
+     if(!self)throw std::runtime_error("null pointer dereference");
+-    auto* t=read<BrType*>(self);auto& types=registered_types(impl(c));
+-    if(!t||std::none_of(types.begin(),types.end(),[&](const auto& known){return known.get()==t;}))
++    auto* t=read<BrType*>(self);
++    if(!allocation_owner(impl(c)).type_addresses.contains(t))
+         throw std::runtime_error("virtual dispatch requires a class or interface receiver");
+     t=unwrapped(t,self).first;
+     if(slot<0||static_cast<std::size_t>(slot)>=t->methods.size()||!t->methods[static_cast<std::size_t>(slot)])throw std::runtime_error("invalid virtual dispatch");
+@@ -1266,8 +1272,8 @@
+     auto [actual,data]=unwrapped(source,value);auto* owner=bolt::memory::owner_of(dest);bolt::memory::Unique<Box> copy(bolt::memory::make<Box>(owner,actual,data,owner));drop(target,dest);write(dest,target);write(static_cast<std::byte*>(dest)+8,copy.release());
+ });}
+ void* br_unbox(BrContext* c,const char* site,void* self)noexcept{void* result=nullptr;checked(c,site,[&]{
+-    if(!self)throw std::runtime_error("null pointer dereference");auto* t=read<BrType*>(self);auto& types=registered_types(impl(c));
+-    if(!t||std::none_of(types.begin(),types.end(),[&](const auto& known){return known.get()==t;}))throw std::runtime_error("interface unbox requires an interface receiver");
++    if(!self)throw std::runtime_error("null pointer dereference");auto* t=read<BrType*>(self);
++    if(!allocation_owner(impl(c)).type_addresses.contains(t))throw std::runtime_error("interface unbox requires an interface receiver");
+     result=const_cast<void*>(unwrapped(t,self).second);
+ });return result;}
+ void br_value_contract(BrContext* c,BrType* type,void* eq,void* hash_fn)noexcept{
+diff --git a/src/native/lowering/Builder.cpp b/src/native/lowering/Builder.cpp
+--- a/src/native/lowering/Builder.cpp
++++ b/src/native/lowering/Builder.cpp
+@@ -42,7 +42,22 @@
+ Builder::Builder(Lower& l,std::string name,Type result,std::vector<Type> params,Location loc):lower(l),at(std::move(loc)){
+     fn.name=std::move(name);fn.result=result;fn.parameters=std::move(params);fn.at=at;for(auto p:fn.parameters)fn.registers.push_back(p);block();exit=block();error=block();failure=error;
+ }
+-Reg Builder::temp(const std::string& t,bool owned){auto l=lower.layout(t);auto p=alloc(l.size);if(owned&&l.aggregate)cleanup.emplace_back(t,p);return p;}
++Reg Builder::temp(const std::string& t, bool owned) {
++    const auto& layout = lower.layout(t);
++    const auto slot = alloc(layout.size);
++    if (owned && layout.aggregate) {
++        Reg live = 0;
++        if ((layout.kind == native_abi::Class || layout.kind == native_abi::Struct) &&
++            !layout.plain_struct && !layout.padded_field_bytes) {
++            // The shared exit also sees slots from untaken branches. Arm cleanup
++            // before initialization so a partially constructed value still unwinds.
++            live = alloc(1);
++            store(live, integer(Type::I8, 1));
++        }
++        cleanup.push_back({t, slot, live});
++    }
++    return slot;
++}
+ Reg Builder::type(const std::string& t){auto r=load(Type::Ptr,address(lower.layout(t).symbol));if(lower.core())core_types.emplace(r,t);return r;}
+ Reg Builder::string(const std::string& s){
+     auto r=address(lower.literal(s));if(lower.core())core_strings.emplace(r,s);return r;
+@@ -123,7 +138,7 @@
+             store(offset(self,l.marker),type(completes_type));jump(done);current=done;
+         }
+     }
+-    for(auto it=cleanup.rbegin();it!=cleanup.rend();++it)clear_value(it->first,it->second,"br_drop");
++    drop_since(0);
+     if(entered_slot)call("br_leave",Type::Void,{context,load(Type::I32,entered_slot)},false);
+     Instruction ret;ret.op=Op::Return;if(fn.result!=Type::Void){if(!return_slot)throw std::runtime_error("missing native return slot for "+fn.name);ret.args={load(fn.result,return_slot)};}emit(ret);
+     promote_private_swaps();
+diff --git a/src/native/lowering/Lowering.hpp b/src/native/lowering/Lowering.hpp
+--- a/src/native/lowering/Lowering.hpp
++++ b/src/native/lowering/Lowering.hpp
+@@ -49,7 +49,12 @@
+     std::string return_type="void",owner,completes_type;
+     Location at;
+     std::vector<Instruction> prologue;
+-    std::vector<std::pair<std::string,Reg>> cleanup;
++    struct OwnedSlot {
++        std::string type;
++        Reg address;
++        Reg live;
++    };
++    std::vector<OwnedSlot> cleanup;
+     std::unordered_map<std::size_t,Reg> locals;
+     std::unordered_map<Reg,std::string> element_tags;
+     struct ExitAction { const Stmt* finalizer=nullptr;bool catch_end=false;std::size_t cleanup_start=0;Label outer=0; };
+diff --git a/src/native/lowering/Statements.cpp b/src/native/lowering/Statements.cpp
+--- a/src/native/lowering/Statements.cpp
++++ b/src/native/lowering/Statements.cpp
+@@ -4,9 +4,20 @@
+ namespace bolt::ir::lowering {
+ 
+ void Builder::drop_since(std::size_t first) {
+-    // Every owned slot is zero-initialized in the prologue. Repeated cleanup is
+-    // safe because br_drop also clears it; failure paths can clean all slots.
+-    for(std::size_t n=cleanup.size();n>first;--n){const auto& [name,slot]=cleanup[n-1];clear_value(name,slot,"br_drop");}
++    for (std::size_t n = cleanup.size(); n > first; --n) {
++        const auto& slot = cleanup[n - 1];
++        if (!slot.live) {
++            clear_value(slot.type, slot.address, "br_drop");
++            continue;
++        }
++        const auto release = block(), done = block();
++        branch(load(Type::I8, slot.live), release, done);
++        current = release;
++        store(slot.live, integer(Type::I8, 0));
++        clear_value(slot.type, slot.address, "br_drop");
++        jump(done);
++        current = done;
++    }
+ }
+ void Builder::leave_actions(std::size_t first){
+     const auto saved=exit_actions;const auto previous=failure;
+diff --git a/tests/compiler_host.py b/tests/compiler_host.py
+--- a/tests/compiler_host.py
++++ b/tests/compiler_host.py
+@@ -108,8 +108,8 @@
+         destroy(compiler)
+ 
+ 
+-def task_completion_contract(profile):
+-    source = (Path(__file__).parent / "fixtures/HostedTaskCompletion.bolt").read_text(encoding="utf-8")
++def native_fixture_contract(profile, name):
++    source = (Path(__file__).parent / "fixtures" / name).read_text(encoding="utf-8")
+     compiler = host(first, profile)
+     try:
+         module = build(compiler, source)
+@@ -478,13 +478,15 @@
+     assert not h.value
+     field_metadata_contract()
+     async_json_host_contract()
+-    task_completion_contract(0)
++    native_fixture_contract(0, "HostedTaskCompletion.bolt")
++    native_fixture_contract(0, "OwnedSlotLifetime.bolt")
+     persistent_sources_contract()
+     incremental_frontend_contract(0)
+     compare_incremental_with_fresh()
+     results = [exercise(0, int(os.environ.get("BOLT_RELOAD_CYCLES", 3)))]
+     if os.environ.get("BOLT_TEST_LLVM_HOST") == "1":
+-        task_completion_contract(1)
++        native_fixture_contract(1, "HostedTaskCompletion.bolt")
++        native_fixture_contract(1, "OwnedSlotLifetime.bolt")
+         results.append(exercise(1, 1))
+     if target := os.environ.get("BOLT_RELOAD_REPORT"):
+         path = Path(sys.argv[1]).resolve()
+diff --git a/tests/fixtures/OwnedSlotLifetime.bolt b/tests/fixtures/OwnedSlotLifetime.bolt
+new file mode 100644
+--- /dev/null
++++ b/tests/fixtures/OwnedSlotLifetime.bolt
+@@ -0,0 +1,41 @@
++import System
++class Tracked {
++public:
++    static int Made = 0;
++    static int Freed = 0;
++    Tracked() { Made++; }
++    ~Tracked() { Freed++; }
++}
++class Broken {
++public:
++    Tracked Child;
++    static int Freed = 0;
++    Broken() { throw Exception("constructor failed"); }
++    ~Broken() { Freed++; }
++}
++static class Program {
++private:
++    int Exercise(int mode) {
++        if (mode == 0) return 0;
++        Tracked outer;
++        try {
++            if (mode == 1) { Tracked inner; return 1; }
++            if (mode == 2) { Broken broken; }
++            for (int i = 0; i < 3; i++) {
++                Tracked iteration;
++                if (i == 0) continue;
++                break;
++            }
++        } finally {}
++        return 2;
++    }
++public:
++    int Main() {
++        if (Exercise(0) != 0 || Tracked.Made != 0 || Tracked.Freed != 0) return 1;
++        if (Exercise(1) != 1 || Tracked.Made != 2 || Tracked.Freed != 2) return 2;
++        try { Exercise(2); return 3; } catch (Exception& expected) {}
++        if (Tracked.Made != 4 || Tracked.Freed != 4 || Broken.Freed != 0) return 4;
++        if (Exercise(3) != 2 || Tracked.Made != 7 || Tracked.Freed != 7) return 5;
++        return 0;
++    }
++}

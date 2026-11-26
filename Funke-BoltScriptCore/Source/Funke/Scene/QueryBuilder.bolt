@@ -1,0 +1,88 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public class QueryBuilder<TFirst, Columns...> {
+public:
+    FkQuerySpec Spec;
+
+    EntityQueryResult<TFirst, Columns...> WithEntity() {
+        EntityQueryResult<TFirst, Columns...> result;
+        result.FkIds = Spec.Ids();
+        return result;
+    }
+
+    QueryBuilder<TFirst, Columns...> With<T, Rest...>() {
+        QueryBuilder<TFirst, Columns...> result = this;
+        result.Spec.Require<T, Rest...>();
+        return result;
+    }
+
+    QueryBuilder<TFirst, Columns...> Without<T, Rest...>() {
+        QueryBuilder<TFirst, Columns...> result = this;
+        result.Spec.Exclude<T, Rest...>();
+        return result;
+    }
+
+    QueryBuilder<TFirst, Columns...> EnabledOnly() { return Filter(1); }
+    QueryBuilder<TFirst, Columns...> DisabledOnly() { return Filter(2); }
+    QueryBuilder<TFirst, Columns...> IncludeDisabled() { return Filter(0); }
+
+    QueryBuilder<TFirst, Columns...> WithCondition(System.Func<TFirst, bool> predicate) {
+        return WithCondition<TFirst>(predicate);
+    }
+
+    QueryBuilder<TFirst, Columns...> WithCondition<T>(System.Func<T, bool> predicate) {
+        QueryBuilder<TFirst, Columns...> result = this;
+        result.Spec.AddCondition<T>(predicate);
+        return result;
+    }
+
+private:
+    QueryBuilder<TFirst, Columns...> Filter(int mode) {
+        QueryBuilder<TFirst, Columns...> result = this;
+        result.Spec.Filter = mode;
+        return result;
+    }
+}
+
+public class EntityQueryResult<First, Columns...> {
+public:
+    ulong[] FkIds;
+    int Length => FkIds.Length;
+    int Count => FkIds.Length;
+    QueryRow<First, Columns...> this[int index] {
+        get { QueryRow<First, Columns...> row; row.ID = FkIds[index]; return row; }
+    }
+    implicit QueryRow<First, Columns...>[]() { return ToArray(); }
+    QueryRow<First, Columns...>[] ToArray() {
+        QueryRow<First, Columns...>[] rows = new QueryRow<First, Columns...>[Length];
+        for (int i = 0; i < rows.Length; ++i) rows[i] = this[i];
+        return rows;
+    }
+    QueryEnumerator<QueryRow<First, Columns...>> GetEnumerator() {
+        QueryEnumerator<QueryRow<First, Columns...>> cursor;
+        cursor.Items = ToArray();
+        return cursor;
+    }
+}
+
+public static class SceneQueryIteration {
+public:
+    static QueryEnumerator<T> GetEnumerator<T>(this QueryBuilder<T> source) {
+        ulong[] ids = source.Spec.Ids();
+        QueryEnumerator<T> cursor;
+        cursor.Items = new T[ids.Length];
+        for (int i = 0; i < ids.Length; ++i) {
+            T item;
+            item.ID = ids[i];
+            cursor.Items[i] = item;
+        }
+        return cursor;
+    }
+    static QueryEnumerator<QueryRow<A, B, Columns...>> GetEnumerator<A, B, Columns...>(this QueryBuilder<A, B, Columns...> source) {
+        return source.WithEntity().GetEnumerator();
+    }
+}

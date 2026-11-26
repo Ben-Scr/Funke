@@ -9,6 +9,8 @@
 #ifdef FUNKE_PROFILER_ENABLED
 #include "Profiling/GpuTimer.hpp"
 #include "Profiling/Profiler.hpp"
+#include "Diagnostics/LoadingDiagnostics.hpp"
+#include <sstream>
 #include "Project/FunkeProject.hpp"
 #include "Project/ProjectManager.hpp"
 
@@ -25,9 +27,12 @@ namespace Funke {
 		// Defaults are read from the project on first Render() — by the time
 		// Initialize runs, the active project may not be loaded yet.
 		m_SettingsLoaded = false;
+        LoadingDiagnostics::SetEnabled(false);
+        LoadingDiagnostics::Reset();
 	}
 
 	void ProfilerPanel::Shutdown() {
+        LoadingDiagnostics::SetEnabled(false);
 		// Ensure modules stop collecting if the editor is closing while
 		// the panel was visible.
 		Profiler::SetPanelVisible(false);
@@ -320,6 +325,40 @@ namespace Funke {
 		if (dirty) {
 			SaveSettingsToProject();
 		}
+
+        if (EditorUI::SectionHeader("Loading capture", false)) {
+            bool enabled = LoadingDiagnostics::IsEnabled();
+            if (ImGui::Checkbox("Capture every load step and frame", &enabled)) LoadingDiagnostics::SetEnabled(enabled);
+            ImGui::SameLine();
+            const bool reset = EditorUI::Button("Clear capture");
+            if (reset) LoadingDiagnostics::Reset();
+            static std::vector<LoadingPhaseStatistics> samples;
+            static auto next = std::chrono::steady_clock::time_point{};
+            const auto now = std::chrono::steady_clock::now();
+            if (reset || now >= next) { samples = LoadingDiagnostics::Snapshot(); next = now + std::chrono::milliseconds(500); }
+            ImGui::TextWrapped("CPU wall time; texture transfer and mip timings include submission, not GPU execution. P95/P99 use the last 4096 calls per phase; maximum and counts cover the whole capture. Frame.Interval includes all frame work.");
+            if (EditorUI::Button("Copy capture CSV")) {
+                std::ostringstream csv;
+                csv << "phase,calls,units,total_ms,max_ms,p95_ms,p99_ms,last_budget_ms,over_budget,window_samples\n";
+                for (const auto& s : samples) csv << s.Name << ',' << s.Calls << ',' << s.Units << ',' << s.TotalMs << ',' << s.MaxMs
+                    << ',' << s.P95Ms << ',' << s.P99Ms << ',' << s.LastBudgetMs << ',' << s.OverBudget << ',' << s.WindowSamples << '\n';
+                ImGui::SetClipboardText(csv.str().c_str());
+            }
+            if (ImGui::BeginTable("Load phases", 7, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollX)) {
+                for (const char* label : { "Phase", "Calls", "P95 ms", "P99 ms", "Max ms", "Budget ms", "Over budget" }) ImGui::TableSetupColumn(label);
+                ImGui::TableHeadersRow();
+                for (const auto& s : samples) {
+                    ImGui::TableNextRow(); ImGui::TableNextColumn(); ImGui::TextUnformatted(s.Name.c_str());
+                    ImGui::TableNextColumn(); ImGui::Text("%llu", static_cast<unsigned long long>(s.Calls));
+                    ImGui::TableNextColumn(); ImGui::Text("%.3f", s.P95Ms);
+                    ImGui::TableNextColumn(); ImGui::Text("%.3f", s.P99Ms);
+                    ImGui::TableNextColumn(); ImGui::Text("%.3f", s.MaxMs);
+                    ImGui::TableNextColumn(); if (s.LastBudgetMs >= 0) ImGui::Text("%.3f", s.LastBudgetMs); else ImGui::TextUnformatted("-");
+                    ImGui::TableNextColumn(); ImGui::Text("%llu", static_cast<unsigned long long>(s.OverBudget));
+                }
+                ImGui::EndTable();
+            }
+        }
 
 		for (const auto& category : GetCategoryLayout()) {
 			if (EditorUI::SectionHeader(category.Header, true)) {

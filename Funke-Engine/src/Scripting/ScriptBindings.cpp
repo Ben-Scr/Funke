@@ -1,4 +1,7 @@
 #include "pch.hpp"
+#include "Scripting/ScriptPreferences.hpp"
+#include "Scene/ComponentAccess.hpp"
+#include "Scripting/StructFieldBytes.hpp"
 #include "Scripting/ScriptBindingGuard.hpp"
 #include "Assets/AssetRegistry.hpp"
 #include "Assets/AssetLoader.hpp"
@@ -1819,6 +1822,67 @@ namespace Funke {
 		} FNK_BINDING_CATCH(0);
 	}
 
+
+	static uint64_t Funke_Scene_BeginJobQueryBorrow(const char* sceneName, const char* writes, const char* reads) {
+		if (!Application::IsMainThread()) return 0;
+		Scene* scene = ResolveLoadedSceneForQuery(sceneName);
+		if (!scene || !scene->IsLoaded()) return 0;
+		std::vector<uint32_t> writeIds, readIds;
+		auto parse = [](const char* names, std::vector<uint32_t>& ids) {
+			std::string_view remaining(names ? names : "");
+			while (!remaining.empty()) {
+				const auto separator = remaining.find('|');
+				const std::string name(remaining.substr(0, separator));
+				const auto* info = FindComponentByName(name.c_str());
+				if (!info || !info->IsModuleActive()) return false;
+				ids.push_back(info->typeIdU32);
+				if (separator == std::string_view::npos) break;
+				remaining.remove_prefix(separator + 1);
+			}
+			return true;
+		};
+		if (!parse(writes, writeIds) || !parse(reads, readIds)) return 0;
+		return ComponentAccess::BeginJobBorrow(scene->GetRegistry(), writeIds, readIds);
+	}
+	static void Funke_Scene_EndJobQueryBorrow(uint64_t token) { ComponentAccess::EndJobBorrow(token); }
+
+	static uint64_t Funke_Scene_BeginQueryBorrow(const char* sceneName) {
+		if (!Application::IsMainThread()) return 0;
+		Scene* scene = ResolveLoadedSceneForQuery(sceneName);
+		return scene && scene->IsLoaded() ? ComponentAccess::BeginBorrow(scene->GetRegistry()) : 0;
+	}
+	static void Funke_Scene_EndQueryBorrow(uint64_t token) {
+		ComponentAccess::EndBorrow(token);
+	}
+	static int Funke_Entity_CaptureComponent(uint64_t id, const char* name, uint64_t* identity) {
+		if (!identity || !Application::IsMainThread()) return 0;
+		Scene* scene = nullptr;
+		EntityHandle handle = entt::null;
+		if (!ResolveEntityReference(id, scene, handle)) return 0;
+		const auto* info = FindComponentByName(name);
+		if (!info || !info->IsModuleActive()) return 0;
+		ComponentAccess::Identity captured;
+		if (!ComponentAccess::Capture(scene->GetEntity(handle), *info, SceneManager::GetComponentRegistry().GetGeneration(), captured)) return 0;
+		std::memcpy(identity, &captured, sizeof(captured));
+		return 1;
+	}
+	static int Funke_Entity_TransferComponent(uint64_t id, const char* name, const uint64_t* identity, void* value, int size, int write) {
+		if (!identity || !Application::IsMainThread()) return 0;
+		Scene* scene = nullptr;
+		EntityHandle handle = entt::null;
+		if (!ResolveEntityReference(id, scene, handle)) return 0;
+		const auto* info = FindComponentByName(name);
+		if (!info || !info->IsModuleActive()) return 0;
+		size_t payloadSize = info->managedSize;
+		auto fields = info->managedFields;
+		if (fields.empty() && !info->isDynamic) ScriptComponentLayoutAccess::BuiltIn(*info, fields, payloadSize);
+		if (info->isDynamic) payloadSize = info->rawSize;
+		ComponentAccess::Identity captured;
+		std::memcpy(&captured, identity, sizeof(captured));
+		return ComponentAccess::Transfer(scene->GetEntity(handle), *info, SceneManager::GetComponentRegistry().GetGeneration(),
+			captured, value, size, write != 0, payloadSize) ? 1 : 0;
+	}
+
 	static int Funke_Scene_OpenQueryView(
 		const char* sceneName,
 		const char* writeNames,
@@ -2020,13 +2084,19 @@ namespace Funke {
 			? ComponentCategory::Tag
 			: ComponentCategory::Component;
 		auto& registry = SceneManager::GetComponentRegistry();
-		return registry.RegisterDynamic(display, serial, sub, cat, size, alignment);
+		const uint32_t id = registry.RegisterDynamic(display, serial, sub, cat, size, alignment);
+		if (id != 0) {
+			const auto query = ScriptEngine::GetCallbacks().GetClassFieldDefs;
+			const char* schema = query ? query(("schema:" + serial).c_str()) : nullptr;
+			if (schema) registry.SetDynamicProperties(id, BuildDynamicFieldProperties(id, size, schema));
+		}
+		return id;
 	}
 
 	static void Funke_Component_UnregisterAllDynamic()
 	{
 		auto& registry = SceneManager::GetComponentRegistry();
-		registry.UnregisterAllDynamic();
+		registry.UnregisterManagedDynamic();
 	}
 
 	// ── TextRenderer ────────────────────────────────────────────────────
@@ -3467,6 +3537,7 @@ namespace Funke {
 
 	void ScriptBindings::PopulateNativeBindings(NativeBindings& b)
 	{
+		b.PlayerPrefs_Access = ScriptPreferences::Access;
 		PopulateNonComponentBindings(b);
 		PopulatePostProcessingBindings(b);
 		ScriptEditorGui::PopulateBindings(b);
@@ -3892,6 +3963,12 @@ namespace Funke {
 		b.Entity_GetComponentPtr   = FNK_GUARDED_BINDING(Funke_Entity_GetComponentPtr);
 		b.Entity_GetComponentPtrReadOnly = FNK_GUARDED_BINDING(Funke_Entity_GetComponentPtrReadOnly);
 		b.Entity_GetComponentSize  = FNK_GUARDED_BINDING(Funke_Entity_GetComponentSize);
+		b.Scene_BeginQueryBorrow = FNK_GUARDED_BINDING(Funke_Scene_BeginQueryBorrow);
+		b.Scene_EndQueryBorrow = FNK_GUARDED_BINDING(Funke_Scene_EndQueryBorrow);
+		b.Scene_BeginJobQueryBorrow = FNK_GUARDED_BINDING(Funke_Scene_BeginJobQueryBorrow);
+		b.Scene_EndJobQueryBorrow = FNK_GUARDED_BINDING(Funke_Scene_EndJobQueryBorrow);
+		b.Entity_CaptureComponent = FNK_GUARDED_BINDING(Funke_Entity_CaptureComponent);
+		b.Entity_TransferComponent = FNK_GUARDED_BINDING(Funke_Entity_TransferComponent);
 		b.Scene_OpenQueryView      = FNK_GUARDED_BINDING(Funke_Scene_OpenQueryView);
 
 		// ── UI (appended for binary compat — order MUST match NativeBindings in ScriptGlue.hpp and the C# mirror) ──

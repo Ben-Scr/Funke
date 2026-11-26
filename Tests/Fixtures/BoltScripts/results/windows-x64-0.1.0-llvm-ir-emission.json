@@ -1,0 +1,661 @@
+{
+  "compiler_before_sha256": "b78d58e0047ecede9711957cb8a446a45312c88e7961bcaae13c8743f8802046",
+  "compiler_sha256": "a0d19d0fba181f9340af349161b30713953fc675e87e502ed7649f4bc48b8f19",
+  "engine_sha256": "500eb4de927a83c160deda862b34ed85ef5cab8bcd1a0696b5517429fd4357c8",
+  "test_executable_sha256": "391ecb81776361f0c75d477a90be0643c6ebe10b4cea0d7ad9cd8ec916174d4c",
+  "llvm_sha256": "19ebfb8901720344d237068f3015b9d07fb3420c7767f9f2bd666b8654638b3e",
+  "runs": [
+    {
+      "round": 1,
+      "workload": "literal",
+      "compiler": "before",
+      "cold_ms": 1374.2164,
+      "edit_ms": 1599.5974,
+      "reload_ms": 1599.7875
+    },
+    {
+      "round": 1,
+      "workload": "literal",
+      "compiler": "after",
+      "cold_ms": 1418.1506,
+      "edit_ms": 2614.8171,
+      "reload_ms": 2615.105
+    },
+    {
+      "round": 1,
+      "workload": "expression",
+      "compiler": "after",
+      "cold_ms": 2213.8601,
+      "edit_ms": 1508.4025,
+      "reload_ms": 1508.5879
+    },
+    {
+      "round": 1,
+      "workload": "expression",
+      "compiler": "before",
+      "cold_ms": 1473.2341,
+      "edit_ms": 1526.829,
+      "reload_ms": 1527.0192
+    },
+    {
+      "round": 1,
+      "workload": "declaration",
+      "compiler": "before",
+      "cold_ms": 1456.0499,
+      "edit_ms": 1482.7262,
+      "reload_ms": 1482.9042
+    },
+    {
+      "round": 1,
+      "workload": "declaration",
+      "compiler": "after",
+      "cold_ms": 2126.4201,
+      "edit_ms": 1511.5906,
+      "reload_ms": 1511.7807
+    },
+    {
+      "round": 2,
+      "workload": "literal",
+      "compiler": "after",
+      "cold_ms": 1436.1606,
+      "edit_ms": 1370.6568,
+      "reload_ms": 1370.818
+    },
+    {
+      "round": 2,
+      "workload": "literal",
+      "compiler": "before",
+      "cold_ms": 1416.743,
+      "edit_ms": 1469.0618,
+      "reload_ms": 1469.2403
+    },
+    {
+      "round": 2,
+      "workload": "expression",
+      "compiler": "before",
+      "cold_ms": 1542.9434,
+      "edit_ms": 1520.5122,
+      "reload_ms": 1520.725
+    },
+    {
+      "round": 2,
+      "workload": "expression",
+      "compiler": "after",
+      "cold_ms": 1484.6285,
+      "edit_ms": 1482.0701,
+      "reload_ms": 1482.2402
+    },
+    {
+      "round": 2,
+      "workload": "declaration",
+      "compiler": "after",
+      "cold_ms": 1374.6145,
+      "edit_ms": 1507.1505,
+      "reload_ms": 1507.3362
+    },
+    {
+      "round": 2,
+      "workload": "declaration",
+      "compiler": "before",
+      "cold_ms": 1515.1714,
+      "edit_ms": 1555.6498,
+      "reload_ms": 1555.827
+    },
+    {
+      "round": 3,
+      "workload": "literal",
+      "compiler": "before",
+      "cold_ms": 1628.0616,
+      "edit_ms": 1662.1106,
+      "reload_ms": 1662.3157
+    },
+    {
+      "round": 3,
+      "workload": "literal",
+      "compiler": "after",
+      "cold_ms": 1508.6427,
+      "edit_ms": 1469.1874,
+      "reload_ms": 1469.345
+    },
+    {
+      "round": 3,
+      "workload": "expression",
+      "compiler": "after",
+      "cold_ms": 1395.1512,
+      "edit_ms": 1446.1436,
+      "reload_ms": 1446.3109
+    },
+    {
+      "round": 3,
+      "workload": "expression",
+      "compiler": "before",
+      "cold_ms": 1393.8005,
+      "edit_ms": 1693.1593,
+      "reload_ms": 1693.3292
+    },
+    {
+      "round": 3,
+      "workload": "declaration",
+      "compiler": "before",
+      "cold_ms": 1463.6866,
+      "edit_ms": 1446.3779,
+      "reload_ms": 1446.5689
+    },
+    {
+      "round": 3,
+      "workload": "declaration",
+      "compiler": "after",
+      "cold_ms": 1390.483,
+      "edit_ms": 1461.1889,
+      "reload_ms": 1461.3752
+    },
+    {
+      "round": 1,
+      "workload": "move",
+      "compiler": "before",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 1331.156,
+      "update_ms": 0.230481
+    },
+    {
+      "round": 1,
+      "workload": "move",
+      "compiler": "after",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 1312.2924,
+      "update_ms": 0.236187
+    },
+    {
+      "round": 1,
+      "workload": "compute",
+      "compiler": "after",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 1342.8262,
+      "update_ms": 0.8021
+    },
+    {
+      "round": 1,
+      "workload": "compute",
+      "compiler": "before",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 1348.6153,
+      "update_ms": 0.799512
+    },
+    {
+      "round": 2,
+      "workload": "move",
+      "compiler": "after",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 1306.661,
+      "update_ms": 0.2346
+    },
+    {
+      "round": 2,
+      "workload": "move",
+      "compiler": "before",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 1347.8161,
+      "update_ms": 0.234275
+    },
+    {
+      "round": 2,
+      "workload": "compute",
+      "compiler": "before",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 1382.1091,
+      "update_ms": 0.821256
+    },
+    {
+      "round": 2,
+      "workload": "compute",
+      "compiler": "after",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 1352.7982,
+      "update_ms": 0.799631
+    },
+    {
+      "round": 3,
+      "workload": "move",
+      "compiler": "before",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 1379.0802,
+      "update_ms": 0.223281
+    },
+    {
+      "round": 3,
+      "workload": "move",
+      "compiler": "after",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 1354.4432,
+      "update_ms": 0.238775
+    },
+    {
+      "round": 3,
+      "workload": "compute",
+      "compiler": "after",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 1372.5225,
+      "update_ms": 0.804087
+    },
+    {
+      "round": 3,
+      "workload": "compute",
+      "compiler": "before",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 1341.907,
+      "update_ms": 0.808369
+    },
+    {
+      "round": 4,
+      "workload": "move",
+      "compiler": "after",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 1286.0839,
+      "update_ms": 0.225394
+    },
+    {
+      "round": 4,
+      "workload": "move",
+      "compiler": "before",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 1333.6825,
+      "update_ms": 0.251806
+    },
+    {
+      "round": 4,
+      "workload": "compute",
+      "compiler": "before",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 1382.4061,
+      "update_ms": 0.824219
+    },
+    {
+      "round": 4,
+      "workload": "compute",
+      "compiler": "after",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 1453.8492,
+      "update_ms": 0.911112
+    },
+    {
+      "round": 5,
+      "workload": "move",
+      "compiler": "before",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 1590.0705,
+      "update_ms": 0.254494
+    },
+    {
+      "round": 5,
+      "workload": "move",
+      "compiler": "after",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 1394.1802,
+      "update_ms": 0.226238
+    },
+    {
+      "round": 5,
+      "workload": "compute",
+      "compiler": "after",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 1358.7656,
+      "update_ms": 0.827913
+    },
+    {
+      "round": 5,
+      "workload": "compute",
+      "compiler": "before",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 1437.8942,
+      "update_ms": 0.810369
+    },
+    {
+      "round": 6,
+      "workload": "move",
+      "compiler": "after",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 1544.7778,
+      "update_ms": 0.255625
+    },
+    {
+      "round": 6,
+      "workload": "move",
+      "compiler": "before",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 1733.7713,
+      "update_ms": 0.248819
+    },
+    {
+      "round": 6,
+      "workload": "compute",
+      "compiler": "before",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 1583.9734,
+      "update_ms": 0.835044
+    },
+    {
+      "round": 6,
+      "workload": "compute",
+      "compiler": "after",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 1445.794,
+      "update_ms": 0.820519
+    },
+    {
+      "round": 7,
+      "workload": "move",
+      "compiler": "before",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 1498.2061,
+      "update_ms": 0.233744
+    },
+    {
+      "round": 7,
+      "workload": "move",
+      "compiler": "after",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 1382.0239,
+      "update_ms": 0.228469
+    },
+    {
+      "round": 7,
+      "workload": "compute",
+      "compiler": "after",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 1513.284,
+      "update_ms": 0.839869
+    },
+    {
+      "round": 7,
+      "workload": "compute",
+      "compiler": "before",
+      "core_ms": 0.0,
+      "assembly_ms": 0.0,
+      "first_ms": 2195.4156,
+      "update_ms": 1.049206
+    }
+  ],
+  "medians": {
+    "literal": {
+      "before": {
+        "cold_ms": 1416.743,
+        "edit_ms": 1599.5974,
+        "reload_ms": 1599.7875
+      },
+      "after": {
+        "cold_ms": 1436.1606,
+        "edit_ms": 1469.1874,
+        "reload_ms": 1469.345
+      }
+    },
+    "expression": {
+      "after": {
+        "cold_ms": 1484.6285,
+        "edit_ms": 1482.0701,
+        "reload_ms": 1482.2402
+      },
+      "before": {
+        "cold_ms": 1473.2341,
+        "edit_ms": 1526.829,
+        "reload_ms": 1527.0192
+      }
+    },
+    "declaration": {
+      "before": {
+        "cold_ms": 1463.6866,
+        "edit_ms": 1482.7262,
+        "reload_ms": 1482.9042
+      },
+      "after": {
+        "cold_ms": 1390.483,
+        "edit_ms": 1507.1505,
+        "reload_ms": 1507.3362
+      }
+    },
+    "move": {
+      "before": {
+        "core_ms": 0.0,
+        "assembly_ms": 0.0,
+        "first_ms": 1379.0802,
+        "update_ms": 0.234275
+      },
+      "after": {
+        "core_ms": 0.0,
+        "assembly_ms": 0.0,
+        "first_ms": 1354.4432,
+        "update_ms": 0.2346
+      }
+    },
+    "compute": {
+      "after": {
+        "core_ms": 0.0,
+        "assembly_ms": 0.0,
+        "first_ms": 1372.5225,
+        "update_ms": 0.820519
+      },
+      "before": {
+        "core_ms": 0.0,
+        "assembly_ms": 0.0,
+        "first_ms": 1382.4061,
+        "update_ms": 0.821256
+      }
+    }
+  },
+  "llvm_ir_emission": {
+    "move": {
+      "runs": [
+        {
+          "round": 1,
+          "before_ms": 83.0192,
+          "after_ms": 49.2403
+        },
+        {
+          "round": 2,
+          "before_ms": 105.4158,
+          "after_ms": 46.153
+        },
+        {
+          "round": 3,
+          "before_ms": 164.1977,
+          "after_ms": 115.3033
+        },
+        {
+          "round": 4,
+          "before_ms": 128.6014,
+          "after_ms": 91.7717
+        },
+        {
+          "round": 5,
+          "before_ms": 123.7378,
+          "after_ms": 81.8473
+        },
+        {
+          "round": 6,
+          "before_ms": 133.6617,
+          "after_ms": 97.2327
+        },
+        {
+          "round": 7,
+          "before_ms": 124.3679,
+          "after_ms": 117.4889
+        },
+        {
+          "round": 8,
+          "before_ms": 144.9315,
+          "after_ms": 97.6861
+        },
+        {
+          "round": 9,
+          "before_ms": 142.0041,
+          "after_ms": 74.432
+        },
+        {
+          "round": 10,
+          "before_ms": 156.1957,
+          "after_ms": 80.5823
+        },
+        {
+          "round": 11,
+          "before_ms": 131.4985,
+          "after_ms": 89.1851
+        },
+        {
+          "round": 12,
+          "before_ms": 228.71,
+          "after_ms": 235.5914
+        },
+        {
+          "round": 13,
+          "before_ms": 169.738,
+          "after_ms": 84.8543
+        },
+        {
+          "round": 14,
+          "before_ms": 132.1929,
+          "after_ms": 70.8178
+        },
+        {
+          "round": 15,
+          "before_ms": 134.261,
+          "after_ms": 76.4461
+        }
+      ],
+      "before_ms": 133.6617,
+      "after_ms": 84.8543,
+      "emitted_bytes": 5868297,
+      "ir_sha256": "7234b8e1a7dae68f737530d3032106a40c51d5c6ebaca1663fac6a62697adbab"
+    },
+    "compute": {
+      "runs": [
+        {
+          "round": 1,
+          "before_ms": 111.8524,
+          "after_ms": 70.1529
+        },
+        {
+          "round": 2,
+          "before_ms": 227.8989,
+          "after_ms": 67.8248
+        },
+        {
+          "round": 3,
+          "before_ms": 224.7463,
+          "after_ms": 141.7006
+        },
+        {
+          "round": 4,
+          "before_ms": 215.6196,
+          "after_ms": 186.4383
+        },
+        {
+          "round": 5,
+          "before_ms": 213.5698,
+          "after_ms": 125.9745
+        },
+        {
+          "round": 6,
+          "before_ms": 127.2512,
+          "after_ms": 108.3636
+        },
+        {
+          "round": 7,
+          "before_ms": 112.5209,
+          "after_ms": 67.9739
+        },
+        {
+          "round": 8,
+          "before_ms": 102.671,
+          "after_ms": 70.2405
+        },
+        {
+          "round": 9,
+          "before_ms": 77.7985,
+          "after_ms": 49.706
+        },
+        {
+          "round": 10,
+          "before_ms": 79.1677,
+          "after_ms": 58.3721
+        },
+        {
+          "round": 11,
+          "before_ms": 98.6451,
+          "after_ms": 62.9293
+        },
+        {
+          "round": 12,
+          "before_ms": 93.1643,
+          "after_ms": 56.0044
+        },
+        {
+          "round": 13,
+          "before_ms": 109.1419,
+          "after_ms": 137.1577
+        },
+        {
+          "round": 14,
+          "before_ms": 143.9289,
+          "after_ms": 127.0233
+        },
+        {
+          "round": 15,
+          "before_ms": 145.761,
+          "after_ms": 93.2462
+        }
+      ],
+      "before_ms": 112.5209,
+      "after_ms": 70.2405,
+      "emitted_bytes": 5875628,
+      "ir_sha256": "5a180f3f4736e361b1f1293b731357d4febb1c4ba5649e96aab6cd0f9661d809"
+    }
+  },
+  "baseline_report": "windows-x64-0.1.0-llvm-entity-updates.json",
+  "version": "Bolt 0.1.0 (x86_64-pc-windows-msvc)",
+  "system": "Windows-11-10.0.26300-SP0",
+  "cpu": "AMD Ryzen 9 7900X 12-Core Processor",
+  "dotnet_sdk": "10.0.403",
+  "fixture_files": {
+    "EntityMove.bolt": "01b13853a2a7cbb46f94afddf50c5aa17ae6c8845624f8c8721919cb2b50d566",
+    "Move.cs": "96dfc5641d34830e4911269728bbe66f03cc4e5c20b19e46454e8c7dc3caf62c",
+    "EntityCompute.bolt": "7ed77c2ebba4bb94e41d819dbdd9f05a857773104ecaefff7810005d38779d9f",
+    "Compute.cs": "327c42f377d7603ea6539166d0993c2c275676d71ac02d3919f994f471b79c99"
+  },
+  "edits_per_process": 8,
+  "sdk_snapshot": "2026-11-21 16:59 CET with the previous Funke SDK changes and patch 0004 and Funke SDK patch 0005",
+  "backend": "LLVM Release, default<O3>, MCJIT OptLevel=3",
+  "sdk_patch_sha256": "e822d96875b2cb97ad54ee18158e9979a147c2bd9450cd201c9b077860a3d8cd",
+  "cli_sha256": "6d80457e3cb647203ec1afec091440dca6697bd3df98707cd477bbd10f3eea73",
+  "runtime_sha256": "87c615805ba408c095bc93da6c8778ccc832a9677fd2e2ec93fe655a3b23ad41",
+  "methodology": {
+    "compile": "Three pairs of fresh processes per edit type. Each process runs the Funke cold validation and eight edits with per-frame position checks. Compiler order alternates by round and edit type.",
+    "runtime": "Seven pairs per workload, alternating compiler order. Same frozen test executable, engine and gameplay scripts. 1,000 entities, 256 warmup frames, 31 groups of 16 timed updates; local and world transforms are checked.",
+    "ir": "15 alternating pairs per workload measured inside the same process on the same lowered module. Timing covers verification and emission. Byte comparison takes place outside the timed section. The diagnostic build also compares Debug and Release IR for Windows x64, Linux x64 and macOS arm64, including a synthetic module with all 256 byte values, empty data and pointer relocations."
+  }
+}

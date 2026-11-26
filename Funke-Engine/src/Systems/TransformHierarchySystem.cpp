@@ -15,7 +15,6 @@ namespace Funke {
 
 		struct PropagationState {
 			std::vector<EntityHandle> Roots;
-			std::vector<EntityHandle> DirtyTransforms;
 			Transform2DPropagationStats Stats;
 		};
 
@@ -147,8 +146,7 @@ namespace Funke {
 
 			FUNKE_PROFILE_SCOPE("TransformHierarchy");
 
-			scene.ConsumeDirtyTransformEntities(state->DirtyTransforms);
-			const auto& dirtyTransforms = state->DirtyTransforms;
+			std::vector<EntityHandle> dirtyTransforms = scene.ConsumeDirtyTransformEntities();
 			state->Stats.FullTraversal = dirtyAll;
 
 			if (!hasHierarchy) {

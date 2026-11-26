@@ -352,6 +352,87 @@ TEST_CASE("ComponentRef from an unbound NativeScript is safely empty")
 	CheckInvalidComponentRef(readOnly);
 }
 
+namespace {
+	struct ConvenienceValue {
+		std::unique_ptr<int> Value;
+		explicit ConvenienceValue(std::unique_ptr<int> value) : Value(std::move(value)) {}
+	};
+	struct ConvenienceTag {};
+	template<typename T>
+	concept HasPointerTryGet = requires(T& value) { value.template TryGetComponent<ConvenienceTag>(); };
+	static_assert(!HasPointerTryGet<Entity>);
+	static_assert(!HasPointerTryGet<NativeScript>);
+	static_assert(std::is_same_v<decltype(std::declval<const Entity&>().TryGetComponent<ConvenienceValue>()), const ConvenienceValue*>);
+	static_assert(std::is_same_v<decltype(std::declval<const NativeScript&>().TryGetComponent<ConvenienceValue>()), const ConvenienceValue*>);
+	static_assert(std::is_same_v<decltype(std::declval<NativeScript&>().GetComponent<ComponentAccessScript>()), ComponentAccessScript*>);
+	static_assert(std::is_same_v<decltype(std::declval<const NativeScript&>().TryGetComponent<ComponentAccessScript>()), const ComponentAccessScript*>);
+}
+
+TEST_CASE("Native convenience pointer access handles missing and expired entities") {
+	auto scene = Scene::CreateDetachedScene("Convenience pointer access");
+	auto entity = scene->CreateEmptyEntity();
+	CHECK(entity.TryGetComponent<ConvenienceValue>() == nullptr);
+	auto& value = entity.AddComponent<ConvenienceValue>(std::make_unique<int>(17));
+	CHECK(entity.TryGetComponent<ConvenienceValue>() == &value);
+	const Entity& readOnly = entity;
+	CHECK(readOnly.TryGetComponent<ConvenienceValue>() == &value);
+	const ConvenienceValue* out = nullptr;
+	CHECK(readOnly.TryGetComponent(out));
+	CHECK(out == &value);
+	entity.RemoveComponent<ConvenienceValue>();
+	CHECK_FALSE(readOnly.TryGetComponent(out));
+	CHECK(out == nullptr);
+	scene->DestroyEntity(entity);
+	CHECK(entity.TryGetComponent<ConvenienceValue>() == nullptr);
+	scene.reset();
+	CHECK(readOnly.TryGetComponent<ConvenienceValue>() == nullptr);
+	CHECK_THROWS_AS(entity.GetOrAddComponent<ConvenienceValue>(std::make_unique<int>(2)), FunkeException);
+}
+
+TEST_CASE("Native convenience GetOrAdd preserves existing values and mutation rules") {
+	auto scene = Scene::CreateDetachedScene("Convenience get or add");
+	auto entity = scene->CreateEmptyEntity();
+	auto initial = std::make_unique<int>(17);
+	auto& component = entity.GetOrAddComponent<ConvenienceValue>(std::move(initial));
+	CHECK(initial == nullptr);
+	CHECK(*component.Value == 17);
+	auto unused = std::make_unique<int>(99);
+	CHECK(&entity.GetOrAddComponent<ConvenienceValue>(std::move(unused)) == &component);
+	CHECK(unused != nullptr);
+	CHECK(*component.Value == 17);
+	entity.GetOrAddComponent<ConvenienceTag>();
+	entity.GetOrAddComponent<ConvenienceTag>();
+	CHECK(entity.HasComponent<ConvenienceTag>());
+	entity.GetOrAddComponent<Transform2DComponent>();
+	CHECK_THROWS_AS(entity.GetOrAddComponent<Transform3DComponent>(), FunkeException);
+	CHECK_FALSE(entity.HasComponent<Transform3DComponent>());
+#if defined(FNK_DEBUG) || defined(FNK_RELEASE)
+	const auto token = ComponentAccess::BeginBorrow(scene->GetRegistry());
+	struct EndBorrow { uint64_t Token; ~EndBorrow() { ComponentAccess::EndBorrow(Token); } } endBorrow{ token };
+	CHECK_NOTHROW(entity.GetOrAddComponent<ConvenienceValue>(std::move(unused)));
+	CHECK_NOTHROW(entity.GetOrAddComponent<ConvenienceTag>());
+	CHECK_THROWS_AS(entity.GetOrAddComponent<ByteEmplaceTestComponent>(), std::logic_error);
+	CHECK_FALSE(entity.HasComponent<ByteEmplaceTestComponent>());
+#endif
+}
+
+TEST_CASE("Native convenience unbound scripts preserve nullable and throwing contracts") {
+	ComponentAccessScript script;
+	CHECK_THROWS_AS(script.GetEntity(), FunkeException);
+	CHECK(script.TryGetComponent<ConvenienceValue>() == nullptr);
+	const ComponentAccessScript& readOnly = script;
+	const ConvenienceValue* value = nullptr;
+	CHECK_FALSE(readOnly.TryGetComponent(value));
+	CHECK(value == nullptr);
+	CHECK_THROWS_AS(script.GetOrAddComponent<ConvenienceTag>(), FunkeException);
+	CHECK(script.AddComponent<ComponentAccessScript>() == nullptr);
+	CHECK(script.GetComponent<ComponentAccessScript>() == nullptr);
+	CHECK(script.GetOrAddComponent<ComponentAccessScript>() == nullptr);
+	CHECK_FALSE(script.HasComponent<ComponentAccessScript>());
+	CHECK(readOnly.TryGetComponent<ComponentAccessScript>() == nullptr);
+	CHECK_NOTHROW(script.RemoveComponent<ComponentAccessScript>());
+}
+
 TEST_CASE("Scene bulk creation rejects invalid output and entity caps without mutation")
 {
 	auto scene = Scene::CreateDetachedScene("Bulk Creation Validation");
@@ -1827,6 +1908,15 @@ TEST_CASE("Runtime single-entity deserialization retargets self references")
 	const auto field = scriptComponent.PendingFieldValues.find("SelfReferenceScript.Target");
 	REQUIRE(field != scriptComponent.PendingFieldValues.end());
 	CHECK(field->second == std::to_string(scene->GetEntityPersistentID(cloneHandle)));
+
+	auto target = Scene::CreateDetachedScene("Live Clone Target");
+	const Entity copy = target->CloneEntity(scene->GetEntity(cloneHandle));
+	REQUIRE(copy.IsValid());
+	const auto copyId = target->GetEntityPersistentID(copy.GetHandle());
+	CHECK(copyId != scene->GetEntityPersistentID(cloneHandle));
+	const auto& fieldsOnCopy = target->GetComponent<ScriptComponent>(copy.GetHandle()).PendingFieldValues;
+	REQUIRE(fieldsOnCopy.contains("SelfReferenceScript.Target"));
+	CHECK(fieldsOnCopy.at("SelfReferenceScript.Target") == std::to_string(copyId));
 }
 
 TEST_CASE("Spawning dynamic sprites does not invalidate the static sprite grid")
@@ -2079,4 +2169,48 @@ TEST_CASE("Reload identity resolves the owning scene instead of the authored ent
         CHECK(bindings.Entity_GetOwningSceneId(id) != bindings.Entity_GetSceneGUID(id));
     }
     CHECK(first->GetSceneId() != second->GetSceneId());
+}
+
+TEST_CASE("Runtime point IDs are scene-local and survive sparse mixed batches") {
+	using namespace Funke;
+	auto scene = Scene::CreateDetachedScene("Runtime points");
+	auto other = Scene::CreateDetachedScene("Other runtime points");
+	auto existing = scene->CreateEntity("Keep");
+	std::array<uint64_t, 3> ids{};
+	std::array<uint64_t, 3> foreign{};
+	scene->CreateRuntimePoints(ids);
+	other->CreateRuntimePoints(foreign);
+	CHECK(scene->GetEntityCount() == 4);
+	CHECK(scene->ReadRuntimePoints(foreign, nullptr) == 0);
+	CHECK(other->DestroyRuntimePoints(ids) == 0);
+	CHECK(scene->TranslateRuntimePoints(ids, 3.f, -7.f) == 3);
+	std::array<uint64_t, 4> selection{ids[2], 0, ids[0], foreign[1]};
+	std::array<float, 8> xy{};
+	CHECK(scene->ReadRuntimePoints(selection, xy.data()) == 2);
+	const std::array<float, 8> expected{3.f, -7.f, 0.f, 0.f, 3.f, -7.f, 0.f, 0.f};
+	CHECK(xy == expected);
+	const std::array<uint64_t, 2> twice{ids[1], ids[1]};
+	CHECK(scene->DestroyRuntimePoints(twice) == 1);
+	std::array<uint64_t, 1> reused{};
+	scene->CreateRuntimePoints(reused);
+	CHECK(scene->DestroyRuntimePoints(twice) == 0);
+	CHECK(scene->ReadRuntimePoints(reused, nullptr) == 1);
+	CHECK(scene->DestroyRuntimePoints(ids) == 2);
+	CHECK(scene->DestroyRuntimePoints(reused) == 1);
+	CHECK(existing.IsValid());
+	CHECK(scene->GetEntityCount() == 1);
+	CHECK(other->DestroyRuntimePoints(foreign) == 3);
+}
+
+TEST_CASE("Runtime point destruction respects native component lifecycle") {
+	using namespace Funke;
+	auto scene = Scene::CreateDetachedScene("Point hierarchy");
+	std::array<uint64_t, 1> ids{};
+	scene->CreateRuntimePoints(ids);
+	const auto handle = static_cast<EntityHandle>(static_cast<uint32_t>(ids[0]));
+	auto child = scene->CreateEntity("Child");
+	child.SetParent(scene->GetEntity(handle));
+	CHECK(scene->DestroyRuntimePoints(ids) == 1);
+	CHECK_FALSE(child.IsValid());
+	CHECK(scene->GetEntityCount() == 0);
 }

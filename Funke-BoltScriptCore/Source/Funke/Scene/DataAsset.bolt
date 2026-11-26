@@ -1,0 +1,28 @@
+namespace Funke;
+
+public class DataAsset {
+protected:
+    ulong FkGuid;
+public:
+    ulong FkAssetId() { return FkGuid; }
+    ulong FkKind() { return 8ul; }
+    virtual ulong FkDataType() { return 0ul; }
+    void FkSetGuid(ulong guid) { FkGuid = guid; }
+    virtual void OnValidate() {}
+}
+
+public static class FkDataStorage {
+public:
+    static ulong Current() { return FkEventWord(0ul, 0ul); }
+    static string? Read(ulong guid, string key) {
+        FunkeText.Put(key);
+        ulong size = FkDataAsset(0ul, guid);
+        if (size == 0ul) return null;
+        return FunkeText.Read(size - 1ul);
+    }
+    static void Write(ulong guid, string key, string value) {
+        FunkeText.Put(key + "=" + value);
+        FkDataAsset(1ul, guid);
+    }
+}
+

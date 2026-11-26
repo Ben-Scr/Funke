@@ -1,0 +1,132 @@
+import System
+import System.Threading
+import System.Threading.Tasks
+import System.Collections.Generic
+namespace Funke;
+
+extern "C" ulong FkAssetOperation(ulong operation, void* arguments, void* unused);
+
+public static class AssetManager {
+private:
+    static bool MatchesDataType<T>(ulong guid) {
+        FunkeText.Put(Type.Name<T>());
+        return FkDataAsset(2ul, guid) != 0ul;
+    }
+    static ulong ParseGUID(string guid) {
+        string compact = guid.Trim().Replace("-", "");
+        byte[] chars = compact.ToUtf8();
+        if (chars.Length == 0) return 0ul;
+        ulong value = 0ul;
+        bool decimal = true;
+        for (int i = 0; i < chars.Length; i++) {
+            int digit = (int)chars[i] - 48;
+            if (digit < 0 || digit > 9 || value > (ulong.MaxValue - (ulong)digit) / 10ul) { decimal = false; break; }
+            value = value * 10ul + (ulong)digit;
+        }
+        if (decimal) return value;
+        if (chars.Length > 16) return 0ul;
+        value = 0ul;
+        for (int i = 0; i < chars.Length; i++) {
+            int c = (int)chars[i];
+            int digit = c >= 48 && c <= 57 ? c - 48 : c >= 65 && c <= 70 ? c - 55 : c >= 97 && c <= 102 ? c - 87 : -1;
+            if (digit < 0) return 0ul;
+            value = (value << 4) | (ulong)digit;
+        }
+        return value;
+    }
+    static ulong Operation(ulong op, ulong id, ulong kind) {
+        ulong[] args = {id, kind};
+        return FkAssetOperation(op, &args[0], null);
+    }
+    static void ValidateAsyncKind(ulong kind) {
+        if (FkAssetOperation(0ul, null, null) == 0ul)
+            throw InvalidOperationException("Start asynchronous asset loads on the engine thread.");
+        if (kind != 1ul && kind != 2ul && kind != 6ul && kind != 11ul)
+            throw NotSupportedException("This asset type cannot be loaded asynchronously.");
+    }
+    static Task<T?> Async<T>(ulong guid, ulong kind, CancellationToken cancellationToken) {
+        if (cancellationToken.IsCancellationRequested) {
+            Task<T?> canceled = Task<T?>.CreatePending();
+            OperationCanceledException reason("Asset load canceled.");
+            canceled.SetCanceled(reason);
+            canceled.Complete();
+            return canceled;
+        }
+        ValidateAsyncKind(kind);
+        ulong id = guid == 0ul ? 0ul : Operation(1ul, guid, kind);
+        if (id == 0ul) return Task.FromResult<T?>(null);
+        Task<T?> task = Task<T?>.CreatePending();
+        System.Func<bool, bool> check = (bool stopped) => {
+            int status = (int)Funke.AssetManager.Operation(2ul, id, 0ul);
+            if (status == 1 && !stopped && !cancellationToken.IsCancellationRequested) return false;
+            try {
+                if (status == 4 || stopped || (status == 1 && cancellationToken.IsCancellationRequested))
+                    throw OperationCanceledException("Asset load canceled.");
+                else if (status == 5)
+                    throw NotSupportedException("Asynchronous loading is unavailable in this build.");
+                else if (status == 2) {
+                    T asset;
+                    asset.FkSetGuid(guid);
+                    task.SetResult(asset);
+                } else task.SetResult(null);
+            } catch (OperationCanceledException& canceled) { task.SetCanceled(canceled); }
+            catch (System.Exception& error) { task.SetException(error); }
+            finally {
+                Funke.AssetManager.Operation(3ul, id, 0ul);
+                task.Complete();
+            }
+            return true;
+        };
+        ManagedTasks.Watch(check);
+        return task;
+    }
+public:
+    static T? Load<T>(string path) {
+        T asset;
+        if (path.Trim().Length == 0) return null;
+        FunkeText.Put(path);
+        ulong guid = FkAsset_LoadTyped(0ul, asset.FkKind());
+        if (guid == 0ul || (asset.FkKind() == 8ul && !MatchesDataType<T>(guid))) return null;
+        asset.FkSetGuid(guid);
+        return asset;
+    }
+    static T? LoadByGUID<T>(string guid) { return LoadByGUID<T>(ParseGUID(guid)); }
+    static T? LoadByGUID<T>(ulong guid) {
+        T asset;
+        if (guid == 0ul) return null;
+        guid = FkAsset_LoadTyped(guid, asset.FkKind());
+        if (guid == 0ul || (asset.FkKind() == 8ul && !MatchesDataType<T>(guid))) return null;
+        asset.FkSetGuid(guid);
+        return asset;
+    }
+    static T[] FindAll<T>(string pathPrefix = "") {
+        T sample;
+        List<T> matches;
+        int kind = (int)sample.FkKind();
+        int size = FkService.Asset_FindAllBuffer(pathPrefix, kind, null, 0);
+        if (size <= 0) return matches.ToArray();
+        byte[] buffer = new byte[size + 1];
+        FkService.Asset_FindAllBuffer(pathPrefix, kind, &buffer[0], buffer.Length);
+        try {
+            string[] ids = System.Text.Json.Json.Deserialize<string[]>(FkService.ReadText(buffer, size));
+            for (int i = 0; i < ids.Length; i++) {
+                T? asset = LoadByGUID<T>(ids[i]);
+                if (asset != null) matches.Add(asset.Value);
+            }
+        } catch (System.Exception& error) {}
+        return matches.ToArray();
+    }
+    static Task<T?> LoadAsync<T>(string path, CancellationToken cancellationToken = default) {
+        T sample;
+        ulong guid = cancellationToken.IsCancellationRequested || path.Trim().Length == 0 ? 0ul : GetGUID(path);
+        return Async<T>(guid, sample.FkKind(), cancellationToken);
+    }
+    static Task<T?> LoadByGUIDAsync<T>(ulong guid, CancellationToken cancellationToken = default) {
+        T sample;
+        return Async<T>(guid, sample.FkKind(), cancellationToken);
+    }
+    static Task<T?> LoadByGUIDAsync<T>(string guid, CancellationToken cancellationToken = default) {
+        return LoadByGUIDAsync<T>(ParseGUID(guid), cancellationToken);
+    }
+    static ulong GetGUID(string path) { return FkAsset_GetOrCreateUUIDFromPath(FunkeText.Put(path), 0ul); }
+}

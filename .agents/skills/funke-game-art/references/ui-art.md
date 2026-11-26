@@ -50,7 +50,7 @@ Follow `funke-game-ui` → **Preserve texture shape when resizing** for the sizi
 
 ## Text
 
-- Fonts are `.ttf`/`.otf` only (no bitmap fonts). Glyphs are baked for **ASCII + Latin-1** (German umlauts work; Polish, Turkish, Cyrillic, typographic quotes, en-dashes and ellipsis don't).
+- Use TTF/OTF files and check glyph coverage with the shipped fonts and fallbacks. [Font coverage](../../../../Github-Docs/Documentation/Assets/Assets.md#font-coverage).
 - **Ship your fonts in `Assets/Fonts/`** with their licence (OFL fonts from Google Fonts: e.g. a rounded sans for body, a display or pixel font for titles), and set `"defaultFontAsset"` in `project.json`. Don't rely on engine built-in fonts: their set is changing.
 - **Shadow/outline:** the Text Renderer's own effects, in text pixels (Font Size units): `"outlineWidth": 2` + `outlineR/G/B/A`, `"shadowX": 2, "shadowY": -2` + `shadowR/G/B/A` (C#: `OutlineWidth`, `OutlineColor`, `ShadowOffset`, `ShadowColor`). Use the ink token at ~85 % alpha; pixel fonts look crisp with 1 font pixel (whole multiples of the design size). No duplicate label behind the text (engines before 2026-10-19 needed one).
 - Pixel fonts are only near-crisp at whole multiples of their design size (`fontSize × UI scale`), and the atlas is sampled linearly. Snap sizes to multiples (16, 32, 48 for a 16 px design grid).

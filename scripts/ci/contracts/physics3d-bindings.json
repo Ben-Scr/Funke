@@ -1,0 +1,102 @@
+{
+  "area": "Physics3D",
+  "ownership": "Synchronous calls; output pointers are caller-owned and are never retained.",
+  "slots": [
+    {
+      "name": "Rigidbody3D_Get",
+      "index": 837,
+      "native": "void(*Rigidbody3D_Get)(uint64_tentityID,float*values,intcount);",
+      "managed": "publicdelegate*unmanaged<ulong,float*,int,void>Rigidbody3D_Get;"
+    },
+    {
+      "name": "Rigidbody3D_Set",
+      "index": 838,
+      "native": "void(*Rigidbody3D_Set)(uint64_tentityID,constfloat*values,intcount);",
+      "managed": "publicdelegate*unmanaged<ulong,float*,int,void>Rigidbody3D_Set;"
+    },
+    {
+      "name": "Rigidbody3D_GetVelocity",
+      "index": 839,
+      "native": "void(*Rigidbody3D_GetVelocity)(uint64_tentityID,intangular,float*x,float*y,float*z);",
+      "managed": "publicdelegate*unmanaged<ulong,int,float*,float*,float*,void>Rigidbody3D_GetVelocity;"
+    },
+    {
+      "name": "Rigidbody3D_SetVelocity",
+      "index": 840,
+      "native": "void(*Rigidbody3D_SetVelocity)(uint64_tentityID,intangular,floatx,floaty,floatz);",
+      "managed": "publicdelegate*unmanaged<ulong,int,float,float,float,void>Rigidbody3D_SetVelocity;"
+    },
+    {
+      "name": "Rigidbody3D_AddForce",
+      "index": 841,
+      "native": "void(*Rigidbody3D_AddForce)(uint64_tentityID,intkind,intmode,floatx,floaty,floatz,floatpx,floatpy,floatpz);",
+      "managed": "publicdelegate*unmanaged<ulong,int,int,float,float,float,float,float,float,void>Rigidbody3D_AddForce;"
+    },
+    {
+      "name": "Rigidbody3D_IsSleeping",
+      "index": 842,
+      "native": "int(*Rigidbody3D_IsSleeping)(uint64_tentityID);",
+      "managed": "publicdelegate*unmanaged<ulong,int>Rigidbody3D_IsSleeping;"
+    },
+    {
+      "name": "Rigidbody3D_SetSleeping",
+      "index": 843,
+      "native": "void(*Rigidbody3D_SetSleeping)(uint64_tentityID,intsleeping);",
+      "managed": "publicdelegate*unmanaged<ulong,int,void>Rigidbody3D_SetSleeping;"
+    },
+    {
+      "name": "Collider3D_Get",
+      "index": 844,
+      "native": "void(*Collider3D_Get)(uint64_tentityID,intkind,float*values,intcount);",
+      "managed": "publicdelegate*unmanaged<ulong,int,float*,int,void>Collider3D_Get;"
+    },
+    {
+      "name": "Collider3D_Set",
+      "index": 845,
+      "native": "void(*Collider3D_Set)(uint64_tentityID,intkind,constfloat*values,intcount);",
+      "managed": "publicdelegate*unmanaged<ulong,int,float*,int,void>Collider3D_Set;"
+    },
+    {
+      "name": "Physics3D_Raycast",
+      "index": 846,
+      "native": "int(*Physics3D_Raycast)(floatox,floatoy,floatoz,floatdx,floatdy,floatdz,floatmaxDistance,uint64_t*hitEntityID,float*hitValues,intcount);",
+      "managed": "publicdelegate*unmanaged<float,float,float,float,float,float,float,ulong*,float*,int,int>Physics3D_Raycast;"
+    },
+    {
+      "name": "Physics3D_RaycastMasked",
+      "index": 1020,
+      "native": "int(*Physics3D_RaycastMasked)(floatox,floatoy,floatoz,floatdx,floatdy,floatdz,floatmaxDistance,uint64_tmask,intincludeTriggers,uint64_t*hitEntityID,float*hitValues,intcount);",
+      "managed": "publicdelegate*unmanaged<float,float,float,float,float,float,float,ulong,int,ulong*,float*,int,int>Physics3D_RaycastMasked;"
+    },
+    {
+      "name": "Physics3D_CheckSphere",
+      "index": 1021,
+      "native": "int(*Physics3D_CheckSphere)(floatx,floaty,floatz,floatradius,uint64_tmask,intincludeTriggers);",
+      "managed": "publicdelegate*unmanaged<float,float,float,float,ulong,int,int>Physics3D_CheckSphere;"
+    },
+    {
+      "name": "Physics3D_GetGravity",
+      "index": 847,
+      "native": "void(*Physics3D_GetGravity)(float*x,float*y,float*z);",
+      "managed": "publicdelegate*unmanaged<float*,float*,float*,void>Physics3D_GetGravity;"
+    },
+    {
+      "name": "Physics3D_SetGravity",
+      "index": 848,
+      "native": "void(*Physics3D_SetGravity)(floatx,floaty,floatz);",
+      "managed": "publicdelegate*unmanaged<float,float,float,void>Physics3D_SetGravity;"
+    },
+    {
+      "name": "MeshCollider3D_GetCustomMesh",
+      "index": 854,
+      "native": "uint64_t(*MeshCollider3D_GetCustomMesh)(uint64_tentityID);",
+      "managed": "publicdelegate*unmanaged<ulong,ulong>MeshCollider3D_GetCustomMesh;"
+    },
+    {
+      "name": "MeshCollider3D_SetCustomMesh",
+      "index": 855,
+      "native": "void(*MeshCollider3D_SetCustomMesh)(uint64_tentityID,uint64_tmeshGuid);",
+      "managed": "publicdelegate*unmanaged<ulong,ulong,void>MeshCollider3D_SetCustomMesh;"
+    }
+  ]
+}

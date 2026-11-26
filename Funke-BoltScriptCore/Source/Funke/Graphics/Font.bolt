@@ -1,0 +1,28 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public class Font {
+private:
+    ulong guid;
+public:
+    ulong UUID => guid;
+    ulong FkKind() { return 6ul; }
+    void FkSetGuid(ulong value) { guid = value; }
+    string Path => guid == 0ul ? "" : FunkeText.Read(FkAsset_GetPathBuffer(guid, 0ul));
+    string Name {
+        get {
+            if (guid == 0ul) return "(None)";
+            string name = FunkeText.Read(FkAsset_GetDisplayNameBuffer(guid, 0ul));
+            return name.Length == 0 ? "(Missing Asset)" : name;
+        }
+    }
+    static Font? FromAssetUUID(ulong guid) { return AssetManager.LoadByGUID<Font>(guid); }
+    bool IsValid => UUID != 0ul && FkService.Font_LoadAsset(UUID) != 0;
+    string ToString() { return Name; }
+    bool Equals(Font? other) { return other != null && UUID == other.Value.UUID; }
+    int GetHashCode() { return Reinterpret<int>((uint)((UUID ^ (UUID >> 32)) & 4294967295ul)); }
+
+}

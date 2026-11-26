@@ -821,6 +821,39 @@ TEST_CASE("Asset history: deleting a folder restores nested assets and empty dir
 	CHECK(AssetRegistry::ResolvePath(id).empty());
 }
 
+#ifdef FNK_PLATFORM_WINDOWS
+TEST_CASE("Asset history: long recovery paths preserve folder contents metadata and repeated undo redo") {
+	const auto base = Path::CanonicalIdentity(std::filesystem::temp_directory_path())
+		/ ("FunkeLongUndo-" + std::to_string(static_cast<uint64_t>(UUID())));
+	REQUIRE(base.native().size() < 214);
+	struct Cleanup {
+		std::filesystem::path Root;
+		~Cleanup() { std::error_code error; std::filesystem::remove_all(Root, error); }
+	} cleanup{base};
+	AssetHistoryFixture f(base / std::string(214 - base.native().size(), 'p'));
+	const auto folder = f.Assets / "Folder";
+	const auto file = folder / "Nested" / "sound.wav";
+	REQUIRE(f.Meta(file).native().size() < 260);
+	const auto id = f.Create(file, "original bytes");
+	const auto metadata = File::ReadAllText(Path::ToUtf8(f.Meta(file)));
+	std::filesystem::create_directories(folder / "Empty");
+	auto edit = f.History.Begin({Path::ToUtf8(folder)}, "Delete Assets");
+	f.Delete(folder);
+	AssetRegistry::ForgetAssetPathIncremental(Path::ToUtf8(file));
+	f.History.Commit(edit);
+	for (int i = 0; i < 3; ++i) {
+		REQUIRE(f.History.Undo() == "Delete Assets");
+		CHECK(File::ReadAllText(Path::ToUtf8(file)) == "original bytes");
+		CHECK(File::ReadAllText(Path::ToUtf8(f.Meta(file))) == metadata);
+		CHECK(std::filesystem::is_directory(folder / "Empty"));
+		CHECK(std::filesystem::path(AssetRegistry::ResolvePath(id)) == file);
+		REQUIRE(f.History.Redo() == "Delete Assets");
+		CHECK_FALSE(std::filesystem::exists(folder));
+		CHECK(AssetRegistry::ResolvePath(id).empty());
+	}
+}
+#endif
+
 TEST_CASE("Asset history: existing file or orphan metadata blocks restore without overwriting") {
 	AssetHistoryFixture f;
 	const auto path = f.Assets / "asset.png";
@@ -956,6 +989,10 @@ TEST_CASE("Asset history: failure after parking files restores current state and
 	f.History.Commit(edit);
 	std::filesystem::remove(parent);
 	CHECK_THROWS(f.History.Undo());
+	for (const auto& entry : std::filesystem::directory_iterator(edit->Storage)) {
+		const auto name = entry.path().filename();
+		CHECK((name == "before" || name == "after"));
+	}
 	CHECK(std::filesystem::exists(to));
 	CHECK(std::filesystem::exists(f.Meta(to)));
 	CHECK(std::filesystem::path(AssetRegistry::ResolvePath(id)) == to);

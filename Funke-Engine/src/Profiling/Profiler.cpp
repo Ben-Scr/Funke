@@ -165,7 +165,11 @@ namespace Funke {
 			"Renderer2D.InstanceCopyBytes", "Renderer2D.UploadBytes", "Renderer2D.SceneDrawGrowths",
 			"Scripts.Snapshot", "Scripts.SnapshotBytes", "Scripts.SnapshotAllocations",
 			"Scripts.FixedUpdate", "Physics2D.Sync", "Physics2D.Step", "Physics2D.Callbacks",
-			"Physics2D.ContactEvents", "Assets.Request", "Assets.Decode", "Assets.Publish",
+			"Physics2D.ContactEvents", "Assets.Request", "Assets.Decode", "Assets.Publish", "Assets.TextureAllocate", "Assets.TextureTransfer", "Assets.TextureMips", "Assets.Release",
+            "Scene.Pump", "Scene.PrepareWorker", "Scene.Header", "Scene.Entity", "Scene.Materialize",
+            "Scene.PrefabPrepare", "Scene.PrefabEntity", "Scene.PrefabParent", "Scene.PrefabFixups",
+            "Scene.Finalize", "Scene.LoadCallback", "Scene.Activation", "Scene.Release",
+            "Scene.LifecycleCallback", "Scene.AwakeCallback", "Scene.DestroyCallback", "Scene.EntitiesRelease",
 			"Assets.Complete", "Assets.Pump", "Scene.Teardown", "Scene.Activate",
 			"Hierarchy Panel", "Editor PreRender", "Editor.AssetBrowser", "Editor.ProfilerPanel",
 

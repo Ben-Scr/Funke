@@ -35,6 +35,14 @@ namespace Funke {
         unsigned AtlasTexture = 0;
     };
 
+    // CPU timings for lazy glyph misses; upload submission is not GPU execution time.
+    struct FontGlyphCacheStats {
+        uint64_t RasterizationAttempts = 0;
+        uint64_t UploadedGlyphs = 0;
+        double RasterizationMs = 0;
+        double UploadSubmissionMs = 0;
+    };
+
     class FUNKE_API Font {
     public:
         static constexpr uint32_t k_GlyphTableSize = 256;
@@ -72,11 +80,12 @@ namespace Funke {
 
         // Main thread only: first use rasterizes missing atlas entries; unavailable characters use a visible fallback.
         const GlyphMetrics* GetGlyph(uint32_t codepoint) const;
+        bool HasGlyph(uint32_t codepoint) const;
 
         // Vertical metrics in pixels, scaled to the baked size.
-        float GetAscent() const { return m_Ascent; }
-        float GetDescent() const { return m_Descent; }
-        float GetLineHeight() const { return m_LineHeight; }
+        float GetAscent() const;
+        float GetDescent() const;
+        float GetLineHeight() const;
         float GetPixelSize() const { return m_PixelSize; }
 
         // Initial atlas only; each GlyphMetrics identifies its own atlas page.
@@ -86,6 +95,7 @@ namespace Funke {
 
         // All resident R8 atlas pages, including lazy Unicode pages, count toward the LRU budget.
         size_t GetAtlasByteSize() const;
+        FontGlyphCacheStats GetGlyphCacheStats() const;
 
         const std::string& GetFilepath() const { return m_Filepath; }
 
@@ -95,6 +105,10 @@ namespace Funke {
 
     private:
         friend class FontManager;
+        friend struct FontFallbackTestAccess;
+        const Font* GetGlyphSource(uint32_t codepoint) const;
+        const GlyphMetrics* GetOwnGlyph(uint32_t codepoint) const;
+        mutable std::unordered_map<uint32_t, GlyphMetrics> m_FallbackGlyphs;
         static float GetPreparedPixelSize(const std::shared_ptr<const FontPreparedData>& prepared);
         void Cleanup();
         // Shared body of LoadFromFile/LoadFromBuffer once m_TtfBuffer +

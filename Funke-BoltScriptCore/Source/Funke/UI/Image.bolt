@@ -1,0 +1,16 @@
+import Funke
+namespace Funke.UI;
+
+public class Image : Component {
+public:
+    protected override ulong FkType() { return 17ul; }
+    string SpriteName { get { return FunkeText.Read(FkImage_GetSpriteNameBuffer(ID, 0ul)); } set { FkImage_SetSpriteName(ID, FunkeText.Put(value)); } }
+    int SortingOrder { get { return Reinterpret<int>((uint)(FkImage_GetSortingOrder(ID, 0ul) & 4294967295ul)); } set { FkImage_SetSortingOrder(ID, (ulong)Reinterpret<uint>(value)); } }
+    int SortingLayer { get { return Reinterpret<int>((uint)(FkImage_GetSortingLayer(ID, 0ul) & 4294967295ul)); } set { FkImage_SetSortingLayer(ID, (ulong)Reinterpret<uint>(value)); } }
+    Vector4 Color { get { return FunkeApiTypes.DecodeVector4(FkImage_GetColor(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkImage_SetColor(ID, value.LowBits()); } }
+    Funke.Texture? Texture { get { return Funke.Texture.FromAssetUUID(FkImage_GetTexture(ID, 0ul)); } set { ulong guid = 0ul; if (value != null) guid = value.Value.UUID; FkImage_SetTexture(ID, guid); } }
+    Funke.Material? Material { get { return Funke.Material.FromAssetUUID(FkImage_GetMaterial(ID, 0ul)); } set { ulong guid = 0ul; if (value != null) guid = value.Value.UUID; FkImage_SetMaterial(ID, guid); } }
+    ImageType Type { get { return (ImageType)(int)Reinterpret<float>((uint)FkGetImage_Type(ID, 0ul)); } set { FkSetImage_Type(ID, (ulong)Reinterpret<uint>((float)(int)value)); } }
+    Vector4 Border { get { return FunkeApiTypes.DecodeVector4(FkGetImage_Border(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkSetImage_Border(ID, value.LowBits()); } }
+    float BorderScale { get { return Reinterpret<float>((uint)FkGetImage_BorderScale(ID, 0ul)); } set { FkSetImage_BorderScale(ID, (ulong)Reinterpret<uint>(value)); } }
+}

@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "type": "ItemDefinition",
+  "fields": {
+    "Id": "inserter",
+    "DisplayName": "Inserter",
+    "Icon": "1039721937119298735",
+    "SpriteName": "",
+    "StackSize": "100"
+  }
+}

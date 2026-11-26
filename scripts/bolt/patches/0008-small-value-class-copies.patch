@@ -1,0 +1,211 @@
+diff --git a/src/native/lowering/Lowering.hpp b/src/native/lowering/Lowering.hpp
+--- a/src/native/lowering/Lowering.hpp
++++ b/src/native/lowering/Lowering.hpp
+@@ -34,6 +34,9 @@
+     bool plain_struct=false;
+     // For small non-owning structs with padding, one bit per declared field byte.
+     std::uint64_t padded_field_bytes=0;
++    // Small value classes copy scalar fields and rebuild each static class header.
++    std::uint64_t class_field_bytes=0;
++    std::vector<std::pair<std::size_t,std::string>> class_headers;
+     bool zero_default=false;
+     std::vector<FieldLayout> fields;
+ };
+@@ -235,6 +238,10 @@
+     Value projected_call(const Expr&, ListProjection&);
+     bool projected_sum(const Stmt&, const Expr& limit, const Expr& body);
+     bool scalar_append_loop(const Stmt&, const Expr& limit, const Expr& body, const Stmt* record_body = nullptr);
++    struct PrivateRecordBuffer { std::size_t id; std::int32_t capacity; };
++    std::unordered_map<const Stmt*,PrivateRecordBuffer> private_record_clears;
++    void find_private_record_buffers(const Stmt& scope);
++    bool elide_record_refill(const Stmt& scope, std::size_t position);
+     struct RecordFill {
+         std::size_t source;
+         std::uint32_t count;
+diff --git a/src/native/lowering/Layout.cpp b/src/native/lowering/Layout.cpp
+--- a/src/native/lowering/Layout.cpp
++++ b/src/native/lowering/Layout.cpp
+@@ -3,6 +3,33 @@
+ #include <limits>
+ 
+ namespace bolt::ir::lowering {
++
++namespace {
++bool collect_class_copy(const Lower& lower, const Layout& value, std::size_t offset,
++                        std::uint64_t& bytes, std::vector<std::pair<std::size_t,std::string>>& headers) {
++    if (native_abi::scalar_storage_kind(value.kind)) {
++        bytes |= (std::numeric_limits<std::uint64_t>::max() >> (64 - value.size)) << offset;
++        return true;
++    }
++    if (value.kind != native_abi::Class && value.kind != native_abi::Struct) return false;
++    const auto* cls = lower.program.find_class(value.name);
++    if (!cls || cls->is_native || value.marker != native_abi::no_marker) return false;
++    if (value.kind == native_abi::Class) {
++        // The inherited fields are flattened, but a native base can own hidden storage.
++        for (const auto* base = cls; !base->base.empty();) {
++            base = lower.program.find_class(base->base);
++            if (!base || base->is_native || lower.layouts.at(base->name).kind != native_abi::Class) return false;
++        }
++        headers.emplace_back(offset, value.name);
++    } else if (std::any_of(cls->methods.begin(), cls->methods.end(),
++                          [](const Method& method) { return method.is_destructor; })) return false;
++    for (const auto& field : value.fields) {
++        if (is_reference(field.type) || !collect_class_copy(lower, lower.layouts.at(referred(field.type)),
++                offset + field.offset, bytes, headers)) return false;
++    }
++    return true;
++}
++}
+ 
+ void Lower::finish_layouts() {
+     // Container element discovery may encounter a still-incomplete class.
+@@ -12,6 +39,14 @@
+         auto& value = layouts.at(name);
+         const auto& target=target_layouts.get(name);
+         value.size=target.size;value.alignment=target.alignment;value.marker=target.marker;value.fields=target.fields;
++    }
++    for (const auto& name : pending_layouts) {
++        auto& value = layouts.at(name);
++        if (value.kind != native_abi::Class || value.size > 64) continue;
++        if (!collect_class_copy(*this, value, 0, value.class_field_bytes, value.class_headers)) {
++            value.class_field_bytes = 0;
++            value.class_headers.clear();
++        }
+     }
+     pending_layouts.clear();
+ }
+diff --git a/src/native/lowering/Builder.cpp b/src/native/lowering/Builder.cpp
+--- a/src/native/lowering/Builder.cpp
++++ b/src/native/lowering/Builder.cpp
+@@ -48,7 +48,7 @@
+     if (owned && layout.aggregate) {
+         Reg live = 0;
+         if ((layout.kind == native_abi::Class || layout.kind == native_abi::Struct) &&
+-            !layout.plain_struct && !layout.padded_field_bytes) {
++            !layout.plain_struct && !layout.padded_field_bytes && layout.class_headers.empty()) {
+             // The shared exit also sees slots from untaken branches. Arm cleanup
+             // before initialization so a partially constructed value still unwinds.
+             live = alloc(1);
+diff --git a/src/native/lowering/Values.cpp b/src/native/lowering/Values.cpp
+--- a/src/native/lowering/Values.cpp
++++ b/src/native/lowering/Values.cpp
+@@ -53,7 +53,10 @@
+ }
+ void Builder::copy_value(const std::string& t,Reg destination,Reg source) {
+     const auto& layout = lower.layout(t);
+-    if (!layout.plain_struct && !layout.padded_field_bytes) {
++    const bool small_class = !layout.class_headers.empty();
++    const bool fieldwise = small_class || layout.padded_field_bytes;
++    const auto field_bytes = small_class ? layout.class_field_bytes : layout.padded_field_bytes;
++    if (!layout.plain_struct && !fieldwise) {
+         call("br_copy",Type::Void,{context,site(),type(t),destination,source});
+         return;
+     }
+@@ -73,7 +76,7 @@
+     }
+     // Runtime self-assignment leaves even explicitly written padding intact.
+     Label done = 0;
+-    if (layout.padded_field_bytes) {
++    if (fieldwise) {
+         if (destination == source) return;
+         done = block();
+         const auto distinct = block();
+@@ -84,8 +87,8 @@
+     // must observe the same snapshot as a runtime value copy.
+     std::vector<std::pair<std::size_t,Reg>> parts;
+     for (std::size_t pos=0; pos<layout.size;) {
+-        const auto remaining = layout.padded_field_bytes
+-            ? static_cast<std::size_t>(std::countr_one(layout.padded_field_bytes >> pos))
++        const auto remaining = fieldwise
++            ? static_cast<std::size_t>(std::countr_one(field_bytes >> pos))
+             : layout.size-pos;
+         if (!remaining) {
+             ++pos;
+@@ -95,16 +98,17 @@
+         parts.emplace_back(pos,load(word,offset(source,pos)));
+         pos += width(word);
+     }
+-    if (layout.padded_field_bytes) instruction(Op::Zero,Type::Void,{destination},layout.size);
++    if (fieldwise) instruction(Op::Zero,Type::Void,{destination},layout.size);
+     for (auto [pos,value] : parts) store(offset(destination,pos),value);
+-    if (layout.padded_field_bytes) {
++    for (const auto& [pos,name] : layout.class_headers) store(offset(destination,pos),type(name));
++    if (fieldwise) {
+         jump(done);
+         current = done;
+     }
+ }
+ void Builder::clear_value(const std::string& t,Reg address,const char* operation) {
+     const auto& layout = lower.layout(t);
+-    if (layout.plain_struct || layout.padded_field_bytes) {
++    if (layout.plain_struct || layout.padded_field_bytes || !layout.class_headers.empty()) {
+         instruction(Op::Zero,Type::Void,{address},layout.size);
+         return;
+     }
+@@ -351,7 +355,7 @@
+         return {t,v.value};
+     }
+     if(dst.kind==native_abi::Interface){auto p=temp(t);call("br_box",Type::Void,{context,site(),type(t),p,type(v.type),memory(v)});return {t,p};}
+-    if(dst.aggregate&&src.aggregate){auto p=temp(t);call("br_copy",Type::Void,{context,site(),type(t),p,v.value});return {t,p};}
++    if(dst.aggregate&&src.aggregate){auto p=temp(t);copy_value(t,p,v.value);return {t,p};}
+     bool si=src.kind==native_abi::Signed||src.kind==native_abi::Unsigned,di=dst.kind==native_abi::Signed||dst.kind==native_abi::Unsigned;
+     if(lower.core() && t=="char" && si) {
+         auto scalar=cast(v.value,Type::I64,src.kind==native_abi::Signed?"sext":"zext");
+diff --git a/src/native/lowering/Expressions.cpp b/src/native/lowering/Expressions.cpp
+--- a/src/native/lowering/Expressions.cpp
++++ b/src/native/lowering/Expressions.cpp
+@@ -81,7 +81,7 @@
+                         jump(done);return;
+                     }
+                     const auto copy=temp(actual.name);
+-                    call("br_copy",Type::Void,{context,site(),type(actual.name),copy,value.value});
++                    copy_value(actual.name,copy,value.value);
+                     auto formatted=invoke(*cls,*method,copy,{},0,false);
+                     assign("string",output,formatted);
+                     jump(done);
+diff --git a/tests/NativeTests.cpp b/tests/NativeTests.cpp
+--- a/tests/NativeTests.cpp
++++ b/tests/NativeTests.cpp
+@@ -609,6 +609,42 @@
+         output("parentheses-not-casts","int a=4; int b=2; Print((a)+b); Print((a)-b); Print((a)*b);", "6\n2\n8\n");
+         output("bits-32-64","Print(Reinterpret<uint>(1.0f)); Print(Reinterpret<float>(1065353216u)); Print(Reinterpret<ulong>(1.0)); Print(Reinterpret<double>(4607182418800017408ul));", "1065353216\n1\n4607182418800017408\n1\n");
+         output("bits-signed-small","Print(Reinterpret<ushort>(short(-1))); Print(Reinterpret<short>(ushort(65535))); Print(Reinterpret<short>(ushort(65535))); Print(Reinterpret<int>(4294967295u));", "65535\n-1\n-1\n-1\n");
++        test(prefix+"small-class-value-copy",[&]{
++            check(execute(R"(
++                class Base { public: byte Tag; virtual int Kind() { return 1; } }
++                class Derived : Base { public: override int Kind() { return 2; } }
++                class Item { public: Base Part; ulong Id; }
++                class Pair { public: ulong First, Last; }
++                class Owned { public: string Text; }
++                static class Program { public:
++                    void Assign(Item& dest, const Item& src) { dest = src; }
++                    int KindOf(Base& value) { return value.Kind(); }
++                    void Main() {
++                        Item[] items = new Item[2];
++                        Derived derived; derived.Tag = (byte)7;
++                        Base& basePart = derived;
++                        items[0].Part = basePart;
++                        items[0].Id = 23ul;
++                        byte* raw = &items[0].Part.Tag;
++                        raw[1] = (byte)91;
++                        Assign(items[0],items[0]);
++                        Print(raw[1] == (byte)91);
++                        Assign(items[1],items[0]);
++                        byte* copied = &items[1].Part.Tag;
++                        Print(copied[1] == (byte)0 && KindOf(items[1].Part) == 1);
++                        Print(items[1].Part.Tag == (byte)7 && items[1].Id == 23ul);
++                        ulong[] words = new ulong[4];
++                        Pair& first = *((Pair*)&words[0]);
++                        Pair& shifted = *((Pair*)&words[1]);
++                        first.First = 11ul; first.Last = 22ul;
++                        shifted = first;
++                        Print(shifted.First == 11ul && shifted.Last == 22ul);
++                        Owned a; a.Text = "saved"; Owned b = a; a.Text = "changed";
++                        Print(b.Text);
++                    }
++                }
++            )") == "true\ntrue\ntrue\ntrue\nsaved\n","class header, padding, alias or ownership mismatch");
++        });
+         test(prefix+"native-padded-buffer-snapshot",[&]{
+             check(execute(R"(
+                 import Bolt.Runtime

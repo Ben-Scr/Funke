@@ -2,6 +2,7 @@
 #include "Graphics/GltfImporter.hpp"
 
 #include "Graphics/MeshAsset.hpp"
+#include "Graphics/ImageProcessing.hpp"
 #include "Graphics/SkeletalAnimation.hpp"
 #include "Serialization/Json.hpp"
 
@@ -97,7 +98,11 @@ namespace Funke {
 				if (const Value* asset = Member(m_Root, "asset"); !asset || !StringMember(*asset, "version").starts_with("2")) {
 					return Fail("only glTF 2.0 is supported");
 				}
-				if (!LoadBuffers(binChunk) || !LoadNodes() || !LoadSkins() || !LoadMeshes() || !LoadAnimations()) return false;
+				for (const auto& extension : ArrayMember(m_Root, "extensionsRequired")) {
+					if (extension.AsStringOr() != "KHR_materials_unlit")
+						return Fail("required glTF extension is not supported: " + extension.AsStringOr());
+				}
+				if (!LoadBuffers(binChunk) || !LoadMaterials() || !LoadNodes() || !LoadSkins() || !LoadMeshes() || !LoadAnimations()) return false;
 				if (m_Indices.empty()) return Fail("the file contains no triangle meshes");
 				return Finish(out);
 			}
@@ -243,6 +248,114 @@ namespace Funke {
 				return true;
 			}
 
+			bool LoadMaterials() {
+				const auto& textures = ArrayMember(m_Root, "textures");
+				const auto& images = ArrayMember(m_Root, "images");
+				const auto& samplers = ArrayMember(m_Root, "samplers");
+				m_Textures.resize(textures.size());
+				std::vector<std::shared_ptr<const ImageData>> decoded(images.size());
+				auto texture = [&](const Value& owner, const char* name, int32_t& result) -> bool {
+					const auto* info = Member(owner, name);
+					if (!info) return true;
+					if (IntMember(*info, "texCoord", 0) != 0) return Fail(std::string(name) + ": only TEXCOORD_0 is currently supported");
+					if (const auto* extensions = Member(*info, "extensions"); extensions && Member(*extensions, "KHR_texture_transform"))
+						return Fail(std::string(name) + ": KHR_texture_transform is not supported");
+					const int64_t index = IntMember(*info, "index", -1);
+					if (index < 0 || static_cast<size_t>(index) >= textures.size()) return Fail(std::string(name) + ": invalid texture index");
+					result = static_cast<int32_t>(index);
+					auto& target = m_Textures[static_cast<size_t>(index)];
+					if (target.Image) return true;
+					const auto& source = textures[static_cast<size_t>(index)];
+					const int64_t imageIndex = IntMember(source, "source", -1);
+					if (imageIndex < 0 || static_cast<size_t>(imageIndex) >= images.size()) return Fail("texture has no supported image source");
+					if (!decoded[static_cast<size_t>(imageIndex)]) {
+						const auto& image = images[static_cast<size_t>(imageIndex)];
+						const std::string uri = StringMember(image, "uri");
+						std::vector<uint8_t> bytes;
+						if (uri.starts_with("data:")) {
+							const auto comma = uri.find(',');
+							if (comma == std::string::npos || uri.substr(0, comma).find(";base64") == std::string::npos
+								|| !DecodeBase64(std::string_view(uri).substr(comma + 1), bytes)) return Fail("invalid image data URI");
+						}
+						else if (!uri.empty()) {
+							if (!m_ReadExternal || !m_ReadExternal(PercentDecode(uri), bytes)) return Fail("could not read image '" + uri + "'");
+						}
+						else {
+							const auto& views = ArrayMember(m_Root, "bufferViews");
+							const int64_t viewIndex = IntMember(image, "bufferView", -1);
+							if (viewIndex < 0 || static_cast<size_t>(viewIndex) >= views.size()) return Fail("image has no valid bufferView");
+							const auto& view = views[static_cast<size_t>(viewIndex)];
+							const int64_t buffer = IntMember(view, "buffer", -1), offset = IntMember(view, "byteOffset", 0), length = IntMember(view, "byteLength", -1);
+							if (buffer < 0 || static_cast<size_t>(buffer) >= m_Buffers.size() || offset < 0 || length <= 0) return Fail("invalid image buffer range");
+							const auto& data = m_Buffers[static_cast<size_t>(buffer)];
+							if (static_cast<uint64_t>(offset) > data.size() || static_cast<uint64_t>(length) > data.size() - static_cast<size_t>(offset)) return Fail("image exceeds its buffer");
+							bytes.assign(data.begin() + offset, data.begin() + offset + length);
+						}
+						decoded[static_cast<size_t>(imageIndex)] = ImageProcessing::Decode(bytes);
+						if (!decoded[static_cast<size_t>(imageIndex)]) return Fail("unsupported or corrupt glTF image");
+					}
+					target.Image = decoded[static_cast<size_t>(imageIndex)];
+					const int64_t sampler = IntMember(source, "sampler", -1);
+					if (sampler >= 0) {
+						if (static_cast<size_t>(sampler) >= samplers.size()) return Fail("invalid texture sampler");
+						const auto& settings = samplers[static_cast<size_t>(sampler)];
+						const auto wrap = [](int64_t mode) { return mode == 33071 ? Wrap::Clamp : mode == 33648 ? Wrap::Mirror : Wrap::Repeat; };
+						target.WrapU = wrap(IntMember(settings, "wrapS", 10497));
+						target.WrapV = wrap(IntMember(settings, "wrapT", 10497));
+						const auto min = IntMember(settings, "minFilter", 9987), mag = IntMember(settings, "magFilter", 9729);
+						target.Filtering = mag == 9728 && (min == 9728 || min == 9984 || min == 9986) ? Filter::Point
+							: min >= 9984 ? Filter::Trilinear : Filter::Bilinear;
+					}
+					return true;
+				};
+				const auto scalar = [](const Value& owner, const char* name, float fallback, float maximum = 1.0f) {
+					const auto* value = Member(owner, name);
+					const float result = value ? static_cast<float>(value->AsDoubleOr(fallback)) : fallback;
+					return std::isfinite(result) ? std::clamp(result, 0.0f, maximum) : fallback;
+				};
+                std::unordered_map<std::string, size_t> nameCounts;
+                for (const auto& source : ArrayMember(m_Root, "materials")) ++nameCounts[StringMember(source, "name")];
+				for (const auto& source : ArrayMember(m_Root, "materials")) {
+					ImportedMeshMaterial imported;
+					imported.Name = StringMember(source, "name");
+                    imported.Key = !imported.Name.empty() && nameCounts[imported.Name] == 1
+                        ? "name:" + imported.Name : "index:" + std::to_string(m_Materials.size());
+					auto& material = imported.Surface;
+					material.LinearColorFactors = true;
+					material.Metallic = material.Roughness = 1.0f;
+					if (const auto* pbr = Member(source, "pbrMetallicRoughness")) {
+						float color[4] = { 1, 1, 1, 1 };
+						ReadFloats(*pbr, "baseColorFactor", color, 4);
+						material.BaseColor = Color(color[0], color[1], color[2], color[3]);
+						material.Metallic = scalar(*pbr, "metallicFactor", 1);
+						material.Roughness = scalar(*pbr, "roughnessFactor", 1);
+						if (!texture(*pbr, "baseColorTexture", imported.Textures[0]) || !texture(*pbr, "metallicRoughnessTexture", imported.Textures[2])) return false;
+					}
+					float emissive[3] = {};
+					ReadFloats(source, "emissiveFactor", emissive, 3);
+					material.EmissiveColor = Color(emissive[0], emissive[1], emissive[2], 1);
+					if (!texture(source, "normalTexture", imported.Textures[1]) || !texture(source, "emissiveTexture", imported.Textures[3])
+						|| !texture(source, "occlusionTexture", imported.Textures[4])) return false;
+					if (const auto* normal = Member(source, "normalTexture")) material.NormalScale = scalar(*normal, "scale", 1, std::numeric_limits<float>::max());
+					if (const auto* occlusion = Member(source, "occlusionTexture")) material.OcclusionStrength = scalar(*occlusion, "strength", 1);
+					const std::string alpha = StringMember(source, "alphaMode");
+					if (alpha == "MASK") material.Surface = MaterialSurface::Cutout;
+					else if (alpha == "BLEND") material.Surface = MaterialSurface::Transparent;
+					else if (!alpha.empty() && alpha != "OPAQUE") return Fail("unsupported alphaMode '" + alpha + "'");
+					material.AlphaCutoff = scalar(source, "alphaCutoff", 0.5f);
+					if (const auto* sided = Member(source, "doubleSided")) material.DoubleSided = sided->AsBoolOr(false);
+					if (const auto* extensions = Member(source, "extensions"); extensions && Member(*extensions, "KHR_materials_unlit")) material.Lit = false;
+					m_Materials.push_back(std::move(imported));
+				}
+				// glTF's implicit material differs from Funke's historical material defaults.
+				ImportedMeshMaterial fallback;
+				fallback.Key = "default";
+				fallback.Surface.Metallic = fallback.Surface.Roughness = 1.0f;
+				fallback.Surface.LinearColorFactors = true;
+				m_Materials.push_back(std::move(fallback));
+				return true;
+			}
+
 			bool LoadNodes() {
 				const Value::Array& nodes = ArrayMember(m_Root, "nodes");
 				m_Data->Nodes.resize(nodes.size());
@@ -358,7 +471,7 @@ namespace Funke {
 				const Value* positionAccessor = attributes ? Member(*attributes, "POSITION") : nullptr;
 				if (!positionAccessor) return true;
 
-				std::vector<double> positions, normals, uvs, joints, weights, indices;
+				std::vector<double> positions, normals, uvs, tangents, joints, weights, indices;
 				int components = 0;
 				if (!ReadAccessor(positionAccessor->AsInt64Or(-1), false, positions, components)) return false;
 				if (components != 3) return Fail("POSITION must be VEC3");
@@ -375,7 +488,7 @@ namespace Funke {
 					return true;
 				};
 				if (!readOptional("NORMAL", false, normals, 3) || !readOptional("TEXCOORD_0", false, uvs, 2)
-					|| !readOptional("JOINTS_0", true, joints, 4) || !readOptional("WEIGHTS_0", false, weights, 4)) {
+					|| !readOptional("TANGENT", false, tangents, 4) || !readOptional("JOINTS_0", true, joints, 4) || !readOptional("WEIGHTS_0", false, weights, 4)) {
 					return false;
 				}
 
@@ -403,6 +516,7 @@ namespace Funke {
 					// glTF and the engine both put the UV origin top-left.
 					vertex.UV[0] = uvs.empty() ? 0.0f : static_cast<float>(uvs[v * 2]);
 					vertex.UV[1] = uvs.empty() ? 0.0f : static_cast<float>(uvs[v * 2 + 1]);
+					if (!tangents.empty()) for (int k = 0; k < 4; ++k) vertex.Tangent[k] = static_cast<float>(tangents[v * 4 + k]);
 				}
 				if (mode == 4) {
 					for (size_t i = 0; i + 2 < source.size(); i += 3) local.Indices.insert(local.Indices.end(), { source[i], source[i + 1], source[i + 2] });
@@ -453,6 +567,11 @@ namespace Funke {
 					m_Data->VertexWeights.push_back(weight);
 				}
 				m_Data->BindVertices.insert(m_Data->BindVertices.end(), local.Vertices.begin(), local.Vertices.end());
+				const int64_t material = IntMember(primitive, "material", -1);
+				if (material < -1 || (material >= 0 && static_cast<size_t>(material) >= m_Materials.size() - 1)) return Fail("invalid primitive material index");
+				if (local.Indices.size() > std::numeric_limits<uint32_t>::max() - m_Indices.size()) return Fail("too many indices");
+				m_Submeshes.push_back({ static_cast<uint32_t>(m_Indices.size()), static_cast<uint32_t>(local.Indices.size()),
+					material < 0 ? static_cast<uint32_t>(m_Materials.size() - 1) : static_cast<uint32_t>(material) });
 				for (uint32_t index : local.Indices) m_Indices.push_back(static_cast<uint32_t>(base) + index);
 				if (m_Data->Joints.size() > std::numeric_limits<uint16_t>::max()) return Fail("too many joints");
 				return true;
@@ -520,6 +639,9 @@ namespace Funke {
 				SkeletalAnimation::SkinVertices(*m_Data, joints, out.Data.Vertices);
 				SkeletalAnimation::ComputeJointBounds(*m_Data);
 				out.Data.Indices = std::move(m_Indices);
+				out.Submeshes = std::move(m_Submeshes);
+				out.Materials = std::move(m_Materials);
+				out.Textures = std::move(m_Textures);
 				// Static models need no skeleton at runtime.
 				if (!m_SkinBase.empty() || !m_Data->Clips.empty()) out.Skin = std::move(m_Data);
 				return true;
@@ -534,6 +656,9 @@ namespace Funke {
 			std::vector<uint32_t> m_SkinJointCount;
 			std::unordered_map<uint32_t, uint32_t> m_RigidJoints;
 			std::vector<uint32_t> m_Indices;
+			std::vector<MeshSubmesh> m_Submeshes;
+			std::vector<ImportedMeshMaterial> m_Materials;
+			std::vector<ImportedMeshTexture> m_Textures;
 		};
 	}
 

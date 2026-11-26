@@ -14,22 +14,23 @@ import tempfile
 import runtime_smoke_test as smoke
 
 
-def checked(command: list[str], timeout: int = 1200) -> str:
+def checked(command: list[str], timeout: int = 1200, environment: dict[str, str] | None = None) -> str:
     result = subprocess.run(command, cwd=smoke.REPO_ROOT, text=True, encoding="utf-8",
                             errors="replace", stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            timeout=timeout)
+                            timeout=timeout, env=environment)
     if result.returncode:
         raise RuntimeError(f"Command failed ({result.returncode}): {command}\n{result.stdout}")
     return result.stdout
 
 
-def verify(cli: Path, root: Path) -> None:
+def verify(cli: Path, root: Path, bolt_release: bool = False) -> None:
     checked([str(cli), "create", "ExportSmoke", "--path", str(root),
              "--no-register", "--no-git", "--no-compile"])
     project = root / "ExportSmoke"
     project_file = project / "project.json"
     config = json.loads(project_file.read_text(encoding="utf-8-sig"))
-    config["modules"] = ["Funke.2D", "Funke.3D"]
+    if not bolt_release:
+        config["modules"] = ["Funke.2D", "Funke.3D"]
     config["buildScenes"] = ["SampleScene"]
     project_file.write_text(json.dumps(config, indent=2), encoding="utf-8")
     script = project / "Assets/Scripts/ExportProbe.cs"
@@ -40,9 +41,21 @@ def verify(cli: Path, root: Path) -> None:
     scene_file = project / "Assets/Scenes/SampleScene.scene"
     scene = json.loads(scene_file.read_text(encoding="utf-8-sig"))
     scene["entities"].append({"name": "Export Probe", "Scripts": [{"className": "ExportProbe", "enabled": True}]})
+    environment = os.environ.copy()
+    if bolt_release:
+        guid = "812345679875312938"
+        bolt = script.with_name("BoltExportProbe.bolt")
+        bolt.write_text('import Funke\npublic class BoltExportProbe : EntityScript {\n'
+                        ' public override void OnStart() { Log.Info("EXPORT_SMOKE_BOLT_STARTED"); }\n}\n',
+                        encoding="utf-8")
+        bolt.with_suffix(".bolt.meta").write_text(json.dumps({"AssetGUID": guid, "uuid": guid, "kind": "Script"}), encoding="utf-8")
+        scene["entities"].append({"name": "Bolt Probe", "Scripts": [{"className": guid, "type": "Bolt"}]})
+        environment = {k: v for k, v in environment.items() if not k.upper().startswith(("BOLT_", "FUNKE_BOLT_", "LLVM_"))}
     scene_file.write_text(json.dumps(scene, indent=2), encoding="utf-8")
     output = root / "Export"
-    checked([str(cli), "build", "--project", str(project), "--development", "--output", str(output), "--verbose"])
+    profile = "--release" if bolt_release else "--development"
+    checked([str(cli), "build", "--project", str(project), profile, "--output", str(output), "--verbose"],
+            environment=environment)
     relocated = root / "Relocated Game Prüfung"
     shutil.copytree(output, relocated)
     if sys.platform == "darwin":
@@ -53,18 +66,43 @@ def verify(cli: Path, root: Path) -> None:
         binary = content / ("ExportSmoke.exe" if os.name == "nt" else "ExportSmoke")
     if not (content / "dotnet/host/fxr").is_dir():
         raise RuntimeError("Export did not bundle .NET.")
-    environment = os.environ.copy()
     for key in ("DOTNET_ROOT", "DOTNET_ROOT_X64", "DOTNET_ROOT_ARM64", "DOTNET_ROOT(x86)"):
         environment[key] = str(root / "no-system-runtime")
     environment["DOTNET_MULTILEVEL_LOOKUP"] = "0"
     environment["CI"] = "true"
     markers = smoke.REQUIRED_MARKERS + ("Core assembly loaded:", "Using bundled .NET runtime:",
                                         "EXPORT_SMOKE_SCRIPT_STARTED")
+    if bolt_release:
+        if os.name == "nt":
+            library = content / "BoltModules" / f"{guid}.dll"
+            if not (content / "BoltRuntime.dll").is_file() or any(
+                    p.name.lower() in {"llvm-c.dll", "boltcompiler.dll", "bolt.exe"} for p in content.rglob("*")):
+                raise RuntimeError("Unexpected Windows AOT player dependencies")
+            markers += (f"Loaded Windows AOT module {guid}",)
+            missing_diagnostic = "Cannot load Windows AOT module"
+        else:
+            library = binary.parent / ("llvm/lib/libLLVM.dylib" if sys.platform == "darwin" else "llvm/lib/libLLVM.so")
+            markers += ("Compiler profile: LLVM Release",)
+            missing_diagnostic = "LLVM shared library not found"
+        if not library.is_file():
+            raise RuntimeError(f"Missing Bolt artifact {library}")
+        markers += ("EXPORT_SMOKE_BOLT_STARTED",)
     log_path, offset = smoke.log_snapshot(binary)
     status, log = smoke.run_runtime(binary, 60, markers, environment)
     log += smoke.read_log_tail(log_path, offset)
     if status or any(marker not in log for marker in markers) or any(marker in log for marker in smoke.FORBIDDEN_MARKERS):
         raise RuntimeError(f"Exported game failed (status {status}):\n{log}")
+    if bolt_release:
+        missing = library.with_name(library.name + ".unavailable")
+        library.rename(missing)
+        try:
+            log_path, offset = smoke.log_snapshot(binary)
+            status, log = smoke.run_runtime(binary, 60, (), environment)
+            log += smoke.read_log_tail(log_path, offset)
+            if status == 124 or "EXPORT_SMOKE_BOLT_STARTED" in log or missing_diagnostic not in log:
+                raise RuntimeError(f"Missing Bolt library was not reported:\n{log}")
+        finally:
+            missing.rename(library)
     # A damaged private install must never silently select a machine-wide runtime.
     framework = content / "dotnet/shared/Microsoft.NETCore.App"
     framework.rename(framework.with_name("unavailable"))
@@ -86,6 +124,7 @@ def verify(cli: Path, root: Path) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cli", required=True, type=Path)
+    parser.add_argument("--bolt-release", action="store_true", help="Also exercise a Bolt EntityScript in a standalone Release player.")
     args = parser.parse_args()
     cli = args.cli.resolve()
     if not cli.is_file():
@@ -94,10 +133,12 @@ def main() -> int:
     work.mkdir(parents=True, exist_ok=True)
     try:
         with tempfile.TemporaryDirectory(prefix="run-", dir=work) as temporary:
-            verify(cli, Path(temporary))
+            verify(cli, Path(temporary), args.bolt_release)
     except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
         print(error, file=sys.stderr)
         return 1
+    if args.bolt_release:
+        print("Relocated Release game executed its Bolt EntityScript.")
     print("Desktop export passed: relocated game ran C# using bundled .NET; damaged bundle refused fallback.")
     return 0
 

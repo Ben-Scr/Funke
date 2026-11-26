@@ -12,3 +12,5 @@ Images, text and widgets use the canvas transform for drawing. Mouse and touch h
 In the Editor View, select the canvas to manipulate its world transform. Select a child to edit its local UI layout; the Rect tool edits its size. The 3D view also supports picking and framing world-space UI.
 
 World-space images and text depth-test against scene meshes, so opaque geometry in front hides them. They render before postprocessing and MSAA resolve, without writing depth, preserving UI blending and canvas ordering. Screen-space UI is drawn over world-space canvases. Separate world canvases have stable canvas order; sorting layer/order controls elements within each canvas.
+
+For panels and buttons that change size, see [Resizable UI images](../Assets/Resizable-UI-Images.md). Sliced and tiled Images use the same RectTransform as other widgets.

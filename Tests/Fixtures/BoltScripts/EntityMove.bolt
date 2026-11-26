@@ -1,0 +1,12 @@
+import Funke
+
+public class EntityMove : EntityScript
+{
+    public override void OnUpdate()
+    {
+        Vector2 position = Transform2D.Position;
+        position.X += 1.0f;
+        Transform2D.Position = position;
+    }
+}
+

@@ -17,9 +17,10 @@ namespace Funke::SkinningCompute {
 		float Weights[4];
 		float UV[2];
 		float Padding[2];
+		float Tangent[4];
 	};
-	static_assert(sizeof(Vertex) == 80 && offsetof(Vertex, UV) == 64);
-	static_assert(sizeof(MeshVertex) == 32 && offsetof(MeshVertex, Normal) == 12 && offsetof(MeshVertex, UV) == 24);
+	static_assert(sizeof(Vertex) == 96 && offsetof(Vertex, UV) == 64);
+	static_assert(sizeof(MeshVertex) == 48 && offsetof(MeshVertex, Normal) == 12 && offsetof(MeshVertex, UV) == 24);
 
 	inline bool FitsLimits(uint64_t vertices, uint64_t joints, uint64_t maxBindingSize, uint64_t maxBufferSize, uint32_t maxWorkgroups) {
 		const uint64_t limit = std::min(maxBindingSize, maxBufferSize);
@@ -39,6 +40,7 @@ namespace Funke::SkinningCompute {
 			vertex.Position[3] = 1.0f;
 			std::copy_n(source.Normal, 3, vertex.Normal);
 			std::copy_n(source.UV, 2, vertex.UV);
+			std::copy_n(source.Tangent, 4, vertex.Tangent);
 			for (int k = 0; k < 4; ++k) {
 				vertex.Joints[k] = data.VertexJoints[i][k];
 				vertex.Weights[k] = data.VertexWeights[i][k];
@@ -56,6 +58,7 @@ struct SkinVertex {
     weights: vec4<f32>,
     uv: vec2<f32>,
     padding: vec2<f32>,
+    tangent: vec4<f32>,
 };
 @group(0) @binding(0) var<storage, read> source: array<SkinVertex>;
 @group(0) @binding(1) var<storage, read> joints: array<mat4x4<f32>>;
@@ -83,7 +86,15 @@ fn skin(@builtin(global_invocation_id) id: vec3<u32>) {
     let magnitude = length(normal);
     if (magnitude > 1e-12) { normal /= magnitude; }
     else { normal = vec3<f32>(0, 1, 0); }
-    let base = id.x * 8u;
+    var tangent = (matrix * vec4<f32>(vertex.tangent.xyz, 0.0)).xyz;
+    tangent -= normal * dot(normal, tangent);
+    let tangentLength = length(tangent);
+    var handedness = 0.0;
+    if (tangentLength > 1e-12) {
+        tangent /= tangentLength;
+        handedness = vertex.tangent.w * select(1.0, -1.0, dot(matrix[0].xyz, cofactor[0]) < 0.0);
+    }
+    let base = id.x * 12u;
     output[base] = position.x;
     output[base + 1u] = position.y;
     output[base + 2u] = position.z;
@@ -92,6 +103,10 @@ fn skin(@builtin(global_invocation_id) id: vec3<u32>) {
     output[base + 5u] = normal.z;
     output[base + 6u] = vertex.uv.x;
     output[base + 7u] = vertex.uv.y;
+    output[base + 8u] = tangent.x;
+    output[base + 9u] = tangent.y;
+    output[base + 10u] = tangent.z;
+    output[base + 11u] = handedness;
 }
 )WGSL";
 }

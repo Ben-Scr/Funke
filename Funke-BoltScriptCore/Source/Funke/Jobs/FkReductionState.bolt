@@ -1,0 +1,23 @@
+import System
+import System.Threading
+import System.Threading.Tasks
+namespace Funke.Jobs;
+
+public class FkReductionState<T> {
+public:
+    T Identity;
+    System.Func<T,T,T>? Combine;
+    System.Threading.Mutex Gate;
+    System.Threading.ThreadLocal<System.Memory.Shared<FkReductionCell<T>>> Local;
+    System.Collections.Generic.List<System.Memory.Shared<FkReductionCell<T>>> Cells;
+    System.Memory.Shared<FkReductionCell<T>> Current() {
+        var cell=Local.Value;
+        if(cell.HasValue)return cell;
+        cell=System.Memory.Shared<FkReductionCell<T>>.Create();
+        cell.Get().Value=Identity;
+        Gate.Lock();
+        try {Cells.Add(cell);Local.Value=cell;}
+        finally {Gate.Unlock();}
+        return cell;
+    }
+}

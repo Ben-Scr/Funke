@@ -1,0 +1,9 @@
+import Funke
+namespace Funke.UI;
+
+public enum ScrollbarDirection {
+    LeftToRight = 0,
+    RightToLeft = 1,
+    BottomToTop = 2,
+    TopToBottom = 3,
+}

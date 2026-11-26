@@ -1,0 +1,60 @@
+import Funke
+import Funke.Graphics
+import Funke.Physics
+import System
+
+public class ServiceApi : EntityScript {
+    [DevCommand("service_api_sum", "Add two integers.")]
+    private static int CommandSum(int first, int second = 5) { return first + second; }
+    private static bool hadLanguage;
+    private static string savedLanguage;
+    [DevCommand("service_api_pref")]
+    private static void ProbeLanguage(bool begin) {
+        string key = Localization.PreferenceKey;
+        if (begin) {
+            hadLanguage = PlayerPrefs.HasKey(key);
+            savedLanguage = PlayerPrefs.GetString(key);
+            PlayerPrefs.SetString(key, "service-api-language");
+        } else if (hadLanguage) PlayerPrefs.SetString(key, savedLanguage);
+        else PlayerPrefs.DeleteKey(key);
+    }
+    public int Stage;
+    private static string? ConsoleEcho(string[] args) { return args.Length == 1 ? args[0] : "missing"; }
+    public override void OnDestroy() { DevConsole.Unregister("service_api_echo"); }
+    public override void OnStart() {
+        PhysicsLayer high = PhysicsLayer.FromIndex(61u);
+        PhysicsLayer mask = PhysicsLayer.Default | high;
+        if (!mask.Contains(high) || mask.Without(high) != PhysicsLayer.Default) return;
+        Stage = 1;
+        byte[] rgba = {255, 0, 0, 255, 0, 255, 0, 128};
+        byte[] png = Png.Encode(2, 1, ReadOnlySpan<byte>(rgba));
+        int width = 0, height = 0;
+        byte[]? decoded = Texture.DecodeImage(png, 16, width, height);
+        if (decoded == null || width != 2 || height != 1 || decoded.Value.Length != rgba.Length) return;
+        for (int i = 0; i < rgba.Length; i++) if (decoded.Value[i] != rgba[i]) return;
+        Stage = 2;
+        PhysicsLayer missing = PhysicsLayer.Default;
+        if (PhysicsLayer.TryFromName("Service API nonexistent layer", missing) || !missing.IsEmpty) return;
+        Stage = 3;
+        if (AssetManager.LoadByGUID<Font>("not an asset") != null) return;
+        Font[] absent = AssetManager.FindAll<Font>("__service_api_missing__");
+        if (absent.Length != 0) return;
+        System.Threading.CancellationTokenSource source;
+        source.Cancel();
+        var canceled = AssetManager.LoadAsync<Texture>("__service_api_missing__", source.Token);
+        if (!canceled.IsCanceled) return;
+        Stage = 4;
+        DevConsole.Register("service_api_echo", ConsoleEcho, "Echo one argument.");
+        if (DevConsole.Execute("service_api_echo one; service_api_echo two") != "one\ntwo") return;
+        Stage = 5;
+        if (Localization.Format("{0:D3} {1}", 7, "items") != "007 items") return;
+        LanguageInfo entry("en", "English");
+        if (entry.ToString() != "LanguageInfo { Code = en, DisplayName = English }") return;
+        if (entry.GetHashCode() != LanguageInfo("en", "English").GetHashCode()) return;
+        var invariant = System.Globalization.CultureInfo.InvariantCulture;
+        if (invariant.Name != "" || invariant.NumberFormat.NumberDecimalSeparator != ".") return;
+        Mesh first, second;
+        if (first != second) return;
+        Stage = 6;
+    }
+}

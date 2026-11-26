@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "type": "RecipeDefinition",
+  "fields": {
+    "Id": "drill",
+    "Result": "4803740367729287525",
+    "Amount": "1",
+    "Seconds": "4",
+    "CreativeOnly": "false",
+    "Ingredients": "\n\\n2353410425120650349\\n8\n\\n1758807086289073383\\n3\n\\n8868858783520673027\\n5"
+  }
+}

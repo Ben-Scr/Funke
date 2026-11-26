@@ -370,6 +370,19 @@ struct Lights {
 @group(0) @binding(3) var shadowSampler: sampler_comparison;
 @group(1) @binding(0) var baseTexture: texture_2d<f32>;
 @group(1) @binding(1) var baseSampler: sampler;
+@group(1) @binding(2) var normalTexture: texture_2d<f32>;
+@group(1) @binding(3) var normalSampler: sampler;
+@group(1) @binding(4) var metallicRoughnessTexture: texture_2d<f32>;
+@group(1) @binding(5) var metallicRoughnessSampler: sampler;
+@group(1) @binding(6) var emissiveTexture: texture_2d<f32>;
+@group(1) @binding(7) var emissiveSampler: sampler;
+@group(1) @binding(8) var occlusionTexture: texture_2d<f32>;
+@group(1) @binding(9) var occlusionSampler: sampler;
+struct MaterialParameters {
+    params: vec4<f32>, // cutoff, normal scale (zero without a map), occlusion strength
+    flags: vec4<f32>,  // linear color factors, double sided
+};
+@group(1) @binding(10) var<uniform> material: MaterialParameters;
 
 struct VertexInput {
 	@location(0)  position:    vec3<f32>,
@@ -386,6 +399,7 @@ struct VertexInput {
 	@location(11) emissive:    vec4<f32>,  // linear, w = 1 when fog applies
 	@location(12) surface:     vec4<f32>,  // x = metallic, y = roughness, z = lit, w = transparent
 	@location(13) uvTransform: vec4<f32>,  // xy = tiling, zw = offset
+	@location(14) tangent: vec4<f32>,
 };
 
 struct VertexOutput {
@@ -397,6 +411,7 @@ struct VertexOutput {
 	@location(4) emissive: vec3<f32>,
 	@location(5) @interpolate(flat) surface: vec4<f32>,
 	@location(6) @interpolate(flat) fogged: f32,
+	@location(7) tangent: vec4<f32>,
 };
 
 @vertex
@@ -408,6 +423,9 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 	out.clip_position = frame.viewProj * world;
 	out.worldPos = world.xyz;
 	out.normal = normalMatrix * in.normal;
+    let basis = mat3x3<f32>(model[0].xyz, model[1].xyz, model[2].xyz);
+    out.tangent = vec4<f32>(basis * in.tangent.xyz,
+        in.tangent.w * select(1.0, -1.0, determinant(basis) < 0.0));
 	out.uv = in.uv * in.uvTransform.xy + in.uvTransform.zw;
 	out.color = in.color;
 	out.emissive = in.emissive.rgb;
@@ -547,19 +565,48 @@ fn shadowFactor(worldPos: vec3<f32>, normal: vec3<f32>) -> f32 {
 }
 
 @fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-	let texel = textureSample(baseTexture, baseSampler, in.uv);
-	let albedo = srgbToLinear(in.color.rgb * texel.rgb);
-	// Opaque surfaces keep alpha 1 so the target stays opaque.
-	let alpha = select(1.0, clamp(in.color.a * texel.a, 0.0, 1.0), in.surface.w > 0.5);
-	if (in.surface.z < 0.5) {
-		return vec4<f32>(encodeOutput(applyFog(albedo + in.emissive, in.worldPos, in.fogged)), alpha);
-	}
-
-	let metallic = clamp(in.surface.x, 0.0, 1.0);
-	let roughness = clamp(in.surface.y, 0.045, 1.0);
-	let a = roughness * roughness;
-	let n = normalize(in.normal);
+fn fs_main(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    // Sample and differentiate before discard/branches to keep derivative control flow uniform.
+    let texel = textureSample(baseTexture, baseSampler, in.uv);
+    let normalTexel = textureSample(normalTexture, normalSampler, in.uv).xyz * 2.0 - 1.0;
+    let mr = textureSample(metallicRoughnessTexture, metallicRoughnessSampler, in.uv);
+    let emissive = in.emissive * srgbToLinear(textureSample(emissiveTexture, emissiveSampler, in.uv).rgb);
+    let occlusion = mix(1.0, textureSample(occlusionTexture, occlusionSampler, in.uv).r, material.params.z);
+    let dp1 = dpdx(in.worldPos);
+    let dp2 = dpdy(in.worldPos);
+    let duv1 = dpdx(in.uv);
+    let duv2 = dpdy(in.uv);
+    let albedo = select(srgbToLinear(in.color.rgb * texel.rgb),
+        in.color.rgb * srgbToLinear(texel.rgb), material.flags.x > 0.5);
+    let coverage = clamp(in.color.a * texel.a, 0.0, 1.0);
+    let transparent = in.surface.w > 0.5 && in.surface.w < 1.5;
+    if (in.surface.w > 1.5 && coverage < material.params.x) { discard; }
+    let alpha = select(1.0, coverage, transparent);
+    if (in.surface.z < 0.5) {
+        return vec4<f32>(encodeOutput(applyFog(albedo + emissive, in.worldPos, in.fogged)), alpha);
+    }
+    let metallic = clamp(in.surface.x * mr.b, 0.0, 1.0);
+    let roughness = clamp(in.surface.y * mr.g, 0.045, 1.0);
+    let a = roughness * roughness;
+    var n = normalize(in.normal);
+    // Authored tangents survive node transforms and CPU/GPU skinning. Legacy/procedural
+    // meshes use UV derivatives, with a geometric-normal fallback for degenerate UVs.
+    var t = in.tangent.xyz - n * dot(n, in.tangent.xyz);
+    var b = cross(n, t) * in.tangent.w;
+    if (abs(in.tangent.w) < 0.5 || dot(t, t) < 1e-12) {
+        let uvDet = duv1.x * duv2.y - duv1.y * duv2.x;
+        let direction = select(1.0, -1.0, uvDet < 0.0);
+        t = (dp1 * duv2.y - dp2 * duv1.y) * direction;
+        t -= n * dot(n, t);
+        b = cross(n, t) * direction;
+        if (abs(uvDet) < 1e-12) { t = vec3<f32>(0.0); b = vec3<f32>(0.0); }
+    }
+    if (material.params.y > 0.0 && dot(t, t) > 1e-12 && dot(b, b) > 1e-12) {
+        let mapped = normalize(t) * normalTexel.x * material.params.y
+            + normalize(b) * normalTexel.y * material.params.y + n * normalTexel.z;
+        if (dot(mapped, mapped) > 1e-12) { n = normalize(mapped); }
+    }
+    if (material.flags.y > 0.5 && !front) { n = -n; }
 	let v = normalize(frame.relativeCameraPos.xyz - in.worldPos);
 	let NoV = max(dot(n, v), 1e-4);
 	let f0 = mix(vec3<f32>(0.04), albedo, metallic);
@@ -610,13 +657,13 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 	let ambientDiffuse = frame.ambient.rgb + skyColor(n) * skyStrength;
 	let ambientSpecular = frame.ambient.rgb + skyColor(normalize(mix(r, n, a))) * skyStrength;
 	let reflectance = envBRDF(f0, roughness, NoV);
-	color += diffuseColor * ambientDiffuse + reflectance * ambientSpecular;
-	color += in.emissive;
+	color += (diffuseColor * ambientDiffuse + reflectance * ambientSpecular) * occlusion;
+	color += emissive;
 
 	// Reflected light isn't filtered by the surface's transparency: glass and water turn mirror-like at grazing angles.
 	let fresnelAlpha = clamp(alpha + (1.0 - alpha) * max(reflectance.r, max(reflectance.g, reflectance.b)), 0.0, 1.0);
 	return vec4<f32>(encodeOutput(applyFog(toneMap(color * frame.cameraPos.w), in.worldPos, in.fogged)),
-		select(alpha, fresnelAlpha, in.surface.w > 0.5));
+		select(alpha, fresnelAlpha, transparent));
 }
 )WGSL";
 
@@ -686,28 +733,45 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 )WGSL";
 
 		constexpr const char* k_Shadow3DWGSL = R"WGSL(
-struct ShadowFrame {
-	lightViewProj: mat4x4<f32>,
-};
-
+struct ShadowFrame { lightViewProj: mat4x4<f32>, };
+struct MaterialParameters { params: vec4<f32>, flags: vec4<f32>, };
 @group(0) @binding(0) var<uniform> shadowFrame: ShadowFrame;
-
+@group(1) @binding(0) var baseTexture: texture_2d<f32>;
+@group(1) @binding(1) var baseSampler: sampler;
+@group(1) @binding(10) var<uniform> material: MaterialParameters;
 struct VertexInput {
-	@location(0) position: vec3<f32>,
-	@location(1) model0:   vec4<f32>,
-	@location(2) model1:   vec4<f32>,
-	@location(3) model2:   vec4<f32>,
-	@location(4) model3:   vec4<f32>,
+    @location(0) position: vec3<f32>,
+    @location(2) uv: vec2<f32>,
+    @location(3) model0: vec4<f32>,
+    @location(4) model1: vec4<f32>,
+    @location(5) model2: vec4<f32>,
+    @location(6) model3: vec4<f32>,
+    @location(10) color: vec4<f32>,
+    @location(12) surface: vec4<f32>,
+    @location(13) uvTransform: vec4<f32>,
 };
-
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+    @location(1) @interpolate(flat) alphaSurface: vec2<f32>,
+};
 @vertex
-fn vs_main(in: VertexInput) -> @builtin(position) vec4<f32> {
-	let model = mat4x4<f32>(in.model0, in.model1, in.model2, in.model3);
-	return shadowFrame.lightViewProj * model * vec4<f32>(in.position, 1.0);
+fn vs_main(in: VertexInput) -> VertexOutput {
+    let model = mat4x4<f32>(in.model0, in.model1, in.model2, in.model3);
+    var out: VertexOutput;
+    out.position = shadowFrame.lightViewProj * model * vec4<f32>(in.position, 1.0);
+    out.uv = in.uv * in.uvTransform.xy + in.uvTransform.zw;
+    out.alphaSurface = vec2<f32>(in.color.a, in.surface.w);
+    return out;
+}
+@fragment
+fn fs_main(in: VertexOutput) {
+    let coverage = clamp(textureSample(baseTexture, baseSampler, in.uv).a * in.alphaSurface.x, 0.0, 1.0);
+    if (in.alphaSurface.y > 1.5 && coverage < material.params.x) { discard; }
 }
 )WGSL";
 
-		constexpr const char* k_Particle3DWGSL = R"WGSL(
+        constexpr const char* k_Particle3DWGSL = R"WGSL(
 struct ParticleFrame {
 	viewProj:    mat4x4<f32>,
 	cameraRight: vec4<f32>,

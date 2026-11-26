@@ -71,7 +71,10 @@ namespace Funke {
 
 		// Main thread only; publish the view only after all rows have been uploaded.
 		bool CreateForUpload(int width, int height, Filter filter = Filter::Point,
-			Wrap wrapU = Wrap::Clamp, Wrap wrapV = Wrap::Clamp);
+			Wrap wrapU = Wrap::Clamp, Wrap wrapV = Wrap::Clamp, bool generateMipmaps = false);
+		// Call after the final row; mip generation remains one measured driver operation.
+		bool FinishUpload();
+		bool IsUploadComplete() const { return IsValid() && m_UploadedRows == m_Height && !m_UploadNeedsFinish; }
 		bool UploadRows(int firstRow, int rowCount, const uint8_t* rgba, size_t byteCount);
 
 		// Re-upload the full image to the existing GPU texture. byteCount must
@@ -117,7 +120,10 @@ namespace Funke {
 		bool IsFlippedY() const { return m_FlippedY; }
 
 	private:
+		friend class TextureManager;
 		uint64_t m_Tex = 0;
+		int m_UploadedRows = 0;
+		bool m_UploadNeedsFinish = false;
 		int m_Width = 0, m_Height = 0, m_Channels = 0;
 
 		Filter m_Filter = Filter::Point;

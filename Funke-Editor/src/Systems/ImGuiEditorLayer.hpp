@@ -20,8 +20,10 @@
 #include "Gui/EditorPreferencesPanel.hpp"
 #include "Gui/PackageManagerPanel.hpp"
 #include "Gui/PrefabInspector.hpp"
+#include "Gui/AssetPreview3D.hpp"
 #include "Gui/MarkdownPreview.hpp"
 #include "Gui/ProfilerPanel.hpp"
+#include "Gui/StringTablePanel.hpp"
 #include "Gui/ScriptEditorWindows.hpp"
 #include "Gui/SpriteEditorPanel.hpp"
 #include "Gui/SplashScreen.hpp"
@@ -35,6 +37,7 @@
 #include "Graphics/TextureHandle.hpp"
 #include "Serialization/FileWatcher.hpp"
 #include "Undo/UndoStack.hpp"
+#include "Undo/EditorHistorySession.hpp"
 #include "Undo/TransformEditCommand.hpp"
 #include "Undo/Transform3DEditCommand.hpp"
 #include "Undo/StructureEditCommand.hpp"
@@ -189,6 +192,7 @@ namespace Funke {
 		void RenderSettings_Editor(FunkeProject& project, bool& changed, const std::string& filterLower);
 		void RenderSettings_Systems(FunkeProject& project, bool& changed, bool& outGlobalSystemsChanged, const std::string& filterLower);
 		void RenderSettings_Physics(FunkeProject& project, bool& changed, const std::string& filterLower);
+		void RenderSettings_Multithreading(FunkeProject& project, bool& changed, const std::string& filterLower);
 		void TickSplashPreview();
 		void RenderSceneSystemsInspector(Scene& scene);
 		void ExecuteBuildAsync();
@@ -236,6 +240,7 @@ namespace Funke {
 		void ClearEntitySelection();
 		bool IsEntitySelected(EntityHandle entity) const;
 		std::vector<EntityHandle> GetSelectedEntities(const Scene& scene) const;
+		static std::vector<EntityHandle> FilterSelectedHierarchyRoots(const Scene& scene, const std::vector<EntityHandle>& selectedEntities);
 		void SetSingleEntitySelection(EntityHandle entity, int index);
 		void ToggleEntitySelection(EntityHandle entity, int index);
 		void SelectEntityRange(Scene& scene, int index);
@@ -406,6 +411,7 @@ namespace Funke {
 		std::optional<InspectorRenameEdit> m_InspectorRename;
 		EventId m_LogSubscriptionId{};
 		std::vector<LogEntry> m_LogEntries;
+		double m_LogCopiedAt = -1.0;
 		std::shared_ptr<LogDispatchState> m_LogDispatchState;
 		bool m_ShowLogInfo = true;
 		bool m_ShowLogWarn = true;
@@ -427,6 +433,7 @@ namespace Funke {
 
 		// ── Prefab edit mode ──────────────────────────────────────────
 		std::unique_ptr<Scene> m_PrefabEditScene;
+		AssetPreview3D m_AssetPreview3D;
 		std::string m_PrefabEditPath;
 		EntityHandle m_PrefabEditRootEntity = entt::null;
 		bool m_PrefabEditDirty = false;
@@ -472,10 +479,7 @@ namespace Funke {
 		// derive the per-frame factor applied to the selection. Reset between drags.
 		Vec2 m_GizmoGroupScalePrev{ 1.0f, 1.0f };
 
-		SceneUndoHistory m_SceneUndoHistory;
-		UndoStack m_DetachedUndoStack;
-		UndoStack* m_ActiveUndoStack = nullptr;
-		const Scene* m_UndoStackSceneId = nullptr;
+		EditorHistorySession m_UndoHistory;
 
 		// Crash recovery: periodic copies of dirty scenes, offered back after an abnormal exit.
 		std::vector<SceneRecovery::PendingScene> m_PendingRecovery;
@@ -680,7 +684,6 @@ namespace Funke {
 		std::string m_EntityClipboardJson;
 
 		std::vector<std::pair<std::string, std::string>> m_PlayModeScenes;
-		std::unordered_map<std::string, UndoStack> m_PlayModeUndoHistory;
 		// Scenes that had unsaved edits when Play started; they are snapshotted privately and marked dirty again on Stop.
 		std::unordered_set<std::string> m_PlayModeDirtyScenes;
 		// Name of the active scene at play-mode entry. Restored after exit so
@@ -716,6 +719,8 @@ namespace Funke {
 		BuildProfilesPanel m_BuildProfilesPanel;
 		bool m_BuildProfilesPanelInitialized = false;
 		bool m_ShowPackageManager = false;
+		bool m_ShowStringTables = false;
+		StringTablePanel m_StringTablePanel;
 		bool m_ShowProfiler = false;
 		ProfilerPanel m_ProfilerPanel;
 		bool m_ShowAnimationWindow = false;
@@ -740,6 +745,7 @@ namespace Funke {
 			Editor,
 			Systems,
 			Physics,
+			Multithreading,
 		};
 	private:
 		SettingsCategory m_SelectedSettingsCategory = SettingsCategory::Display;

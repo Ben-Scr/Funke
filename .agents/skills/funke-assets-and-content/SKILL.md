@@ -1,11 +1,11 @@
 ---
 name: funke-assets-and-content
-description: Use when working with GAME CONTENT in a Funke project — textures and sprites, audio, fonts, materials, meshes, animation assets, the GUID-based asset system that ties them together, and Data Assets (Funke's ScriptableObject equivalent for shared game data). Triggers on "asset", "GUID", ".meta file", "sprite slice", "AssetManager.Load / LoadByGUID / FindAll / GetGUID", "Texture.FromAssetUUID / runtime texture / SetPixel", "Audio.FromAssetUUID / PlayOneShot", "asset slot in inspector", "Data Asset", "[CreateDataAsset]", "OnValidate", ".dataasset", "item/stats/loot/dialogue data", or how content is found, referenced, loaded, cached and shipped. The source of truth is `Funke-ScriptCore/Source/Funke/Core/AssetManager.cs`, `Graphics/Texture.cs`, `Audio/Audio.cs`, `Scene/DataAsset.cs` and `Github-Docs/Documentation/Assets/`. Inspector field rules are in `funke-inspector-ruleset`, on-disk layout in `funke-project-structure`.
+description: "Import, reference or load Funke game assets by GUID. Covers .meta files, sprite slices, audio, fonts, materials, meshes and C# Data Assets."
 ---
 
 # Funke Assets & Content
 
-Content in Funke is **discovered, not imported**: drop a file into the project's `Assets/` folder and the engine assigns it a permanent **GUID**. Everything references content by GUID, never by path, so you can move/rename freely. This skill covers the asset model, how to reference and load content from C#, the per-type asset classes, and **Data Assets** (shared game data).
+Place content in the project's `Assets/` folder for automatic discovery.
 
 ## The asset model
 
@@ -33,25 +33,9 @@ Content in Funke is **discovered, not imported**: drop a file into the project's
 
 ## Referencing content from C#
 
-Two idioms — prefer the first.
+**Inspector slots.** Prefer typed fields such as `public Texture? Icon;` or `public Audio? PickupSfx;`. Drag the asset into its picker to store its GUID with the scene. See [Inspector fields](../funke-inspector-ruleset/SKILL.md) for visibility and attributes.
 
-**1. Inspector slot (the normal way).** Declare a typed field; the Editor shows an asset picker; the engine stores the GUID with the scene. Drag the asset onto the slot.
-
-```csharp
-public class Pickup : EntityScript
-{
-    public Texture? Icon;      // texture picker
-    public Audio?   PickupSfx; // audio picker
-
-    public override void OnStart()
-    {
-        if (Icon != null) GetComponent<SpriteRenderer>()!.Texture = Icon;
-    }
-}
-```
-(Slot/attribute rules — `[ShowInEditor]`, read-only, etc. — are in `funke-inspector-ruleset`.)
-
-**2. Load in code via `AssetManager` (static).**
+**Loading in code.** `AssetManager` exposes these methods.
 
 ```csharp
 T? Load<T>(string path) where T : class;          // path resolved to a GUID internally
@@ -107,7 +91,7 @@ Assign to a `TextRenderer.Font`. Fonts are cached per pixel size.
 
 ## Data Assets — shared game data (ScriptableObject equivalent)
 
-When many objects should read the **same** data edited in **one** place (item/enemy/stat definitions, loot tables, dialogue, difficulty presets), use a **Data Asset**. The class is the template; each `.dataasset` file is one filled-in instance with its own GUID. The engine keeps **one shared live instance per file**.
+A `DataAsset` class defines the schema. Each `.dataasset` file has its own GUID and one shared live instance. Use prefabs for reusable entities with components and children, and script fields for per-entity values.
 
 ### Define the class
 
@@ -117,20 +101,15 @@ using Funke;
 [CreateDataAsset("Gameplay/Item Data")]   // adds a Create → Data Asset → Gameplay/Item Data menu entry
 public class ItemData : DataAsset
 {
-    public string DisplayName = "New Item";
-    public int    MaxStack    = 99;
-    [ClampValue(0f, 1000f)] public float Weight = 1.0f;
-    public Color   Tint = Color.White;
-    public Texture? Icon;
-    public RarityData? Rarity;            // a Data Asset can reference another Data Asset
-
+    public int MaxStack = 99;
+    public RarityData? Rarity;  // reference to another Data Asset
     public override void OnValidate()     // runs after edit-in-editor or load-from-disk
     {
         if (MaxStack < 1) MaxStack = 1;
     }
 }
 ```
-- Base class: `public abstract class DataAsset` (in `Funke-ScriptCore/Source/Funke/Scene/DataAsset.cs`); override `OnValidate()`.
+- `OnValidate()` runs after Inspector edits and disk loads. See `Funke-ScriptCore/Source/Funke/Scene/DataAsset.cs`.
 - `[CreateDataAsset(menuPath)]` (`menuPath` is slash-separated; default `""`). Without it the class still works but won't appear in the create menu.
 - **Field types** = the same set as script fields: primitives, `string`, enums, `Vector2/3/4`, `Color`, `Graph`, `Texture`/`Audio`/`Material`/`Mesh`/`Scene`, prefabs (`Entity`), **other `DataAsset` subclasses**, lists of those and `List<PlainClass>` inline objects. `Font`, `Dictionary` and other generic types are silently not serialized. Inspector attributes apply (`[ClampValue]`, `[Header]`, `[ToolTip]`, …).
 
@@ -144,9 +123,6 @@ public class ItemData : DataAsset
 A `.dataasset` stores the class `type` name, a format `version`, and the field values (JSON or binary per the project's `assetSerializationFormat`). Hot reload re-creates instances from disk and replays field values (creating all first, so cross-references resolve).
 
 File format, list encodings, generator helpers and patterns (enemy types, waves, levels, catalogs): `funke-make-a-game` → `references/data-driven.md`.
-
-**Data Asset vs alternatives:** shared data decoupled from entities → **Data Asset**; a reusable *entity* with components/children → **Prefab**; per-instance values on one entity → **plain script fields**.
-
 ## Hot reload & purging (editor)
 
 - Editing a `.png`/`.ttf`/`.wav` on disk re-decodes and re-uploads it live; Asset Browser thumbnails refresh. The shipped runtime reads files once (no hot reload).
@@ -154,9 +130,6 @@ File format, list encodings, generator helpers and patterns (enemy types, waves,
 
 ## Pitfalls
 
-- **Never hard-code GUIDs or fragile paths** when an Inspector slot will do — slots keep references stable across moves/renames.
-- **Lost `.meta` = broken references.** Treat `.meta` as part of the asset; commit it.
-- **Runtime `Texture` objects must be `Dispose()`d** — they hold a GPU resource and are not garbage-collected.
 - **New projects serialize as JSON**; older projects (or a `project.json` without `assetSerializationFormat`) are Binary and their `.dataasset`/`.scene` files aren't human-readable until converted (`funke convert --format json`, see `funke-project-structure`).
 - **`SpriteRenderer.Color` is a `Vector4`**, but `Color` (struct, with presets like `Color.White`) is what most APIs and Data Asset fields use — convert deliberately.
 

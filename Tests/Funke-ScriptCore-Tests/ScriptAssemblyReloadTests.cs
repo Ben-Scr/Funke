@@ -20,6 +20,7 @@ public unsafe sealed class ScriptAssemblyReloadTests : IDisposable
     private readonly string m_Directory = Path.Combine(Path.GetTempPath(), "FunkeReload-" + Guid.NewGuid().ToString("N"));
     private static int s_UnregisterCount;
     private static uint s_RegisteredSize;
+    private static bool s_RejectRegistration;
 
     public ScriptAssemblyReloadTests()
     {
@@ -31,6 +32,7 @@ public unsafe sealed class ScriptAssemblyReloadTests : IDisposable
         ScriptInstanceManager.SetCoreAssembly(typeof(EntityScript).Assembly);
         s_UnregisterCount = 0;
         s_RegisteredSize = 0;
+        s_RejectRegistration = false;
     }
 
     [UnmanagedCallersOnly]
@@ -40,7 +42,7 @@ public unsafe sealed class ScriptAssemblyReloadTests : IDisposable
     private static uint RegisterDynamic(byte* name, byte* serial, byte* category, uint code, uint size, uint alignment)
     {
         s_RegisteredSize = size;
-        return 1;
+        return s_RejectRegistration ? 0u : 1u;
     }
 
     [UnmanagedCallersOnly]
@@ -65,6 +67,25 @@ public unsafe sealed class ScriptAssemblyReloadTests : IDisposable
         NativeCallbacks.Bindings = m_PreviousBindings;
         ComponentTypes.NativeLayoutQuery = m_PreviousLayout;
         Directory.Delete(m_Directory, recursive: true);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Failed_native_registration_clears_candidate_and_allows_retry(bool replaceExisting)
+    {
+        string path = Path.Combine(m_Directory, "Game.dll");
+        WriteAssembly(path, 1, nativeLayout: "dynamic");
+        if (replaceExisting) Assert.Equal(1, ScriptInstanceManager.LoadUserAssemblyPath(path));
+        s_RejectRegistration = true;
+        WriteAssembly(path, 2, nativeLayout: "dynamic");
+        Assert.Equal(0, ScriptInstanceManager.LoadUserAssemblyPath(path));
+        Assert.Null(ScriptInstanceManager.UserAssembly);
+        Assert.Null(ScriptInstanceManager.UserAssemblyDirectory);
+        Assert.Equal(replaceExisting ? 2 : 1, s_UnregisterCount);
+        s_RejectRegistration = false;
+        Assert.Equal(1, ScriptInstanceManager.LoadUserAssemblyPath(path));
+        Assert.Equal(2, ReadVersion());
     }
 
     [Fact]
@@ -121,6 +142,98 @@ public unsafe sealed class ScriptAssemblyReloadTests : IDisposable
         }
         Assert.False(previous.IsAlive);
         Assert.Equal(2, ReadVersion());
+    }
+
+    [UnmanagedCallersOnly]
+    private static uint WrapperTypeId(byte* name) => 61;
+
+    [UnmanagedCallersOnly]
+    private static int WrapperPresent(ulong entity, uint type) => type == 61 ? 1 : 0;
+
+    [Fact]
+    public void Generic_component_type_cache_does_not_retain_unloaded_wrapper_assemblies()
+    {
+        WeakReference context = CacheWrapperThenUnload(Path.Combine(m_Directory, "Wrapper.dll"));
+        for (int attempt = 0; attempt < 10 && context.IsAlive; ++attempt)
+        {
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+        }
+        Assert.False(context.IsAlive);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static WeakReference CacheWrapperThenUnload(string path)
+    {
+        var assembly = new PersistedAssemblyBuilder(new AssemblyName("WrapperGame"), typeof(object).Assembly);
+        var wrapper = assembly.DefineDynamicModule("WrapperGame").DefineType("ReloadWrapper", TypeAttributes.Public, typeof(Component));
+        wrapper.DefineDefaultConstructor(MethodAttributes.Public);
+        wrapper.CreateType();
+        assembly.Save(path);
+        var context = new AssemblyLoadContext("Wrapper cache test", isCollectible: true);
+        Type type = context.LoadFromAssemblyPath(path).GetType("ReloadWrapper")!;
+        NativeCallbacks.Bindings.Component_GetTypeId = &WrapperTypeId;
+        NativeCallbacks.Bindings.Entity_HasComponentByTypeId = &WrapperPresent;
+        Entity.ClearManagedComponentStore();
+        typeof(Entity).GetMethod(nameof(Entity.RegisterNativeComponent))!.MakeGenericMethod(type).Invoke(null, new object[] { "Reload wrapper" });
+        MethodInfo method = Array.Find(typeof(Entity).GetMethods(), method => method.Name == nameof(Entity.HasComponent) && method.IsGenericMethodDefinition)!;
+        Assert.Equal(true, method.MakeGenericMethod(type).Invoke(Entity.FromID(7), null));
+        var reference = new WeakReference(context);
+        context.Unload();
+        return reference;
+    }
+
+    [Fact]
+    public void Repeated_executed_reloads_release_instances_and_all_retired_contexts()
+    {
+        string path = Path.Combine(m_Directory, "Game.dll");
+        var retired = new WeakReference[64];
+        for (int cycle = 0; cycle < retired.Length; ++cycle)
+            retired[cycle] = LoadExecuteAndTrackContext(path, cycle);
+        delegate* unmanaged<void> unload = &ScriptInstanceManager.UnloadUserAssembly;
+        unload();
+
+        for (int attempt = 0; attempt < 10; ++attempt)
+        {
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+            if (Array.TrueForAll(retired, context => !context.IsAlive)) break;
+        }
+        Assert.All(retired, context => Assert.False(context.IsAlive));
+        Assert.Null(ScriptInstanceManager.UserAssembly);
+        Assert.Null(ScriptInstanceManager.GetScriptInstance(42, "type:ReloadScript"));
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static WeakReference LoadExecuteAndTrackContext(string path, int version)
+    {
+        WriteAssembly(path, version);
+        Assert.Equal(1, ScriptInstanceManager.LoadUserAssemblyPath(path));
+        var context = new WeakReference(AssemblyLoadContext.GetLoadContext(ScriptInstanceManager.UserAssembly!));
+        Assert.Equal(version, ReadVersion());
+        ScriptInstanceManager.ResetRegisteredPlayState();
+        DevCommandRegistry.BuildCommandsJson();
+        EditorWindowRegistry.BuildTypesJson();
+        PackageScriptRegistry.BuildTypesJson();
+        byte[] name = System.Text.Encoding.UTF8.GetBytes("type:ReloadScript\0");
+        delegate* unmanaged<byte*, ulong, int> create = &ScriptInstanceManager.CreateScriptInstance;
+        delegate* unmanaged<byte*, byte*> fields = &ScriptInstanceManager.GetClassFieldDefs;
+        delegate* unmanaged<int, void> start = &ScriptInstanceManager.InvokeStart;
+        delegate* unmanaged<int, void> destroy = &ScriptInstanceManager.InvokeOnDestroy;
+        delegate* unmanaged<int, void> release = &ScriptInstanceManager.DestroyScriptInstance;
+        int handle;
+        fixed (byte* pointer = name)
+        {
+            handle = create(pointer, 42);
+            Assert.Contains("VisibleValue", Marshal.PtrToStringUTF8((nint)fields(pointer)));
+        }
+        Assert.NotEqual(0, handle);
+        start(handle);
+        destroy(handle);
+        release(handle);
+        return context;
     }
 
     [Fact]
@@ -388,6 +501,36 @@ public unsafe sealed class ScriptAssemblyReloadTests : IDisposable
         destroy(handle); release(handle);
     }
 
+    [Fact]
+    public void Lifecycle_failure_after_commit_is_isolated_and_instance_can_retry()
+    {
+        string path = Path.Combine(m_Directory, "Game.dll");
+        WriteAssembly(path, 1);
+        Assert.Equal(1, ScriptInstanceManager.LoadUserAssemblyPath(path));
+        byte[] name = System.Text.Encoding.UTF8.GetBytes("type:ReloadScript\0");
+        delegate* unmanaged<byte*, ulong, int> create = &ScriptInstanceManager.CreateScriptInstance;
+        delegate* unmanaged<int, void> start = &ScriptInstanceManager.InvokeStart;
+        delegate* unmanaged<int, void> destroy = &ScriptInstanceManager.InvokeOnDestroy;
+        delegate* unmanaged<int, void> release = &ScriptInstanceManager.DestroyScriptInstance;
+        int handle;
+        fixed (byte* p = name) handle = create(p, 42);
+        Assert.NotEqual(0, handle);
+        Type type = ScriptInstanceManager.UserAssembly!.GetType("ReloadScript")!;
+        type.GetField("FailStarts")!.SetValue(null, true);
+        start(handle); // Exception must not cross the unmanaged boundary.
+        object instance = ScriptInstanceManager.GetScriptInstance(42, "type:ReloadScript")!;
+        Assert.Equal(1, type.GetField("Starts")!.GetValue(instance));
+        type.GetField("FailStarts")!.SetValue(null, false);
+        start(handle); start(handle);
+        Assert.Equal(2, type.GetField("Starts")!.GetValue(instance));
+        type.GetField("FailDestroys")!.SetValue(null, true);
+        destroy(handle); release(handle);
+        Assert.Null(ScriptInstanceManager.GetScriptInstance(42, "type:ReloadScript"));
+        WriteAssembly(path, 2);
+        Assert.Equal(1, ScriptInstanceManager.LoadUserAssemblyPath(path));
+        Assert.Equal(2, ReadVersion());
+    }
+
     private static void WriteAssembly(string path, int version, Type? fieldType = null, string? nativeLayout = null)
     {
         var assembly = new PersistedAssemblyBuilder(new AssemblyName("ReloadGame"), typeof(object).Assembly);
@@ -410,10 +553,16 @@ public unsafe sealed class ScriptAssemblyReloadTests : IDisposable
         script.DefineField("VisibleValue", typeof(int), FieldAttributes.Public);
         foreach (var pair in new[] { ("OnStart", "Starts"), ("OnDestroy", "Destroys") }) {
             FieldBuilder counter = script.DefineField(pair.Item2, typeof(int), FieldAttributes.Public);
+            FieldBuilder fail = script.DefineField("Fail" + pair.Item2, typeof(bool), FieldAttributes.Public | FieldAttributes.Static);
             MethodBuilder method = script.DefineMethod(pair.Item1, MethodAttributes.Public | MethodAttributes.Virtual, typeof(void), Type.EmptyTypes);
             ILGenerator il = method.GetILGenerator();
             il.Emit(OpCodes.Ldarg_0); il.Emit(OpCodes.Dup); il.Emit(OpCodes.Ldfld, counter);
-            il.Emit(OpCodes.Ldc_I4_1); il.Emit(OpCodes.Add); il.Emit(OpCodes.Stfld, counter); il.Emit(OpCodes.Ret);
+            il.Emit(OpCodes.Ldc_I4_1); il.Emit(OpCodes.Add); il.Emit(OpCodes.Stfld, counter);
+            Label success = il.DefineLabel();
+            il.Emit(OpCodes.Ldsfld, fail); il.Emit(OpCodes.Brfalse, success);
+            il.Emit(OpCodes.Ldstr, "injected lifecycle failure");
+            il.Emit(OpCodes.Newobj, typeof(InvalidOperationException).GetConstructor(new[] { typeof(string) })!);
+            il.Emit(OpCodes.Throw); il.MarkLabel(success); il.Emit(OpCodes.Ret);
             script.DefineMethodOverride(method, typeof(EntityScript).GetMethod(pair.Item1)!);
         }
         FieldBuilder visits = script.DefineField("ResetVisits", typeof(int), FieldAttributes.Public | FieldAttributes.Static);

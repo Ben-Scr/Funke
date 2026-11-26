@@ -10,7 +10,7 @@ namespace Funke {
 		config.EnablePhysics2D = false;
 		config.EnableAudio = false;
 		config.EnableScripting = false;
-		config.EnableRenderer2D = false;
+		config.EnableSceneRendering = false;
 		// EnableTextureManager stays on so the window-icon path can still load
 		// a project icon (a one-shot upload, not a per-frame cost).
 		config.EnableTextureManager = true;
@@ -31,7 +31,7 @@ namespace Funke {
 		config.EnableWindow = false;
 		config.EnableGuiRenderer = false;
 		config.EnableGizmoRenderer = false;
-		config.EnableRenderer2D = false;
+		config.EnableSceneRendering = false;
 		config.EnableTextureManager = false;
 		config.EnableShaderManager = false;
 		config.AutoCreateDefaultCamera2D = false;

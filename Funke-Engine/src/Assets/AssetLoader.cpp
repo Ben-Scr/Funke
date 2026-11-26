@@ -1,6 +1,7 @@
 #include "pch.hpp"
 #include "Profiling/Profiler.hpp"
 #include "Assets/AssetLoader.hpp"
+#include "Diagnostics/LoadingDiagnostics.hpp"
 
 #include "Assets/AssetRegistry.hpp"
 #include "Core/PlatformDetection.hpp"
@@ -55,6 +56,7 @@ namespace Funke {
 			FileStamp TextureMetaStamp;
 			uint64_t RegistryVersion = 0;
 			bool Discarded = false;
+			size_t Observers = 0;
 #if FUNKE_WITH_RENDER
 			Filter FilterMode = Filter::Point;
 			Wrap WrapU = Wrap::Clamp;
@@ -62,6 +64,12 @@ namespace Funke {
 			float FontSize = 32.0f;
 #endif
 			std::future<PreparedAsset> Future;
+			std::unique_ptr<PreparedAsset> Prepared;
+#if FUNKE_WITH_RENDER
+			std::unique_ptr<Texture2D> Upload;
+			int UploadedRows = 0;
+			bool MipsFinished = false;
+#endif
 		};
 
 		struct Request {
@@ -112,7 +120,7 @@ namespace Funke {
 		}
 
 		PreparedAsset Prepare(const Work& work) {
-			FUNKE_PROFILE_SCOPE("Assets.Decode");
+			LoadingScope timing("Assets.Decode");
 			PreparedAsset prepared;
 			try {
 				switch (work.Kind) {
@@ -148,7 +156,7 @@ namespace Funke {
 		}
 
 		bool Publish(const Work& work, PreparedAsset& prepared) {
-			FUNKE_PROFILE_SCOPE("Assets.Publish");
+			LoadingScope timing("Assets.Publish");
 			if (IsCached(work)) return true;
 			switch (work.Kind) {
 #if FUNKE_WITH_AUDIO
@@ -170,11 +178,53 @@ namespace Funke {
 			}
 		}
 
-		bool HasObservers(const std::shared_ptr<Work>& work) {
-			for (const auto& [id, request] : g_Requests) {
-				if (request.Preparation == work && request.Result.Status == AssetLoadStatus::Pending) return true;
+		enum class Publication { Pending, Success, Failed };
+		Publication PublishStep(Work& work, double budget) {
+			if (IsCached(work)) return Publication::Success;
+			auto& prepared = *work.Prepared;
+			if (!prepared.Ready) return Publication::Failed;
+#if FUNKE_WITH_RENDER
+			if (work.Kind == AssetKind::Texture) {
+				if (!prepared.Image) return Publication::Failed;
+				const auto& image = *prepared.Image;
+				if (!work.Upload) {
+					LoadingScope timing("Assets.TextureAllocate", budget);
+					work.Upload = std::make_unique<Texture2D>();
+					return work.Upload->CreateForUpload(image.Width, image.Height,
+						work.FilterMode, work.WrapU, work.WrapV, true) ? Publication::Pending : Publication::Failed;
+				}
+				if (work.UploadedRows < image.Height) {
+					constexpr size_t k_ChunkBytes = 1024 * 1024;
+					const size_t stride = static_cast<size_t>(image.Width) * 4u;
+					const int rows = std::min(image.Height - work.UploadedRows,
+						static_cast<int>(std::max<size_t>(1, k_ChunkBytes / stride)));
+					LoadingScope timing("Assets.TextureTransfer", budget, stride * rows);
+					if (!work.Upload->UploadRows(work.UploadedRows, rows,
+						image.Pixels + stride * work.UploadedRows, stride * rows)) return Publication::Failed;
+					work.UploadedRows += rows;
+					return Publication::Pending;
+				}
+				if (!work.MipsFinished) {
+					LoadingScope timing("Assets.TextureMips", budget);
+					work.MipsFinished = work.Upload->FinishUpload();
+					return work.MipsFinished ? Publication::Pending : Publication::Failed;
+				}
+				LoadingScope timing("Assets.Publish", budget);
+				return TextureManager::IsValid(TextureManager::PublishUploadedTexture(work.Path, std::move(*work.Upload)))
+					? Publication::Success : Publication::Failed;
 			}
-			return false;
+#endif
+			return Publish(work, prepared) ? Publication::Success : Publication::Failed;
+		}
+
+		bool HasObservers(const std::shared_ptr<Work>& work) {
+			return work->Observers != 0;
+		}
+
+		void ReleasePreparation(Request& request) {
+			if (!request.Preparation) return;
+			--request.Preparation->Observers;
+			request.Preparation.reset();
 		}
 
 		void Complete(const std::shared_ptr<Work>& work, AssetLoadStatus status, const std::string& message = {}) {
@@ -185,7 +235,7 @@ namespace Funke {
 					request.Result.Status = status;
 					request.Result.Message = message;
 				}
-				request.Preparation.reset();
+				ReleasePreparation(request);
 			}
 		}
 
@@ -264,7 +314,7 @@ namespace Funke {
 				if (kind == AssetKind::Texture) {
 					const TextureMeta meta = AssetRegistry::ReadTextureMeta(path);
 					if (meta.HasImportBlock) {
-						work->FilterMode = meta.Import.FilterMode;
+						work->FilterMode = meta.Import.FilterMode == Filter::Default ? Filter::Point : meta.Import.FilterMode;
 						work->WrapU = meta.Import.WrapU;
 						work->WrapV = meta.Import.WrapV;
 					}
@@ -275,7 +325,8 @@ namespace Funke {
 				request.Preparation = std::move(work);
 			}
 		}
-		g_Requests.emplace(id, std::move(request));
+		auto& stored = g_Requests.emplace(id, std::move(request)).first->second;
+		if (stored.Preparation) ++stored.Preparation->Observers;
 		return id;
 	}
 
@@ -290,12 +341,16 @@ namespace Funke {
 		auto found = g_Requests.find(operationId);
 		if (found == g_Requests.end() || found->second.Result.Status != AssetLoadStatus::Pending) return false;
 		found->second.Result.Status = AssetLoadStatus::Cancelled;
-		found->second.Preparation.reset();
+		ReleasePreparation(found->second);
 		return true;
 	}
 
 	void AssetLoader::Release(uint64_t operationId) {
-		if (std::this_thread::get_id() == g_MainThread) g_Requests.erase(operationId);
+		if (std::this_thread::get_id() != g_MainThread) return;
+		const auto found = g_Requests.find(operationId);
+		if (found == g_Requests.end()) return;
+		ReleasePreparation(found->second);
+		g_Requests.erase(found);
 	}
 
 	void AssetLoader::Invalidate(AssetKind kind) {
@@ -322,7 +377,7 @@ namespace Funke {
 	}
 
 	void AssetLoader::Pump(double budgetMs, size_t maxPublications) {
-		FUNKE_PROFILE_SCOPE("Assets.Pump");
+		LoadingScope timing("Assets.Pump", std::max(0.0, budgetMs));
 		if (!IsMainThread()) return;
 #if FUNKE_WITH_RENDER
 		TextureUploadBatch uploadBatch;
@@ -332,32 +387,35 @@ namespace Funke {
 		for (auto it = g_Work.begin(); it != g_Work.end();) {
 			const auto& work = *it;
 			Revalidate(work);
-			if (work->Future.valid()) {
-				if (work->Future.wait_for(std::chrono::seconds(0)) != std::future_status::ready) { ++it; continue; }
-				if (HasObservers(work) && (publications >= maxPublications
-					|| (publications != 0 && std::chrono::steady_clock::now() >= deadline))) { ++it; continue; }
-				try {
-					auto prepared = work->Future.get();
-					if (HasObservers(work) && Revalidate(work, &prepared)) {
-						++publications;
-						const bool loaded = prepared.Ready && Publish(*work, prepared);
-						Complete(work, loaded ? AssetLoadStatus::Success : AssetLoadStatus::Failed,
-							loaded ? "" : (prepared.Error.empty() ? "Asset publication failed" : prepared.Error));
-					}
-				}
-				catch (const std::exception& error) { Complete(work, AssetLoadStatus::Failed, error.what()); }
-				catch (...) { Complete(work, AssetLoadStatus::Failed, "Asset publication failed"); }
-				it = g_Work.erase(it);
+			if (work->Future.valid() && work->Future.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+				++it; continue;
 			}
-			else if (!HasObservers(work)) it = g_Work.erase(it);
-			else ++it;
+			if (!HasObservers(work)) { it = g_Work.erase(it); continue; }
+			if (!work->Future.valid() && !work->Prepared) { ++it; continue; }
+			if (publications >= maxPublications || (publications && std::chrono::steady_clock::now() >= deadline)) {
+				++it; continue;
+			}
+			try {
+				if (!work->Prepared) work->Prepared = std::make_unique<PreparedAsset>(work->Future.get());
+				if (!Revalidate(work, work->Prepared.get())) { it = g_Work.erase(it); continue; }
+				++publications;
+				const auto result = PublishStep(*work, std::max(0.0, budgetMs));
+				if (result == Publication::Pending) { ++it; continue; }
+				const bool loaded = result == Publication::Success;
+				Complete(work, loaded ? AssetLoadStatus::Success : AssetLoadStatus::Failed,
+					loaded ? "" : (work->Prepared->Error.empty() ? "Asset publication failed" : work->Prepared->Error));
+			}
+			catch (const std::exception& error) { Complete(work, AssetLoadStatus::Failed, error.what()); }
+			catch (...) { Complete(work, AssetLoadStatus::Failed, "Asset publication failed"); }
+			LoadingScope release("Assets.Release", std::max(0.0, budgetMs));
+			it = g_Work.erase(it);
 		}
 
 		size_t active = 0;
 		for (const auto& work : g_Work) if (work->Future.valid()) ++active;
 		for (auto it = g_Work.begin(); it != g_Work.end();) {
 			const auto& work = *it;
-			if (work->Future.valid()) { ++it; continue; }
+			if (work->Future.valid() || work->Prepared) { ++it; continue; }
 			try {
 				if (IsCached(*work)) {
 					Complete(work, AssetLoadStatus::Success);

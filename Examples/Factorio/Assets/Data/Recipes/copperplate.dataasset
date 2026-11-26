@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "type": "RecipeDefinition",
+  "fields": {
+    "Id": "copperplate",
+    "Result": "5641443796209399924",
+    "Amount": "1",
+    "Seconds": "2",
+    "CreativeOnly": "false",
+    "Ingredients": "\n\\n3032358598452126556\\n1"
+  }
+}

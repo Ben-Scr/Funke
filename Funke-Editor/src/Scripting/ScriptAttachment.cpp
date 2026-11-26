@@ -12,6 +12,14 @@ namespace Funke::EditorScriptAttachment {
 			return false;
 		}
 
+		if (scriptEntry.Type == ScriptType::Bolt && scriptEntry.IsNativeComponent) {
+			auto& registry = SceneManager::GetComponentRegistry();
+			const auto* info = registry.FindBySerializedName(scriptEntry.ClassName);
+			if (!entity.IsValid() || !info || !info->IsBoltStruct() || info->has(entity)) return false;
+			if (!registry.AddWithDependencies(entity, *info)) return false;
+			scene.MarkDirty();
+			return true;
+		}
 		if (!entity.HasComponent<ScriptComponent>()) {
 			entity.AddComponent<ScriptComponent>();
 		}

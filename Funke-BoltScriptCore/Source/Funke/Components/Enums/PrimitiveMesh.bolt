@@ -1,0 +1,12 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public enum PrimitiveMesh {
+    Cube = 0,
+    Sphere = 1,
+    Plane = 2,
+    Cylinder = 3,
+}

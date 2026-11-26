@@ -1,0 +1,7 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public enum LoadSceneMode { Single, Additive }

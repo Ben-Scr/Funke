@@ -13,7 +13,9 @@ namespace Funke {
 		Scene,
 		Config,
 		Prefab,
-		ShaderSource
+		ShaderSource,
+		Material,
+		Mesh
 	};
 
 } // namespace Funke

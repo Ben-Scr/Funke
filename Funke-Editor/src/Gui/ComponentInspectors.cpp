@@ -22,6 +22,9 @@
 #include "Components/UI/InspectorEventBinding.hpp"
 #include "Editor/EditorComponentRegistration.hpp"
 #include "Graphics/MeshAsset.hpp"
+#include "Editor/ImportedMaterialAssets.hpp"
+#include <unordered_set>
+#include "Components/Graphics/MeshRendererComponent.hpp"
 #include "Graphics/SkeletalAnimation.hpp"
 #include "Graphics/TextureManager.hpp"
 #include "Graphics/Texture2D.hpp"
@@ -30,10 +33,12 @@
 #include "Gui/ImGuiUtils.hpp"
 #include "Inspector/PropertyDrawer.hpp"
 #include "Inspector/ReferencePicker.hpp"
+#include "Undo/InspectorUndoRecorder.hpp"
 #include "Math/Trigonometry.hpp"
 #include "Scene/ComponentRegistry.hpp"
 #include "Scene/Scene.hpp"
 #include "Scene/SceneManager.hpp"
+#include "Serialization/File.hpp"
 #include "Scripting/InspectorEventDispatch.hpp"
 #include "Scripting/ScriptComponent.hpp"
 
@@ -178,31 +183,6 @@ namespace Funke {
 			return anyChanged;
 		}
 
-		template <typename Getter, typename Setter>
-		bool DrawAxisLabeledFloatMulti(const char* rowLabel,
-			const char* axisLabel,
-			std::span<const Entity> entities,
-			Getter&& get, Setter&& set,
-			float speed = 0.1f, const char* format = "%.3f")
-		{
-			float value = 0.0f;
-			const bool uniform = ImGuiUtils::MultiEdit::SampleUniform<float>(entities, get, value);
-
-			ImGui::PushID(rowLabel);
-			ImGuiUtils::BeginInspectorFieldRow(rowLabel);
-
-			// Single-axis rows (e.g. rotation Z) reuse the vector field's axis colour: X=0, Y=1, Z=2.
-			const int axisIndex = axisLabel && axisLabel[0] == 'Y' ? 1 : (axisLabel && axisLabel[0] == 'Z' ? 2 : 0);
-			const bool changed = ImGuiUtils::AxisDragFloat("##Value", axisIndex, axisLabel, &value,
-				ImGui::GetContentRegionAvail().x, speed, uniform ? format : "-");
-			if (changed) {
-				for (const Entity& e : entities) set(e, value);
-				ImGuiUtils::MarkSelectionDirty(entities);
-			}
-
-			ImGui::PopID();
-			return changed;
-		}
 
 	} // namespace
 
@@ -241,43 +221,7 @@ namespace Funke {
 
 	void DrawTransform2DInspector(std::span<const Entity> entities)
 	{
-		using TC = Transform2DComponent;
-		const char* xyLabels[2] = { "X", "Y" };
-
-		DrawAxisLabeledVecMulti<2>("Position", xyLabels, entities,
-			[](const Entity& e, int c) {
-				const Vec2& p = e.GetComponent<TC>().LocalPosition;
-				return c == 0 ? p.x : p.y;
-			},
-			[](const Entity& e, int c, float v) {
-				TC& t = const_cast<Entity&>(e).GetComponent<TC>();
-				Vec2 p = t.LocalPosition;
-				if (c == 0) p.x = v; else p.y = v;
-				t.SetPosition(p);
-			},
-			0.1f);
-
-		DrawAxisLabeledFloatMulti("Rotation", "Z", entities,
-			[](const Entity& e) {
-				return Degrees(e.GetComponent<TC>().LocalRotation);
-			},
-			[](const Entity& e, float v) {
-				const_cast<Entity&>(e).GetComponent<TC>().SetRotation(Radians(v));
-			},
-			1.0f);
-
-		DrawAxisLabeledVecMulti<2>("Scale", xyLabels, entities,
-			[](const Entity& e, int c) {
-				const Vec2& s = e.GetComponent<TC>().LocalScale;
-				return c == 0 ? s.x : s.y;
-			},
-			[](const Entity& e, int c, float v) {
-				TC& t = const_cast<Entity&>(e).GetComponent<TC>();
-				Vec2 s = t.LocalScale;
-				if (c == 0) s.x = v; else s.y = v;
-				t.SetScale(s);
-			},
-			0.1f);
+		DrawPropertiesFor<Transform2DComponent>(entities);
 	}
 
 	// Camera2D properties flow through the auto-drawer.
@@ -489,6 +433,100 @@ namespace Funke {
 		}
 	} // namespace
 
+    namespace {
+        template<class TComponent>
+        void DrawModelMaterialSlots(std::span<const Entity> entities, uint64_t TComponent::* modelField) {
+            if (entities.size() != 1) return;
+            auto& renderer = const_cast<Entity&>(entities.front()).GetComponent<TComponent>();
+            const uint64_t modelGuid = renderer.*modelField;
+            const auto* asset = MeshLibrary::Get(modelGuid);
+            if (!asset || asset->Materials.empty() || asset->Submeshes.empty()) return;
+            if (!EditorUI::SectionHeader("Model Materials", true)) return;
+            if (renderer.Material != 0) ImGui::TextDisabled("The Material field overrides all slots. Clear it to use these materials.");
+            ImGui::BeginDisabled(renderer.Material != 0);
+            std::unordered_set<uint32_t> used;
+            for (const auto& range : asset->Submeshes) used.insert(range.MaterialIndex);
+            for (size_t index = 0; index < asset->Materials.size(); ++index) {
+                if (!used.contains(static_cast<uint32_t>(index))) continue;
+                const auto& material = asset->Materials[index];
+                const std::string key = material.Key;
+                const std::string name = !material.Name.empty() ? material.Name : key == "default" ? "Default" : "Material";
+                PropertyDescriptor property;
+                property.Name = "MaterialSlot:" + key;
+                property.DisplayName = std::to_string(index) + ": " + name;
+                property.Type = PropertyType::AssetRef;
+                property.Metadata.AssetKindFilter = AssetKind::Material;
+                property.Metadata.Tooltip = "Override this model material. None uses the imported material.";
+                property.Get = [modelGuid, key](const Entity& entity) -> PropertyValue {
+                    PropertyValue value; value.Type = PropertyType::AssetRef;
+                    value.UIntValue = entity.GetComponent<TComponent>().MaterialOverrides.Get(modelGuid, key);
+                    return value;
+                };
+                property.Set = [modelGuid, key, modelField](Entity& entity, const PropertyValue& value) {
+                    if (entity.GetComponent<TComponent>().*modelField != modelGuid) return;
+                    MaterialLibrary::Invalidate(value.UIntValue);
+                    entity.GetComponent<TComponent>().MaterialOverrides.Set(modelGuid, key, value.UIntValue);
+                };
+                PropertyDrawer::Draw(entities, property, "model:" + std::to_string(modelGuid) + ":" + key);
+            }
+            ImGui::EndDisabled();
+            if (ImGui::Button("Extract Editable Materials")) {
+                const auto project = ProjectManager::GetCurrentProject();
+                if (!project) return;
+                ImportedMaterialAssets::Result result;
+                std::string error;
+                const auto registerAsset = [](const std::string& path, const TextureImportSettings* settings) -> uint64_t {
+                    const uint64_t guid = AssetRegistry::ImportAssetPathIncremental(path);
+                    if (guid == 0) return 0;
+                    if (settings) {
+                        TextureMeta metadata = AssetRegistry::ReadTextureMeta(path);
+                        if (!metadata.HasImportBlock) {
+                            metadata.Import = *settings;
+                            metadata.HasImportBlock = true;
+                            if (!AssetRegistry::WriteTextureMeta(path, metadata)) return 0;
+                        }
+                    }
+                    Json::Value metadataJson;
+                    if (!Json::TryParse(File::ReadAllText(AssetRegistry::GetMetaPath(path)), metadataJson)) return 0;
+                    const auto* persistedGuid = metadataJson.FindMember("AssetGUID");
+                    if (!persistedGuid || persistedGuid->AsStringOr() != std::to_string(guid)) return 0;
+                    return guid;
+                };
+                if (!ImportedMaterialAssets::Extract(modelGuid, *asset, Path::FromUtf8(project->AssetsDirectory), registerAsset, result, error)) {
+                    FNK_CORE_ERROR_TAG("Material", "Material extraction failed: {}", error);
+                    return;
+                }
+                PropertyDescriptor assignment;
+                assignment.Name = "ExtractedModelMaterials";
+                assignment.DisplayName = "Model Materials";
+                assignment.Type = PropertyType::String;
+                assignment.Get = [](const Entity& entity) {
+                    auto json = Json::Value::MakeObject();
+                    entity.GetComponent<TComponent>().MaterialOverrides.Serialize(json);
+                    PropertyValue value; value.Type = PropertyType::String; value.StringValue = Json::Stringify(json);
+                    return value;
+                };
+                assignment.Set = [modelGuid, modelField](Entity& entity, const PropertyValue& value) {
+                    auto& component = entity.GetComponent<TComponent>();
+                    if (component.*modelField == modelGuid)
+                        component.MaterialOverrides.Deserialize(Json::Parse(value.StringValue), modelGuid);
+                };
+                InspectorUndoRecorder::CaptureBefore(entities, assignment);
+                // Only fill unassigned slots; explicit user overrides keep their precedence.
+                for (const auto& [key, guid] : result.Materials.Slots)
+                    if (renderer.MaterialOverrides.Get(modelGuid, key) == 0) renderer.MaterialOverrides.Set(modelGuid, key, guid);
+                InspectorUndoRecorder::CaptureAfter(entities, assignment);
+                ImGuiUtils::MarkSelectionDirty(entities);
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Create editable material and PNG copies. Existing files and slot overrides are kept; clear a slot to return to the imported material.");
+        }
+    }
+
+    void DrawMeshRendererInspector(std::span<const Entity> entities) {
+        DrawPropertiesFor<MeshRendererComponent>(entities);
+        DrawModelMaterialSlots<MeshRendererComponent>(entities, &MeshRendererComponent::CustomMesh);
+    }
+
 	void DrawSkinnedMeshRendererInspector(std::span<const Entity> entities)
 	{
 		const auto* info = SceneManager::GetComponentRegistry().GetInfo<SkinnedMeshRendererComponent>();
@@ -500,6 +538,7 @@ namespace Funke {
 		const size_t split = static_cast<size_t>(optimization - properties.begin());
 		PropertyDrawer::DrawAll(entities, properties.first(split), info->displayName);
 		DrawSkinnedClipPicker(entities);
+		DrawModelMaterialSlots<SkinnedMeshRendererComponent>(entities, &SkinnedMeshRendererComponent::Model);
 		if (split < properties.size()) PropertyDrawer::DrawAll(entities, properties.subspan(split), info->displayName);
 	}
 

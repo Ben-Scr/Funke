@@ -1,8 +1,8 @@
 # Your First Game
 
-This walkthrough takes a new project from the Launcher to a finished desktop build in about 15 minutes. It assumes you have never used Funke before. Screens and names are the same on Windows, Linux and macOS; executables just have no `.exe` outside Windows.
+Create a desktop project, move a player into a collectible and export the game. The example uses the Empty 2D template and two C# scripts.
 
-Funke supports **C++ and C#** game development. This walkthrough uses C#; for C++ in the editor, follow [Native C++ scripts](Scripting/Scripting.md#native-c-scripts). For a native application using the SDK directly, see the [C++ application guide](../../Funke-Engine/README.md). A project can combine both languages.
+For other scripting workflows, see [native C++ scripts](Scripting/Scripting.md#native-c-scripts), [Bolt scripts and desktop SDK setup](Scripting/Bolt.md) or the [C++ application guide](../../Funke-Engine/README.md).
 
 Prefer to explore an existing game? Open the Launcher's **Asset Library** for reference projects such as **NeonStack** and **Voxtau**, plus the **FunkeBench** benchmark sample. These are distributed through the separate [Funke Asset Library](https://github.com/Ben-Scr/Funke-AssetLibrary). The **2D** and **3D** templates include a camera, physics ground and a falling box (plus a directional light in 3D). Each includes `Assets/Help.md`. **Empty 2D** and **Empty 3D** contain a blank scene with no entities or physics module. None of these templates generates starter scripts.
 
@@ -10,7 +10,7 @@ This tutorial uses built-in APIs to keep setup small. For tilemaps, install **Fu
 
 ## 1. Install the prerequisites
 
-As of 3 November 2026, there is no public engine release on [Releases](https://github.com/Ben-Scr/Funke/releases). First [build Funke from source](../../README.md#getting-started) for your platform. The build requires the native toolchain even when your game uses only C#. Successful [CI runs](https://github.com/Ben-Scr/Funke/actions/workflows/ci.yml) may offer temporary test bundles or installers; availability and GitHub access requirements differ from a public release. The installer guides below describe those artifacts when available.
+Install a matching package from [Releases](https://github.com/Ben-Scr/Funke/releases) when available, or [build Funke from source](../../README.md#build-from-source). Building the engine requires the native toolchain even for a C# game. Successful [CI runs](https://github.com/Ben-Scr/Funke/actions/workflows/ci.yml) can also provide temporary test installers.
 
 | You need | For | Download |
 |---|---|---|
@@ -22,7 +22,7 @@ The Launcher checks for these on start and shows a **Download** button next to a
 
 ## 2. Create a project
 
-1. Start **Funke-Launcher.exe** from `bin/Release-windows-x86_64/Funke-Launcher` after a Windows source build. On Linux or macOS, use the Launcher path in the [platform build instructions](../../README.md#getting-started); installed test builds can use their application shortcut.
+1. Start **Funke-Launcher.exe** from `bin/Release-windows-x86_64/Funke-Launcher` after a Windows source build. On Linux or macOS, use the Launcher path in the [platform build instructions](../../README.md#build-from-source); installed test builds can use their application shortcut.
 2. Click **New Project**, choose **Empty 2D**, enter a name, pick a folder, and confirm.
 3. The Launcher creates the project, compiles its scripts once, and lists it under **Projects**. Double-click it to open the editor.
 
@@ -37,7 +37,7 @@ For a ready-to-run physics scene instead, choose **2D** or **3D** when creating 
 
 ## 4. Write two scripts
 
-In the **Asset Browser**, open `Assets/Scripts`, right-click and choose **Create › EntityScript**. Name it `PlayerController` and double-click it to open your code editor:
+In the **Asset Browser**, open `Assets/Scripts`, right-click and choose **Create > C# Scripting > EntityScript**. Name it `PlayerController` and open it in your code editor.
 
 ```csharp
 using Funke;
@@ -89,13 +89,13 @@ Attach the scripts: select the Player, **Add Component**, pick `PlayerController
 
 ### Press Play
 
-Click **Play** in the toolbar. Move with **WASD**, the arrow keys or a gamepad's left stick, and touch the coin. The Console prints how many coins you have collected across all sessions. Press **Stop** to return to editing; nothing that happened during play is kept.
+Click **Play** in the toolbar. Move with **WASD**, the arrow keys or a gamepad’s left stick, and touch the coin. The Console prints the total you have collected. Press **Stop** to restore the authored scene and its coin. The count written to `PlayerPrefs` persists across Play sessions.
 
 ## 5. Make it yours
 
 Some small next steps, each using one new feature:
 
-1. **Add more coins.** Select the Coin, press **Ctrl+D** to duplicate it, and drag the copies around the Viewport. **Ctrl+Z** undoes any step.
+1. **Add more coins.** Select the Coin, press **Ctrl+D** to duplicate it, and drag the copies around the Viewport. **Ctrl+Z** undoes the last scene edit.
 2. **Turn the coin into a prefab.** Drag the Coin from the Hierarchy into the Asset Browser. Changes to the prefab then apply to every instance.
 3. **Add art.** Drop a `.png` into `Assets/`, then drag it onto the Player's **Sprite Renderer › Texture** slot. For a sprite sheet, slice it in the **Sprite Editor** and add an **Animator** with a looping clip that records the slices on the **Sprite Renderer > Texture** track; see [Animation](Engine-Core/Animation.md).
 4. **Add walls.** Create an entity with a `BoxCollider2D` (no Rigidbody needed for static walls). The player bumps into it because the wall's collider is not a sensor.

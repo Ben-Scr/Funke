@@ -180,6 +180,17 @@ class StructuredEvidenceTests(unittest.TestCase):
             "sanitize": {"outcome": "success"}}, False, self.root / "missing.xml")
         self.assertEqual(report["checks"][0]["status"], "failed")
 
+    def test_unexecuted_sanitizer_preserves_reason_and_blocks_gate(self):
+        needs = self.prepare("linux")
+        lane = "linux-instrumentation/sanitize"
+        for steps, expected in (({}, "not_run"), ({"sanitize": {"outcome": "skipped"}}, "skipped"),
+                                ({"sanitize": {"outcome": "cancelled"}}, "blocked")):
+            record = capture_lane(lane, steps, False, None) | self.RUN
+            self.change(lane, lambda old: old.update(record))
+            result = aggregate(needs, "linux", False, self.root, self.RUN)
+            self.assertFalse(result["passed"])
+            self.assertEqual(next(item["status"] for item in result["lanes"] if item["lane"] == lane), expected)
+
     def test_doctest_requires_completed_nonempty_assertions(self):
         path = self.root / "native.xml"
         good = ('<doctest><TestSuite><TestCase name="Probe" filename="probe.cpp" line="1">'

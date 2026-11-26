@@ -15,8 +15,12 @@
 #include "Components/UI/SliderComponent.hpp"
 #include "Components/UI/InputFieldComponent.hpp"
 #include "Scene/Scene.hpp"
+#include "Scene/SceneManager.hpp"
+#include "Scene/BuiltInComponentRegistration.hpp"
 #include "Systems/UIEventSystem.hpp"
 #include "Systems/UIFocusSystem.hpp"
+#include "Serialization/SceneSerializer.hpp"
+#include "Serialization/Json.hpp"
 #include "Core/Application.hpp"
 #include "Core/Window.hpp"
 
@@ -620,4 +624,69 @@ TEST_CASE("UI quad culling uses letterboxed scissor pixels and preserves edge sa
 	const auto zeroViewport = QuadVisibility::FromScissor(1, 1, 1, 1, 0, 0, 0, 0);
 	CHECK(zeroViewport.Min.x == -1.0f);
 	CHECK(zeroViewport.Max.x == 1.0f);
+}
+
+
+TEST_CASE("Spatial UI focus keeps Tab linear and respects explicit neighbours") {
+    NavigationFixture ui;
+    auto& first = ui.Registry.get<InteractableComponent>(ui.First);
+    first.SpatialNavigation = true;
+    ui.Registry.get<RectTransform2DComponent>(ui.Second).AnchoredPosition = {0, -100};
+    ui.Step({ .Right = true });
+    CHECK(ui.Focused(ui.First));
+    ui.Step({ .Down = true });
+    CHECK(ui.Focused(ui.Second));
+    ui.Step({ .Tab = true, .Shift = true });
+    CHECK(ui.Focused(ui.First));
+    first.NavigationRight = ui.Second;
+    ui.Step({ .Right = true });
+    CHECK(ui.Focused(ui.Second));
+    ui.Step({ .Tab = true, .Shift = true });
+    ui.Registry.get<InteractableComponent>(ui.Second).Interactable = false;
+    ui.Step({ .Right = true });
+    CHECK(ui.Focused(ui.First));
+}
+
+TEST_CASE("Spatial UI focus excludes masked centres and keeps text cursor keys") {
+    NavigationFixture ui;
+    ui.Registry.get<InteractableComponent>(ui.First).SpatialNavigation = true;
+    ui.Registry.emplace<MaskComponent>(ui.Root);
+    ui.Registry.get<RectTransform2DComponent>(ui.Second).AnchoredPosition = {1000, 0};
+    ui.Step({ .Right = true });
+    CHECK(ui.Focused(ui.First));
+    ui.Registry.get<RectTransform2DComponent>(ui.Second).AnchoredPosition = {120, 0};
+    auto& field = ui.Registry.emplace<InputFieldComponent>(ui.First);
+    field.IsFocused = true;
+    ui.Step({ .Right = true });
+    CHECK(ui.Focused(ui.First));
+    ui.Step({ .Tab = true });
+    CHECK(ui.Focused(ui.Second));
+}
+
+
+TEST_CASE("Spatial UI navigation options and persistent links survive scene roundtrip") {
+    Application app;
+    RegisterBuiltInComponents(SceneManager::GetComponentRegistry());
+    auto scene = Scene::CreateDetachedScene("Navigation roundtrip");
+    auto first = scene->CreateEntity("First");
+    auto second = scene->CreateEntity("Second");
+    auto& options = first.AddComponent<InteractableComponent>();
+    second.AddComponent<InteractableComponent>().Focusable = true;
+    options.Focusable = true;
+    options.SpatialNavigation = true;
+    options.NavigationWrap = true;
+    options.NavigationRight = second.GetHandle();
+    const auto firstId = scene->GetEntityPersistentID(first.GetHandle());
+    const auto secondId = scene->GetEntityPersistentID(second.GetHandle());
+    auto loaded = Scene::CreateDetachedScene("Loaded navigation");
+    REQUIRE(SceneSerializer::DeserializeScene(*loaded, SceneSerializer::SerializeScene(*scene)));
+    EntityHandle a = entt::null, b = entt::null;
+    REQUIRE(loaded->TryResolveEntityRef(firstId, a));
+    REQUIRE(loaded->TryResolveEntityRef(secondId, b));
+    const auto& restored = loaded->GetComponent<InteractableComponent>(a);
+    CHECK(restored.SpatialNavigation);
+    CHECK(restored.NavigationWrap);
+    CHECK(restored.NavigationRight == b);
+    CHECK(restored.NavigationLeft == entt::null);
+    CHECK_FALSE(loaded->GetComponent<InteractableComponent>(b).SpatialNavigation);
 }

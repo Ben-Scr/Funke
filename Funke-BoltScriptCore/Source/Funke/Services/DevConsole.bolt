@@ -1,0 +1,110 @@
+import System
+import System.Collections.Generic
+namespace Funke;
+
+extern "C" ulong FkConsoleIo(ulong operation, void* value, void* extra);
+extern "C" ulong FkConsoleExecute(ulong unused, void* line, void* bridge);
+
+public class DevCommandAttribute {
+private:
+    string name;
+public:
+    DevCommandAttribute(string commandName = "") : name(commandName) {}
+    string Name => name;
+    string Description;
+}
+public static class FkConsoleArgs {
+public:
+    static bool Bool(string word) {
+        string text = word.ToLower();
+        if (text == "on" || text == "yes" || text == "true" || text == "1") return true;
+        if (text == "off" || text == "no" || text == "false" || text == "0") return false;
+        throw ArgumentException("Invalid boolean argument.");
+    }
+    static float[] Coordinates(string word, int dimensions) {
+        string[] parts = word.Split(",");
+        if (parts.Length != dimensions) throw ArgumentException("Unexpected vector dimensions.");
+        float[] coordinates = new float[dimensions];
+        for (int i = 0; i < dimensions; i++) {
+            float value = 0.0f;
+            if (!float.TryParse(parts[i].Trim(), value)) throw ArgumentException("Invalid vector coordinate.");
+            coordinates[i] = value;
+        }
+        return coordinates;
+    }
+    static Vector2 Vec2(string word) { float[] v = Coordinates(word, 2); return Vector2(v[0], v[1]); }
+    static Vector3 Vec3(string word) { float[] v = Coordinates(word, 3); return Vector3(v[0], v[1], v[2]); }
+}
+public struct FkConsoleCallback {
+public:
+    void Run() {
+        FkConsoleCallback next;
+        void* capture = Bolt.Runtime.ThreadCallback.Capture<FkConsoleCallback>(next);
+        FkConsoleIo(7ul, capture, null);
+        DevConsole.FkDispatch();
+    }
+}
+public struct FkConsoleBridge {
+public:
+    void* Entry;
+    void* Capture;
+}
+public static class DevConsole {
+private:
+    static Dictionary<string, Func<string[], string?>> handlers, attributes;
+public:
+    static bool IsAvailable => (FkService.DevConsole_GetState() & 1) != 0;
+    static bool IsOpen => (FkService.DevConsole_GetState() & 2) != 0;
+    static string Execute(string commandLine) {
+        byte[] line = FkService.CString(commandLine);
+        FkConsoleCallback callback;
+        FkConsoleBridge bridge;
+        bridge.Entry = Bolt.Runtime.ThreadCallback.Entry<FkConsoleCallback>();
+        bridge.Capture = Bolt.Runtime.ThreadCallback.Capture<FkConsoleCallback>(callback);
+        try { return FunkeText.Read(FkConsoleExecute(0ul, &line[0], &bridge)); }
+        finally { if (bridge.Capture != null) Bolt.Runtime.ThreadCallback.Cancel(bridge.Capture); }
+    }
+    static void Register(string name, Func<string[], string?> handler, string description = "") {
+        string key = name.Trim().ToLower();
+        if (key.Length == 0) throw ArgumentException("A command needs a name.");
+        byte[] keyBytes = FkService.CString(key), descriptionBytes = FkService.CString(description);
+        if (FkConsoleIo(0ul, &keyBytes[0], &descriptionBytes[0]) == 0ul)
+            throw InvalidOperationException("Register the command from a running script.");
+        handlers.Remove(key);
+        handlers.Add(key, handler);
+    }
+    static void FkRegister(string name, Func<string[], string?> handler, string description, string usage) {
+        string nameKey = name.Trim().ToLower();
+        if (attributes.ContainsKey(nameKey)) return;
+        byte[] key = FkService.CString(nameKey), text = FkService.CString(usage), detail = FkService.CString(description);
+        FkConsoleIo(9ul, &key[0], &detail[0]);
+        FkConsoleIo(8ul, &key[0], &text[0]);
+        attributes.Add(nameKey, handler);
+    }
+    static void Register(string name, Action<string[]> handler, string description = "") {
+        Func<string[], string?> run = (string[] args) => { handler.Invoke(args); return null; };
+        Register(name, run, description);
+    }
+    static bool Unregister(string name) {
+        string key = name.Trim().ToLower();
+        byte[] buffer = FkService.CString(key);
+        handlers.Remove(key);
+        return FkConsoleIo(1ul, &buffer[0], null) != 0ul;
+    }
+    static void FkDispatch() {
+        try {
+            string key = FunkeText.Read(FkConsoleIo(4ul, null, null));
+            if (!handlers.ContainsKey(key) && !attributes.ContainsKey(key)) throw InvalidOperationException("Unknown command " + key);
+            int count = (int)FkConsoleIo(2ul, null, null);
+            string[] args = new string[count];
+            for (int i = 0; i < count; i++) args[i] = FunkeText.Read(FkConsoleIo(3ul, &i, null));
+            var handler = handlers.ContainsKey(key) ? handlers.GetRef(key) : attributes.GetRef(key);
+            string? result = handler.Invoke(args);
+            byte[] value = FkService.CString(result == null ? "" : result.Value);
+            FkConsoleIo(5ul, &value[0], null);
+        } catch (System.Exception& error) {
+            byte[] message = FkService.CString(error.Message);
+            FkConsoleIo(6ul, &message[0], null);
+        }
+    }
+}

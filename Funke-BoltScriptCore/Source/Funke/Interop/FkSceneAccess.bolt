@@ -1,0 +1,50 @@
+import System
+namespace Funke;
+
+public static class FkSceneAccess {
+public:
+    static int Int(ulong word) { return Reinterpret<int>((uint)(word & 4294967295ul)); }
+    static byte[] CString(string value) {
+        byte[] bytes = value.ToUtf8();
+        byte[] terminated = new byte[bytes.Length + 1];
+        for (int i = 0; i < bytes.Length; i++) terminated[i] = bytes[i];
+        return terminated;
+    }
+    static ulong Call(ulong slot, ulong a) {
+        ulong[] args = {a};
+        return FkNativeInvoke(slot, &args[0], null);
+    }
+    static ulong Call(ulong slot, ulong a, ulong b) {
+        ulong[] args = {a, b};
+        return FkNativeInvoke(slot, &args[0], null);
+    }
+    static ulong Call(ulong slot, ulong a, ulong b, ulong c) {
+        ulong[] args = {a, b, c};
+        return FkNativeInvoke(slot, &args[0], null);
+    }
+    static ulong Call(ulong slot, ulong a, ulong b, ulong c, ulong d) {
+        ulong[] args = {a, b, c, d};
+        return FkNativeInvoke(slot, &args[0], null);
+    }
+    static ulong Call(ulong slot, ulong a, ulong b, ulong c, ulong d, ulong e) {
+        ulong[] args = {a, b, c, d, e};
+        return FkNativeInvoke(slot, &args[0], null);
+    }
+    static ulong Call(ulong slot, ulong a, ulong b, ulong c, ulong d, ulong e, ulong f) {
+        ulong[] args = {a, b, c, d, e, f};
+        return FkNativeInvoke(slot, &args[0], null);
+    }
+    static string Text(ulong slot, ulong[] args) {
+        int pointer = args.Length - 2;
+        int size = Int(FkNativeInvoke(slot, &args[0], null));
+        if (size <= 0) return "";
+        byte[] bytes = new byte[size + 1];
+        args[pointer] = FkNativeSlot.Pointer(&bytes[0]);
+        args[pointer + 1] = (ulong)bytes.Length;
+        FkNativeInvoke(slot, &args[0], null);
+        byte[] content = new byte[size];
+        for (int i = 0; i < size; i++) content[i] = bytes[i];
+        return string.FromUtf8(content);
+    }
+}
+

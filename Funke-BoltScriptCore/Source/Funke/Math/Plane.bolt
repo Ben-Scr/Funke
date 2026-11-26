@@ -1,0 +1,29 @@
+import System
+import Math
+namespace Funke;
+
+public struct Plane {
+public:
+    Plane() {}
+    Plane(Vector3 normal, Vector3 point) {
+        Vector3.FkValidateFinite(normal, "normal");
+        Vector3.FkValidateFinite(point, "point");
+        double length = Math.Sqrt<double>((double)normal.X * normal.X + (double)normal.Y * normal.Y + (double)normal.Z * normal.Z);
+        if (length == 0) throw System.ArgumentOutOfRangeException("normal");
+        Normal = Vector3((float)(normal.X / length), (float)(normal.Y / length), (float)(normal.Z / length));
+        Distance = (float)(-((double)Normal.X * point.X + (double)Normal.Y * point.Y + (double)Normal.Z * point.Z));
+        if (!Mathf.FkFinite(Distance)) throw System.ArgumentOutOfRangeException("point");
+    }
+    Vector3 Normal;
+    float Distance;
+    bool TryRaycast(Ray ray, float& distance) {
+        distance = 0;
+        if (Normal.LengthSquared() == 0 || !Vector3.FkIsFinite(ray.Origin) || !Vector3.FkIsFinite(ray.Direction)) return false;
+        double denominator = (double)Normal.X * ray.Direction.X + (double)Normal.Y * ray.Direction.Y + (double)Normal.Z * ray.Direction.Z;
+        if (Math.Abs<double>(denominator) <= Mathf.Epsilon) return false;
+        double value = -((double)Normal.X * ray.Origin.X + (double)Normal.Y * ray.Origin.Y + (double)Normal.Z * ray.Origin.Z + Distance) / denominator;
+        if (!Mathf.FkFinite(value) || value < 0 || value > 3.402823466e38f) return false;
+        distance = (float)value;
+        return true;
+    }
+}

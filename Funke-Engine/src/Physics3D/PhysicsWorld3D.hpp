@@ -72,6 +72,11 @@ namespace Funke {
 		void ForEachActiveContact(const std::function<void(const Vec3& point, const Vec3& normal, bool isTrigger)>& callback) const;
 
 		bool Raycast(const Vec3& origin, const Vec3& direction, float maxDistance, RaycastHit3D& outHit) const;
+		// Membership is taken from the rigidbody owner, including compound children.
+		bool Raycast(const Vec3& origin, const Vec3& direction, float maxDistance, RaycastHit3D& outHit,
+			uint64_t layerMask, bool includeTriggers = false) const;
+
+		bool CheckSphere(const Vec3& center, float radius, uint64_t layerMask = ~uint64_t(0), bool includeTriggers = false) const;
 
 		Vec3 GetGravity() const;
 		void SetGravity(const Vec3& gravity);

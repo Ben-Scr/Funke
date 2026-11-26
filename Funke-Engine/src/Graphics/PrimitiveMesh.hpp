@@ -21,6 +21,8 @@ namespace Funke {
 		float Position[3];
 		float Normal[3];
 		float UV[2];
+		// w = handedness (+/-1); zero uses a derivative tangent frame for procedural/legacy meshes.
+		float Tangent[4] = {};
 	};
 
 	// CPU-side geometry, CCW front faces, unit sized and centred on the origin (Plane lies in XZ facing +Y).

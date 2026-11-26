@@ -4,7 +4,7 @@
 namespace Funke {
 
 	// Bump together with InteropHandshake.LayoutVersion (ScriptHostBridge.cs) on any add/remove/reorder in NativeBindings or ManagedCallbacks.
-	inline constexpr int32_t k_ScriptInteropLayoutVersion = 55;
+	inline constexpr int32_t k_ScriptInteropLayoutVersion = 63;
 
 	/// Layout must match C# NativeBindingsStruct exactly (Sequential, blittable).
 	struct NativeBindings
@@ -1396,6 +1396,46 @@ namespace Funke {
 		int (*PhysicsLayer_GetIndex)(const char* name);
 		uint64_t (*Entity_GetLayer)(uint64_t entityID);
 		void (*Entity_SetLayer)(uint64_t entityID, uint64_t mask);
+		int (*Physics3D_RaycastMasked)(float ox, float oy, float oz, float dx, float dy, float dz, float maxDistance, uint64_t mask, int includeTriggers, uint64_t* hitEntityID, float* hitValues, int count);
+		int (*Physics3D_CheckSphere)(float x, float y, float z, float radius, uint64_t mask, int includeTriggers);
+		uint64_t (*Scene_BeginQueryBorrow)(const char* sceneName);
+		void (*Scene_EndQueryBorrow)(uint64_t token);
+		int (*Entity_CaptureComponent)(uint64_t entityId, const char* name, uint64_t* identity);
+		int (*Entity_TransferComponent)(uint64_t entityId, const char* name, const uint64_t* identity, void* value, int size, int write);
+		uint64_t (*Scene_BeginJobQueryBorrow)(const char* sceneName, const char* writes, const char* reads);
+		void (*Scene_EndJobQueryBorrow)(uint64_t token);
+        // Per-material model overrides (0 = static renderer, 1 = skinned renderer).
+        int (*MeshRenderer_GetMaterialSlotCount)(uint64_t entityID, int rendererKind);
+        int (*MeshRenderer_GetMaterialSlotName)(uint64_t entityID, int rendererKind, int slot, char* output, int capacity);
+        uint64_t (*MeshRenderer_GetMaterialSlotOverride)(uint64_t entityID, int rendererKind, int slot);
+        int (*MeshRenderer_SetMaterialSlotOverride)(uint64_t entityID, int rendererKind, int slot, uint64_t materialGuid);
+
+
+		void (*Transform3D_GetRight)(uint64_t id, float* x, float* y, float* z);
+		void (*Transform3D_GetUp)(uint64_t id, float* x, float* y, float* z);
+		int (*PlayerPrefs_Access)(const char* path, int op, const char* key, int keyBytes, uint64_t* value, char* text, int capacity);
+
+		uint64_t (*CameraFollowRig_GetTarget)(uint64_t id);
+		int (*CameraFollowRig_SetTarget)(uint64_t id, uint64_t target);
+		void (*CameraFollowRig_GetOffset)(uint64_t id, float* x, float* y, float* z);
+		void (*CameraFollowRig_SetOffset)(uint64_t id, float x, float y, float z);
+		float (*CameraFollowRig_GetDamping)(uint64_t id);
+		void (*CameraFollowRig_SetDamping)(uint64_t id, float value);
+		int (*CameraFollowRig_GetOrbit)(uint64_t id);
+		void (*CameraFollowRig_SetOrbit)(uint64_t id, int value);
+		float (*CameraFollowRig_GetYaw)(uint64_t id);
+		void (*CameraFollowRig_SetYaw)(uint64_t id, float value);
+		float (*CameraFollowRig_GetPitch)(uint64_t id);
+		void (*CameraFollowRig_SetPitch)(uint64_t id, float value);
+		float (*CameraFollowRig_GetDistance)(uint64_t id);
+		void (*CameraFollowRig_SetDistance)(uint64_t id, float value);
+		int (*CameraFollowRig_GetLookAtTarget)(uint64_t id);
+		void (*CameraFollowRig_SetLookAtTarget)(uint64_t id, int value);
+		void (*CameraFollowRig_Reset)(uint64_t id);
+		int (*RuntimePoints_Create)(uint64_t* ids, int count);
+		int (*RuntimePoints_Translate)(const uint64_t* ids, int count, float dx, float dy);
+		int (*RuntimePoints_Read)(const uint64_t* ids, int count, float* positions);
+		int (*RuntimePoints_Destroy)(const uint64_t* ids, int count);
 
 	};
 
@@ -1542,6 +1582,8 @@ namespace Funke {
 		void        (*NotifyEntitiesDestroyed)(const uint64_t* entityIDs, int count);
 		void        (*NotifyComponentsRemoved)(const uint64_t* entityIDs, int count, uint32_t typeId);
 		void        (*AssetLoadsCompleted)(const uint64_t* operationIds, const uint64_t* assetIds, const int* statuses, int count);
+		void (*PlatformEvent)(int event, const char* channel, int channelBytes, const char* message, int messageBytes);
+
 	};
 
 } // namespace Funke

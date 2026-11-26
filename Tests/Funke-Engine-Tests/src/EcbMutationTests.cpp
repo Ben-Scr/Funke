@@ -357,6 +357,32 @@ TEST_CASE("Direct component bindings preserve mutable conflicts dependencies and
 	CHECK(blocked.HasComponent<EcbMutationDependency>());
 }
 
+TEST_CASE("Leaf dependency additions honor reverse conflicts edited between calls")
+{
+	Application app;
+	auto scene = Scene::CreateDetachedScene("Leaf Component Rules");
+	SceneExecutionScope scope(*scene);
+	auto& components = SceneManager::GetComponentRegistry();
+	components.Register<EcbMutationBlocker>({ "ECB Mutation Blocker", ComponentCategory::Component });
+	RegisterValue();
+	auto& info = *components.GetInfo<EcbMutationValue>();
+	auto& blocker = *components.GetInfo<EcbMutationBlocker>();
+	RestoreDirectComponentInfo restoreInfo(info);
+	RestoreDirectComponentInfo restoreBlocker(blocker);
+	info.dependsOn.clear();
+	info.conflictsWith.clear();
+	Entity entity = scene->CreateEmptyEntity();
+	entity.AddComponent<EcbMutationBlocker>();
+	REQUIRE(components.AddWithDependencies(entity, info));
+	entity.RemoveComponent<EcbMutationValue>();
+	blocker.conflictsWith.push_back(typeid(EcbMutationValue));
+	CHECK_FALSE(components.AddWithDependencies(entity, info));
+	CHECK_FALSE(entity.HasComponent<EcbMutationValue>());
+	blocker.conflictsWith.clear();
+	CHECK(components.AddWithDependencies(entity, info));
+	CHECK(entity.HasComponent<EcbMutationValue>());
+}
+
 TEST_CASE("Direct component bindings honor custom callbacks and reentrant entity destruction")
 {
 	Application app;

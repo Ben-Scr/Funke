@@ -1,0 +1,10 @@
+import System
+import System.Threading
+import System.Threading.Tasks
+namespace Funke.Jobs;
+
+public class FkAtomicRefState<T> {
+public:
+    System.Threading.Mutex Gate;
+    System.Memory.Shared<T> Value;
+}

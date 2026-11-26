@@ -1,0 +1,11 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public class NameComponent : Component {
+public:
+    protected override ulong FkType() { return 24ul; }
+    string Name { get { return FunkeText.Read(FkNameComponent_GetNameBuffer(ID, 0ul)); } set { FkNameComponent_SetName(ID, FunkeText.Put(value)); } }
+}

@@ -4,8 +4,23 @@ Release notes describe user-visible compatibility, reliability, and workflow cha
 
 ## [Unreleased]
 
+### Added
+
+- Desktop projects can attach Bolt scripts to entities and use scene and global systems. Desktop export checks retained Bolt sources and includes the compiler host and SDK notices. [Bolt scripting](Github-Docs/Documentation/Scripting/Bolt.md)
+- Static and skinned glTF renderers accept per-slot material overrides. The Inspector can extract editable materials and textures. Unique material names keep overrides attached across source slot reordering. [3D materials](Github-Docs/Documentation/Engine-Core/3D.md#materials)
+- C# gameplay can run behavior trees with per-agent state and a shared tree definition. [C# behavior trees](Github-Docs/Documentation/Engine-Core/Navigation-and-Worlds.md#running-a-behavior-tree-from-c)
+
+- C++ scripts expose their owning entity, nullable component pointers, consistent native-script access and `GetOrAddComponent`. Native project setup supplies eight editable VS Code snippets for scripts, component access and Inspector fields.
+- The String Tables panel edits project localization files with search, missing-key diagnostics, conflict detection and file Undo/Redo.
+- Project font fallback families select missing glyphs from ordered font assets while sharing metrics with text layout and caret calculations.
+- Opt-in loading capture separates decode, transfer, scene construction, lifecycle and release phases, with P95/P99 statistics and CSV export.
+- Asynchronous loading splits large texture transfers and prefab entity/parent construction into cooperative steps; allocation, mip generation, fixups and callbacks can still exceed a frame budget.
+
 ### Fixed
 
+- Windows cleans up Tracy allocator heaps when worker threads exit. The recorded 120-cycle Play/Stop/recompile run includes warmup, private memory samples and acceptance budgets. [Memory lifecycle verification](Github-Docs/Documentation/Editor/Memory-Lifecycle-Verification.md)
+- Folder Undo handles long Windows backup paths, and successful asset-operation rollback cleans up temporary transaction files. [Windows Editor acceptance](Github-Docs/Documentation/Editor/Acceptance-2026-11-20.md#saved-editor-state-and-undo)
+- C# script and component labels in the Inspector hide the internal `type:` identity prefix while preserving namespaces and stored identities.
 - Build and Build and Play apply the build profile's rendering API only to the exported game, preserving the editor's API and avoiding an unrelated reload prompt, including when build validation fails.
 - Opening a newly created C++ script in Visual Studio waits for the native solution to be generated instead of routing it into an already-open C# solution. Pending opens are cancelled on editor shutdown; missing solutions report an actionable error.
 - Asset undo accepts verified macOS system-directory aliases while rejecting links inside asset paths; tests use canonical registry identities.

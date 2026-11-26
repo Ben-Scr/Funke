@@ -105,4 +105,56 @@ public static class Mathf
     }
 
     public static bool Approximately(float a, float b) => Abs(a - b) < Epsilon;
+
+    public static float Repeat(float value, float length)
+    {
+        if (!float.IsFinite(value)) throw new ArgumentOutOfRangeException(nameof(value));
+        if (!float.IsFinite(length) || length <= 0) throw new ArgumentOutOfRangeException(nameof(length));
+        float remainder = value % length;
+        if (remainder < 0) remainder += length;
+        return remainder == length ? 0 : remainder;
+    }
+
+    public static float PingPong(float value, float length)
+    {
+        if (!float.IsFinite(length) || length <= 0) throw new ArgumentOutOfRangeException(nameof(length));
+        if (!float.IsFinite(value)) throw new ArgumentOutOfRangeException(nameof(value));
+        double phase = Math.Abs((double)value) % (2d * length);
+        return (float)(phase <= length ? phase : 2d * length - phase);
+    }
+
+    public static float MoveTowardsAngle(float current, float target, float maxDegreesDelta)
+    {
+        if (!float.IsFinite(maxDegreesDelta) || maxDegreesDelta < 0) throw new ArgumentOutOfRangeException(nameof(maxDegreesDelta));
+        float start = Repeat(current, 360);
+        float delta = TransformUtility.DeltaAngleDegrees(start, Repeat(target, 360));
+        return Repeat(start + Math.Clamp(delta, -maxDegreesDelta, maxDegreesDelta), 360);
+    }
+
+    public static float SmoothDamp(float current, float target, ref float velocity, float smoothTime, float deltaTime,
+        float maxSpeed = float.PositiveInfinity)
+    {
+        Vector3 v = new(velocity, 0, 0);
+        float result = Vector3.SmoothDamp(new(current, 0, 0), new(target, 0, 0), ref v, smoothTime, deltaTime, maxSpeed).X;
+        velocity = v.X;
+        return result;
+    }
+
+    public static float SmoothDampAngle(float current, float target, ref float velocity, float smoothTime, float deltaTime,
+        float maxSpeed = float.PositiveInfinity)
+    {
+        float start = Repeat(current, 360);
+        float delta = TransformUtility.DeltaAngleDegrees(start, Repeat(target, 360));
+        return Repeat(SmoothDamp(start, start + delta, ref velocity, smoothTime, deltaTime, maxSpeed), 360);
+    }
+
+    internal static float DampingFactor(float rate, float deltaTime)
+    {
+        if (!float.IsFinite(rate) || rate < 0) throw new ArgumentOutOfRangeException(nameof(rate));
+        if (!float.IsFinite(deltaTime) || deltaTime < 0) throw new ArgumentOutOfRangeException(nameof(deltaTime));
+        return (float)(1 - Math.Exp(-(double)rate * deltaTime));
+    }
+
+    public static float Damp(float current, float target, float rate, float deltaTime) =>
+        float.Lerp(current, target, DampingFactor(rate, deltaTime));
 }

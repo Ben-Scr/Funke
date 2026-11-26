@@ -42,9 +42,7 @@ namespace Funke {
 		void OnUpdate(Application& app, float dt) override;
 		void OnDetach(Application& app) override;
 
-		// Public so the anonymous-namespace helpers in LauncherLayer.cpp can
-		// see the asset-library data shapes. Not part of any exported
-		// engine-side API — they're just internal-to-the-launcher data.
+		// Shared with the asset-library parser; internal to the launcher.
 		enum class AssetLibraryStage : std::uint8_t {
 			Idle = 0,
 			FetchingManifest,
@@ -231,7 +229,7 @@ namespace Funke {
 		void RequestProjectDelete(const LauncherProjectEntry& entry);
 		bool DeleteProjectFromDisk(const LauncherProjectEntry& entry);
 		void StartCreateProjectAsync(const std::string& name, const std::string& location,
-			const std::string& directoryName, const std::string& company, bool initializeGit,
+			const std::string& directoryName, bool initializeGit,
 			std::optional<ProjectTemplate> projectTemplate);
 		void RenderTemplatePicker(float contentWidth);
 		const ProjectTemplate* GetSelectedTemplate() const;
@@ -305,7 +303,6 @@ namespace Funke {
 
 		char m_NewProjectName[256]{};
 		char m_NewProjectLocation[512]{};
-		char m_NewProjectCompany[256]{};
 		bool m_NewProjectInitializeGit = true;
 		std::string m_CreateError;
 		// Re-discovered each time the create dialog opens so new template folders show up without a restart.

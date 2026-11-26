@@ -1,4 +1,5 @@
 #include "pch.hpp"
+#include "Scene/ComponentAccess.hpp"
 #include "Scene/ComponentRegistry.hpp"
 #include "Scene/SceneManager.hpp"
 
@@ -98,6 +99,13 @@ namespace Funke {
         if (stored.typeIdU32 != 0 && stored.typeIdU32 < m_byTypeId.size()) {
             m_byTypeId[stored.typeIdU32] = &stored;
         }
+        ++m_generation;
+    }
+
+    void ComponentRegistry::SetDynamicProperties(uint32_t typeId, std::vector<PropertyDescriptor> properties) {
+        const auto found = m_dynamicMap.find(typeId);
+        if (found == m_dynamicMap.end()) throw std::invalid_argument("Unknown dynamic component");
+        found->second.properties = std::move(properties);
         ++m_generation;
     }
 
@@ -308,7 +316,18 @@ namespace Funke {
     }
 
     void ComponentRegistry::UnregisterAllDynamic() {
-        for (auto& [typeIdU32, info] : m_dynamicMap) {
+        UnregisterDynamic(false);
+    }
+
+    void ComponentRegistry::UnregisterManagedDynamic() {
+        UnregisterDynamic(true);
+    }
+
+    void ComponentRegistry::UnregisterDynamic(bool managedOnly) {
+        ComponentAccess::RequireNoBorrows();
+        std::erase_if(m_dynamicMap, [&](const auto& entry) {
+            const auto& [typeIdU32, info] = entry;
+            if (managedOnly && !info.serializedName.starts_with("type:")) return false;
             if (info.serializedNameHash != 0) {
                 const auto it = m_hashIndex.find(info.serializedNameHash);
                 if (it != m_hashIndex.end() && it->second == &info) {
@@ -318,9 +337,9 @@ namespace Funke {
             if (typeIdU32 < m_byTypeId.size()) {
                 m_byTypeId[typeIdU32] = nullptr;
             }
-        }
-        m_dynamicMap.clear();
-        m_dynamicStorages.clear();
+            m_dynamicStorages.erase(typeIdU32);
+            return true;
+        });
         ++m_generation;
     }
 
@@ -469,6 +488,29 @@ namespace Funke {
     bool ComponentRegistry::AddWithDependencies(const Entity& entity, const ComponentInfo& info) const {
         if (!entity.IsValid()) return false;
         const auto* registry = entity.GetRegistry();
+        if (info.dependsOn.empty() && GetByTypeId(info.typeIdU32) == &info) {
+            if (!info.IsModuleActive() || !info.add || !info.has) return false;
+            const ComponentInfo* conflict = nullptr;
+            // Leaf additions need no dependency graph or snapshot of every attached component.
+            // Inspect present components before comparing RTTI/conflict lists; most registered
+            // types are absent. Both directions include edits without a generation bump.
+            ForEachComponentInfo([&](auto, const ComponentInfo& candidate) {
+                if (conflict || !candidate.has) return;
+                const auto* storage = registry->storage(candidate.storageHash);
+                if (((storage && storage->contains(entity.GetHandle()))
+                    || (candidate.dynamicStorage && candidate.dynamicStorage->Contains(*registry, entity.GetHandle())))
+                    && TypesConflict(info.typeId, candidate.typeId)) conflict = &candidate;
+            });
+            if (conflict) {
+                FNK_CORE_WARN_TAG("ComponentRegistry", "Component dependency conflict: {} / {}", info.displayName, conflict->displayName);
+                return false;
+            }
+            const uint32_t typeId = info.typeIdU32;
+            std::unordered_set<std::type_index> visited;
+            if (!AddWithDependenciesImpl(entity, info, visited, /*isRoot=*/true)) return false;
+            const auto* current = GetByTypeId(typeId);
+            return entity.IsValid() && current && current->has && HasAddedComponent(entity, *current);
+        }
         std::vector<const ComponentInfo*> existing;
         ForEachComponentInfo([&](auto, const ComponentInfo& candidate) {
             if (!candidate.has) return;

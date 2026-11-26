@@ -1,0 +1,74 @@
+import System
+namespace Funke;
+
+public class EditorIgnoreAttribute : Attribute {}
+public class EditorReadOnlyAttribute : Attribute {}
+public class HideFromEditorAttribute : Attribute {}
+public class ResetOnPlayAttribute : Attribute {}
+
+public class ClampValueAttribute : Attribute {
+private:
+    float min;
+    float max;
+public:
+    ClampValueAttribute(float min, float max) : min(min), max(max) {}
+    float Min => min;
+    float Max => max;
+}
+
+public class CreateDataAssetAttribute : Attribute {
+private:
+    string menuPath;
+public:
+    CreateDataAssetAttribute(string menuPath = "") : menuPath(menuPath) {}
+    string MenuPath => menuPath;
+}
+
+public class HeaderAttribute : Attribute {
+private:
+    string content;
+    int size;
+public:
+    HeaderAttribute(string content = "", int size = 5) : content(content), size(size) {}
+    string Content => content;
+    int Size => size;
+}
+
+public class ShowInEditorAttribute : Attribute {
+private:
+    string displayName;
+    bool readOnly;
+public:
+    ShowInEditorAttribute(string displayName = "", bool readOnly = false) : displayName(displayName), readOnly(readOnly) {}
+    string DisplayName => displayName;
+    bool ReadOnly => readOnly;
+}
+
+public class SpaceAttribute : Attribute {
+private:
+    float height;
+public:
+    SpaceAttribute(float height = 8.0f) : height(height) {}
+    float Height => height;
+}
+
+public class ToolTipAttribute : Attribute {
+private:
+    string text;
+public:
+    ToolTipAttribute(string text) : text(text) {}
+    string Text => text;
+}
+
+public class EnabledIfAttribute : Attribute {
+private:
+    string fieldName;
+    string? expectedValue;
+public:
+    EnabledIfAttribute(string name) : fieldName(name) {}
+    EnabledIfAttribute(string name, string value) : fieldName(name), expectedValue(value) {}
+    EnabledIfAttribute(string name, bool value) : fieldName(name), expectedValue(value ? "true" : "false") {}
+    EnabledIfAttribute(string name, int value) : fieldName(name), expectedValue((string)value) {}
+    string FieldName => fieldName;
+    string? ExpectedValue => expectedValue;
+}

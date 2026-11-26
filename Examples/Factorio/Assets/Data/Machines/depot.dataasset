@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "type": "MachineDefinition",
+  "fields": {
+    "Id": "depot",
+    "DisplayName": "Storage chest",
+    "Description": "Stores up to 400 items. Load and unload using inserters.",
+    "Kind": "4",
+    "CycleSeconds": "1",
+    "Prefab": "prefab:8961876478654112810",
+    "Icon": "3799167722807270014",
+    "SpriteName": "crate",
+    "BuildingItem": "8395812498524052880",
+    "ConnectionTexture": "0",
+    "Recipes": ""
+  }
+}

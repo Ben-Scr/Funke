@@ -1,0 +1,14 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public class DirectionalLight : Component {
+public:
+    protected override ulong FkType() { return 13ul; }
+    Color Color { get { return FunkeApiTypes.DecodeColor(FkDirectionalLight_GetColor(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkDirectionalLight_SetColor(ID, value.LowBits()); } }
+    float Intensity { get { return Reinterpret<float>((uint)FkDirectionalLight_GetIntensity(ID, 0ul)); } set { FkDirectionalLight_SetIntensity(ID, (ulong)Reinterpret<uint>(value)); } }
+    Color Ambient { get { return FunkeApiTypes.DecodeColor(FkDirectionalLight_GetAmbient(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkDirectionalLight_SetAmbient(ID, value.LowBits()); } }
+    bool CastShadows { get { return (FkDirectionalLight_GetCastShadows(ID, 0ul) != 0ul); } set { FkDirectionalLight_SetCastShadows(ID, (value ? 1ul : 0ul)); } }
+}

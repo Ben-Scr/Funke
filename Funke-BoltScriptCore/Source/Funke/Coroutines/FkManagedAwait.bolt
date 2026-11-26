@@ -1,0 +1,11 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public class FkManagedAwait {
+public:
+    ulong Owner;
+    System.Func<bool,bool>? Step;
+}

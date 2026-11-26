@@ -68,6 +68,7 @@ namespace Funke::PlatformPackages {
 		info.Kind = ReadStringField(content, "kind");
 		info.Description = ReadStringField(content, "description");
 		info.Hosts = ReadStringField(content, "hosts");
+		info.BoltAot = ReadStringField(content, "boltAot") == "1";
 		info.Directory = packageDirectory;
 		if (info.Name.empty() || info.Version.empty()) return std::nullopt;
 		if (info.Kind != "platform" && info.Kind != "build-component") return std::nullopt;

@@ -7,6 +7,7 @@
 #include "Localization/GameLocalization.hpp"
 #include "Profiling/Profiler.hpp"
 #include "Scene/Scene.hpp"
+#include "Gui/WidgetLocalization.hpp"
 
 namespace Funke {
 
@@ -25,9 +26,16 @@ namespace Funke {
 	void LocalizedTextSystem::OnPreRender(Scene& scene) {
 		const bool playing = Application::GetIsPlaying();
 		const bool preview = !playing && !GameLocalization::GetPreviewLanguage().empty();
+		const auto widgetTexts = WidgetLocalization::Collect(scene.GetRegistry(), playing);
 		for (auto [entity, text] : scene.GetRegistry().view<TextRendererComponent>().each()) {
 			const auto* localized = scene.GetRegistry().try_get<LocalizedTextComponent>(entity);
-			if (preview && localized && !localized->Key.empty()) {
+			if (auto widget = widgetTexts.find(entity); widget != widgetTexts.end()) {
+				if (!text.PreviewText || *text.PreviewText != widget->second) {
+					text.PreviewText = std::string(widget->second);
+					scene.MarkUIDirty();
+				}
+			}
+			else if (preview && localized && !localized->Key.empty()) {
 				const std::string& translated = GameLocalization::GetPreview(localized->Key);
 				if (!text.PreviewText || *text.PreviewText != translated) {
 					text.PreviewText = translated;

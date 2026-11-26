@@ -51,6 +51,7 @@ def _bootstrap_sdk_path(engine_root: Path | None) -> None:
 
 _bootstrap_sdk_path(_engine_root_from_argv())
 
+from funke_platform_sdk.bolt_aot import prepare_bolt
 from funke_platform_sdk import (  # noqa: E402
     BuildRequest, BuilderError, emit_log, emit_progress, find_cmake, find_ninja, platform_cache,
     prepare_native_packages, run, run_builder,
@@ -120,6 +121,7 @@ def build(request: BuildRequest) -> Path:
     work = platform_cache("iOS", "work", hashlib.sha256(str(request.project_root.resolve()).encode()).hexdigest()[:10],
                           request.configuration + "-" + request.modules_key)
     set_log_file(work / "build.log")
+    bolt_args = prepare_bolt(request, work / "bolt", "ios-arm64")
 
     ninja = find_ninja()
     if not ninja:
@@ -184,6 +186,7 @@ def build(request: BuildRequest) -> Path:
         f"-DFUNKE_CONFIGURATION={request.configuration}",
         f"-DFUNKE_ENTITY_BITS={request.entity_bits}",
         *request.cmake_module_args(),
+        *bolt_args,
         "-DFUNKE_IOS_ORIENTATIONS=" + "".join(
             f"<string>{o}</string>" for o in IOS_INTERFACE_ORIENTATIONS[project_orientation(request.content_dir)]),
     ]

@@ -162,6 +162,25 @@ public unsafe sealed class JobDispatchTests : IDisposable
         Assert.Empty(s_Entries);
     }
 
+    [Fact]
+    public void PlaybackWaitsForProducerBeforeInspectingItsCommands()
+    {
+        using var commands = new Funke.EntityCommandBuffer();
+        bool completed = false;
+        JobHandle producer = Job.Schedule(() => completed = true);
+        Assert.Equal(0, commands.Playback(producer));
+        Assert.True(completed);
+        Assert.Empty(s_Entries);
+    }
+
+    [Fact]
+    public void PlaybackDoesNotProceedAfterProducerFailure()
+    {
+        using var commands = new Funke.EntityCommandBuffer();
+        JobHandle producer = Job.Schedule(new FailingJob("producer failed"));
+        Assert.Equal("producer failed", Assert.Throws<InvalidOperationException>(() => commands.Playback(producer)).Message);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

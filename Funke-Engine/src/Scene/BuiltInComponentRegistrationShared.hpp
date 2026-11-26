@@ -13,6 +13,7 @@
 #include "Scene/ComponentRegistry.hpp"
 #include "Scene/Scene.hpp"
 #include "Serialization/Json.hpp"
+#include "Serialization/EntityReferenceSerialization.hpp"
 
 #include <cstdint>
 #include <string>
@@ -22,6 +23,7 @@ namespace Funke {
 }
 
 namespace Funke::BuiltInComponentRegistrationInternal {
+	void RegisterLocalizedUI(ComponentRegistry& registry);
 
 	// Tags everything registered while alive with an engine feature module (ComponentInfo::engineModule).
 	class ModuleRegistrationScope {
@@ -50,6 +52,7 @@ namespace Funke::BuiltInComponentRegistrationInternal {
 	// Adds serialization to components the slices registered; assigns no type ids.
 	void Attach2DSerialization(ComponentRegistry& registry);
 	void Register3D(ComponentRegistry& registry);
+	void RegisterCameraRig(ComponentRegistry& registry);
 	void RegisterPhysics3D(ComponentRegistry& registry);
 	void RegisterParticles3D(ComponentRegistry& registry);
 	void RegisterAnimation(ComponentRegistry& registry);
@@ -105,7 +108,7 @@ namespace Funke::BuiltInComponentRegistrationInternal {
 				id = s->GetEntityPersistentID(h);
 			}
 		}
-		return UIUuidToJson(UUID(id));
+		return UIUuidToJson(UUID(Detail::MapWrittenEntityReference(id)));
 	}
 	inline void UIEntityHandleFromJson(Entity& owner, const Json::Value& v, EntityHandle& outRef) {
 		const UUID id = UIUuidFromJson(v, UUID(0));
@@ -144,12 +147,20 @@ namespace Funke::BuiltInComponentRegistrationInternal {
 		Json::Value array = Json::Value::MakeArray();
 		for (const InspectorEventBinding& b : list.Bindings) {
 			Json::Value row = Json::Value::MakeObject();
-			row.AddMember("entity",  UIUuidToJson(UUID(b.TargetEntityUUID)));
+			row.AddMember("entity",  UIUuidToJson(UUID(Detail::MapWrittenEntityReference(b.TargetEntityUUID))));
 			row.AddMember("class",   Json::Value(b.ScriptClassName));
 			row.AddMember("method",  Json::Value(b.MethodName));
 			row.AddMember("enabled", Json::Value(b.Enabled));
 			row.AddMember("argKind", Json::Value(static_cast<int>(b.ArgumentKind)));
-			row.AddMember("argValue", Json::Value(b.ArgumentValue));
+			std::string argument = b.ArgumentValue;
+			if (b.ArgumentKind == InspectorEventArgKind::EntityRef && !argument.empty()) {
+				try {
+					std::size_t end = 0;
+					const uint64_t id = std::stoull(argument, &end);
+					if (end == argument.size()) argument = std::to_string(Detail::MapWrittenEntityReference(id));
+				} catch (...) {}
+			}
+			row.AddMember("argValue", Json::Value(argument));
 			array.Append(std::move(row));
 		}
 		return array;

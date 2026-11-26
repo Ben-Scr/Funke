@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Gui/EditorTheme.hpp"
+#include "Gui/GrabCursor.hpp"
 #include <imgui.h>
 #include <algorithm>
 #include <cmath>
@@ -22,8 +23,20 @@ namespace Funke::ReorderUI {
 				ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(center.x + x * offset, center.y + y * offset), radius, color);
 			}
 		}
-		if (hovered || active) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+		if (hovered || active) GrabCursor::Request(active);
 		if (hovered && !active) ImGui::SetTooltip("Drag to reorder");
+	}
+
+	// Apply after all panels so target widgets cannot replace the drag cursor.
+	// The payload also keeps this working when the source handle scrolls out of view.
+	inline void ApplyDragCursor() {
+		const ImGuiPayload* payload = ImGui::GetDragDropPayload();
+		if (payload && ImGui::IsMouseDown(ImGuiMouseButton_Left)
+			&& (payload->IsDataType("SCENE_LIST_ITEM")
+				|| payload->IsDataType("COMPONENT_REF")
+				|| payload->IsDataType("LIST_ITEM_REORDER"))) {
+			GrabCursor::Request(true);
+		}
 	}
 
 	inline void DrawInsertionMarker(float left, float right, float y) {

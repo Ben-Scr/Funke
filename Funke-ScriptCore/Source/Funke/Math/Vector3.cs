@@ -51,6 +51,131 @@ public struct Vector3 : IEquatable<Vector3>, ISpanFormattable
 
     public static float Distance(Vector3 a, Vector3 b) => (a - b).Length();
 
+    public static float DistanceSquared(Vector3 a, Vector3 b) => (a - b).LengthSquared();
+    public static Vector3 ClosestPointOnSegment(Vector3 point, Vector3 start, Vector3 end)
+    {
+        ValidateFinite(point, nameof(point));
+        ValidateFinite(start, nameof(start));
+        ValidateFinite(end, nameof(end));
+        double x = (double)end.X - start.X, y = (double)end.Y - start.Y, z = (double)end.Z - start.Z;
+        double lengthSquared = x * x + y * y + z * z;
+        if (lengthSquared == 0) return start;
+        double dot = ((double)point.X - start.X) * x + ((double)point.Y - start.Y) * y + ((double)point.Z - start.Z) * z;
+        double t = Math.Clamp(dot / lengthSquared, 0, 1);
+        return new((float)(start.X + t * x), (float)(start.Y + t * y), (float)(start.Z + t * z));
+    }
+    public static Vector3 LerpUnclamped(Vector3 a, Vector3 b, float t) =>
+        new(float.Lerp(a.X, b.X, t), float.Lerp(a.Y, b.Y, t), float.Lerp(a.Z, b.Z, t));
+
+    public static bool TryNormalize(Vector3 input, out Vector3 result)
+    {
+        double length = Math.Sqrt((double)input.X * input.X + (double)input.Y * input.Y + (double)input.Z * input.Z);
+        if (length > 0 && double.IsFinite(length))
+        {
+            result = new((float)(input.X / length), (float)(input.Y / length), (float)(input.Z / length));
+            return true;
+        }
+        result = Zero;
+        return false;
+    }
+
+    public static Vector3 Project(Vector3 vector, Vector3 normal)
+    {
+        ValidateFinite(vector, nameof(vector));
+        ValidateFinite(normal, nameof(normal));
+        if (!TryNormalize(normal, out normal)) return Zero;
+        double dot = (double)vector.X * normal.X + (double)vector.Y * normal.Y + (double)vector.Z * normal.Z;
+        return new((float)(normal.X * dot), (float)(normal.Y * dot), (float)(normal.Z * dot));
+    }
+
+    public static Vector3 ProjectOnPlane(Vector3 vector, Vector3 normal) => vector - Project(vector, normal);
+    public static Vector3 Reflect(Vector3 vector, Vector3 normal) => vector - 2 * Project(vector, normal);
+
+    public static float Angle(Vector3 from, Vector3 to)
+    {
+        if (!TryNormalize(from, out from) || !TryNormalize(to, out to)) return 0;
+        return MathF.Atan2(Cross(from, to).Length(), Dot(from, to)) * Mathf.Rad2Deg;
+    }
+
+    public static float SignedAngle(Vector3 from, Vector3 to, Vector3 axis)
+    {
+        if (!TryNormalize(axis, out axis) || !TryNormalize(from, out from) || !TryNormalize(to, out to)) return 0;
+        return Dot(axis, Cross(from, to)) < 0 ? -Angle(from, to) : Angle(from, to);
+    }
+
+    public static Vector3 Damp(Vector3 current, Vector3 target, float rate, float deltaTime) =>
+        LerpUnclamped(current, target, Mathf.DampingFactor(rate, deltaTime));
+
+    /// <summary>Moves at most maxDelta world units without overshooting; maxDelta must be finite and nonnegative.</summary>
+    public static Vector3 MoveTowards(Vector3 current, Vector3 target, float maxDelta)
+    {
+        ValidateFinite(current, nameof(current));
+        ValidateFinite(target, nameof(target));
+        if (!float.IsFinite(maxDelta) || maxDelta < 0) throw new ArgumentOutOfRangeException(nameof(maxDelta));
+        double x = (double)target.X - current.X, y = (double)target.Y - current.Y, z = (double)target.Z - current.Z;
+        double distance = Math.Sqrt(x * x + y * y + z * z);
+        if (distance <= maxDelta) return target;
+        double scale = maxDelta / distance;
+        return new((float)(current.X + x * scale), (float)(current.Y + y * scale), (float)(current.Z + z * scale));
+    }
+
+    /// <summary>Preserves direction and shorter vectors; maxLength must be finite and nonnegative.</summary>
+    public static Vector3 ClampMagnitude(Vector3 vector, float maxLength)
+    {
+        ValidateFinite(vector, nameof(vector));
+        if (!float.IsFinite(maxLength) || maxLength < 0) throw new ArgumentOutOfRangeException(nameof(maxLength));
+        double length = Math.Sqrt((double)vector.X * vector.X + (double)vector.Y * vector.Y + (double)vector.Z * vector.Z);
+        if (length <= maxLength) return vector;
+        double scale = maxLength / length;
+        return new((float)(vector.X * scale), (float)(vector.Y * scale), (float)(vector.Z * scale));
+    }
+
+    /// <summary>Critically damped motion in seconds; velocity persists between calls, deltaTime 0 preserves state, maxSpeed limits the tracking offset.</summary>
+    public static Vector3 SmoothDamp(Vector3 current, Vector3 target, ref Vector3 velocity,
+        float smoothTime, float deltaTime, float maxSpeed = float.PositiveInfinity)
+    {
+        ValidateFinite(current, nameof(current));
+        ValidateFinite(target, nameof(target));
+        ValidateFinite(velocity, nameof(velocity));
+        if (!float.IsFinite(smoothTime) || smoothTime < 0) throw new ArgumentOutOfRangeException(nameof(smoothTime));
+        if (!float.IsFinite(deltaTime) || deltaTime < 0) throw new ArgumentOutOfRangeException(nameof(deltaTime));
+        if (float.IsNaN(maxSpeed) || maxSpeed < 0) throw new ArgumentOutOfRangeException(nameof(maxSpeed));
+        if (deltaTime == 0) return current;
+
+        double time = Math.Max(smoothTime, 0.0001), omega = 2 / time;
+        double decay = Math.Exp(-omega * deltaTime);
+        double x = (double)current.X - target.X, y = (double)current.Y - target.Y, z = (double)current.Z - target.Z;
+        double length = Math.Sqrt(x * x + y * y + z * z), limit = maxSpeed * time;
+        if (length > limit) { double scale = limit / length; x *= scale; y *= scale; z *= scale; }
+        double tx = (velocity.X + omega * x) * deltaTime;
+        double ty = (velocity.Y + omega * y) * deltaTime;
+        double tz = (velocity.Z + omega * z) * deltaTime;
+        double rx = current.X - x + (x + tx) * decay;
+        double ry = current.Y - y + (y + ty) * decay;
+        double rz = current.Z - z + (z + tz) * decay;
+        Vector3 nextVelocity = new((float)((velocity.X - omega * tx) * decay),
+            (float)((velocity.Y - omega * ty) * decay), (float)((velocity.Z - omega * tz) * decay));
+        Vector3 result = new((float)rx, (float)ry, (float)rz);
+        if (((double)target.X - current.X) * (rx - target.X)
+            + ((double)target.Y - current.Y) * (ry - target.Y)
+            + ((double)target.Z - current.Z) * (rz - target.Z) > 0)
+        {
+            result = target;
+            nextVelocity = Zero;
+        }
+        ValidateFinite(result, nameof(result));
+        ValidateFinite(nextVelocity, nameof(velocity));
+        velocity = nextVelocity;
+        return result;
+    }
+
+    internal static bool IsFinite(Vector3 value) => float.IsFinite(value.X) && float.IsFinite(value.Y) && float.IsFinite(value.Z);
+
+    internal static void ValidateFinite(Vector3 value, string name)
+    {
+        if (!IsFinite(value)) throw new ArgumentOutOfRangeException(name);
+    }
+
     public static Vector3 Lerp(Vector3 a, Vector3 b, float t)
     {
         t = Mathf.Clamp01(t);

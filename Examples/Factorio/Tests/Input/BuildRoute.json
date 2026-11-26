@@ -1,0 +1,61 @@
+{
+  "fixedStep": 60,
+  "steps": [
+    {
+      "at": ".5s",
+      "command": "factory.assert fresh; factory.give belt 10"
+    },
+    {
+      "at": ".7s",
+      "key": "2"
+    },
+    {
+      "at": "1s",
+      "mouse": [
+        0.5,
+        0.286
+      ],
+      "button": "left",
+      "action": "down"
+    },
+    {
+      "at": "1.6s",
+      "mouse": [
+        0.5804,
+        0.286
+      ]
+    },
+    {
+      "at": "1.9s",
+      "mouse": [
+        0.5804,
+        0.2143
+      ]
+    },
+    {
+      "at": "2.2s",
+      "mouse": [
+        0.5804,
+        0.2143
+      ],
+      "button": "left",
+      "action": "up"
+    },
+    {
+      "at": "2.5s",
+      "command": "factory.assertcell 0 3 0; factory.assertcell 1 3 0; factory.assertcell 2 3 3; factory.assertcell 2 4 3"
+    },
+    {
+      "at": "2.8s",
+      "key": "Q"
+    },
+    {
+      "at": "3s",
+      "screenshot": "dragged-belt-corner"
+    },
+    {
+      "at": "3.2s",
+      "quit": true
+    }
+  ]
+}

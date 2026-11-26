@@ -1,0 +1,18 @@
+import Funke
+namespace Funke.UI;
+
+public class RectTransform : Component {
+public:
+    protected override ulong FkType() { return 31ul; }
+    Vector2 AnchorMin { get { return Vector2.FromBits(FkRectTransform_GetAnchorMin(ID, 0ul)); } set { FkRectTransform_SetAnchorMin(ID, value.Bits()); } }
+    Vector2 AnchorMax { get { return Vector2.FromBits(FkRectTransform_GetAnchorMax(ID, 0ul)); } set { FkRectTransform_SetAnchorMax(ID, value.Bits()); } }
+    Vector2 Pivot { get { return Vector2.FromBits(FkRectTransform_GetPivot(ID, 0ul)); } set { FkRectTransform_SetPivot(ID, value.Bits()); } }
+    Vector2 AnchoredPosition { get { return Vector2.FromBits(FkRectTransform_GetAnchoredPosition(ID, 0ul)); } set { FkRectTransform_SetAnchoredPosition(ID, value.Bits()); } }
+    Vector2 Position { get { return Vector2.FromBits(FkRectTransform_GetScreenPosition(ID, 0ul)); } set { FkRectTransform_SetScreenPosition(ID, value.Bits()); } }
+    Vector2 SizeDelta { get { return Vector2.FromBits(FkRectTransform_GetSizeDelta(ID, 0ul)); } set { FkRectTransform_SetSizeDelta(ID, value.Bits()); } }
+    Vector2 Scale { get { return Vector2.FromBits(FkRectTransform_GetScale(ID, 0ul)); } set { FkRectTransform_SetScale(ID, value.Bits()); } }
+    Vector2 LocalScale { get { return Vector2.FromBits(FkRectTransform_GetLocalScale(ID, 0ul)); } set { FkRectTransform_SetLocalScale(ID, value.Bits()); } }
+    Vector2 Size => Vector2.FromBits(FkRectTransform_GetResolvedSize(ID, 0ul));
+    float Rotation { get { return Reinterpret<float>((uint)FkRectTransform_GetRotation(ID, 0ul)) * Mathf.Rad2Deg; } set { FkRectTransform_SetRotation(ID, (ulong)Reinterpret<uint>(value * Mathf.Deg2Rad)); } }
+    float LocalRotation { get { return Reinterpret<float>((uint)FkRectTransform_GetLocalRotation(ID, 0ul)) * Mathf.Rad2Deg; } set { FkRectTransform_SetLocalRotation(ID, (ulong)Reinterpret<uint>(value * Mathf.Deg2Rad)); } }
+}

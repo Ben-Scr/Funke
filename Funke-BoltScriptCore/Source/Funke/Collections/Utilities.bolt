@@ -1,0 +1,38 @@
+import System
+import System.Diagnostics
+namespace Funke.Collections;
+
+public struct Range<T> {
+private:
+    T minimum, maximum;
+public:
+    Range(T min, T max) {
+        if (min > max) throw System.ArgumentOutOfRangeException("min");
+        minimum = min; maximum = max;
+    }
+    T Min { get { return minimum; } set { if (value > maximum) throw System.ArgumentOutOfRangeException("Min"); minimum = value; } }
+    T Max { get { return maximum; } set { if (value < minimum) throw System.ArgumentOutOfRangeException("Max"); maximum = value; } }
+    T Clamp(T value) { return value < minimum ? minimum : (value > maximum ? maximum : value); }
+    bool OutOfBounds(T value) { return value < minimum || value > maximum; }
+    bool OutOfBounds(T[] values) {
+        for (int i = 0; i < values.Length; i++) if (!OutOfBounds(values[i])) return false;
+        return true;
+    }
+    string ToString() { return "Range(" + (string)minimum + ", " + (string)maximum + ")"; }
+}
+
+public struct PerformanceTimer {
+private:
+    System.Diagnostics.Stopwatch watch;
+public:
+    bool IsRunning => watch.IsRunning;
+    double ElapsedSeconds => watch.ElapsedSeconds;
+    float ElapsedSecondsF => (float)watch.ElapsedSeconds;
+    long ElapsedRawTicks => watch.ElapsedTicks;
+    void Start() { watch.Unpause(); }
+    void Stop() { watch.Stop(); }
+    void Restart() { watch.Restart(); }
+    void Reset() { watch.Reset(); }
+    static PerformanceTimer StartNew() { PerformanceTimer result; result.Start(); return result; }
+}
+

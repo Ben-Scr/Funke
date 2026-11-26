@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "type": "RecipeDefinition",
+  "fields": {
+    "Id": "gear",
+    "Result": "1758807086289073383",
+    "Amount": "1",
+    "Seconds": "1",
+    "CreativeOnly": "false",
+    "Ingredients": "\n\\n2353410425120650349\\n2"
+  }
+}

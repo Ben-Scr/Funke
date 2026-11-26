@@ -8,6 +8,9 @@
 #include <future>
 #include <memory>
 #include "Jobs/JobSystem.hpp"
+#include "Project/FunkeProject.hpp"
+#include "Project/ProjectManager.hpp"
+#include "Physics3D/PhysicsWorld3D.hpp"
 #include "Memory/FrameArenas.hpp"
 #include "Serialization/Path.hpp"
 
@@ -16,6 +19,57 @@
 #include <string>
 
 using namespace Funke;
+
+TEST_CASE("Application applies project threading settings before starting jobs and physics") {
+	struct RestoreProject {
+		uint32_t Mask = JobSystem::GetParallelWorkloads();
+		std::unique_ptr<FunkeProject> Project = ProjectManager::GetCurrentProject()
+			? std::make_unique<FunkeProject>(*ProjectManager::GetCurrentProject()) : nullptr;
+		~RestoreProject() {
+			ProjectManager::SetCurrentProject(std::move(Project));
+			JobSystem::SetParallelWorkloads(Mask);
+		}
+	} restore;
+	class ThreadingApplication final : public Application {
+	public:
+		bool EnableJobs = true;
+		int ExpectedWorkers = 0;
+		ThreadingSettings ExpectedSettings;
+		ApplicationConfig GetConfiguration() const override {
+			auto config = ApplicationConfig::Minimal();
+			config.EnableWindow = false;
+			config.EnableTextureManager = false;
+			config.EnableJobSystem = EnableJobs;
+			config.JobSystemWorkerCount = 3;
+			return config;
+		}
+		void Start() override {
+			CHECK(GetEffectiveThreadingSettings() == ExpectedSettings);
+			CHECK(JobSystem::GetWorkerCount() == ExpectedWorkers);
+			CHECK(JobSystem::GetParallelWorkloads() == ExpectedSettings.GetParallelWorkloads());
+			CHECK_FALSE(JobSystem::CanParallelize(ParallelWorkload::Particles));
+			PhysicsWorld3D world;
+			world.Step(1.0f / 60.0f);
+			Application::Quit();
+		}
+	};
+	for (int count : { 0, 2 }) {
+		for (bool enableJobs : { false, true }) {
+			auto project = std::make_unique<FunkeProject>();
+			project->Threading.WorkerCount = count;
+			project->Threading.Physics3DWorkerCount = count;
+			project->Threading.ParallelParticles = false;
+			ThreadingApplication application;
+			application.EnableJobs = enableJobs;
+			application.ExpectedWorkers = enableJobs ? count : 0;
+			application.ExpectedSettings = project->Threading;
+			application.ExpectedSettings.WorkerCount = application.ExpectedWorkers;
+			ProjectManager::SetCurrentProject(std::move(project));
+			CHECK(application.Run() == 0);
+			CHECK_FALSE(JobSystem::IsInitialized());
+		}
+	}
+}
 
 namespace {
 	class LiveResizeTestApplication final : public Application {

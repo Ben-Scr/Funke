@@ -1,0 +1,43 @@
+import System
+import System.Threading
+import System.Threading.Tasks
+namespace Funke.Jobs;
+
+public class ParallelReducer<T=int> {
+private:
+    System.Memory.Shared<FkReductionState<T>> state;
+public:
+    ParallelReducer() {}
+    ParallelReducer(T identity,System.Func<T,T,T> combine) {
+        state=System.Memory.Shared<FkReductionState<T>>.Create();
+        state.Get().Identity=identity;
+        state.Get().Combine=combine;
+    }
+    void Add(T value) {
+        var cell=state.Get().Current();
+        cell.Get().Value=state.Get().Combine.Value.Invoke(cell.Get().Value,value);
+    }
+    T Result() {
+        T result=state.Get().Identity;
+        for(int i=0;i<state.Get().Cells.Count;i++){
+            var cell=state.Get().Cells.ItemAt(i);
+            result=state.Get().Combine.Value.Invoke(result,cell.Get().Value);
+        }
+        return result;
+    }
+    void Reset(){
+        for(int i=0;i<state.Get().Cells.Count;i++){
+            var cell=state.Get().Cells.ItemAt(i);
+            cell.Get().Value=state.Get().Identity;
+        }
+    }
+    void Dispose(){state.Get().Local.Dispose();}
+    static ParallelReducer<int> SumInt() {return ParallelReducer<int>(0,(int x,int y)=>x+y);}
+    static ParallelReducer<long> SumLong() {return ParallelReducer<long>(0l,(long x,long y)=>x+y);}
+    static ParallelReducer<float> SumFloat() {return ParallelReducer<float>(0.0f,(float x,float y)=>x+y);}
+    static ParallelReducer<double> SumDouble() {return ParallelReducer<double>(0.0,(double x,double y)=>x+y);}
+    static ParallelReducer<int> MinInt() {return ParallelReducer<int>(int.MaxValue,(int x,int y)=>x<y?x:y);}
+    static ParallelReducer<int> MaxInt() {return ParallelReducer<int>(int.MinValue,(int x,int y)=>x>y?x:y);}
+    static ParallelReducer<float> MinFloat() {return ParallelReducer<float>(Reinterpret<float>(2139095040u),(float x,float y)=>x<y?x:y);}
+    static ParallelReducer<float> MaxFloat() {return ParallelReducer<float>(Reinterpret<float>(4286578688u),(float x,float y)=>x>y?x:y);}
+}

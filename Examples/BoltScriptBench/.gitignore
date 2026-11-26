@@ -1,0 +1,5 @@
+!Assets/**/*.meta
+FunkeAssets/
+Packages/
+Builds/
+.vscode/

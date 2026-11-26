@@ -1,0 +1,13 @@
+import System.Threading
+namespace Funke.Jobs;
+
+public static class JobQueryExtensions {
+public:
+    static JobHandle Schedule<T>(Funke.Scene scene, T job, CancellationToken cancellationToken = default) {
+        return scene.Schedule<T>(job, cancellationToken);
+    }
+
+    static JobHandle ScheduleParallel<T>(Funke.Scene scene, T job, int batchSize = 0, CancellationToken cancellationToken = default) {
+        return scene.ScheduleParallel<T>(job, batchSize, cancellationToken);
+    }
+}

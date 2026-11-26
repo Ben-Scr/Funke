@@ -1,0 +1,28 @@
+import Funke
+
+public class ReloadStateProbe : EntityScript, IHotReloadState {
+private:
+    int step;
+    int count;
+public:
+    public override void OnAwake() { step = 1; }
+    public override void OnEnable() { if (step == 1) step = 2; }
+    public override void OnStart() { if (step == 2) step = 3; count = 10; }
+    public override void OnUpdate() {
+        count++;
+        Transform2D.Position = Vector2(count,step);
+    }
+    void CaptureReloadState(ReloadState state) {
+        state.Set<int>("count",count);
+        state.Set<ulong>("id",Entity.ID);
+        state.Set<string>("label","hé🙂");
+    }
+    void RestoreReloadState(ReloadState state) {
+        ulong id; string label; int saved;
+        if (step == 3 && state.TryGet<int>("count",saved) && state.TryGet<ulong>("id",id) &&
+            id == Entity.ID && state.TryGet<string>("label",label) && label == "hé🙂") {
+            step = 4;
+            count = saved + 100;
+        }
+    }
+}

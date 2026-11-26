@@ -7,6 +7,7 @@ public sealed class FactorySimulation : EntityScript
     public float StepSeconds = 0.05f;
     private float accumulated;
     private readonly List<MachineNode> ordered = new();
+    private int revision = -1;
     public override void OnUpdate()
     {
         var session = FactorySession.Instance;
@@ -22,8 +23,12 @@ public sealed class FactorySimulation : EntityScript
     public void Advance(FactorySession session, float step)
     {
         if (!session.Running || step <= 0 || !float.IsFinite(step)) return;
-        ordered.Clear(); ordered.AddRange(session.Nodes.Values);
-        ordered.Sort((a, b) => a.GridY != b.GridY ? a.GridY.CompareTo(b.GridY) : a.GridX.CompareTo(b.GridX));
+        if (revision != session.Revision)
+        {
+            revision = session.Revision;
+            ordered.Clear(); ordered.AddRange(session.Nodes.Values);
+            ordered.Sort((a, b) => a.GridY != b.GridY ? a.GridY.CompareTo(b.GridY) : a.GridX.CompareTo(b.GridX));
+        }
         // Advance all machines before transfers, so new cargo cannot travel twice in one step.
         foreach (var node in ordered) node.Tick(step);
         foreach (var node in ordered)
@@ -31,6 +36,7 @@ public sealed class FactorySimulation : EntityScript
             if (!session.Running) break;
             node.Transfer();
         }
-        session.AdvanceClock(step);
+        session.Crafting?.Tick(step);
+        session.Elapsed += step;
     }
 }

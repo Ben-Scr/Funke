@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "type": "RecipeDefinition",
+  "fields": {
+    "Id": "assembler",
+    "Result": "2463213064408685797",
+    "Amount": "1",
+    "Seconds": "5",
+    "CreativeOnly": "false",
+    "Ingredients": "\n\\n2353410425120650349\\n10\n\\n1758807086289073383\\n5\n\\n5641443796209399924\\n3"
+  }
+}

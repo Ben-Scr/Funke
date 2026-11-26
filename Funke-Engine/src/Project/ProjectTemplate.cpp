@@ -118,7 +118,7 @@ namespace Funke {
 			}
 			// Per-user editor state of the source project; new projects open their startup scene.
 			settings.AddMember("lastOpenedScene", project.StartupScene);
-			std::erase_if(settings.GetObject(), [](const auto& member) { return member.first == "editorView3D"; });
+			std::erase_if(settings.GetMembers(), [](const auto& member) { return member.first == "editorView3D"; });
 			if (!File::WriteAllText(Path::ToUtf8(root / std::string(ProjectTemplates::k_ProjectSettingsFileName)),
 				Json::Stringify(settings, true))) {
 				outError = "Could not write the template project settings";

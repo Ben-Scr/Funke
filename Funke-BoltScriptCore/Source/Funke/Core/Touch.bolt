@@ -1,0 +1,15 @@
+namespace Funke;
+
+public struct Touch {
+private:
+    long id;
+    Vector2 position, startPosition;
+    TouchPhase phase;
+public:
+    Touch(long id, Vector2 position, Vector2 startPosition, TouchPhase phase)
+        : id(id), position(position), startPosition(startPosition), phase(phase) {}
+    long Id => id;
+    Vector2 Position => position;
+    Vector2 StartPosition => startPosition;
+    TouchPhase Phase => phase;
+}

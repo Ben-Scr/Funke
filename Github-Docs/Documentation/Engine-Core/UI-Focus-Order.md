@@ -47,7 +47,7 @@ projection decide the frontmost interactive hit. Component insertion order does
 not decide mouse focus. A non-focusable interactive overlay blocks pointer focus
 on elements behind it; clicking it clears the previous keyboard focus.
 
-Keyboard/gamepad traversal deliberately follows the shared `UIDrawOrder`
+Linear keyboard/gamepad traversal deliberately follows the shared `UIDrawOrder`
 hierarchy traversal, filtered by `Focusable` and `Interactable`. Child order is
 authored through the hierarchy; roots use the shared deterministic root ordering.
 Changing image/text `SortOrder` affects the visual/pointer stack, not the tab
@@ -74,3 +74,71 @@ under `artifacts/backlog-round8/`.
 
 These checks exercise engine hit-testing and injected touch events on Windows;
 they are not physical-device touch or mobile platform certification.
+
+
+## Spatial directional navigation
+
+Enable **Spatial Navigation** on a focusable Interactable in the Inspector to
+use its resolved rectangle for arrows, D-pad and stick navigation. Leave it off
+for the existing linear behavior. Tab/Shift+Tab always uses the authored linear
+order. All participating widgets normally enable the option; the currently
+focused widget chooses the mode for the next move.
+
+Candidates must be enabled, interactable and focusable, have a positive-size
+rectangle and a finite center, and belong to the same world-canvas coordinate
+space. A center clipped by an ancestor mask is excluded. This is a rectangle/
+center visibility rule, not texture-alpha or occlusion testing; it does not
+scroll an offscreen target into view. In scroll views, scroll first to expose
+additional candidates. The ordinary tab order remains unchanged.
+
+For the requested axis, only centers strictly ahead are candidates. The smallest
+`distanceSquared / forwardDistance` wins: this balances closeness and alignment.
+Equal scores retain the deterministic hierarchy traversal order. UI coordinates
+are Y-up. Simultaneous horizontal and vertical input chooses the vertical axis;
+opposite inputs on an axis cancel.
+
+**Navigation Left/Right/Up/Down** optionally references an explicit neighbour.
+An eligible reference overrides geometry. A missing, destroyed, disabled,
+self-referencing, clipped or cross-canvas neighbour falls back to geometry.
+These are persistent entity references, using the existing scene/prefab reference
+resolution rather than saved runtime handles.
+
+Without **Navigation Wrap**, reaching an edge keeps focus. With it enabled and
+no forward candidate, navigation chooses the closest opposite row/column and
+then its farthest opposite edge. It never falls back to an arbitrary next tab
+item. With no current focus, the existing first/last linear acquisition applies.
+
+Input fields consume their cursor arrows before navigation. Sliders consume their
+adjustment axis; circular sliders and open dropdowns retain their editing behavior.
+Tab still exits those controls. Enter/Space and gamepad activation are unchanged.
+
+The options default off in older scenes. Authoring is available through the
+Inspector and native InteractableComponent; no new managed binding-table entries
+are introduced by this feature.
+
+
+## Widget implementation boundary
+
+`UIEventSystem` owns mouse/finger capture, hover, pressed owners and text-action
+ownership. `InputFieldEditing` owns stateless UTF-8 insertion/deletion, selection,
+caret hit-testing, line geometry, horizontal/vertical scrolling and input text
+visuals. Its functions operate on the passed field/registry; they do not create
+a second focus or pointer owner. The source extraction retained the existing
+behavior and calls (28 functions, about 670 lines).
+
+The default scene schedule resolves layout before interaction. UIFocusSystem
+then chooses/clears keyboard/controller focus and produces activation flags.
+UIEventSystem uses the shared hit-test to update hover/capture, resolves widget
+activation, edits the focused text field and queues dispatch. Scrollbar enable
+changes and user event dispatch occur after the affected registry iteration.
+LocalizedTextSystem supplies display-only widget localization after UI events.
+The extracted editing module must not overwrite focus or activation decisions.
+
+Regression coverage includes hit-test overlap/masks, focus loss, touch ending,
+scroll passthrough, canvas order and a mixed label/dropdown/input fixture. This
+is headless/injected-input validation, not a claim of a new visual desktop or
+physical-touch-device acceptance.
+
+### Windows controller navigation acceptance
+
+The Windows Release Game View on 26 November 2026 used an SDL virtual controller. Three right D-pad presses moved focus from Left to Middle to Right and wrapped back to Left, although the entities were created in Left, Right, Middle order. Six native geometry, focus, masking and serialization tests passed (28 assertions) after the serialization fixture initialized its application and component registry.

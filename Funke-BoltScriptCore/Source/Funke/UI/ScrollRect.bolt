@@ -1,0 +1,42 @@
+import Funke
+namespace Funke.UI;
+
+public class ScrollRect : Component {
+public:
+    protected override ulong FkType() { return 35ul; }
+    bool Horizontal { get { return (FkScrollRect_GetHorizontal(ID, 0ul) != 0ul); } set { FkScrollRect_SetHorizontal(ID, (value ? 1ul : 0ul)); } }
+    bool Vertical { get { return (FkScrollRect_GetVertical(ID, 0ul) != 0ul); } set { FkScrollRect_SetVertical(ID, (value ? 1ul : 0ul)); } }
+    ScrollRectMovementType MovementType { get { return (ScrollRectMovementType)FkScrollRect_GetMovementType(ID, 0ul); } set { FkScrollRect_SetMovementType(ID, (ulong)value); } }
+    float Elasticity { get { return Reinterpret<float>((uint)FkScrollRect_GetElasticity(ID, 0ul)); } set { FkScrollRect_SetElasticity(ID, (ulong)Reinterpret<uint>(value)); } }
+    bool Inertia { get { return (FkScrollRect_GetInertia(ID, 0ul) != 0ul); } set { FkScrollRect_SetInertia(ID, (value ? 1ul : 0ul)); } }
+    float DecelerationRate { get { return Reinterpret<float>((uint)FkScrollRect_GetDecelerationRate(ID, 0ul)); } set { FkScrollRect_SetDecelerationRate(ID, (ulong)Reinterpret<uint>(value)); } }
+    float ScrollSensitivity { get { return Reinterpret<float>((uint)FkScrollRect_GetScrollSensitivity(ID, 0ul)); } set { FkScrollRect_SetScrollSensitivity(ID, (ulong)Reinterpret<uint>(value)); } }
+    ScrollbarVisibility HorizontalScrollbarVisibility { get { return (ScrollbarVisibility)FkScrollRect_GetHorizontalScrollbarVisibility(ID, 0ul); } set { FkScrollRect_SetHorizontalScrollbarVisibility(ID, (ulong)value); } }
+    ScrollbarVisibility VerticalScrollbarVisibility { get { return (ScrollbarVisibility)FkScrollRect_GetVerticalScrollbarVisibility(ID, 0ul); } set { FkScrollRect_SetVerticalScrollbarVisibility(ID, (ulong)value); } }
+    float HorizontalScrollbarSpacing { get { return Reinterpret<float>((uint)FkScrollRect_GetHorizontalScrollbarSpacing(ID, 0ul)); } set { FkScrollRect_SetHorizontalScrollbarSpacing(ID, (ulong)Reinterpret<uint>(value)); } }
+    float VerticalScrollbarSpacing { get { return Reinterpret<float>((uint)FkScrollRect_GetVerticalScrollbarSpacing(ID, 0ul)); } set { FkScrollRect_SetVerticalScrollbarSpacing(ID, (ulong)Reinterpret<uint>(value)); } }
+    Vector2 NormalizedPosition { get { return Vector2.FromBits(FkScrollRect_GetNormalizedPosition(ID, 0ul)); } set { FkScrollRect_SetNormalizedPosition(ID, value.Bits()); } }
+    bool ValueChangedThisFrame => (FkScrollRect_GetValueChangedThisFrame(ID, 0ul) != 0ul);
+    Funke.Entity? Content { get { return Funke.Entity.FromId(FkScrollRect_GetContent(ID, 0ul)); } set { ulong id = 0ul; if (value != null) id = value.Value.ID; FkScrollRect_SetContent(ID, id); } }
+    Funke.Entity? Viewport { get { return Funke.Entity.FromId(FkScrollRect_GetViewport(ID, 0ul)); } set { ulong id = 0ul; if (value != null) id = value.Value.ID; FkScrollRect_SetViewport(ID, id); } }
+    Funke.Entity? HorizontalScrollbar { get { return Funke.Entity.FromId(FkScrollRect_GetHorizontalScrollbar(ID, 0ul)); } set { ulong id = 0ul; if (value != null) id = value.Value.ID; FkScrollRect_SetHorizontalScrollbar(ID, id); } }
+    Funke.Entity? VerticalScrollbar { get { return Funke.Entity.FromId(FkScrollRect_GetVerticalScrollbar(ID, 0ul)); } set { ulong id = 0ul; if (value != null) id = value.Value.ID; FkScrollRect_SetVerticalScrollbar(ID, id); } }
+    void SetNormalizedPosition(Vector2 value, bool notifyEvent = true) {
+        Vector2 previous = NormalizedPosition;
+        NormalizedPosition = value;
+        FkScrollRect_MarkValueObserved(ID, 0ul);
+        Vector2 applied = NormalizedPosition;
+        if (notifyEvent && applied != previous) Events.FkChanged(applied);
+    }
+    ScrollRectEvents& Events { get { return FkUiStore<ScrollRect, ScrollRectEvents>.For(ID).Get(); } }
+    WidgetEvent<Vector2> ValueChanged {
+        get {
+            Shared<ScrollRectEvents> state = FkUiStore<ScrollRect, ScrollRectEvents>.For(ID);
+            WidgetEvent<Vector2> signal;
+            signal.FkAdd = (Action<Vector2> h) => { state.Get().ValueChanged += h; };
+            signal.FkRemove = (Action<Vector2> h) => { state.Get().ValueChanged -= h; };
+            return signal;
+        }
+        set {}
+    }
+}

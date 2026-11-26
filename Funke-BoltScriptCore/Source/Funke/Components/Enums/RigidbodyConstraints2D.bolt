@@ -1,0 +1,14 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public enum RigidbodyConstraints2D {
+    None            = 0,
+    FreezePositionX = 1 << 0,
+    FreezePositionY = 1 << 1,
+    FreezeRotation  = 1 << 2,
+    FreezePosition  = FreezePositionX | FreezePositionY,
+    FreezeAll       = FreezePosition  | FreezeRotation,
+}

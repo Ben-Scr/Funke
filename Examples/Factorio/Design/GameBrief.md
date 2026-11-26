@@ -1,15 +1,22 @@
-# Factorio — Rust & Steel
+# Rust & Steel - free exploration and factory building
 
-Selected direction: variant 1, Rust & Steel (13 November 2026).
+Selected art direction: Rust & Steel. Updated 13 November 2026 to replace the contract prototype with the user's requested open factory game.
 
-Windows desktop, 2D factory automation with a free construction camera. Build and rotate machines on a square grid. Connect iron drills, furnaces, assemblers and shipping depots using directional belts. Deliver 20 gears within eight minutes; completion and timeout offer a fresh start. After completion, continue in sandbox mode. Buildings refund their full construction cost when removed, so experimentation cannot consume the entire budget permanently.
+Windows desktop, 2D grid construction with a free camera. No forced goals, deadlines, score, winning or losing. Gather finite iron, copper and stone deposits, craft parts and buildings, place a factory and expand production.
 
-This is an independent small prototype, not feature parity with Factorio. No combat, electrical networks, fluid simulation, research tree, multiplayer or infinite terrain in this version. The original game's art is not included.
+New factory: empty inventory, normal material costs and timed queued crafting. Creative: exactly the same inventory and recipes, with instant, free crafting for every item. Building placement consumes the crafted item in both modes. The player can inspect and manually fill/empty machines.
 
-The opening scene authors four machines and iron/copper deposits. The player completes the conveyor connections and can rebuild or expand. Machines send directly into an adjacent compatible machine or belt; inserters are outside this slice. Copper is scenery reserved for expansion; iron is the active production resource.
+Content:
+- ItemDefinition: iron ore, stone, copper ore, iron plate, copper plate, gear, and six building items.
+- RecipeDefinition: result/count, time and ingredient list. Raw-resource recipes are creative-only; the ordinary mode gathers deposits. Plate recipes bootstrap personal crafting.
+- MachineDefinition: drill, conveyor, furnace, assembler, storage chest, inserter.
+- FactoryRules: catalogs, inventory slot limit, mining time, map bounds and colors.
+- ResourceDeposit: finite quantity per authored cell.
 
-Content: MachineDefinition (drill, belt, furnace, assembler, depot), ItemDefinition (iron ore, iron plate, gear), FactoryRules (budget, time, objective, grid bounds), ResourceDeposit (authored iron cells). Small C# scripts own simulation, construction, camera, saves, presentation and menu flow separately.
+Belts visually connect at exact tile boundaries; straight segments, bends and side merges update from neighbours. Single-item backpressure prevents loss. Inserters pick up behind and deliver ahead, including belt-to-machine and machine-to-chest transfers. Held cargo survives blocked or missing destinations. Mixed chests select a compatible ingredient.
 
-Tools/build_all.py owns initial scenes and prefabs. Data assets are create-if-missing so Inspector changes survive regeneration. All starting objects are scene-authored. Player-built machines and in-transit item visuals instantiate prefabs.
+Exploration is a finite 97 x 73 cell frontier with 88 authored resource cells. Walking characters, infinite terrain, research, combat, power, fuel, fluids, splitters, underground belts and two-lane belts are outside this version.
 
-Tests must exercise placement, rotation, deletion/refunds, UI input blocking, real production and delivery, saves, pause, completion, timeout and restart. Logs and in-engine screenshots are evidence; play feel remains a human judgment.
+All initial terrain, resource cells, UI and managers are scene-authored. New machines and cargo visuals instantiate prefabs. build_all.py and presentation.py own scenes, prefabs and structural/UI artwork. Original ImageGen textures are used unmodified. Existing Data Assets are migrated once from credits/contracts; subsequent regeneration preserves tuning.
+
+Tests cover gathering -> timed crafting -> placement -> machine production -> belt/inserter transport -> storage, plus creative mode, capacity/backpressure, saves, malformed snapshots, real input, UI blocking and pause. Human play feel is not established by automated tests.

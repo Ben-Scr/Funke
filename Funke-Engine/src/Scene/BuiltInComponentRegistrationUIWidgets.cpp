@@ -23,18 +23,39 @@ namespace Funke::BuiltInComponentRegistrationInternal {
 			// Opt-in keyboard / controller navigation. Defaults to false
 			// so existing scenes are not silently included in Tab order.
 			Properties::Make("Focusable",    "Focusable",    &InteractableComponent::Focusable),
+			Properties::Make("SpatialNavigation", "Spatial Navigation", &InteractableComponent::SpatialNavigation),
+			Properties::Make("NavigationWrap", "Navigation Wrap", &InteractableComponent::NavigationWrap),
+			MakeUiEntityRef<InteractableComponent>("NavigationLeft", "Navigation Left", &InteractableComponent::NavigationLeft),
+			MakeUiEntityRef<InteractableComponent>("NavigationRight", "Navigation Right", &InteractableComponent::NavigationRight),
+			MakeUiEntityRef<InteractableComponent>("NavigationUp", "Navigation Up", &InteractableComponent::NavigationUp),
+			MakeUiEntityRef<InteractableComponent>("NavigationDown", "Navigation Down", &InteractableComponent::NavigationDown),
+
 		};
 		interactableInfo.serialize = [](Entity e) -> Json::Value {
 			const auto& c = e.GetComponent<InteractableComponent>();
 			Json::Value v = Json::Value::MakeObject();
 			v.AddMember("interactable", Json::Value(c.Interactable));
 			v.AddMember("focusable",    Json::Value(c.Focusable));
+			v.AddMember("spatialNavigation", Json::Value(c.SpatialNavigation));
+			v.AddMember("navigationWrap", Json::Value(c.NavigationWrap));
+			v.AddMember("navigationLeft", UIEntityHandleToJson(e, c.NavigationLeft));
+			v.AddMember("navigationRight", UIEntityHandleToJson(e, c.NavigationRight));
+			v.AddMember("navigationUp", UIEntityHandleToJson(e, c.NavigationUp));
+			v.AddMember("navigationDown", UIEntityHandleToJson(e, c.NavigationDown));
+
 			return v;
 		};
 		interactableInfo.deserialize = [](Entity e, const Json::Value& v) {
 			auto& c = e.GetComponent<InteractableComponent>();
 			if (const Json::Value* m = v.FindMember("interactable")) c.Interactable = m->AsBoolOr(c.Interactable);
 			if (const Json::Value* m = v.FindMember("focusable"))    c.Focusable    = m->AsBoolOr(c.Focusable);
+			if (const Json::Value* m = v.FindMember("spatialNavigation")) c.SpatialNavigation = m->AsBoolOr(false);
+			if (const Json::Value* m = v.FindMember("navigationWrap")) c.NavigationWrap = m->AsBoolOr(false);
+			if (const Json::Value* m = v.FindMember("navigationLeft")) UIEntityHandleFromJson(e, *m, c.NavigationLeft);
+			if (const Json::Value* m = v.FindMember("navigationRight")) UIEntityHandleFromJson(e, *m, c.NavigationRight);
+			if (const Json::Value* m = v.FindMember("navigationUp")) UIEntityHandleFromJson(e, *m, c.NavigationUp);
+			if (const Json::Value* m = v.FindMember("navigationDown")) UIEntityHandleFromJson(e, *m, c.NavigationDown);
+
 		};
 		registry.Register<InteractableComponent>(interactableInfo);
 
@@ -654,5 +675,6 @@ namespace Funke::BuiltInComponentRegistrationInternal {
 			}
 		};
 		registry.Register<ScrollRectComponent>(scrollRectInfo);
+		RegisterLocalizedUI(registry);
 	}
 }

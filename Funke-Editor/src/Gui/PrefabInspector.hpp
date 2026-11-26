@@ -13,6 +13,7 @@ namespace Funke {
 
 	bool SavePrefabSourceTransactionally(Scene& sourceScene, EntityHandle sourceRoot,
 		const std::string& prefabPath, std::string_view logTag);
+	bool ResetPrefabVariantComponent(Scene& scene, EntityHandle root, const std::string& componentName);
 
 	// Same propagation for a .prefab changed outside the editor: previousSource (the parse the loaded
 	// instances were built from) is the override baseline. Edit mode only; scenes roll back on failure.

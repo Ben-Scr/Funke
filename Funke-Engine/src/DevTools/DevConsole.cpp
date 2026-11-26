@@ -17,6 +17,7 @@
 #include "Utils/CharConv.hpp"
 #if FUNKE_WITH_SCRIPTING
 #include "Scripting/ScriptEngine.hpp"
+#include "Scripting/BoltScriptHost.hpp"
 #endif
 
 #include <algorithm>
@@ -101,7 +102,11 @@ namespace Funke {
 					return DevCommandResult::Error(std::string("Command failed: ") + e.what());
 				}
 			}
-			DevCommandResult managed = RunManaged(command);
+			#if FUNKE_WITH_SCRIPTING
+            auto bolt = BoltScriptHost::ExecuteDevCommand(name, {tokens.begin() + 1, tokens.end()});
+            if (bolt.Result != DevCommandResult::Status::NotFound) return bolt;
+#endif
+            DevCommandResult managed = RunManaged(command);
 			if (managed.Result == DevCommandResult::Status::NotFound) {
 				managed.Output = "Unknown command '" + tokens.front() + "'. Type 'help' for the list.";
 			}
@@ -144,8 +149,11 @@ namespace Funke {
 		for (const auto& [name, command] : g_Commands) {
 			commands.push_back({ name, command.Usage, command.Description, false });
 		}
-		for (DevCommandInfo& managed : ListManaged()) {
-			if (!HasNativeCommand(managed.Name)) commands.push_back(std::move(managed));
+		#if FUNKE_WITH_SCRIPTING
+        BoltScriptHost::AppendDevCommands(commands);
+#endif
+        for (DevCommandInfo& managed : ListManaged()) {
+			if (std::none_of(commands.begin(), commands.end(), [&](const auto& info) { return info.Name == managed.Name; })) commands.push_back(std::move(managed));
 		}
 		std::sort(commands.begin(), commands.end(), [](const DevCommandInfo& a, const DevCommandInfo& b) { return a.Name < b.Name; });
 		return commands;

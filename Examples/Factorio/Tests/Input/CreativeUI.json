@@ -1,0 +1,97 @@
+{
+  "fixedStep": 60,
+  "steps": [
+    {
+      "at": ".5s",
+      "command": "factory.assert menu"
+    },
+    {
+      "at": ".7s",
+      "screenshot": "main-menu"
+    },
+    {
+      "at": "1s",
+      "mouse": [
+        0.5,
+        0.52
+      ],
+      "button": "left"
+    },
+    {
+      "at": "2s",
+      "command": "factory.assert creative; factory.assert fresh"
+    },
+    {
+      "at": "2.2s",
+      "key": "E"
+    },
+    {
+      "at": "2.6s",
+      "command": "factory.assert inventory"
+    },
+    {
+      "at": "2.8s",
+      "screenshot": "empty-creative-inventory"
+    },
+    {
+      "at": "3s",
+      "mouse": [
+        0.563,
+        0.38
+      ],
+      "button": "left"
+    },
+    {
+      "at": "3.4s",
+      "command": "factory.assert crafted; factory.assert ui-blocked"
+    },
+    {
+      "at": "3.6s",
+      "key": "Escape"
+    },
+    {
+      "at": "3.9s",
+      "key": "2"
+    },
+    {
+      "at": "4.1s",
+      "key": "R"
+    },
+    {
+      "at": "4.3s",
+      "mouse": [
+        0.5,
+        0.286
+      ],
+      "button": "left"
+    },
+    {
+      "at": "4.6s",
+      "command": "factory.assertcell 0 3 1"
+    },
+    {
+      "at": "4.8s",
+      "mouse": [
+        0.5,
+        0.286
+      ],
+      "button": "right"
+    },
+    {
+      "at": "5.1s",
+      "command": "factory.assert ui-blocked"
+    },
+    {
+      "at": "5.4s",
+      "key": "Escape"
+    },
+    {
+      "at": "5.7s",
+      "command": "factory.assert paused"
+    },
+    {
+      "at": "6s",
+      "quit": true
+    }
+  ]
+}

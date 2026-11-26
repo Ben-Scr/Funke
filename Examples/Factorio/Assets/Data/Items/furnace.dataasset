@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "type": "ItemDefinition",
+  "fields": {
+    "Id": "furnace",
+    "DisplayName": "Furnace",
+    "Icon": "3799167722807270014",
+    "SpriteName": "furnace",
+    "StackSize": "100"
+  }
+}

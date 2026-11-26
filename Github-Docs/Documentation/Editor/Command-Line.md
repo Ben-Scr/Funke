@@ -47,14 +47,14 @@ To test in an editor that is already open instead, without restarting anything, 
 
 For structured authoring use `editor scenes`, `entities`, `inspect`, `schema`, `apply` and `apply-status`; query fresh session/instance/revision tokens before changing a scene. See [Editor Bridge](Editor-Bridge.md) for the batch format and [Testing](Testing.md#isolated-gameplay-suites) for `funke test`. Bridge exit codes are 0 success, 1 business failure, 2 usage, 3 busy/timeout and 4 unreachable editor, identically in text and JSON. `--no-wait` returns `completion: "accepted"` and does not certify completion.
 
-`create` does everything the Launcher does:
+`funke create` starts an Empty 2D project. Use the [Launcher templates](Editor.md#project-templates) for a 3D project, a physics starter or a custom template. With the default options, the CLI performs these steps.
 
 1. Writes an empty 2D project (a scene with no entities and no starter scripts). Add a camera and enable physics in Package Manager when needed.
 2. Compiles its scripts once.
 3. Runs `git init`.
 4. Adds the project to the Launcher's project list.
 
-The steps can be skipped with `--no-compile`, `--no-git` and `--no-register`. New projects store scenes and prefabs as **JSON**; `--format binary` keeps the old default.
+The steps can be skipped with `--no-compile`, `--no-git` and `--no-register`. New projects store scenes and prefabs as **JSON**. Pass `--format binary` to select binary storage.
 
 ## Building
 
@@ -134,7 +134,7 @@ funke sprite border Assets/Textures/Ui.png --slice Ui_3 --border 8,8,12,8
 
 `--keep` appends to the existing slices instead of replacing them. `--dry-run` prints the slices without writing them.
 
-`sprite border` stores a 9-slice border (`left,bottom,right,top` in pixels, or one value for all four; `0` clears it) for the whole texture or, with `--slice`, for one sprite slice. Sliced and Tiled Images use it when their own border is 0. `sprite list` prints the slices' borders too.
+`sprite border` stores a 9-slice border (`left,bottom,right,top` in pixels, or one value for all four; `0` clears it) for the whole texture or, with `--slice`, for one sprite slice. Sliced and Tiled Images use it when their own border is 0. `sprite list` prints the slices' borders too. For a worked panel example, see [Resizable UI images](../Assets/Resizable-UI-Images.md).
 
 ### Prefabs
 

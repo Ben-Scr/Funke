@@ -134,7 +134,7 @@ TEST_CASE("Every template creates a project whose startup scene only uses regist
 		CHECK(entities->GetArray().empty() == empty);
 		for (const Json::Value& entity : entities->GetArray()) {
 			REQUIRE(entity.IsObject());
-			for (const auto& [key, value] : entity.GetObject()) {
+			for (const auto& [key, value] : entity.GetMembers()) {
 				(void)value;
 				// Component blocks are PascalCase; entity metadata (name, uuid, ...) is camelCase.
 				if (key.empty() || !std::isupper(static_cast<unsigned char>(key.front()))) continue;
@@ -327,7 +327,7 @@ TEST_CASE("Legacy projects without a modules field retain dimensions and physics
 
 	Json::Value root = Json::Parse(File::ReadAllText(project.ProjectFilePath));
 	REQUIRE(root.IsObject());
-	std::erase_if(root.GetObject(), [](const auto& member) { return member.first == "modules"; });
+	std::erase_if(root.GetMembers(), [](const auto& member) { return member.first == "modules"; });
 	*root.FindMember("projectFormatVersion") = Json::Value(1);
 	REQUIRE(File::WriteAllText(project.ProjectFilePath, Json::Stringify(root, true)));
 

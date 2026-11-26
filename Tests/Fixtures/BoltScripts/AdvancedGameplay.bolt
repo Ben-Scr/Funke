@@ -1,0 +1,111 @@
+import Funke
+import Funke.Jobs
+import Funke.Coroutines
+import Gameplay
+import System
+import System.Threading
+import System.Threading.Tasks
+
+struct CountingJob : IJobFor {
+    public AtomicInt Total;
+    public ParallelReducer<int> Reduce;
+    public void Execute(int index) { Total.Add(index + 1); Reduce.Add(index+1); }
+}
+public class AdvancedGameplay : EntityScript {
+    public int Stage;
+    private CancellationTokenSource stop;
+    private Task<int> external;
+    private Task<int> failing;
+    private AtomicInt jobs;
+    public override void OnStart() {
+        if (!Entity.AddNativeComponent<MotionData>()) return;
+        Entity.AddNativeComponent<PathSample>();
+        PathSample& sample=Entity.GetRefOrThrow<PathSample>();
+        sample.Point.Position=Vector3(1.0f,2.0f,3.0f);
+        sample.Point.Sequence=47u;
+        var live=Entity.GetNativeComponentReadOnly<PathSample>();
+        sample.Point.Sequence++;
+        if(!live.HasValue || live.Value.Point.Sequence!=48u)return;
+        MotionData& data=Entity.GetRefOrThrow<MotionData>();
+        data.Mode=3; data.Count=10; data.Distance=12.25;
+        Scene target; target.Name="AdvancedBolt";
+        bool found = false;
+        for (var row : target.Query<Transform2D>().With<MotionData, PathSample>().WithEntity())
+            if (row.ID == Entity.ID) found = true;
+        if (!found) return;
+        if (target.Query<Transform2D>().With<MotionData>().Without<PathSample>().WithEntity().Length != 0) return;
+        DistanceJob adjust;
+        target.ScheduleParallel<DistanceJob>(adjust,1).Complete();
+        CountingJob work; work.Total=jobs; work.Reduce=ParallelReducer.SumInt();
+        AtomicRef<int> winner;
+        var box=System.Memory.Shared<int>.Create(); box.Get()=12;
+        if(!winner.TrySetIfNull(box) || winner.TrySetIfNull(box))return;
+        var held=winner.Load();
+        if(held.Get()!=12)return;
+        EntityCommandBuffer commands;
+        commands.AsParallelWriter().CreateWith<MotionData, PathSample, MotionData, PathSample, MotionData,
+                                               PathSample, MotionData, PathSample, MotionData>();
+        if (commands.EntityCount != 1 || commands.CommandCount != 9) return;
+        commands.Clear();
+        EntityRef[] createdRefs = new EntityRef[2];
+        commands.CreateEntitiesWith<MotionData, PathSample>(2, System.Span<EntityRef>(createdRefs));
+        if (commands.Playback() != 2) return;
+        for (int i = 0; i < 2; i++) {
+            var created = commands.GetCreatedEntity(i);
+            if (!created.HasNativeComponent<MotionData>() || !created.HasNativeComponent<PathSample>()) return;
+        }
+        commands.Clear();
+        JobContext frame=JobContext.ForFrame(commands.AsParallelWriter(),123u);
+        JobHandle record=Job.ScheduleParallelFor(3,(int i)=>{
+            var random=frame.GetRng();
+            var e=frame.Ecb.Create();
+            PathSample item;item.Point.Sequence=20u+(uint)i;item.Valid=(byte)random.NextInt(1,2);
+            frame.Ecb.AddComponent<PathSample>(e,item);
+        },1);
+        if(commands.Playback(record)!=3)return;
+        uint total=0u;
+        for(int i=0;i<3;i++){var created=commands.GetCreatedEntity(i);PathSample& item=created.GetRefOrThrow<PathSample>();total+=item.Point.Sequence+item.Valid;}
+        commands.Dispose();
+        if(total!=66u)return;
+        JobHandle workDone=Job.ScheduleParallelFor<CountingJob>(work,8,2);
+        workDone.Complete();
+        if(work.Reduce.Result()!=36)return;
+        work.Reduce.Reset();
+        if(work.Reduce.Result()!=0)return;
+        work.Reduce.Dispose();
+        external=Task<int>.CreatePending();
+        failing=Task<int>.CreatePending();
+        RunCoroutine(Sequence);
+        RunCoroutine(Recover);
+        RunCoroutine(DetachedWait);
+    }
+    public override void OnUpdate() {
+        if(Stage==1 && !external.IsCompleted) { external.SetResult(7); external.Complete();
+            InvalidOperationException problem("fault from producer"); failing.SetException(problem); failing.Complete(); }
+        else if(Stage==44) stop.Cancel();
+    }
+    private async Task<void> DetachedWait() {
+        Task<void> timer=WaitForFrames(2);
+        await timer;
+        Entity.GetRefOrThrow<PathSample>().Point.Sequence++;
+    }
+    private async Task<void> Recover() {
+        try {
+            int value=await failing;
+            Stage+=value;
+        } catch(System.InvalidOperationException& error) {
+            await WaitForNextFrame();
+            if(error.Message=="fault from producer")Entity.GetRefOrThrow<PathSample>().Valid=10;
+        } finally { Entity.GetRefOrThrow<PathSample>().Valid++; }
+    }
+    private async Task<int> ReadExternal() {return await external;}
+    private async Task<void> Sequence() {
+        try {
+            Stage=1;
+            int value=await ReadExternal();
+            Stage+=value+jobs.Load();
+            try { await WaitForFrames(20,stop.Token); }
+            finally { Stage+=100; await WaitForNextFrame(); Stage++; }
+        } finally { Stage+=200; Entity.GetRefOrThrow<MotionData>().Count=Stage; }
+    }
+}

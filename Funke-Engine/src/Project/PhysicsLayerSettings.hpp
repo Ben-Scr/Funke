@@ -10,13 +10,17 @@ namespace Funke {
 	// Stable indices: renaming a layer never changes scene/prefab masks.
 	struct PhysicsLayerSettings {
 		static constexpr uint32_t Count = 64;
+		static constexpr std::array<std::string_view, 6> DefaultNames = {
+			"Default", "UI", "Player", "Enemy", "World", "Pickup"
+		};
+		static constexpr uint32_t DefaultVisibleCount = static_cast<uint32_t>(DefaultNames.size());
 		std::array<std::string, Count> Names{};
 		std::array<uint64_t, Count> CollisionMasks{};
-		uint32_t VisibleCount = 16;
+		uint32_t VisibleCount = DefaultVisibleCount;
 
 		PhysicsLayerSettings() {
 			for (uint32_t i = 0; i < Count; ++i) {
-				Names[i] = i == 0 ? "Default" : "Layer " + std::to_string(i);
+				Names[i] = i < DefaultNames.size() ? std::string(DefaultNames[i]) : "Layer " + std::to_string(i);
 				CollisionMasks[i] = UINT64_MAX;
 			}
 		}
@@ -28,7 +32,7 @@ namespace Funke {
 		}
 
 		bool SetName(uint32_t index, std::string_view name) {
-			if (index >= Count) return false;
+			if (index == 0 || index >= Count) return false;
 			const auto first = name.find_first_not_of(" \t\r\n");
 			if (first == std::string_view::npos) return false;
 			name = name.substr(first, name.find_last_not_of(" \t\r\n") - first + 1);

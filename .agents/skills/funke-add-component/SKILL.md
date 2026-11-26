@@ -1,11 +1,11 @@
 ---
 name: funke-add-component
-description: Use when adding a new built-in ECS component to the Funke engine (C++) or auditing whether an existing one is wired everywhere. Triggers on "add a component", "new component", "built-in component", "RegisterComponent", "ComponentInfo", "ComponentRegistry", "BuiltInComponentRegistration", "serializedName", "DeclareConflict", "DeclareDependency", "on_construct hook", "ComponentCategory::Tag", "s_NativeComponentNames", "C# component wrapper", or work in `Funke-Engine/src/Components/`, `Funke-Engine/src/Scene/BuiltInComponentRegistration*.cpp`, `Scene/ComponentInfo.hpp`. Covers the full pipeline — struct, per-category registration slice, serialization (registry-driven vs the three hand-written ladders), prefab/clone/ECB concerns, Scene construct/destroy hooks, C# exposure, tests and build. For fields on an existing component use `funke-serialize-field`; for inspector rows `funke-inspector-ruleset`; for package-owned components `funke-author-package`.
+description: "Add or audit a built-in C++ ECS component across Funke registration, lifecycle, serialization, cloning and C# wrappers."
 ---
 
 # Add a Built-in Component
 
-A built-in component touches up to eight sites. Missing one fails silently (data lost on save, play/stop, paste, prefab spawn, or invisible to C#), so walk the whole list. Reference implementations: `LocalizedTextComponent` (data + system + C#), `WidthConstraintComponent` / `MaskComponent` (minimal registry-driven serialization).
+Use `LocalizedTextComponent` as a complete example and `WidthConstraintComponent` or `MaskComponent` for registry-driven serialization.
 
 ## 1. Struct
 
@@ -99,14 +99,11 @@ Many in-tree UI registrations fall back to the *current* value (`AsDoubleOr(c.X)
 
 ## 5. C# exposure (optional)
 
-Native name lookup (`FindComponentByName` in `ScriptBindings.cpp`) accepts the serializedName, `<serializedName>Component`, or the displayName, so a C# `Component` subclass gets generic `HasComponent/AddComponent/RemoveComponent<T>` without new bindings; property access needs bindings. Details in `funke-engine-scripting`; the sites are:
+`FindComponentByName` accepts the serialized name, that name followed by `Component`, or the display name. This supports generic `HasComponent<T>`, `AddComponent<T>` and `RemoveComponent<T>`. For property access, follow [the binding procedure](../funke-engine-scripting/SKILL.md), including the paired layout version change for added, removed or reordered slots.
 
-1. Native functions in `Funke-Engine/src/Scripting/ScriptBindings.cpp` (use `GET_COMPONENT(Type, entityID, failReturn)`), assigned in `ScriptBindings::PopulateNativeBindings` as `b.X = FNK_GUARDED_BINDING(Funke_X)` (`Scripting/ScriptBindingGuard.hpp`). Non-component bindings live in `ScriptBindingsScene.cpp`, ECB in `ScriptBindingsEcb.cpp`, jobs in `ScriptBindingsJobs.cpp`.
-2. Function pointers **appended at the end** of `NativeBindings` in `Scripting/ScriptGlue.hpp` and, in identical order, of `NativeBindingsStruct` in `Funke-ScriptCore/Source/Funke/Interop/NativeCallbacks.cs`. The handshake checks `sizeof` and `k_ScriptInteropLayoutVersion` / `InteropHandshake.LayoutVersion` (`Interop/ScriptHostBridge.cs`); bump both together on reorder/remove.
-3. `internal static` wrappers in `Funke-ScriptCore/Source/Funke/Core/InternalCalls.cs`.
-4. Wrapper class `: Component` in `Funke-ScriptCore/Source/Funke/Scene/Components.cs` (UI types in `UI/UIComponents.cs`), using `RequireComponent<T>()`.
-5. Map the type to the native **displayName** in `s_NativeComponentNames` (`Funke-ScriptCore/Source/Funke/Scene/Entity.cs`). Without it the C# class name is used for lookup (works only if it equals the serializedName) and reverse name→type resolution misses it.
-6. If the C++ layout of `Transform2DComponent` / `SpriteRendererComponent` changes, update `Funke-ScriptCore/Source/Funke/Native/NativeTransform2D.cs` / `NativeSpriteRenderer.cs` (size is verified at init).
+- Put the `Component` wrapper in the matching `Scene/Components*.cs` file and use `RequireComponent<T>()`. [Component source organization](../../../Github-Docs/Documentation/Scripting/Scripting.md#component-source-organization) lists the 2D, 3D, physics, audio, UI and animation locations.
+- Map the C# type to the native **display name** in `Entity.s_NativeComponentNames` for forward and reverse lookup.
+- Layout changes to `Transform2DComponent` or `SpriteRendererComponent` also affect their `Funke.Native` mirrors. For packed `float*` bindings, extend the layout assertions in `Rendering3DTests.cs`.
 
 ## 6. Tests (`Tests/Funke-Engine-Tests/src`, doctest)
 
@@ -126,11 +123,6 @@ User-facing components: `CHANGELOG.md`, `Github-Docs/Documentation/`, and the co
 
 ## Pitfalls
 
-- Adding to `NativeBindings`: bump `k_ScriptInteropLayoutVersion` and `InteropHandshake.LayoutVersion` together, append the C# delegates in the same order, and extend the packed-count assertions in `Tests/Funke-ScriptCore-Tests/Rendering3DTests.cs` when you add a packed `float*` layout.
 - New renderable 3D component: add its pass to `Renderer3D::RenderScene` (meshes, then particles); every pass must honour `m_OwnDepthNeedsClear` and call `WebGPUBackend::FlushCommands()` before the next scene's `WriteBuffer`. Editor and runtime both go through `RenderScene`, so nothing else needs wiring for drawing.
 - Editor play-on-awake lives in three places: the scene system's `Awake`, `PlayOnAwakeRecursive` in `Scene.cpp` (prefab spawns) and `StartPlayOnAwakeComponents` in `ImGuiEditorLayer.cpp`.
-
-- Registered with `RegisterComponent(...)` but no `serialize` → component silently vanishes on save, play→stop, paste, and prefab apply.
-- Display name typo in `s_NativeComponentNames` → C# `GetComponent<T>()`/`HasComponent<T>()` silently fail.
-- `AddComponent` inside an `on_construct` hook for a type whose hook is being deferred → ordering bugs; keep hooks idempotent.
-- A component with heap members added via a C# `EntityCommandBuffer` → playback rejected with an `Ecb` "no emplaceFromBytes callback" warning (see step 1).
+- Keep construct hooks idempotent. Adding another component with a deferred hook can change initialization order.

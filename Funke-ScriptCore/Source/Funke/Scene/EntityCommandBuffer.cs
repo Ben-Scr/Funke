@@ -501,6 +501,15 @@ public sealed partial class EntityCommandBuffer : IDisposable
     /// <summary>Ships the batch to the active scene. Returns entity count; IDs available via <see cref="GetCreatedEntityId"/> indexed by EntityRef order (main first, then workers by ascending thread ID).</summary>
     public int Playback() => Playback(EntityCommandBufferPlaybackMode.Automatic);
 
+    /// <summary>Completes the producer dependency before reading recorded commands and playing them back on the main thread.</summary>
+    /// <remarks>The dependency must include every recorder and every job borrowing affected scene storage. Unrelated jobs are not implicitly synchronized.</remarks>
+    public int Playback(Funke.Jobs.JobHandle dependency, EntityCommandBufferPlaybackMode mode = EntityCommandBufferPlaybackMode.Automatic)
+    {
+        ValidatePlaybackMode(mode);
+        dependency.Complete();
+        return Playback(mode);
+    }
+
     /// <summary>Completes synchronously on the main thread; parallel mode may fall back to preserve command and callback ordering.</summary>
     public unsafe int Playback(EntityCommandBufferPlaybackMode mode)
     {

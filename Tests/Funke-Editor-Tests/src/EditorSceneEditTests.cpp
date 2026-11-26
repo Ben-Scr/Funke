@@ -100,8 +100,38 @@ TEST_CASE("Agent batch restores dirty state and redo history after an applying s
 		+ "\"},\"name\":\"Changed\"},{\"op\":\"property.set\",\"entity\":{\"id\":\"" + id
 		+ "\"},\"component\":\"Transform2D\",\"property\":\"Position\",\"value\":[8,9]}]}");
 	const auto revision = scene->GetRevision();
+    request.AddMember("dryRun", true);
+    REQUIRE(EditorSceneEdit::Apply(*scene, history, request).FindMember("ok")->AsBoolOr(false));
+    CHECK(scene->GetRevision() == revision);
+    CHECK(history.CanRedo());
+    *request.FindMember("dryRun") = Json::Value(false);
+    const auto originalDeserialize = component->deserialize;
+    struct RestoreDeserializer {
+        ComponentInfo& Info;
+        decltype(ComponentInfo::deserialize) Original;
+        ~RestoreDeserializer() { Info.deserialize = Original; }
+    } restoreDeserializer{*component, originalDeserialize};
+    bool failRestore = false;
+    SUBCASE("Successful restoration preserves the previous history") {}
+    SUBCASE("Failed restoration quarantines the scene until retry") {
+        failRestore = true;
+        component->deserialize = [](Entity, const Json::Value&) { throw std::runtime_error("injected restore failure"); };
+    }
 	const auto result = EditorSceneEdit::Apply(*scene, history, request);
 	CHECK_FALSE(result.FindMember("ok")->AsBoolOr(true));
+    if (failRestore) {
+        CHECK(result.FindMember("code")->AsStringOr() == "rollback_failed");
+        CHECK(history.NeedsRecovery());
+        CHECK_FALSE(history.CanRedo());
+        component->deserialize = originalDeserialize;
+        const auto recovered = EditorSceneEdit::Apply(*scene, history, Request(R"({"operations":[{"op":"history.recover"}]})"));
+        REQUIRE_MESSAGE(recovered.FindMember("ok")->AsBoolOr(false), Json::Stringify(recovered));
+        CHECK_FALSE(history.NeedsRecovery());
+        EntityHandle restored = entt::null;
+        REQUIRE(scene->TryResolveEntityRef(std::stoull(id), restored));
+        CHECK(scene->GetEntity(restored).GetName() == "Original");
+        return;
+    }
 	CHECK(result.FindMember("code")->AsStringOr() == "apply_failed");
 	EntityHandle handle = entt::null;
 	REQUIRE(scene->TryResolveEntityRef(std::stoull(id), handle));
@@ -155,4 +185,45 @@ TEST_CASE("Agent batches preserve prefab instance identity across apply undo and
 		if (phase == 0) REQUIRE_FALSE(history.Undo(*scene).empty());
 		if (phase == 1) REQUIRE_FALSE(history.Redo(*scene).empty());
 	}
+}
+
+TEST_CASE("Agent batches reject a scene revision changed after preflight") {
+    auto scene = Scene::CreateDetachedScene("Batch conflict");
+    UndoStack history;
+    auto request = Request(R"({"operations":[{"op":"entity.create","localId":"a","name":"A"}]})");
+    request.AddMember("expectedRevision", std::to_string(scene->GetRevision()));
+    request.AddMember("dryRun", true);
+    REQUIRE(EditorSceneEdit::Apply(*scene, history, request).FindMember("ok")->AsBoolOr(false));
+    *request.FindMember("dryRun") = Json::Value(false);
+    const auto result = EditorSceneEdit::Apply(*scene, history, request, [&] { scene->MarkDirty(); });
+    CHECK(result.FindMember("code")->AsStringOr() == "revision_conflict");
+    CHECK(scene->GetEntityCount() == 0);
+    CHECK_FALSE(history.CanUndo());
+}
+
+TEST_CASE("Failed recovery blocks batches and history until an explicit successful retry") {
+    struct Recovery : EditCommand {
+        bool& Fails;
+        Recovery(bool& fails) : Fails(fails) {}
+        void Undo(Scene&) override { if (Fails) throw std::runtime_error("restore fault"); }
+        void Redo(Scene&) override {}
+    };
+    auto scene = Scene::CreateDetachedScene("Batch recovery");
+    UndoStack history;
+    UndoStack partner;
+    bool fails = true;
+    history.PushLinked(partner, std::make_unique<Recovery>(fails));
+    history.RequireRecovery(std::make_unique<Recovery>(fails), "Injected rollback failure");
+    CHECK_FALSE(partner.CanUndo());
+    history.Clear();
+    CHECK(history.NeedsRecovery());
+    auto request = Request(R"({"operations":[{"op":"entity.create","localId":"a","name":"A"}]})");
+    CHECK(EditorSceneEdit::Apply(*scene, history, request).FindMember("code")->AsStringOr() == "recovery_required");
+    CHECK_FALSE(history.CanUndo());
+    CHECK_FALSE(history.Recover(*scene));
+    CHECK(history.NeedsRecovery());
+    fails = false;
+    REQUIRE(history.Recover(*scene));
+    CHECK_FALSE(history.NeedsRecovery());
+    CHECK(EditorSceneEdit::Apply(*scene, history, request).FindMember("ok")->AsBoolOr(false));
 }

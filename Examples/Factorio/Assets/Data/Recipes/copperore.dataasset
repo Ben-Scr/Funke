@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "type": "RecipeDefinition",
+  "fields": {
+    "Id": "copperore",
+    "Result": "3032358598452126556",
+    "Amount": "20",
+    "Seconds": "0",
+    "CreativeOnly": "true",
+    "Ingredients": ""
+  }
+}

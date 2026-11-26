@@ -1,11 +1,11 @@
 ---
 name: funke-game-art
-description: Use when CREATING OR FIXING THE ART of a Funke game — pixel art sprites, tiles, character animation frames, sprite sheets, items and icons, UI art (panels, buttons, 9-slice frames, HUD pills, cards), fonts, palettes, art direction and design language, or AI-generated / imported art that must fit the game. Triggers on "pixel art", "sprite sheet", "tileset", "icon", "UI looks bad / cheap / flat", "make it look better", "art style", "palette", "design language", "9-slice", "font", "replace placeholder art", "inconsistent look", "blurry pixel art", "AI image", "asset pack". Gives the production approach (design language first, one pixel density, a sample before rollout), the rules that make pixel art and UI look intentional, the Funke import side (sharp-bilinear saving, .meta slices, Image 9-slice keys, pixelsPerUnit, fonts) and pixelkit.py (palette ramps, text-grid sprites, pixel and rounded frames, sheets, metas, style sample, lint). Scene wiring and game code go to funke-make-a-game.
+description: "Create or fix Funke game art, including pixel sprites, tiles, animation sheets, palettes, fonts and nine-slice UI artwork."
 ---
 
 # Game art for Funke games
 
-Art is where agent-made games most often fall flat. Each asset can be fine on its own and the game still looks cheap, because the assets don't agree with each other: three pixel densities, a blurry upscale next to crisp pixels, a palette chosen file by file, the default font on a pixel-art menu, flat grey rectangles as buttons. This skill gets every asset to follow **one** design language, makes the agent show a sample before it produces a whole asset family, and provides tools that keep the rules mechanical.
+Use the project's design language to keep sprites, tiles, UI and animation at a consistent density and scale.
 
 ## 0. Start from the design language
 
@@ -25,30 +25,15 @@ When an asset family would take more than an hour, or the user cares about the l
 
 ## 2. Rules that make pixel art look intentional
 
-1. **One density.** Every sprite, tile and UI art pixel uses the same pixel size on screen. A 16 px tile game has 16 px tiles, characters drawn on that grid, icons on that grid, and UI art scaled by a whole number. Never mix a 32 px item into a 16 px world, and never resize pixel art with a smooth filter.
-2. **Palette ramps with hue shift.** Each material has a 4–5 step ramp from dark to light. Shadows lean toward blue/violet, highlights toward warm yellow. `pixelkit.ramp("#4C8C4A")` or the ramps in `palette.json`. No colours outside the palette (`pixelkit.py check` lists them).
-3. **One light direction** (default: top-left) for every sprite, tile and UI bevel. Raised things are light on the top/left and dark on the bottom/right; recessed things are the reverse.
-4. **Hard edges.** Alpha is 0 or 255, without anti-aliased fringes (they turn into blurry halos in game). Dither or use ramp steps instead of soft gradients inside sprites.
-5. **Readable silhouettes and outlines.** Characters and pickups get a dark outline (ink token, or a darker ramp step per side for a softer look) so they read against any background. Tiles usually don't get one. Decide once, and write it in the design language.
-6. **No pillow shading, no noise.** Shade from the light direction, not from the edges inward. Texture means placed clusters (cracks, planks, blades of grass), not random noise. Random per-pixel noise is the most common sign of generated art.
-7. **Signature colours.** Each thing the player must learn (hazard, pickup, checkpoint, enemy type) keeps one colour everywhere: sprite, particles, UI icon.
-8. **Animation:** 2–4 frames for idle/bob, 4–8 for walk/run, held keys on impact. Squash and stretch on landing and jumping, a white hit flash, and frames that stay on the grid.
-9. **Resizing existing art:** recover its native grid before changing size. Resample or reconstruct individual elements on aligned cells; use whole-number nearest-neighbour upscaling where possible. Do not downscale a finished sheet by an arbitrary non-integer factor. Nearest-neighbour alone does not prove that outlines, symmetry, thin details or the silhouette survived.
+Use one native grid, a shared light direction, hard alpha edges and readable silhouettes. Place texture in clusters and shade materials with palette ramps. Give hazards, pickups and checkpoints consistent colours across sprites, effects and HUD icons.
 
-Details, frame counts, tile edge rules, the AI brief template and import settings: `references/pixel-art.md`.
+When resizing existing art, recover the native grid per element and reconstruct thin details on aligned cells. Prefer whole-number nearest-neighbour upscaling. For outlines, hue shifts, tile seams, animation timing and AI briefs, use [the pixel art guide](references/pixel-art.md).
 
 ## 3. Rules that make UI look like a game, not a debug panel
 
-First follow `funke-game-ui` → **Make the UI belong to the game** for visual integration, meaningful icons and HUD feedback. These production rules support the chosen design; they do not prescribe one appearance for every game.
+Derive panels, buttons, wells and tooltips from one frame family. Enable slicing on the actual `Image` and keep icons and handles proportional. Match interactive states and motion to the game's art. Keep critical feedback legible while animating.
 
-1. **Match the game's visual treatment.** Use depth, outlines, highlights, lips or shadows when the artwork calls for them; deliberate flat or minimal UI is also valid. Make interactive states recognizable within that treatment. For a raised button, normal/pressed sprites can remove the lip on press; do not impose this recipe on every control.
-2. **9-slice stretchable frames and tracks.** Prepare borders for textured panels, buttons, slider tracks and suitable fills, and enable `Image` sliced mode on the actual scene/prefab graphics. A sprite-sheet crop or border metadata alone does not enable slicing. Keep corners and end caps intact; use tiled regions for repeating detail and separate proportional icons/handles. Follow `funke-game-ui` → **Preserve texture shape when resizing**, including checks at different sizes, states and fill amounts.
-3. **One frame family:** panel, well (recessed list or slot), card, button, pill, tooltip, all built by the same generator from the same tokens.
-4. **Text:** at most two fonts (title + body). A pixel font only at whole multiples of its design size. Contrast at least 4.5:1 against its fill. Body text on the 1080p reference no smaller than ~26 units on phones. Text needs a higher `sortOrder` than its panel.
-5. **Layout:** a spacing grid (8 or 12 units), consistent outer margins, one primary action per screen, touch targets ≥ 96 reference units on phones.
-6. **Motion follows the game's feel and the information.** Use brief transitions and feedback to communicate interaction or state change. Pop-in, press-down and count-up are optional techniques, not a mandatory style; critical state must remain readable without waiting for animation.
-
-Engine keys (Image `Type`/borders/`BorderScale`, sprite states on buttons), pixel-perfect UI scaling, fonts and HUD recipes: `references/ui-art.md`.
+Use [UI art](references/ui-art.md) for border order and scale, font sizes, contrast, layout and motion. Use [game UI](../funke-game-ui/SKILL.md) for widget behavior and testing states at different sizes and fill amounts.
 
 ## 4. Into Funke
 
@@ -58,14 +43,13 @@ Engine keys (Image `Type`/borders/`BorderScale`, sprite states on buttons), pixe
 - **Let `.meta` own the filter:** SpriteRenderer defaults to `filterMode: 4` (Default); explicitly set `Image.filterMode: 4` too when it should follow the import setting, because Image defaults to Bilinear. Non-default component filters call `SetFilter` on the resolved texture and can affect other users sharing its handle.
 - **Sheets:** pack frames with `pixelkit.pack_sheet` and save them with `sprites=` (named slices go into the `.meta`, rects scaled with the upscale), or slice with `funke sprite slice <png> --grid 64x64` after writing your own `.meta`. Reference a slice with `spriteName`, and animate with an `Animator` `.anim` clip using discrete `SpriteRenderer.Texture` keys.
 - **Size in the world:** `SpriteRenderer.pixelsPerUnit` = art px per tile × upscale (16 px tiles saved 4× → 64) with `Transform2D` scale 1. Every sprite keeps its native pixel size and pivot, so one density holds by construction.
-- **9-slice UI:** `"Image": {"imageType": 1, "border": [l, b, r, t], "borderScale": …}` (Tiled = 2 for structured pixel frames). Fonts ship in `Assets/Fonts/` and cover ASCII + Latin-1 only; outlines and drop shadows are Text Renderer keys (`outlineWidth`, `shadowX/Y` + colors), no duplicate label. Details: `references/ui-art.md`.
 
 ## 5. Verify
 
 1. `python <skill>/scripts/pixelkit.py check Assets/Textures/Characters/*.png … --project . --scale 4` (pixel art saved 4×) reports colours outside the palette, soft alpha edges and a wrong pixel grid.
 2. Open every generated sheet with `view_image`, at native and actual final size plus an integer enlargement. Check thin details, outlines, symmetry, silhouette and transparency; lint cannot judge these.
 3. Take an **in-game** screenshot (`funke-make-a-game` → `references/testing.md`) at the target resolution and judge it there. Lighting, ambient light, UI scale and filtering change how art looks. Compare it with `Design/style-sample.png`.
-4. Check every screen for: one density, crisp pixels (no blur, no shimmer when moving), text readable on its background, nothing overlapping, no placeholder shapes left.
+   Check for shimmer during movement, unreadable labels, overlaps and leftover placeholders.
 
 ## Scripts
 

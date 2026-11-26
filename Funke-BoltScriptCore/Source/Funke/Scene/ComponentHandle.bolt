@@ -1,0 +1,48 @@
+import System
+import Type
+namespace Funke;
+
+public struct ComponentHandle<T> {
+private:
+    ulong owner;
+    string name;
+    ulong scene, generation, revision, schema;
+
+    bool Transfer(void* destination, bool write) {
+        if (scene == 0ul) return false;
+        byte[] nativeName = FkSceneAccess.CString(name);
+        ulong[] identity = {scene, generation, revision, schema};
+        return FkSceneAccess.Call(FkNativeSlot.Entity_TransferComponent, owner, FkNativeSlot.Pointer(&nativeName[0]),
+            FkNativeSlot.Pointer(&identity[0]), FkNativeSlot.Pointer(destination), (ulong)sizeof(T), write ? 1ul : 0ul) != 0ul;
+    }
+public:
+    bool FkCapture(ulong id, string key) {
+        byte[] nativeName = FkSceneAccess.CString(key);
+        ulong address = FkNativeSlot.Pointer(&nativeName[0]);
+        FunkeText.Put(key);
+        if (FkNativeStructId((ulong)sizeof(T), 0ul) == 0ul) return false;
+        ulong[] identity = new ulong[4];
+        if (FkSceneAccess.Call(FkNativeSlot.Entity_CaptureComponent, id, address, FkNativeSlot.Pointer(&identity[0])) == 0ul) return false;
+        owner = id;
+        name = key;
+        scene = identity[0];
+        generation = identity[1];
+        revision = identity[2];
+        schema = identity[3];
+        return true;
+    }
+    bool TryRead(T& value) {
+        value = default;
+        return Transfer(&value, false);
+    }
+    T Read() {
+        T value;
+        if (!TryRead(value)) throw InvalidOperationException("Component handle is stale or unavailable.");
+        return value;
+    }
+    bool TryWrite(T value) { return Transfer(&value, true); }
+    void Write(T value) {
+        if (!TryWrite(value)) throw InvalidOperationException("Component handle is stale or unavailable.");
+    }
+}
+

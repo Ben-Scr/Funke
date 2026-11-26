@@ -1,0 +1,11 @@
+import System
+import System.Threading
+import System.Threading.Tasks
+namespace Funke.Jobs;
+
+public struct JobAwaiter {
+    public Task<void> Task;
+    public bool IsCompleted => Task.IsCompleted;
+    public void GetResult(){Task.Wait();}
+    public void OnCompleted(Action<> action){Task.OnCompleted((System.Threading.Tasks.Task<void> done)=>action.Invoke());}
+}

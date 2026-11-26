@@ -18,8 +18,8 @@ namespace Funke::Json {
 
 		class Parser {
 		public:
-			explicit Parser(std::string_view text)
-				: m_Text(text) {
+			explicit Parser(std::string_view text, bool unique = false)
+				: m_Text(text), m_Unique(unique) {
 			}
 
 			bool ParseValue(Value& outValue, std::string* outError) {
@@ -366,6 +366,7 @@ namespace Funke::Json {
 					}
 
 					if (objectValue.FindMember(key) != nullptr) {
+						if (m_Unique) { SetError(outError, "Duplicate JSON key: " + key); return false; }
 						FNK_CORE_WARN_TAG("Serialization",
 							"Duplicate JSON key '{}' encountered while parsing — last occurrence wins", key);
 					}
@@ -481,6 +482,7 @@ namespace Funke::Json {
 
 		private:
 			std::string_view m_Text;
+			bool m_Unique = false;
 			size_t m_Position = 0;
 		};
 
@@ -752,6 +754,14 @@ namespace Funke::Json {
 		return IsString() ? m_String : std::move(fallback);
 	}
 
+	Value::Object& Value::GetMembers() {
+		return GetObject();
+	}
+
+	const Value::Object& Value::GetMembers() const {
+		return GetObject();
+	}
+
 	Value::Object& Value::GetObject() {
 		// Non-const read used to silently retype the value via SetType, which
 		// nuked any previously-stored payload. Now match the const overload's
@@ -927,6 +937,11 @@ namespace Funke::Json {
 
 	bool TryParse(std::string_view text, Value& outValue, std::string* outError) {
 		Parser parser(text);
+		return parser.ParseValue(outValue, outError);
+	}
+
+	bool TryParseUnique(std::string_view text, Value& outValue, std::string* outError) {
+		Parser parser(text, true);
 		return parser.ParseValue(outValue, outError);
 	}
 

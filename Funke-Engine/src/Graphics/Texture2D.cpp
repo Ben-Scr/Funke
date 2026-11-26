@@ -412,6 +412,8 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
 
 	Texture2D::Texture2D(Texture2D&& other) noexcept
 		: m_Tex(other.m_Tex)
+		, m_UploadedRows(other.m_UploadedRows)
+		, m_UploadNeedsFinish(other.m_UploadNeedsFinish)
 		, m_Width(other.m_Width)
 		, m_Height(other.m_Height)
 		, m_Channels(other.m_Channels)
@@ -433,6 +435,8 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
 		if (this == &other) return *this;
 		Destroy();
 		m_Tex      = other.m_Tex;
+		m_UploadedRows = other.m_UploadedRows;
+		m_UploadNeedsFinish = other.m_UploadNeedsFinish;
 		m_Width    = other.m_Width;
 		m_Height   = other.m_Height;
 		m_Channels = other.m_Channels;
@@ -451,6 +455,8 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
 	}
 
 	void Texture2D::Destroy() {
+		m_UploadedRows = 0;
+		m_UploadNeedsFinish = false;
 		if (m_Tex != 0) {
 			FreeTextureSlot(m_Tex);
 			m_Tex = 0;
@@ -588,7 +594,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
 
 	bool Texture2D::UploadRows(int firstRow, int rowCount, const uint8_t* rgba, size_t byteCount) {
 		if (!rgba || firstRow < 0 || rowCount <= 0 || firstRow > m_Height
-			|| rowCount > m_Height - firstRow || m_HasMips) return false;
+			|| rowCount > m_Height - firstRow) return false;
 		const size_t rowBytes = static_cast<size_t>(m_Width) * 4u;
 		if (byteCount != rowBytes * rowCount) return false;
 		GpuTexture* slot = TryLookup(m_Tex);
@@ -600,13 +606,25 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
 		layout.bytesPerRow = static_cast<uint32_t>(rowBytes);
 		layout.rowsPerImage = static_cast<uint32_t>(rowCount);
 		wgpu::Extent3D size{ static_cast<uint32_t>(m_Width), static_cast<uint32_t>(rowCount), 1 };
-		WebGPUBackend::GetQueue().WriteTexture(&dst, rgba, byteCount, &layout, &size);
+		const auto queue = WebGPUBackend::GetQueue();
+        if (!queue || !WebGPUBackend::IsInitialized()) return false;
+        queue.WriteTexture(&dst, rgba, byteCount, &layout, &size);
 		FUNKE_PROFILE_VALUE("GPU.TextureUploadBytes", float(byteCount));
+		if (firstRow == m_UploadedRows) m_UploadedRows += rowCount;
+		return true;
+	}
+
+	bool Texture2D::FinishUpload() {
+		if (!IsValid() || m_UploadedRows != m_Height || !WebGPUBackend::IsInitialized()) return false;
+		if (!m_UploadNeedsFinish) return true;
+		auto* slot = TryLookup(m_Tex);
+		if (!slot || !GenerateMipChain(slot->Texture, slot->Texture.GetFormat(), slot->MipLevelCount)) return false;
+		m_UploadNeedsFinish = false;
 		return true;
 	}
 
 	bool Texture2D::CreateForUpload(int width, int height,
-		Filter filter, Wrap wrapU, Wrap wrapV)
+		Filter filter, Wrap wrapU, Wrap wrapV, bool generateMipmaps)
 	{
 		Destroy();
 		if (width <= 0 || height <= 0) return false;
@@ -629,12 +647,15 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
 
 		wgpu::Device device = WebGPUBackend::GetDevice();
 
+		const uint32_t levels = generateMipmaps && GetMipPipeline(wgpu::TextureFormat::RGBA8Unorm)
+			? ComputeMipLevelCount(width, height) : 1;
 		wgpu::TextureDescriptor texDesc{};
 		texDesc.dimension       = wgpu::TextureDimension::e2D;
 		texDesc.size            = { static_cast<uint32_t>(width), static_cast<uint32_t>(height), 1 };
 		texDesc.format          = wgpu::TextureFormat::RGBA8Unorm;
 		texDesc.usage           = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopyDst;
-		texDesc.mipLevelCount   = 1;
+		if (levels > 1) texDesc.usage |= wgpu::TextureUsage::RenderAttachment;
+		texDesc.mipLevelCount   = levels;
 		texDesc.sampleCount     = 1;
 		texDesc.viewFormatCount = 0;
 
@@ -647,7 +668,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
 		wgpu::TextureViewDescriptor viewDesc{};
 		viewDesc.format          = wgpu::TextureFormat::RGBA8Unorm;
 		viewDesc.dimension       = wgpu::TextureViewDimension::e2D;
-		viewDesc.mipLevelCount   = 1;
+		viewDesc.mipLevelCount   = levels;
 		viewDesc.arrayLayerCount = 1;
 		viewDesc.aspect          = wgpu::TextureAspect::All;
 		wgpu::TextureView view = texture.CreateView(&viewDesc);
@@ -657,6 +678,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
 		slot.View         = std::move(view);
 		slot.Width        = static_cast<uint32_t>(width);
 		slot.Height       = static_cast<uint32_t>(height);
+		slot.MipLevelCount = levels;
 		slot.CachedFilter = m_Filter;
 		slot.CachedWrapU  = m_WrapU;
 		slot.CachedWrapV  = m_WrapV;
@@ -666,7 +688,8 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
 		m_Width    = width;
 		m_Height   = height;
 		m_Channels = 4;
-		m_HasMips  = false;
+		m_HasMips = levels > 1;
+		m_UploadNeedsFinish = levels > 1;
 		m_SourcePath.clear();
 		return m_Tex != 0;
 	}

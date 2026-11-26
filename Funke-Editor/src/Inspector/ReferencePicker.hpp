@@ -11,6 +11,7 @@
 namespace Funke {
 
 	struct PropertyValue;
+	class Entity;
 
 	namespace ReferencePicker {
 
@@ -40,6 +41,7 @@ namespace Funke {
 		// for fields that can't round-trip a slice (e.g. script TextureRef).
 		std::vector<Entry> CollectAssetsByKind(AssetKind kind, bool includeSlices = true);
 		std::vector<Entry> CollectEntities(bool includePrefabAssets = true); // loaded scene entities, optionally Prefab assets
+		bool MatchesComponentTarget(Entity entity, const std::string& displayName);
 		std::vector<Entry> CollectComponentTargets(const std::string& componentDisplayName);
 
 		enum class Style { Plain, Thumbnails };

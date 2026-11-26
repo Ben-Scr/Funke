@@ -21,6 +21,96 @@ namespace {
 	class TimeTestApplication final : public Application {};
 }
 
+TEST_CASE("FunkeProject threading settings round-trip and validate project JSON") {
+	namespace fs = std::filesystem;
+	const fs::path root = fs::temp_directory_path() / ("FunkeThreading_"
+		+ std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+	fs::create_directories(root / "Assets");
+	struct Cleanup {
+		fs::path Root;
+		~Cleanup() { std::error_code error; fs::remove_all(Root, error); }
+	} cleanup{ root };
+	const std::string projectFile = (root / "project.json").string();
+	FunkeProject project;
+	project.Name = "Threading";
+	project.RootDirectory = root.string();
+	project.ProjectFilePath = projectFile;
+	std::string error;
+	FunkeProject loaded;
+
+	SUBCASE("every worker mode and workload flag survives saving") {
+		for (int count : { -1, 0, 1, 4, 32 }) {
+			for (bool enabled : { false, true }) {
+				project.Threading.WorkerCount = count;
+				project.Threading.Physics3DWorkerCount = count;
+				project.Threading.ParallelParticles = enabled;
+				project.Threading.ParallelSkeletalPoses = enabled;
+				project.Threading.ParallelRendering2D = enabled;
+				project.Threading.ParallelRendering3D = enabled;
+				project.Threading.ParallelPhysics2D = enabled;
+				REQUIRE(project.Save());
+				REQUIRE_MESSAGE(FunkeProject::TryLoad(root.string(), loaded, &error, false), error);
+				CHECK(loaded.Threading == project.Threading);
+			}
+		}
+	}
+	SUBCASE("old projects and partial objects keep automatic defaults") {
+		for (const char* fields : { "", ",\"threading\":{}", ",\"threading\":{\"parallelParticles\":false}" }) {
+			REQUIRE(File::WriteAllText(projectFile, std::string("{\"name\":\"Threading\"") + fields + "}"));
+			REQUIRE_MESSAGE(FunkeProject::TryLoad(root.string(), loaded, &error, false), error);
+			CHECK(loaded.Threading.WorkerCount == -1);
+			CHECK(loaded.Threading.Physics3DWorkerCount == -1);
+			CHECK(loaded.Threading.ParallelSkeletalPoses);
+			CHECK(loaded.Threading.ParallelRendering2D);
+			CHECK(loaded.Threading.ParallelRendering3D);
+			CHECK(loaded.Threading.ParallelPhysics2D);
+		}
+	}
+	SUBCASE("counts are clamped safely and unknown settings survive edits") {
+		REQUIRE(File::WriteAllText(projectFile, R"({"projectFormatVersion":2,"name":"Threading","engineVersion":"2026.1.0","modules":[],"threading":{"workerCount":1e30,"physics3DWorkerCount":-1e30,"parallelParticles":false,"futureSetting":"kept"}})"));
+		REQUIRE_MESSAGE(FunkeProject::TryLoad(root.string(), loaded, &error, false), error);
+		CHECK(loaded.Threading.WorkerCount == 32);
+		CHECK(loaded.Threading.Physics3DWorkerCount == -1);
+		loaded.Threading.ParallelParticles = true;
+		REQUIRE(loaded.Save());
+		Json::Value saved;
+		REQUIRE(Json::TryParse(File::ReadAllText(projectFile), saved));
+		const auto* threading = saved.FindMember("threading");
+		REQUIRE(threading);
+		REQUIRE(threading->FindMember("futureSetting"));
+		CHECK(threading->FindMember("futureSetting")->AsStringOr() == "kept");
+		CHECK(threading->FindMember("parallelParticles")->AsBoolOr(false));
+	}
+	SUBCASE("malformed settings are rejected without changing the file") {
+		for (const char* invalid : { "[]", "null", R"({"workerCount":"4"})", R"({"workerCount":1.5})",
+			R"({"physics3DWorkerCount":false})", R"({"parallelParticles":1})", R"({"parallelSkeletalPoses":"false"})",
+			R"({"parallelRendering2D":null})", R"({"parallelRendering3D":[]})", R"({"parallelPhysics2D":0})" }) {
+			const std::string source = std::string("{\"name\":\"Threading\",\"threading\":") + invalid + "}";
+			REQUIRE(File::WriteAllText(projectFile, source));
+			CHECK_FALSE(FunkeProject::TryLoad(root.string(), loaded, &error, false));
+			CHECK(error.find("threading") != std::string::npos);
+			CHECK(File::ReadAllText(projectFile) == source);
+		}
+	}
+}
+
+TEST_CASE("Threading settings resolve separate physics workers and workload flags") {
+	ThreadingSettings settings;
+	CHECK(settings.GetParallelWorkloads() == k_AllParallelWorkloads);
+	CHECK(settings.ResolvePhysics3DWorkers(0) == 1);
+	CHECK(settings.ResolvePhysics3DWorkers(4) == 3);
+	CHECK(settings.ResolvePhysics3DWorkers(128) == 8);
+	settings.Physics3DWorkerCount = 0;
+	CHECK(settings.ResolvePhysics3DWorkers(128) == 0);
+	settings.Physics3DWorkerCount = 32;
+	CHECK(settings.ResolvePhysics3DWorkers(2) == 32);
+	settings.WorkerCount = -100;
+	settings.Physics3DWorkerCount = 100;
+	settings.Clamp();
+	CHECK(settings.WorkerCount == -1);
+	CHECK(settings.Physics3DWorkerCount == 32);
+}
+
 // project.json round-trip for the default physics-world Hz setting. Mirrors the
 // write-if-non-default serialization contract: a non-default value survives
 // Save() -> Load(), the default is omitted and reconstructed, and the load-time
@@ -612,13 +702,18 @@ TEST_CASE("Physics layers: names and the symmetric 64-bit matrix round-trip") {
     project.RootDirectory = root.string();
     project.ProjectFilePath = (root / "project.json").string();
     auto& layers = project.PhysicsLayers;
-    CHECK(layers.SetName(2, "Player"));
+    CHECK(layers.FindIndex("Default") == 0);
+    CHECK_FALSE(layers.SetName(0, "Renamed"));
+    CHECK_FALSE(layers.SetName(0, ""));
+    CHECK_FALSE(layers.SetName(1, "Default"));
+    CHECK(layers.Names[0] == "Default");
+    CHECK(layers.SetName(2, "Hero"));
     CHECK(layers.SetName(63, "Far Layer"));
-    CHECK_FALSE(layers.SetName(3, "Player"));
+    CHECK_FALSE(layers.SetName(3, "Hero"));
     CHECK_FALSE(layers.SetName(3, " \t"));
     CHECK_FALSE(layers.SetName(3, "Bad##ID"));
     CHECK_FALSE(layers.SetName(64, "Invalid"));
-    CHECK(layers.FindIndex("player") == -1);
+    CHECK(layers.FindIndex("hero") == -1);
     project.PhysicsGravity2D = {1.5f, -3.25f};
     project.PhysicsGravity3D = {2, -4.5f, 6};
     layers.VisibleCount = 64;
@@ -640,9 +735,107 @@ TEST_CASE("Physics layers: names and the symmetric 64-bit matrix round-trip") {
 
     REQUIRE(File::WriteAllText(project.ProjectFilePath, R"({"name":"Legacy","modules":["Funke.2D"]})"));
     const auto legacy = FunkeProject::Load(root.string());
+    CHECK(legacy.PhysicsLayers.VisibleCount == 6);
     CHECK(legacy.PhysicsLayers.Names[0] == "Default");
+    CHECK(legacy.PhysicsLayers.Names[1] == "UI");
+    CHECK(legacy.PhysicsLayers.Names[2] == "Player");
+    CHECK(legacy.PhysicsLayers.Names[3] == "Enemy");
+    CHECK(legacy.PhysicsLayers.Names[4] == "World");
+    CHECK(legacy.PhysicsLayers.Names[5] == "Pickup");
     CHECK((legacy.PhysicsGravity2D == Vec2(0, -9.8f)));
     CHECK((legacy.PhysicsGravity3D == Vec3(0, -9.81f, 0)));
     CHECK(legacy.PhysicsLayers.Names[15] == "Layer 15");
     CHECK(legacy.PhysicsLayers.GetCollisionMask(uint64_t{1} << 63) == UINT64_MAX);
+}
+
+TEST_CASE("Physics layers: compact defaults and saved layer configurations round-trip") {
+    const auto root = std::filesystem::temp_directory_path() / ("FunkeLayerDefaults_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(root / "Assets");
+    struct Cleanup { std::filesystem::path Root; ~Cleanup() { std::error_code ec; std::filesystem::remove_all(Root, ec); } } cleanup{root};
+    FunkeProject project;
+    project.Name = "Layer Defaults";
+    project.RootDirectory = root.string();
+    project.ProjectFilePath = (root / "project.json").string();
+    auto& layers = project.PhysicsLayers;
+    CHECK(layers.VisibleCount == 6);
+    CHECK(layers.FindIndex("UI") == 1);
+    CHECK(layers.FindIndex("Enemy") == 3);
+    uint32_t expectedCount = 6;
+
+    SUBCASE("six defaults stay compact after saving") {}
+    SUBCASE("one visible layer is supported") { layers.VisibleCount = expectedCount = 1; }
+    SUBCASE("an added layer stays visible") {
+        layers.VisibleCount = expectedCount = 7;
+        REQUIRE(layers.SetName(6, "Projectile"));
+    }
+    SUBCASE("existing 16-layer names and filtering are preserved") {
+        layers.VisibleCount = expectedCount = 16;
+        for (uint32_t i = 1; i < PhysicsLayerSettings::Count; ++i)
+            REQUIRE(layers.SetName(i, "Layer " + std::to_string(i)));
+        layers.SetCollision(1, 15, false);
+    }
+    SUBCASE("custom names can exchange default slots") {
+        std::swap(layers.Names[1], layers.Names[3]);
+    }
+    SUBCASE("zero visible layers is repaired to one") { layers.VisibleCount = 0; expectedCount = 1; }
+    SUBCASE("counts above capacity are clamped") { layers.VisibleCount = 100; expectedCount = 64; }
+
+    REQUIRE(project.Save());
+    const auto source = File::ReadAllText(project.ProjectFilePath);
+    FunkeProject loaded;
+    std::string error;
+    REQUIRE_MESSAGE(FunkeProject::TryLoad(root.string(), loaded, &error, false), error);
+    CHECK(loaded.PhysicsLayers.VisibleCount == expectedCount);
+    CHECK(loaded.PhysicsLayers.Names == layers.Names);
+    CHECK(loaded.PhysicsLayers.CollisionMasks == layers.CollisionMasks);
+    CHECK(File::ReadAllText(project.ProjectFilePath) == source);
+}
+
+TEST_CASE("Physics layers: Default is reserved when loading and saving project settings") {
+    const auto root = std::filesystem::temp_directory_path() / ("FunkeReservedLayer_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(root / "Assets");
+    struct Cleanup { std::filesystem::path Root; ~Cleanup() { std::error_code ec; std::filesystem::remove_all(Root, ec); } } cleanup{root};
+    const auto path = (root / "project.json").string();
+    std::string names = R"(["Renamed", "Custom"])";
+    std::string expectedSecondName = "Custom";
+    SUBCASE("a renamed default is restored") {}
+    SUBCASE("another slot cannot claim Default") {
+        names = R"(["Renamed", "Default"])";
+        expectedSecondName = "Layer 1";
+    }
+    SUBCASE("empty saved names still contain Default") {
+        names = "[]";
+        expectedSecondName = "Layer 1";
+    }
+    const auto source = R"({"projectFormatVersion":)" + std::to_string(FunkeProject::k_CurrentProjectFormatVersion)
+        + R"(,"name":"Reserved Layer","engineVersion":"2026.1.0","modules":["Funke.2D"],"physicsLayers":{"visibleCount":0,"names":)"
+        + names + R"(,"collisionMasks":[0]}})";
+    REQUIRE(File::WriteAllText(path, source));
+    FunkeProject loaded;
+    std::string error;
+    REQUIRE_MESSAGE(FunkeProject::TryLoad(root.string(), loaded, &error, false), error);
+    CHECK(loaded.PhysicsLayers.Names[0] == "Default");
+    CHECK(loaded.PhysicsLayers.FindIndex("Default") == 0);
+    CHECK(loaded.PhysicsLayers.Names[1] == expectedSecondName);
+    CHECK(loaded.PhysicsLayers.VisibleCount == 1);
+    CHECK(loaded.PhysicsLayers.CollisionMasks[0] == 0);
+    CHECK(File::ReadAllText(path) == source);
+
+    loaded.PhysicsLayers.Names[0] = "Direct native edit";
+    REQUIRE(loaded.Save());
+    Json::Value saved;
+    REQUIRE(Json::TryParse(File::ReadAllText(path), saved, &error));
+    const auto* savedLayers = saved.FindMember("physicsLayers");
+    REQUIRE(savedLayers != nullptr);
+    const auto* savedNames = savedLayers->FindMember("names");
+    REQUIRE(savedNames != nullptr);
+    REQUIRE(savedNames->IsArray());
+    REQUIRE(savedNames->GetArray().size() == PhysicsLayerSettings::Count);
+    CHECK(savedNames->GetArray()[0].AsStringOr() == "Default");
+
+    FunkeProject reloaded;
+    REQUIRE_MESSAGE(FunkeProject::TryLoad(root.string(), reloaded, &error, false), error);
+    CHECK(reloaded.PhysicsLayers.Names[0] == "Default");
+    CHECK(reloaded.PhysicsLayers.Names[1] == expectedSecondName);
+    CHECK(reloaded.PhysicsLayers.CollisionMasks == loaded.PhysicsLayers.CollisionMasks);
 }

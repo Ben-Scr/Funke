@@ -5,12 +5,13 @@
 -- browsers with WebGPU (Chrome/Edge 113+, Safari 26+, Firefox 141+).
 return {
     name         = "Funke.Platform.Web",
-    version      = "0.1.0",
+    version      = "0.2.0",
     kind         = "platform",
     description  = "Build Funke games for the browser (WebAssembly, WebGPU).",
     platform     = "Web",
     builder      = "Builder/build.py",
     hosts        = "windows,macos,linux",
+    boltAot      = "1",
     protocol     = "1",
     dependencies = { "Funke.ScriptRuntime.Mono" },
 }

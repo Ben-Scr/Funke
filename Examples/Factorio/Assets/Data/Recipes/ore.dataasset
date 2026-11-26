@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "type": "RecipeDefinition",
+  "fields": {
+    "Id": "ore",
+    "Result": "8354091683697080769",
+    "Amount": "20",
+    "Seconds": "0",
+    "CreativeOnly": "true",
+    "Ingredients": ""
+  }
+}

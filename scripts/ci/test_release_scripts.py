@@ -114,8 +114,11 @@ class EditorScriptToolingSourceTests(unittest.TestCase):
             r'm_ManagedRebuildError = "Cannot rebuild C# scripts: managed project path is not configured\.";',
         )
         header = SCRIPT_SYSTEM.with_suffix(".hpp").read_text(encoding="utf-8")
-        self.assertIn("return m_ManagedRebuildError.empty() && m_NativeRebuildError.empty();", header)
-        editor = (REPO_ROOT / "Funke-Editor/src/Systems/ImGuiEditorLayer.cpp").read_text(encoding="utf-8")
+        self.assertIn("return GetLastRebuildOutput().empty();", header)
+        aggregate = source.split("ScriptSystem::GetLastRebuildOutput()", 1)[1].split("return output;", 1)[0]
+        for error_source in ("BoltScriptHost::RebuildErrors()", "&m_ManagedRebuildError", "&m_NativeRebuildError"):
+            self.assertIn(error_source, aggregate)
+        editor = (REPO_ROOT / "Funke-Editor/src/Systems/ImGuiEditorLayerPlayMode.cpp").read_text(encoding="utf-8")
         self.assertRegex(
             editor,
             r"if \(scriptSys && !scriptSys->DidLastRebuildSucceed\(\)\) \{[^}]*return;",
@@ -243,7 +246,8 @@ class BuildMetadataTests(unittest.TestCase):
         return json.loads(metadata_script.METADATA_JSON.read_text(encoding="utf-8"))
 
     def test_matching_prerelease_tag_generates_consistent_identity(self) -> None:
-        self.assertEqual(self._run("--tag", "v2026.1.0-rc.1", "--require-clean"), 0)
+        with mock.patch.object(metadata_script.platform, "system", return_value="Windows"):
+            self.assertEqual(self._run("--tag", "v2026.1.0-rc.1", "--require-clean"), 0)
         metadata = json.loads(metadata_script.METADATA_JSON.read_text(encoding="utf-8"))
         self.assertEqual(metadata["version"], "2026.1.0-rc.1")
         self.assertRegex(metadata["buildId"], r"^2026\.1\.0-rc\.1\+[0-9a-f]{12}$")
@@ -254,6 +258,20 @@ class BuildMetadataTests(unittest.TestCase):
             "<IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>",
             managed_props,
         )
+
+    def test_posix_metadata_names_the_shipping_archive(self) -> None:
+        output = self.root / "build/github-output.txt"
+        for system, machine, label in (("Linux", "x86_64", "Linux-x64"), ("Darwin", "arm64", "macOS-arm64")):
+            with (
+                self.subTest(system=system),
+                mock.patch.object(metadata_script.platform, "system", return_value=system),
+                mock.patch.object(metadata_script.platform, "machine", return_value=machine),
+            ):
+                self.assertEqual(self._run("--require-clean", "--github-output", str(output)), 0)
+                metadata = self._metadata()
+                self.assertEqual(metadata["archiveName"], f"Funke-Editor-2026.1.0-rc.1-{label}.tar.gz")
+                self.assertIsNone(metadata["symbolsArchiveName"])
+                self.assertIn("symbols_archive_name=", output.read_text().splitlines())
 
     def test_final_tag_does_not_match_prerelease_version(self) -> None:
         self.assertEqual(self._run("--tag", "v2026.1.0"), 1)
@@ -291,7 +309,7 @@ class BuildMetadataTests(unittest.TestCase):
             with self.subTest(code=code), mock.patch.object(metadata_script, "run_git", side_effect=patched_git):
                 self.assertEqual(self._run("--tag", "v2026.1.0-rc.1", "--require-clean"), 0)
                 self.assertEqual(self._metadata(), original)
-                self.assertIn(f"symbols_archive_name={original['symbolsArchiveName']}", output.read_text())
+                self.assertIn(f"symbols_archive_name={original['symbolsArchiveName'] or ''}", output.read_text())
 
     def test_unmanaged_or_staged_submodule_changes_still_block_releases(self) -> None:
         git = metadata_script.run_git

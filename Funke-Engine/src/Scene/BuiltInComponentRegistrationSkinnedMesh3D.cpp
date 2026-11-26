@@ -39,7 +39,8 @@ namespace Funke::BuiltInComponentRegistrationInternal {
 			desc.Set = [field, invalidate](Entity& e, const PropertyValue& v) {
 				// Re-read on assignment so a file replaced moments ago is picked up.
 				invalidate(v.UIntValue);
-				e.GetComponent<SMR>().*field = v.UIntValue;
+				auto& renderer = e.GetComponent<SMR>();
+				renderer.*field = v.UIntValue;
 			};
 			return desc;
 		}
@@ -49,6 +50,7 @@ namespace Funke::BuiltInComponentRegistrationInternal {
 			Value v = Value::MakeObject();
 			if (c.Model != 0) v.AddMember("model", Value(std::to_string(c.Model)));
 			if (c.Material != 0) v.AddMember("material", Value(std::to_string(c.Material)));
+			c.MaterialOverrides.Serialize(v);
 			v.AddMember("color", UIColorToJson(c.Color));
 			v.AddMember("lit", Value(c.Lit));
 			v.AddMember("castShadows", Value(c.CastShadows));
@@ -71,6 +73,7 @@ namespace Funke::BuiltInComponentRegistrationInternal {
 			const SMR d{};
 			c.Model = GetUInt64Member(v, "model", 0);
 			c.Material = GetUInt64Member(v, "material", 0);
+			c.MaterialOverrides.Deserialize(v, c.Model);
 			const Value* color = v.FindMember("color");
 			c.Color = color ? UIColorFromJson(*color, d.Color) : d.Color;
 			c.Lit = GetBoolMember(v, "lit", d.Lit);
@@ -99,7 +102,7 @@ namespace Funke::BuiltInComponentRegistrationInternal {
 				"An animated model (.gltf/.glb with a skin or node animation). A model without one draws static.",
 				&SMR::Model, &MeshLibrary::Invalidate),
 			MakeAssetRef("Material", "Material", AssetKind::Material,
-				"A .material asset. None uses a white default material tinted by Color.", &SMR::Material, &MaterialLibrary::Invalidate),
+				"A whole-model override. None uses slot overrides/imported materials.", &SMR::Material, &MaterialLibrary::Invalidate),
 			Properties::Make("Color", "Color", &SMR::Color, Properties::Meta::Tooltip("Tint multiplied into the material's base color.")),
 			Properties::Make("Lit", "Lit", &SMR::Lit,
 				Properties::Meta::EnabledIf([](const Entity& e) { return e.GetComponent<SMR>().Material == 0; })

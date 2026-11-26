@@ -1,6 +1,6 @@
 ---
 name: funke-add-profiler
-description: Use when instrumenting Funke code with the profiler — FUNKE_PROFILE_* macros, adding or registering a profiler module, naming threads for Tracy, timing GPU work, connecting the Tracy viewer, or extending the Profiler panel. Triggers on "FUNKE_PROFILE_SCOPE", "FUNKE_PROFILE_VALUE", "FUNKE_PROFILE_THREAD_NAME", "FUNKE_PROFILER_ENABLED", "--no-profiler", "Profiler::Register", "Profiler::PushSample", "ProfilerModule", "Tracy", "TRACY_ON_DEMAND", "GpuTimer", "GPU timing", "timestamp query", "Profiler panel", "Ctrl+F6", "Track in Background", "Sampling Hz", "profiler shows 0", "enableInRuntime", or work in `Funke-Engine/src/Profiling/` and `Funke-Editor/src/Gui/ProfilerPanel.cpp`. Explains the dual-layer design (Tracy zones + in-engine ring buffers), the compile gate (Dist and --no-profiler strip it), the built-in modules, why samples only land during Play, and how to make a new module show up in the panel (hard-coded category layout).
+description: "Instrument Funke with Tracy, GPU timings or in-engine profiler modules, and diagnose missing samples in the Profiler panel."
 ---
 
 # Funke Profiler
@@ -33,7 +33,7 @@ FUNKE_PROFILE_THREAD_NAME("FileWatcher");           // names the current thread 
 ```
 
 - `FUNKE_PROFILE_SCOPE(name)` uses `ZoneTransientN` + a `__LINE__`-suffixed RAII `ProfilerScopedSample`, so two scopes on different lines of one function are fine; two on the **same line** collide. `name` must be a `const char*` that outlives the scope (string literal).
-- Don't add another `FUNKE_PROFILE_FRAME`; `Application.cpp` emits it once per frame and `Profiler::OnFrameMark` is currently a no-op hook.
+- `Profiler::OnFrameMark` is an extension hook. `Application::Run` already emits the frame mark.
 - Direct API when you already have the number: `Profiler::PushSample(name, ms)` (e.g. `Renderer2D::RenderSceneWithVP` pushes `"Rendering"`), `Profiler::PushValue(name, value)`.
 
 ## Modules
@@ -80,11 +80,7 @@ Adding a module:
 - Settings persist in `<project>/project.json` under `"profiler"`: `enableInRuntime`, `trackInBackground`, `samplingHz`, `trackingSpan`, and `modules` (only modules the user disabled, as `name: false`). Written only when non-default (`FunkeProject.cpp`). New modules need no migration — absent means enabled.
 - Panel UI conventions: `funke-add-editor-panel`.
 
-## Pitfalls
-
-- "Panel shows nothing" → not in Play mode, paused, panel collapsed, module disabled, or name not registered/not in the layout table.
-- Registering in a static initializer or before `Application` init → wiped by `Profiler::Initialize()`.
+## Collection costs
 - `Profiler::AllModules()` deep-copies every ring buffer; in per-frame code use the `AllModules(std::vector<ProfilerModule>&)` overload.
-- Mixing `TRACY_ON_DEMAND` on/off between Tracy and its consumers corrupts zones (comment in `Dependencies.lua`) — don't touch those defines piecemeal.
-- Long editor sessions without `TRACY_ON_DEMAND` grew to multiple GB; it must stay on.
+- Keep `TRACY_ON_DEMAND` consistent across Tracy and its consumers. Mixed definitions corrupt zones, and continuous recording can grow to gigabytes over a long editor session.
 - One-off timing that won't be committed: `Timer` / `ScopedTimer` (`funke-debug`).

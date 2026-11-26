@@ -1,0 +1,68 @@
+import Funke
+namespace Funke.UI;
+
+public class Button : Component {
+public:
+    protected override ulong FkType() { return 5ul; }
+    UITransitionMode TransitionMode { get { return (UITransitionMode)FkButton_GetTransitionMode(ID, 0ul); } set { FkButton_SetTransitionMode(ID, (ulong)value); } }
+    Vector4 NormalColor { get { return FunkeApiTypes.DecodeVector4(FkButton_GetNormalColor(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkButton_SetNormalColor(ID, value.LowBits()); } }
+    Vector4 HoveredColor { get { return FunkeApiTypes.DecodeVector4(FkButton_GetHoveredColor(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkButton_SetHoveredColor(ID, value.LowBits()); } }
+    Vector4 PressedColor { get { return FunkeApiTypes.DecodeVector4(FkButton_GetPressedColor(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkButton_SetPressedColor(ID, value.LowBits()); } }
+    Vector4 DisabledColor { get { return FunkeApiTypes.DecodeVector4(FkButton_GetDisabledColor(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkButton_SetDisabledColor(ID, value.LowBits()); } }
+    Vector4 FocusedColor { get { return FunkeApiTypes.DecodeVector4(FkButton_GetFocusedColor(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkButton_SetFocusedColor(ID, value.LowBits()); } }
+    Funke.Entity? TargetGraphic { get { return Funke.Entity.FromId(FkButton_GetTargetGraphic(ID, 0ul)); } set { ulong id = 0ul; if (value != null) id = value.Value.ID; FkButton_SetTargetGraphic(ID, id); } }
+    Funke.Texture? NormalSprite { get { return Funke.Texture.FromAssetUUID(FkButton_GetNormalSprite(ID, 0ul)); } set { ulong guid = 0ul; if (value != null) guid = value.Value.UUID; FkButton_SetNormalSprite(ID, guid); } }
+    Funke.Texture? HoveredSprite { get { return Funke.Texture.FromAssetUUID(FkButton_GetHoveredSprite(ID, 0ul)); } set { ulong guid = 0ul; if (value != null) guid = value.Value.UUID; FkButton_SetHoveredSprite(ID, guid); } }
+    Funke.Texture? PressedSprite { get { return Funke.Texture.FromAssetUUID(FkButton_GetPressedSprite(ID, 0ul)); } set { ulong guid = 0ul; if (value != null) guid = value.Value.UUID; FkButton_SetPressedSprite(ID, guid); } }
+    Funke.Texture? DisabledSprite { get { return Funke.Texture.FromAssetUUID(FkButton_GetDisabledSprite(ID, 0ul)); } set { ulong guid = 0ul; if (value != null) guid = value.Value.UUID; FkButton_SetDisabledSprite(ID, guid); } }
+    Funke.Texture? FocusedSprite { get { return Funke.Texture.FromAssetUUID(FkButton_GetFocusedSprite(ID, 0ul)); } set { ulong guid = 0ul; if (value != null) guid = value.Value.UUID; FkButton_SetFocusedSprite(ID, guid); } }
+    bool WasClicked {
+        get {
+            Funke.Entity owner = FunkeApiTypes.MakeEntity(ID);
+            Interactable? target = owner.GetComponent<Interactable>();
+            if (target == null) return false;
+            return target.Value.IsClicked;
+        }
+    }
+    ButtonEvents& Events { get { return FkUiStore<Button, ButtonEvents>.For(ID).Get(); } }
+    WidgetEvent<Button> ClickDown {
+        get {
+            Shared<ButtonEvents> state = FkUiStore<Button, ButtonEvents>.For(ID);
+            WidgetEvent<Button> signal;
+            signal.FkAdd = (Action<Button> h) => { state.Get().ClickDown += h; };
+            signal.FkRemove = (Action<Button> h) => { state.Get().ClickDown -= h; };
+            return signal;
+        }
+        set {}
+    }
+    WidgetEvent<Button> Clicked {
+        get {
+            Shared<ButtonEvents> state = FkUiStore<Button, ButtonEvents>.For(ID);
+            WidgetEvent<Button> signal;
+            signal.FkAdd = (Action<Button> h) => { state.Get().Clicked += h; };
+            signal.FkRemove = (Action<Button> h) => { state.Get().Clicked -= h; };
+            return signal;
+        }
+        set {}
+    }
+    WidgetEvent<Button> ClickUp {
+        get {
+            Shared<ButtonEvents> state = FkUiStore<Button, ButtonEvents>.For(ID);
+            WidgetEvent<Button> signal;
+            signal.FkAdd = (Action<Button> h) => { state.Get().ClickUp += h; };
+            signal.FkRemove = (Action<Button> h) => { state.Get().ClickUp -= h; };
+            return signal;
+        }
+        set {}
+    }
+    WidgetEvent<Button> Pressed {
+        get {
+            Shared<ButtonEvents> state = FkUiStore<Button, ButtonEvents>.For(ID);
+            WidgetEvent<Button> signal;
+            signal.FkAdd = (Action<Button> h) => { state.Get().Pressed += h; };
+            signal.FkRemove = (Action<Button> h) => { state.Get().Pressed -= h; };
+            return signal;
+        }
+        set {}
+    }
+}

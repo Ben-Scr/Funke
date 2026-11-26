@@ -1,0 +1,27 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public static class Log {
+private:
+    void Write(string message, ulong level, string file, int line) {
+        FkLogLocation(FunkeText.Put(file), 0ul);
+        FunkeText.Put(message);
+        FkLogText(level, ((ulong)Reinterpret<uint>(line)));
+
+    }
+public:
+    static event System.Action<string> LogMessage;
+    static void FkRaiseMessage() { LogMessage.Invoke(FunkeText.Read(FkEventText(0ul, 0ul))); }
+    void Trace(string message, string file = "", int line = 0) { Write(message, 0ul, file, line); }
+    void Trace<T>(T value, string file = "", int line = 0) { Write((string)value, 0ul, file, line); }
+    void Info(string message, string file = "", int line = 0) { Write(message, 1ul, file, line); }
+    void Info<T>(T value, string file = "", int line = 0) { Write((string)value, 1ul, file, line); }
+    void Warn(string message, string file = "", int line = 0) { Write(message, 2ul, file, line); }
+    void Warn<T>(T value, string file = "", int line = 0) { Write((string)value, 2ul, file, line); }
+    void Error(string message, string file = "", int line = 0) { Write(message, 3ul, file, line); }
+    void Error<T>(T value, string file = "", int line = 0) { Write((string)value, 3ul, file, line); }
+    void Print(string message) { Info(message); }
+}

@@ -19,6 +19,7 @@
 #include "Scene/SceneManager.hpp"
 #include "Scripting/ScriptComponent.hpp"
 #include "Scripting/ScriptComponentInspector.hpp"
+#include "Scripting/BoltScriptHost.hpp"
 #include "Scripting/ScriptDiscovery.hpp"
 #include "Scripting/ScriptEngine.hpp"
 #include "Scripting/DataAssetManager.hpp"
@@ -57,7 +58,7 @@ namespace Funke {
 			}
 			const auto* exists = status.FindMember("exists");
 			if (!exists || !exists->AsBoolOr(false)) {
-				ImGui::TextWrapped("Script type '%s' is not available in the loaded assembly. Its attachment and saved values are retained.", className.c_str());
+				ImGui::TextWrapped("Script type '%s' is not available in the loaded assembly. Its attachment and saved values are retained.", EditorScriptDiscovery::ClassDisplayName(className).c_str());
 				if (ImGui::SmallButton("Open Console")) ImGui::SetWindowFocus("Log");
 				const std::string output = ScriptSystem::GetLastRebuildOutput();
 				if (!output.empty() && ImGui::TreeNode("Last build / reload failure")) {
@@ -271,7 +272,7 @@ namespace Funke {
 		// PropertyDrawer's selection span.
 		void ApplyScriptFieldEdit(const Entity& entity, std::size_t scriptIndex,
 			const std::string& className, const std::string& fieldName,
-			const std::string& newValueStr, bool isPlaying)
+			const std::string& newValueStr, bool isPlaying, const std::string& typeTag = {})
 		{
 			(void)isPlaying; // edits now persist to PendingFieldValues in both modes; see below
 			if (!entity.HasComponent<ScriptComponent>()) return;
@@ -292,6 +293,14 @@ namespace Funke {
 			// mode (ImGuiEditorLayer::CaptureScriptFieldOverrides / ReapplyScriptFieldOverrides).
 			// Runtime gameplay mutations never run through here, so they still revert.
 			sc.PendingFieldValues[className + "." + fieldName] = newValueStr;
+			if (inst.GetType() == ScriptType::Bolt) {
+				if (typeTag == "entity" || typeTag.starts_with("component:")) {
+					auto meta = Json::Value::MakeObject();
+					meta.AddMember("type", typeTag);
+					sc.PendingFieldMetadata[className + "." + fieldName] = Json::Stringify(meta);
+				}
+				BoltScriptHost::ApplyField(entity, className, fieldName);
+			}
 		}
 
 		// The raw bytes of a C# IComponent struct on an entity, or null when `className` isn't one / the entity lacks it.
@@ -420,11 +429,11 @@ namespace Funke {
 			};
 		}
 
-		// ── List field codec ─────────────────────────────────────────
+		// â”€â”€ List field codec â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 		// Script list fields ride the single-string wire as their items, each
 		// prefixed by a '\n' marker with embedded backslash/newline escaped. The
 		// leading marker makes an empty list ("") distinct from a one-element list
-		// whose element is empty ("\n") — without it, "+ Add" then leaving a None
+		// whose element is empty ("\n") â€” without it, "+ Add" then leaving a None
 		// reference (or "") would collapse back to zero elements on the next
 		// round-trip. Must match the C# producer (EncodeListString) byte-for-byte.
 		// The item type lives in PropertyMetadata::ListItemType, so the codec needs
@@ -444,7 +453,7 @@ namespace Funke {
 
 		// Raw container codec (leading-'\n' element marker + backslash/newline
 		// escaping). Used at the outer level (elements) and, for object lists, the
-		// inner level (each element's sub-fields) — the outer pass escapes the
+		// inner level (each element's sub-fields) â€” the outer pass escapes the
 		// inner strings, so nesting is automatic.
 		std::string JoinListString(const std::vector<std::string>& parts) {
 			std::string out;
@@ -608,7 +617,7 @@ namespace Funke {
 			d.Metadata.IsPhysicsLayerMask = rec.TypeTag == "physicslayer";
 			d.Metadata.ComponentTypeName = rec.ComponentTypeName;
 			d.Metadata.AssetKindFilter = ScriptAssetKindForTag(rec.TypeTag);
-			// Script TextureRefs carry only a UUID — slices can't round-trip, so keep them out of the picker.
+			// Script TextureRefs carry only a UUID â€” slices can't round-trip, so keep them out of the picker.
 			d.Metadata.SuppressTextureSlices = true;
 			if (auto pred = BuildScriptEnabledIfPredicate(rec, siblingRecords, perEntityValues)) {
 				d.Metadata.EnabledIfFn = std::move(pred);
@@ -641,7 +650,7 @@ namespace Funke {
 					const auto nativeResult = ApplyNativeComponentFieldEdit(entity, className, fieldName, typeTag, newValueStr);
 					if (nativeResult && !*nativeResult) return;
 					if (!nativeResult) {
-						ApplyScriptFieldEdit(entity, scriptIndex, className, fieldName, newValueStr, isPlaying);
+						ApplyScriptFieldEdit(entity, scriptIndex, className, fieldName, newValueStr, isPlaying, typeTag);
 					}
 					(*perEntityValues)[static_cast<uint32_t>(entity.GetHandle())][fieldName] = newValueStr;
 					(void)multiEditEnabled; // PropertyDrawer already iterates the span
@@ -671,7 +680,7 @@ namespace Funke {
 			d.Metadata.IsPhysicsLayerMask = rec.TypeTag == "physicslayer";
 			d.Metadata.ComponentTypeName = rec.ComponentTypeName;
 			d.Metadata.AssetKindFilter = ScriptAssetKindForTag(rec.TypeTag);
-			// Script TextureRefs carry only a UUID — slices can't round-trip, so keep them out of the picker.
+			// Script TextureRefs carry only a UUID â€” slices can't round-trip, so keep them out of the picker.
 			d.Metadata.SuppressTextureSlices = true;
 			if (auto pred = BuildScriptEnabledIfPredicate(rec, siblingRecords, perEntityValues)) {
 				d.Metadata.EnabledIfFn = std::move(pred);
@@ -761,7 +770,7 @@ namespace Funke {
 			}
 		}
 
-		// ── Nested struct/class grouping ─────────────────────────────
+		// â”€â”€ Nested struct/class grouping â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 		// C# flattens a plain struct/class field into dotted records
 		// ("P" -> "P.X", "P.Y"). Rebuild that shape as collapsible groups;
 		// leaves still draw through the normal PropertyDrawer path.
@@ -846,6 +855,47 @@ namespace Funke {
 			RenderFieldTree(root, records, idPrefix, drawLeaf);
 		}
 
+		std::vector<PropertyDescriptor> BoltFieldDescriptors(std::span<const Entity> entities,
+			const std::string& identity, size_t index)
+		{
+			std::vector<EditorFieldRecord> records;
+			auto values = std::make_shared<ScriptFieldValueMap>();
+			for (size_t i = 0; i < entities.size(); ++i) {
+				const Entity& entity = entities[i];
+				auto& bucket = (*values)[static_cast<uint32_t>(entity.GetHandle())];
+				for (const auto& field : BoltScriptHost::GetFields(entity, identity)) {
+					bucket[field.Name] = field.Value;
+					if (i != 0) continue;
+					EditorFieldRecord record;
+					record.Name = field.Name;
+					record.DisplayName = field.DisplayName;
+					record.TypeTag = field.Type;
+					if (field.Type.starts_with("component:")) record.ComponentTypeName = field.Type.substr(10);
+					if (record.TypeTag.starts_with("Vector")) record.TypeTag[0] = 'v';
+					else if (record.TypeTag == "Color") record.TypeTag = "color";
+					record.Value = field.Value;
+					record.ReadOnly = field.ReadOnly;
+					record.Tooltip = field.Tooltip;
+					record.HeaderContent = field.HeaderContent;
+					record.HeaderSize = field.HeaderSize;
+					record.SpaceHeight = field.SpaceHeight;
+					record.ClampMin = field.ClampMin;
+					record.ClampMax = field.ClampMax;
+					record.HasSpace = field.HasSpace;
+					record.HasClamp = field.HasClamp;
+					record.HasEnabledIf = field.HasEnabledIf;
+					record.EnabledIfAny = field.EnabledIfAny;
+					record.EnabledIfField = field.EnabledIfField;
+					record.EnabledIfValue = field.EnabledIfValue;
+					records.push_back(std::move(record));
+				}
+			}
+			std::vector<PropertyDescriptor> descriptors;
+			for (const auto& record : records) descriptors.push_back(BuildScriptFieldDescriptor(record, identity,
+				index, entities.size() > 1, Application::GetIsPlaying(), values, records));
+			return descriptors;
+		}
+
 		void RenderScriptFieldsForInstance(ScriptComponent& sc,
 			const ScriptInstance& instance, std::size_t scriptIndex,
 			std::span<const Entity> entities, bool multiEditEnabled)
@@ -881,7 +931,7 @@ namespace Funke {
 				}
 			}
 
-			// Per-entity snapshot — GetScriptFields returns a static buffer, so parse each entity fully before moving on.
+			// Per-entity snapshot â€” GetScriptFields returns a static buffer, so parse each entity fully before moving on.
 			auto perEntityValues = std::make_shared<ScriptFieldValueMap>();
 			for (const Entity& e : entities) {
 				if (!e.HasComponent<ScriptComponent>()) continue;
@@ -971,7 +1021,7 @@ namespace Funke {
 			d.Metadata.IsPhysicsLayerMask = rec.TypeTag == "physicslayer";
 			d.Metadata.ComponentTypeName = rec.ComponentTypeName;
 			d.Metadata.AssetKindFilter = ScriptAssetKindForTag(rec.TypeTag);
-			// Script TextureRefs carry only a UUID — slices can't round-trip, so keep them out of the picker.
+			// Script TextureRefs carry only a UUID â€” slices can't round-trip, so keep them out of the picker.
 			d.Metadata.SuppressTextureSlices = true;
 			const auto value = std::make_shared<std::string>(rec.Value);
 
@@ -1034,7 +1084,7 @@ namespace Funke {
 			d.Metadata.IsPhysicsLayerMask = rec.TypeTag == "physicslayer";
 			d.Metadata.ComponentTypeName = rec.ComponentTypeName;
 			d.Metadata.AssetKindFilter = ScriptAssetKindForTag(rec.TypeTag);
-			// Script TextureRefs carry only a UUID — slices can't round-trip, so keep them out of the picker.
+			// Script TextureRefs carry only a UUID â€” slices can't round-trip, so keep them out of the picker.
 			d.Metadata.SuppressTextureSlices = true;
 
 			if (const PropertyType itemType = ConfigureListItemMetadata(d, rec); d.Type == PropertyType::List) {
@@ -1083,7 +1133,7 @@ namespace Funke {
 				if (it != sc.PendingFieldValues.end()) rec.Value = it->second;
 			}
 
-			// No live managed instance in edit mode — build the per-entity snapshot from PendingFieldValues.
+			// No live managed instance in edit mode â€” build the per-entity snapshot from PendingFieldValues.
 			auto perEntityValues = std::make_shared<ScriptFieldValueMap>();
 			for (const Entity& e : entities) {
 				if (!e.HasComponent<ScriptComponent>()) continue;
@@ -1164,7 +1214,10 @@ namespace Funke {
 					section.Properties.push_back(std::move(descriptor));
 				}
 			}
-			else {
+			else if (script.GetType() == ScriptType::Bolt) {
+				section.Properties = BoltFieldDescriptors(std::span(&entity, 1), className, index);
+			}
+			else if (CanBeManagedScript(script.GetType())) {
 				const char* json = script.HasManagedInstance() && callbacks.GetScriptFields
 					? callbacks.GetScriptFields(static_cast<int32_t>(script.GetGCHandle()))
 					: callbacks.GetClassFieldDefs ? callbacks.GetClassFieldDefs(className.c_str()) : nullptr;
@@ -1279,7 +1332,7 @@ namespace Funke {
 
 				if (ImGui::IsItemHovered() && (truncated || !entry.Path.empty() || entry.IsPackage())) {
 					const std::string where = entry.IsPackage()
-						? entry.ClassName + "  (" + EditorScriptDiscovery::PackageDisplayName(entry.Package) + " package)"
+						? EditorScriptDiscovery::ClassDisplayName(entry.ClassName) + "  (" + EditorScriptDiscovery::PackageDisplayName(entry.Package) + " package)"
 						: Path::ToProjectRelativeDisplay(entry.Path.string());
 					ImGui::SetTooltip("%s", where.c_str());
 				}
@@ -1344,7 +1397,8 @@ namespace Funke {
 		if (i >= scriptComp.ManagedComponents.size()) return;
 
 		const std::string& className = scriptComp.ManagedComponents[i];
-		std::string label = className.empty() ? "C# Component" : className + " (C# Component)";
+		const std::string displayName = EditorScriptDiscovery::ClassDisplayName(className);
+		std::string label = className.empty() ? "C# Component" : displayName + " (C# Component)";
 
 		ImGui::PushID(("managed-component-" + std::to_string(i)).c_str());
 
@@ -1358,7 +1412,7 @@ namespace Funke {
 					[](const EditorScriptDiscovery::ScriptEntry& e) {
 						return e.Type == ScriptType::Managed;
 					},
-					className);
+					displayName);
 
 				RenderFieldsForManagedComponent(scriptComp, className, i, pass.Propagation, pass.MultiEdit);
 			}
@@ -1378,6 +1432,10 @@ namespace Funke {
 		if (instance.GetClassName().empty()) {
 			label = "Script";
 		}
+		else if (instance.GetType() == ScriptType::Bolt) {
+			const std::string path = BoltScriptHost::ResolveAsset(instance.GetClassName());
+			label = (path.empty() ? "Missing asset " + instance.GetClassName() : Path::ToUtf8(Path::FromUtf8(path).stem())) + " (Bolt Script)";
+		}
 		else if (instance.GetType() == ScriptType::Native) {
 			label = instance.GetClassName() + " (C++ Script)";
 		}
@@ -1385,19 +1443,20 @@ namespace Funke {
 			const ComponentInfo* dynamicInfo = SceneManager::GetComponentRegistry()
 				.FindBySerializedName(instance.GetClassName());
 			const bool isNativeComponent = dynamicInfo && dynamicInfo->isDynamic;
-			label = instance.GetClassName()
+			label = EditorScriptDiscovery::ClassDisplayName(instance.GetClassName())
 				+ (isNativeComponent ? " (C# Native Component)" : " (C# Script)");
 		}
 
 		ImGui::PushID(static_cast<int>(i));
 
 		bool removeRequested = false;
-		bool open = ImGuiUtils::BeginComponentSection(label.c_str(), removeRequested, {}, "script");
+		bool open = ImGuiUtils::BeginComponentSection(label.c_str(), removeRequested, {},
+			EditorScriptDiscovery::ScriptIconName(instance.GetType()));
 		if (removeRequested) pass.RemoveScriptIndex = i;
 
 		if (open) {
 			const ScriptType instanceType = instance.GetType();
-			const bool ready = instanceType == ScriptType::Native || DrawManagedTypeStatus(instance.GetClassName());
+			const bool ready = !CanBeManagedScript(instanceType) || DrawManagedTypeStatus(instance.GetClassName());
 			if (ready) {
 				DrawOpenScriptButton(instance.GetClassName(),
 					[instanceType](const EditorScriptDiscovery::ScriptEntry& e) {
@@ -1408,7 +1467,11 @@ namespace Funke {
 				if (instance.GetType() == ScriptType::Native) {
 					RenderNativeScriptFields(instance, i, pass.Propagation);
 				}
-				else if (ScriptEngine::IsInitialized()) {
+				else if (instanceType == ScriptType::Bolt) {
+					for (auto& field : BoltFieldDescriptors(pass.Propagation, instance.GetClassName(), i))
+						PropertyDrawer::Draw(pass.Propagation, field, MakeFieldKey(i, instance.GetClassName(), field.Name));
+				}
+				else if (CanBeManagedScript(instanceType) && ScriptEngine::IsInitialized()) {
 					RenderScriptFieldsForInstance(scriptComp, instance, i, pass.Propagation, pass.MultiEdit);
 				}
 			}
@@ -1460,7 +1523,7 @@ namespace Funke {
 
 		if (undo) InspectorUndoRecorder::Record(undo->Finish(*scene, undoHandles));
 		RenderScriptPicker();
-		// NOTE: ReferencePicker::RenderPopup() intentionally NOT called here — the outer loop already renders it once; calling it again duplicates IDs and triggers ImGui's conflicting-ID assertion.
+		// NOTE: ReferencePicker::RenderPopup() intentionally NOT called here â€” the outer loop already renders it once; calling it again duplicates IDs and triggers ImGui's conflicting-ID assertion.
 	}
 
 	void DrawScriptComponentInspector(std::span<const Entity> entities)
@@ -1483,9 +1546,10 @@ namespace Funke {
 			[](const EditorScriptDiscovery::ScriptEntry& e) {
 				return e.IsSceneSystem;
 			},
-			className);
+			EditorScriptDiscovery::ClassDisplayName(className));
 
-		if (!ScriptEngine::IsInitialized()) {
+		const bool bolt = !BoltScriptHost::ResolveAsset(className).empty();
+		if (!bolt && !ScriptEngine::IsInitialized()) {
 			ImGui::TextDisabled("Script engine not initialized");
 			return;
 		}
@@ -1495,9 +1559,14 @@ namespace Funke {
 		const bool hasLiveInstance = (handle != 0);
 
 		// Live instance: read actual managed state. Edit mode: class defaults patched with authored values below.
+		std::string boltFields;
 		const char* json = nullptr;
 		if (hasLiveInstance) {
 			json = ScriptEngine::GetSceneSystemFields(handle);
+		}
+		else if (bolt) {
+			boltFields = BoltScriptHost::SystemFieldDefinitions(className);
+			json = boltFields.c_str();
 		}
 		else if (callbacks.GetClassFieldDefs) {
 			json = callbacks.GetClassFieldDefs(className.c_str());

@@ -56,7 +56,7 @@ namespace Funke {
 		// they get recreated against the new assembly, and global systems are restarted.
 		static bool ReloadManagedAssemblies();
 		bool IsRebuilding() const;
-		bool DidLastRebuildSucceed() const { return m_ManagedRebuildError.empty() && m_NativeRebuildError.empty(); }
+		bool DidLastRebuildSucceed() const { return GetLastRebuildOutput().empty(); }
 		// Compiler output of the last finished build that failed; empty after a success.
 		static std::string GetLastRebuildOutput();
 		// Counts finished C# and native rebuilds, successful or not, so callers can wait for "the next one".

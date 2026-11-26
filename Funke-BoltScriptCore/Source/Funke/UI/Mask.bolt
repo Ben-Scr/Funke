@@ -1,0 +1,8 @@
+import Funke
+namespace Funke.UI;
+
+public class Mask : Component {
+public:
+    protected override ulong FkType() { return 21ul; }
+    bool ShowMaskGraphic { get { return (FkMask_GetShowMaskGraphic(ID, 0ul) != 0ul); } set { FkMask_SetShowMaskGraphic(ID, (value ? 1ul : 0ul)); } }
+}

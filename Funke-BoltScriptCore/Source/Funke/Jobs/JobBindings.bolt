@@ -1,0 +1,85 @@
+import System
+import System.Threading
+import System.Threading.Tasks
+namespace Funke.Jobs;
+
+extern "C" ulong FkQueryPartition(ulong a,ulong b);
+extern "C" ulong FkRunJobRanges(ulong count,void* entry,void* captures);
+
+class FkRangeResult {
+public:
+    Bolt.Runtime.ExceptionState Error;
+    int State;
+}
+class FkQueryRange<T> {
+public:
+    T Work;
+    void** Cells;
+    void* Dense;
+    FkRangeResult* Result;
+    int Count, Grain;
+    CancellationToken Token;
+    void Run() {RunPart((int)FkQueryPartition(0ul,0ul));}
+    void RunPart(int index) {
+        int First=index*Grain, End=First+Funke.Mathf.Min(Grain,Count-First);
+        try {
+            Work.FkRunRows(First,End,Cells,Dense,Token);
+            Result[index].State=1;
+        } catch(System.Exception& ex) { Result[index].Error.Capture(ex); Result[index].State=2; }
+    }
+}
+
+class FkQueryWork<T> {
+public:
+    ulong handle;
+    int count,batchSize;
+    bool parallel;
+    CancellationToken token;
+    T job;
+    Task<void> Completion;
+    void Run() {
+        try {
+            int grain=parallel?batchSize:count;
+            if(grain<=0) {
+                int lanes=Funke.Mathf.Max(1,JobSystem.WorkerCount*4);
+                grain=1+(count-1)/lanes;
+            }
+            int parts=1+(count-1)/grain;
+            FkRangeResult[] results=new FkRangeResult[parts];
+            FkQueryRange<T> range;
+            range.Dense=Funke.FunkeApiTypes.DenseJobRows(handle);
+            if(range.Dense==null) range.Cells=Funke.FunkeApiTypes.JobRows(handle);
+            range.Token=token;
+            range.Work=job;
+            range.Count=count;
+            range.Grain=grain;
+            range.Result=&results[0];
+#ifdef FunkeBoltRepeatCallbacks
+            void* seed=Bolt.Runtime.ThreadCallback.Capture<FkQueryRange<T>>(range);
+            try {
+                if(FkRunJobRanges((ulong)parts,Bolt.Runtime.ThreadCallback.RepeatEntry<FkQueryRange<T>>(),seed)==0ul)
+                    throw System.InvalidOperationException("Could not execute query partitions.");
+            } finally { Bolt.Runtime.ThreadCallback.Cancel(seed); }
+#else
+            Job.ParallelForRange(0, parts, (int lo, int hi) => {
+                for (int i = lo; i < hi; i++) {
+                    FkQueryRange<T> part = range;
+                    part.RunPart(i);
+                }
+            }, 1);
+#endif
+            for(int i=0;i<parts;i++) {
+                if(results[i].State==2)results[i].Error.Rethrow();
+                if(results[i].State!=1)throw System.InvalidOperationException("Query worker did not complete.");
+            }
+        } catch(System.OperationCanceledException& error) {Completion.SetCanceled(error);}
+          catch(System.Exception& error) {Completion.SetException(error);}
+          finally {Funke.FunkeApiTypes.CloseJobView(handle);Completion.Complete();}
+    }
+}
+
+extern "C" ulong FkSubmitJob(ulong module,void* entry,void* capture);
+extern "C" ulong FkWaitJob(ulong job,ulong unused);
+extern "C" ulong FkWorkerCount(ulong unused,ulong ignored);
+extern "C" ulong FkWorkerIndex(ulong unused,ulong ignored);
+extern "C" ulong FkWorkerConfigure(ulong count,ulong unused);

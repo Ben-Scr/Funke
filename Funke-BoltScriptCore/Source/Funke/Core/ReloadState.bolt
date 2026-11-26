@@ -1,0 +1,60 @@
+import System
+import Type
+import System.Collections.Generic
+import System.Memory
+import System.Text.Json
+namespace Funke;
+
+public interface IHotReloadState {
+    void CaptureReloadState(ReloadState state);
+    void RestoreReloadState(ReloadState state);
+}
+
+public class FkReloadValues {
+public:
+    Dictionary<string,string[]> Entries;
+    HashSet<string> Read;
+    bool ReadOnly;
+}
+
+public class ReloadState {
+private:
+    Shared<FkReloadValues> values;
+    static string Scalar<T>() {
+        string name = Type.Name<T>();
+        if (name == Type.Name<bool>() || name == Type.Name<int>() || name == Type.Name<uint>() ||
+            name == Type.Name<long>() || name == Type.Name<ulong>() || name == Type.Name<float>() ||
+            name == Type.Name<double>() || name == Type.Name<string>()) return name;
+        throw System.NotSupportedException("Reload state requires a scalar value or stable ID.");
+    }
+public:
+    ReloadState() { values = Shared<FkReloadValues>.Create(); }
+    void Set<T>(string key, T value) {
+        if (values.Get().ReadOnly) throw System.InvalidOperationException("Restore state is read-only.");
+        if (key.Length == 0) throw System.ArgumentException("A reload state key cannot be empty.");
+        string[] entry = [Scalar<T>(), Json.Serialize<T>(value)];
+        values.Get().Entries[key] = entry;
+    }
+    bool TryGet<T>(string key, T& value) {
+        string type = Scalar<T>();
+        value = default;
+        string[] entry;
+        if (!values.Get().Entries.TryGetValue(key,entry) || entry[0] != type) return false;
+        value = Json.Deserialize<T>(entry[1]);
+        values.Get().Read.Add(key);
+        return true;
+    }
+    string FkSerialize() { return Json.Serialize<Dictionary<string,string[]>>(values.Get().Entries); }
+    static ReloadState FkDeserialize(string text) {
+        ReloadState result;
+        result.values.Get().Entries = Json.Deserialize<Dictionary<string,string[]>>(text);
+        result.values.Get().ReadOnly = true;
+        return result;
+    }
+    string FkUnreadKeys() {
+        string[] keys = values.Get().Entries.Keys;
+        List<string> unread;
+        for (int i = 0; i < keys.Length; i++) if (!values.Get().Read.Contains(keys[i])) unread.Add(keys[i]);
+        return string.Join(", ", unread.ToArray());
+    }
+}

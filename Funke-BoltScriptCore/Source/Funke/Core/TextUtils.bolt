@@ -1,0 +1,125 @@
+import System
+import System.Collections.Generic
+namespace Funke;
+
+public static class TextUtils {
+private:
+    static string Filter(string input, const char[]& chars, bool keep) {
+        HashSet<char> filter;
+        for (int i = 0; i < chars.Length; i++) filter.Add(chars[i]);
+        List<string> parts;
+        for (int i = 0; i < input.Length; i++) {
+            char c = input[i];
+            if (filter.Contains(c) == keep) parts.Add((string)c);
+        }
+        return string.Join("", parts.ToArray());
+    }
+
+    static string Hex(ulong bits) {
+        string result = "";
+        while (bits != 0ul || result.Length == 0) {
+            result = (string)"0123456789ABCDEF"[(int)(bits & 15ul)] + result;
+            bits >>= 4;
+        }
+        return result.Length == 1 ? "0" + result : result;
+    }
+
+public:
+    static string Digits => "0123456789";
+    static string LettersLowercase => "abcdefghijklmnopqrstuvwxyz";
+    static string LettersUppercase => "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    static string Letters => LettersLowercase + LettersUppercase;
+    static char Space => ' ';
+
+    static string RemoveChars(string input, char[] nonAllowedChars) { return Filter(input,nonAllowedChars,false); }
+    static string KeepOnly(string input, char[] allowedChars) { return Filter(input,allowedChars,true); }
+    static string RemoveChars(string input) { return input; }
+    static string RemoveChars(string input, char first, char... chars) {
+        List<char> values; values.Add(first);
+        for (char c : chars) values.Add(c);
+        return Filter(input,values.ToArray(),false);
+    }
+    static string KeepOnly(string input) { return ""; }
+    static string KeepOnly(string input, char first, char... chars) {
+        List<char> values; values.Add(first);
+        for (char c : chars) values.Add(c);
+        return Filter(input,values.ToArray(),true);
+    }
+    static char[] GetFilterCharset(FilterOption filterOption, bool useSpace = true) {
+        string chars = filterOption == FilterOption.Digits ? Digits : (filterOption == FilterOption.Letters ? Letters : Digits + Letters);
+        if (useSpace) chars += " ";
+        char[] result = new char[chars.Length];
+        for (int i = 0; i < chars.Length; i++) result[i] = chars[i];
+        return result;
+    }
+
+    static string ToHex(int value) { return "#" + Hex((ulong)Reinterpret<uint>(value)); }
+    static string ToHex(long value) { return "#" + Hex(Reinterpret<ulong>(value)); }
+    static string ToHex(int[] values) {
+        string[] result = new string[values.Length];
+        for (int i = 0; i < values.Length; i++) result[i] = Hex((ulong)Reinterpret<uint>(values[i]));
+        return "#" + string.Join("", result);
+    }
+    static string ToHex(long[] values) {
+        string[] result = new string[values.Length];
+        for (int i = 0; i < values.Length; i++) result[i] = ToHex(values[i]);
+        return string.Join("", result);
+    }
+    static string ToHex(int first, int second, int... remaining) {
+        List<int> values; values.Add(first); values.Add(second);
+        for (int part : remaining) values.Add(part);
+        return ToHex(values.ToArray());
+    }
+    static string ToHex(long first, long second, long... remaining) {
+        List<long> values; values.Add(first); values.Add(second);
+        for (long part : remaining) values.Add(part);
+        return ToHex(values.ToArray());
+    }
+
+    static int WordsCount(string value) {
+        int count = 1;
+        for (int i = 0; i < value.Length; i++) if (value[i] == Space) count++;
+        return count;
+    }
+    static string ToString<T>(T[] items) {
+        string[] parts = new string[items.Length];
+        for (int i = 0; i < items.Length; i++) parts[i] = (string)items[i];
+        return "[" + string.Join(", ", parts) + "]";
+    }
+    static string ToString<T>(T items) {
+        var iterator = items.GetEnumerator();
+        List<string> parts;
+        while (iterator.MoveNext()) parts.Add((string)iterator.Current);
+        return "[" + string.Join(", ", parts.ToArray()) + "]";
+    }
+    static string ToCase(string value, CaseConvention convention) {
+        if ((int)convention < (int)CaseConvention.PascalCase || (int)convention > (int)CaseConvention.KebabCase) return value;
+        string[] words = value.Split(Space);
+        List<string> result;
+        bool capitalize = convention == CaseConvention.CamelCase || convention == CaseConvention.PascalCase;
+        for (int i = 0; i < words.Length; i++) {
+            string word = words[i];
+            if (word.Length == 0) continue;
+            bool lower = !capitalize || (convention == CaseConvention.CamelCase && result.Count == 0);
+            result.Add(lower ? word.ToLower() : Capitalize(word));
+        }
+        string separator = capitalize ? "" : (convention == CaseConvention.SnakeCase ? "_" : "-");
+        return string.Join(separator, result.ToArray());
+    }
+    static string WrapWith(string value, string beginMark, string endMark) { return beginMark + value + endMark; }
+    static string WrapWith(string value, string mark) { return WrapWith(value,mark,mark); }
+    static string WrapWith(string value, char beginMark, char endMark) { return WrapWith(value,(string)beginMark,(string)endMark); }
+    static string WrapWith(string value, char mark) { return WrapWith(value,mark,mark); }
+    static string ToColoredString(string text, string hexColor) { return "<color=#" + hexColor + ">" + text + "</color>"; }
+    static int DifferentCharsCount(string value) {
+        HashSet<char> chars;
+        for (int i = 0; i < value.Length; i++) chars.Add(value[i]);
+        return chars.Count;
+    }
+    static string Capitalize(string value) {
+        if (value.Length == 0) return value;
+        return value.Substring(0,1).ToUpper() + value.Substring(1).ToLower();
+    }
+}
+
+

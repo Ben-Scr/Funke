@@ -48,6 +48,7 @@ def _engine_root_from_argv() -> Path | None:
 _bootstrap_sdk_path(_engine_root_from_argv())
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from funke_platform_sdk.bolt_aot import prepare_bolt
 from funke_platform_sdk import (  # noqa: E402
     BuildRequest, BuilderError, emit_log, emit_progress, find_cmake, platform_cache, prepare_native_packages, run,
     run_builder,
@@ -175,14 +176,14 @@ def _permission_lines(option: str) -> str:
     return "".join(lines)
 
 
-def _ndk_toolchain(tc: android_toolchain.AndroidToolchain) -> CMakeToolchain:
+def _ndk_toolchain(tc: android_toolchain.AndroidToolchain, min_sdk: int = android_toolchain.MIN_SDK) -> CMakeToolchain:
     ninja = tc.ninja or (Path(shutil.which("ninja")) if shutil.which("ninja") else None)
     return CMakeToolchain(
         key=f"Android/{ABI}",
         configure_args=[
             f"-DCMAKE_TOOLCHAIN_FILE={tc.ndk / 'build' / 'cmake' / 'android.toolchain.cmake'}",
             f"-DANDROID_ABI={ABI}",
-            f"-DANDROID_PLATFORM=android-{android_toolchain.MIN_SDK}",
+            f"-DANDROID_PLATFORM=android-{min_sdk}",
             "-DANDROID_STL=c++_static",
             # 16 KB page support: Google Play rejects apps targeting Android 15+ whose libraries lack it.
             "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON",
@@ -193,10 +194,11 @@ def _ndk_toolchain(tc: android_toolchain.AndroidToolchain) -> CMakeToolchain:
 
 
 def _build_native(request: BuildRequest, tc: android_toolchain.AndroidToolchain, cmake_tc: CMakeToolchain,
-                  sdl3: Path, dawn, mono_pack, mono_package: Path, native_packages: Path) -> Path:
+                  sdl3: Path, dawn, mono_pack, mono_package: Path, native_packages: Path, bolt_args: list[str], min_sdk: int) -> Path:
     cmake = find_cmake(request.engine_root)
     engine_key = hashlib.sha256(str(request.engine_root.resolve()).encode()).hexdigest()[:10]
-    build_dir = platform_cache("Android", ABI, f"player-{engine_key}-{request.configuration}-{request.modules_key}")
+    api_suffix = f"-api{min_sdk}" if min_sdk != android_toolchain.MIN_SDK else ""
+    build_dir = platform_cache("Android", ABI, f"player-{engine_key}-{request.configuration}-{request.modules_key}{api_suffix}")
     args = [
         f"-DFUNKE_ROOT={request.engine_root.as_posix()}",
         f"-DFUNKE_MONO_PACKAGE={mono_package.as_posix()}",
@@ -208,6 +210,7 @@ def _build_native(request: BuildRequest, tc: android_toolchain.AndroidToolchain,
         f"-DFUNKE_ENTITY_BITS={request.entity_bits}",
         f"-DFUNKE_NATIVE_PACKAGES={native_packages.as_posix()}",
         *request.cmake_module_args(),
+        *bolt_args,
         "-DCMAKE_BUILD_TYPE=" + ("Release" if request.is_release else "RelWithDebInfo"),
     ]
     run(cmake_tc.configure_command(cmake, PACKAGE_ROOT / "Native", build_dir, args), label="CMake configure (libmain)")
@@ -365,6 +368,7 @@ def build(request: BuildRequest) -> Path:
     request.output_dir.mkdir(parents=True, exist_ok=True)
     work = platform_cache("Android", "work", hashlib.sha256(str(request.project_root.resolve()).encode()).hexdigest()[:10])
     set_log_file(work / "build.log")
+    bolt_args = prepare_bolt(request, work / "bolt", "android-arm64")
     emit_log(f"Build log: {work / 'build.log'}")
 
     emit_progress(0.02, "Checking the Android toolchain")
@@ -388,7 +392,9 @@ def build(request: BuildRequest) -> Path:
 
     emit_progress(0.35, "Compiling the engine for Android")
     native_packages = prepare_native_packages(request, work / "native-packages", symbol_table=True)
-    libmain = _build_native(request, tc, cmake_tc, sdl3, dawn, mono_pack, mono_package, native_packages.json_path)
+    # Bolt's Android AOT SDK targets API 29. SDL and Dawn built for API 26 also run on 29.
+    min_sdk = max(29, android_toolchain.MIN_SDK) if (request.output_dir / ".funke-bolt").is_dir() else android_toolchain.MIN_SDK
+    libmain = _build_native(request, tc, _ndk_toolchain(tc, min_sdk), sdl3, dawn, mono_pack, mono_package, native_packages.json_path, bolt_args, min_sdk)
 
     emit_progress(0.70, "Android libraries of the game's packages")
     contributions = android_libraries.collect(request, ABI)
@@ -400,7 +406,7 @@ def build(request: BuildRequest) -> Path:
         "@APP_ID@": app_id,
         "@VERSION_CODE@": str(_version_code(request)),
         "@VERSION_NAME@": request.version,
-        "@MIN_SDK@": str(android_toolchain.MIN_SDK),
+        "@MIN_SDK@": str(min_sdk),
         "@TARGET_SDK@": str(android_toolchain.TARGET_SDK),
         "@APP_NAME@": request.app_name.replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;"),
         "@ORIENTATION@": request.option("orientation")

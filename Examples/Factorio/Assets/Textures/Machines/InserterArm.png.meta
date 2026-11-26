@@ -1,0 +1,10 @@
+{
+  "AssetGUID": "5328958008127432639",
+  "uuid": "5328958008127432639",
+  "kind": "Texture",
+  "import": {
+    "filter": "Bilinear",
+    "wrapU": "Clamp",
+    "wrapV": "Clamp"
+  }
+}

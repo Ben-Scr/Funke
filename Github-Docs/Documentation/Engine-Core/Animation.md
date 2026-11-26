@@ -230,5 +230,31 @@ In a scene the component is written as `"Animator": { "controllerAsset": "<guid>
 ## Limits
 
 - One layer per controller; there are no blend trees, avatar masks or root motion yet.
-- Fields of C# `IComponent` structs can't be animated (fields of `EntityScript`s and managed `Component`s can).
+- Dynamic C# `IComponent` animation supports writable scalar, vector and color fields; strings, enums and managed-reference fields are not exposed by the byte codec.
 - Euler Multi-turn deliberately preserves the numeric rotation path. Choose Shortest Angle or Quaternion explicitly for shortest-arc transitions; quaternion tracks require aligned Linear/Constant keys.
+
+## Binding metadata lifetime
+
+Animation targets retain the component registry generation at resolution. Reading,
+writing and type/rotation inspection reject targets from a previous generation
+before dereferencing component/property metadata. Retained editor authored values
+use the same check. Owners must rebind by entity/component/property identity after
+registry changes. The runtime already watches the registry generation.
+
+Dynamic C# `IComponent` registration obtains the managed field schema and publishes
+native property descriptors using `Scripting/StructFieldBytes`. Supported fields
+are floats/doubles, integer widths, booleans, vectors/integer vectors and colors.
+Read-only, unsupported, incorrectly sized and out-of-bounds fields are excluded.
+Reads/writes resolve current ECS storage on every access; they never animate a
+boxed managed copy. Serialized component identity is `type:<FullName>`; nested
+field names are matched exactly before interpreting `.x` as a vector channel.
+The editor's existing track picker enumerates these descriptors automatically.
+
+Removing a component/entity makes its retained target unusable. A schema reload
+invalidates the registry generation and forces rebinding. Recording also retains
+property descriptors: if the generation changes between BeginFrame and EndFrame,
+the preview discards that obsolete frame rather than dereferencing/restoring it.
+Ordinary EndFrame restores authored ECS bytes. Native regressions exercise track
+selection, actual preview poses/restoration, component/entity removal and dynamic
+registry unload during recording. A visible editor session was not part of this
+headless acceptance; full managed/native reload orchestration is a separate test.

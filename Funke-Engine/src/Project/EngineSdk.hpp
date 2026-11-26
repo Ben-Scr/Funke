@@ -85,7 +85,7 @@ namespace Funke::EngineSdk {
 	inline bool ReadRuntimePaths(const Json::Value& value, const std::filesystem::path& root,
 		RuntimePaths& paths, std::string& error, bool requireProfiles = true) {
 		if (!value.IsObject()) { error = "Runtime profiles must be an object."; return false; }
-		for (const auto& [profile, path] : value.GetObject()) {
+		for (const auto& [profile, path] : value.GetMembers()) {
 			if (profile != "Development" && profile != "Release" && profile != "Debug") {
 				error = "Unknown runtime profile: " + profile;
 				return false;
@@ -161,7 +161,7 @@ namespace Funke::EngineSdk {
 			return fail(runtimes ? runtimeError : "runtimes is required.");
 		if (const auto* variants = document.FindMember("runtimeVariants")) {
 			if (!variants->IsObject()) return fail("runtimeVariants must be an object.");
-			for (const auto& [id, profiles] : variants->GetObject()) {
+			for (const auto& [id, profiles] : variants->GetMembers()) {
 				if (id != "2d" && id != "3d" && id != "nomodules"
 					&& id != "v2-nomodules" && id != "v2-2d" && id != "v2-3d" && id != "v2-2d-3d"
 					&& id != "v2-2d-physics2d" && id != "v2-3d-physics3d"

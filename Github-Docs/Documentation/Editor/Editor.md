@@ -26,14 +26,18 @@ You create and open projects from the **Launcher**:
 
 - **New Project** — pick a template, a name and a location; the launcher copies the template's scene and scripts, sets up the C# script project and compiles the scripts once.
 
-Set **Launcher > Settings > Projects > Default company** once to prefill **Company** whenever you create a project. The default is saved per user and survives launcher restarts. You can change or clear Company in **New Project** without changing the default. The dialog's value is saved as the project's `buildCompany`, including when using a custom template, and can later be changed in the editor's **Project Settings**. Changing the default does not modify existing or duplicated projects.
+New projects use the optional **Default company** from **Launcher > Settings > Projects**, including projects created from a custom template. Leave the default blank to create projects without a company. You can set or change the company for an individual project in the editor’s **Project Settings**.
 
 ### Project templates
 
 | Template | Contents |
 |---|---|
-| **Empty 2D** | A Camera 2D. |
-| **Empty 3D** | A Camera 3D and a Directional Light. |
+| **2D** | Camera, physics ground and falling box. Enables `Funke.2D` and `Funke.Physics2D`. |
+| **3D** | Camera, directional light, physics ground and falling box. Enables `Funke.3D` and `Funke.Physics3D`. |
+| **Empty 2D** | Blank scene with `Funke.2D` enabled. |
+| **Empty 3D** | Blank scene with `Funke.3D` enabled. |
+
+Both physics starters include `Assets/Help.md`. All four create `Assets/Scenes/SampleScene.scene` and start without gameplay scripts. The empty scenes contain no entities.
 
 A template is a folder in `templates/` (inside `EngineSDK/` for the packaged Launcher):
 
@@ -93,6 +97,10 @@ To change what a template contains: **Open Source Project**, edit and save the p
 Each project tile shows a preview image of the open scene, which the editor writes to `.funke/thumbnail.png` shortly after the project opens and on every save. It is rendered through the scene's Camera 3D if it has one (with sprites and UI on top), otherwise through its main Camera 2D. A project without either keeps the colored tile with its initials.
 
 A project is a folder with an `project.json` (its settings: scenes, window size, packages, build options) plus folders for your `Assets`, scripts, and scenes.
+
+### Asset Library thumbnails
+
+Visible catalog tiles request the optional thumbnail by URL and version. The launcher fits the image proportionally in a fixed preview area and shows initials while loading or when the image is unavailable. Catalog refresh starts a new cache generation. Two downloads may run concurrently. The in-memory cache holds up to 512 entries and 32 textures, and can release unused textures after 120 frames. The image limits are 8 MiB and 1,048,576 decoded pixels, with an eight-second transfer limit and a ten-second helper process timeout.
 
 ---
 
@@ -162,6 +170,7 @@ In the Asset Browser's current folder, right-click and open **Create**:
 |---|---|
 | **C# Scripting** | EntityScript, SceneSystem, GlobalSystem, Empty C# Script, Component, Native Component, DataAsset |
 | **C++ Scripting** | C++ Script |
+| **Bolt Script** | An attachable `.bolt` EntityScript. See [compiler setup and script examples](../Scripting/Bolt.md). |
 | **Data Assets** | Instances of compiled DataAsset classes, grouped by their menu paths |
 
 **Native Component** generates a `.cs` declaration and belongs under C#. **C++ Script** requires an open project; its disabled tooltip explains this requirement. Creation uses the selected folder, name and collision handling, asset registration, and file undo/redo. **DataAsset** under C# creates the class; **Data Assets** creates a `.dataasset` instance. See [Data Assets](../Assets/Data-Assets.md).
@@ -231,6 +240,8 @@ In the **Hierarchy** panel:
 - **Drag** one entity onto another to make it a **child** (it keeps its on-screen position).
 - **Drag** to reorder siblings.
 - Select and press **Delete** (**Cmd+Backspace** on macOS) to remove an entity and its children.
+
+During entity dragging, the upper/lower quarter of a row selects **Before / After**; the middle selects **As child**. A thick accent line with round endpoints marks the insertion point at the destination indentation. **After** an expanded parent appears below its entire visible subtree; **As child** outlines the parent and indents the marker one level further. Dropping on a scene header or empty space highlights the root target. Dragging uses visual markers without info text, badges, or drag tooltips. The drop target spans the whole row, including its icon and indentation. Invalid destinations show a blocked cursor instead of an insertion marker. Filtered search results highlight the target row but omit the positional line because hidden rows would make it misleading.
 
 Children follow their parent's transform — see [ECS](../Engine-Core/ECS.md#hierarchy-parents-and-children).
 
@@ -344,3 +355,13 @@ For release prerequisites and the clean-machine checklist, see [Building and Shi
 - [Scripting](../Scripting/Scripting.md) — the code behind your entities.
 - [Writing Packages](../Packages/Writing-Packages.md) — extend the editor with new components.
 - [Building and Shipping](Building-and-Shipping.md) — produce and validate a distributable build.
+
+Implementation contracts: [State ownership](Editor-State-Ownership.md) and [Prefab variants](Prefab-Variants.md).
+
+## String Tables
+
+**Tools → String Tables** opens the dockable [translation editor](String-Tables.md) for project localization JSON, search, missing translations and file Undo/Redo.
+
+### Launcher thumbnail acceptance
+
+A Windows Release launcher and loopback catalog exercised delayed, disconnected, missing, empty, corrupt and oversized responses. An offscreen image released its GPU texture after 120 frames. Returning to it decoded the cached file with one GET for the original URL/version. Refresh fetched the changed URL and recovered a failed tile at its new version. The catalog could refresh and the launcher could exit while a response was delayed. A private single-viewport build also downloaded and registered a project through the launcher dialog while a thumbnail response was pending. Cached files are scoped to the current catalog generation and removed on invalidation or shutdown.

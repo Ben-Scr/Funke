@@ -42,6 +42,8 @@ Base64 is an encoding, not encryption. Keep credential files and their encoded v
 
 ## Preparation draft and signed tag handoff
 
+When comparing an editor bundle to its CI run, check the embedded `BuildMetadata.json`. The archive name follows the host platform and architecture. The Windows build also names its private symbol ZIP. The current Linux and macOS archive jobs produce no symbol archive and record `null` for that field. The archived Linux candidate at `67e570bf` carries the older Windows names in both fields. Verify that candidate using its actual filename, digest, commit and run identity.
+
 An unsigned preparation draft may hold CI installer candidates, provided the notes and provenance explicitly identify their signing status. Keep it unpublished. Its source commit remains the commit recorded in those candidates, even if newer release automation is subsequently merged.
 
 For a signed release, configure signing and complete the pre-tag acceptance first. The approved unsigned preview uses its explicit exception and discloses the remaining manual acceptance instead. Push the matching version tag at the reviewed `master` commit. The tag CI runs the complete matrix and the applicable signing gates. `prepare_github_release.py` then creates a draft or refreshes the existing draft for that version. It:

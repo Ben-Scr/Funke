@@ -488,7 +488,7 @@ public:
         auto config = ApplicationConfig::Minimal();
         config.WindowSpecification = WindowSpecification(
             960, 540, "Funke Native SDK", true, true, false);
-        config.EnableRenderer2D = true;
+        config.EnableSceneRendering = true;
         config.EnableShaderManager = true;
         config.EnableTextureManager = true;
         config.EnablePackageHost = true;

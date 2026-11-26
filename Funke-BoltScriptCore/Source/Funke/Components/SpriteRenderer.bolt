@@ -1,0 +1,20 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public class SpriteRenderer : Component {
+public:
+    protected override ulong FkType() { return 41ul; }
+    int SortingOrder { get { return Reinterpret<int>((uint)(FkSpriteRenderer_GetSortingOrder(ID, 0ul) & 4294967295ul)); } set { FkSpriteRenderer_SetSortingOrder(ID, (ulong)Reinterpret<uint>(value)); } }
+    int SortingLayer { get { return Reinterpret<int>((uint)(FkSpriteRenderer_GetSortingLayer(ID, 0ul) & 4294967295ul)); } set { FkSpriteRenderer_SetSortingLayer(ID, (ulong)Reinterpret<uint>(value)); } }
+    TextureFilter FilterMode { get { return (TextureFilter)FkSpriteRenderer_GetFilter(ID, 0ul); } set { FkSpriteRenderer_SetFilter(ID, (ulong)value); } }
+    string SpriteName { get { return FunkeText.Read(FkSpriteRenderer_GetSpriteNameBuffer(ID, 0ul)); } set { FkSpriteRenderer_SetSpriteName(ID, FunkeText.Put(value)); } }
+    Vector4 Color { get { return FunkeApiTypes.DecodeVector4(FkSpriteRenderer_GetColor(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkSpriteRenderer_SetColor(ID, value.LowBits()); } }
+    Funke.Texture? Texture { get { return Funke.Texture.FromAssetUUID(FkSpriteRenderer_GetTexture(ID, 0ul)); } set { ulong guid = 0ul; if (value != null) guid = value.Value.UUID; FkSpriteRenderer_SetTexture(ID, guid); } }
+    Funke.Material? Material { get { return Funke.Material.FromAssetUUID(FkSpriteRenderer_GetMaterial(ID, 0ul)); } set { ulong guid = 0ul; if (value != null) guid = value.Value.UUID; FkSpriteRenderer_SetMaterial(ID, guid); } }
+    float PixelsPerUnit { get { return Reinterpret<float>((uint)FkSpriteRenderer_GetPixelsPerUnit(ID, 0ul)); } set { FkSpriteRenderer_SetPixelsPerUnit(ID, (ulong)Reinterpret<uint>(value)); } }
+    bool FlipX { get { return (FkSpriteRenderer_GetFlipX(ID, 0ul) != 0ul); } set { FkSpriteRenderer_SetFlipX(ID, value ? 1ul : 0ul); } }
+    bool FlipY { get { return (FkSpriteRenderer_GetFlipY(ID, 0ul) != 0ul); } set { FkSpriteRenderer_SetFlipY(ID, value ? 1ul : 0ul); } }
+}

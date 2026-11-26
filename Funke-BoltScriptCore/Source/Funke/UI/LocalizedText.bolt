@@ -1,0 +1,8 @@
+import Funke
+namespace Funke.UI;
+
+public class LocalizedText : Component {
+public:
+    protected override ulong FkType() { return 20ul; }
+    string Key { get { return FunkeText.Read(FkLocalizedText_GetKeyBuffer(ID, 0ul)); } set { FkLocalizedText_SetKey(ID, FunkeText.Put(value)); } }
+}

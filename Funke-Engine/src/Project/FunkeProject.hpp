@@ -4,6 +4,7 @@
 #include "Core/EngineModules.hpp"
 #include "Core/WindowSpecification.hpp"
 #include "Core/GraphicsSettings.hpp"
+#include "Core/ThreadingSettings.hpp"
 #include "Project/PhysicsLayerSettings.hpp"
 #include "Graphics/Text/FontHandle.hpp"
 #include <cstdint>
@@ -155,6 +156,7 @@ namespace Funke {
 		std::string PrefsProfile;
 		static std::string SanitizePrefsProfileName(std::string_view name);
 		GraphicsSettings Graphics{};
+		ThreadingSettings Threading{};
 
 		// FixedUpdate frequency; bounds mirror Time::SetFixedDeltaTime's clamp.
 		// Applied at startup and each editor play entry; scripts may override it per run.
@@ -410,6 +412,7 @@ namespace Funke {
 			const std::string& configuration = "Debug",
 			const std::string& platform = "x64",
 			const CreateProgressCallback& progressCallback = {});
+        std::vector<uint64_t> FontFallbackAssets;
 	};
 
 } // namespace Funke

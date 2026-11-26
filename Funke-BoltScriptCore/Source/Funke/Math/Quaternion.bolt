@@ -1,0 +1,148 @@
+import System
+import Math
+namespace Funke;
+
+public struct Quaternion {
+public:
+    float X, Y, Z, W;
+    static Quaternion Identity => Quaternion(0, 0, 0, 1);
+    static bool IsValidRotation(Quaternion value) { return Mathf.FkFinite(value.X) && Mathf.FkFinite(value.Y) && Mathf.FkFinite(value.Z) && Mathf.FkFinite(value.W)
+        && (value.X != 0 || value.Y != 0 || value.Z != 0 || value.W != 0); }
+    Quaternion(float x, float y, float z, float w) { X = x; Y = y; Z = z; W = w; }
+    Quaternion Normalized() {
+        double length = Math.Sqrt<double>((double)X * X + (double)Y * Y + (double)Z * Z + (double)W * W);
+        return length > 0 && Mathf.FkFinite(length)
+            ? Quaternion((float)(X / length), (float)(Y / length), (float)(Z / length), (float)(W / length)) : Identity;
+    }
+    static Quaternion AngleAxis(float degrees, Vector3 axis) {
+        if (!Mathf.FkFinite(degrees) || !Vector3.TryNormalize(axis, axis)) return Identity;
+        float half = degrees * (Mathf.PI / 360.0f);
+        float sine = Mathf.Sin(half);
+        return Quaternion(axis.X * sine, axis.Y * sine, axis.Z * sine, Mathf.Cos(half)).Normalized();
+    }
+    static Quaternion Euler(Vector3 degrees) {
+        if (!Mathf.FkFinite(degrees.X) || !Mathf.FkFinite(degrees.Y) || !Mathf.FkFinite(degrees.Z)) return Identity;
+        float x = degrees.X * (Mathf.PI / 360.0f), y = degrees.Y * (Mathf.PI / 360.0f), z = degrees.Z * (Mathf.PI / 360.0f);
+        float cx = Mathf.Cos(x), cy = Mathf.Cos(y), cz = Mathf.Cos(z);
+        float sx = Mathf.Sin(x), sy = Mathf.Sin(y), sz = Mathf.Sin(z);
+        return Quaternion(sx * cy * cz - cx * sy * sz, cx * sy * cz + sx * cy * sz,
+            cx * cy * sz - sx * sy * cz, cx * cy * cz + sx * sy * sz).Normalized();
+    }
+    static Quaternion Euler(float x, float y, float z) { return Euler(Vector3(x, y, z)); }
+    Vector3 EulerAngles {
+        get
+        {
+            Quaternion q = Normalized();
+            float pitchY = 2 * (q.Y * q.Z + q.W * q.X), pitchX = q.W * q.W - q.X * q.X - q.Y * q.Y + q.Z * q.Z;
+            float pitch = Mathf.Abs(pitchX) < 1e-7f && Mathf.Abs(pitchY) < 1e-7f
+                ? 2 * Mathf.Atan2(q.X, q.W) : Mathf.Atan2(pitchY, pitchX);
+            double normSquared = (double)q.X * q.X + (double)q.Y * q.Y + (double)q.Z * q.Z + (double)q.W * q.W;
+            float yaw = (float)Math.Asin<double>(Mathf.FkClampDouble(2 * ((double)q.W * q.Y - (double)q.X * q.Z) / normSquared, -1.0, 1.0));
+            float rollY = 2 * (q.X * q.Y + q.W * q.Z), rollX = q.W * q.W + q.X * q.X - q.Y * q.Y - q.Z * q.Z;
+            float roll = Mathf.Abs(rollX) < 1e-7f && Mathf.Abs(rollY) < 1e-7f ? 0 : Mathf.Atan2(rollY, rollX);
+            return Vector3(pitch, yaw, roll) * (180.0f / Mathf.PI);
+        }
+    }
+    static Quaternion Inverse(Quaternion rotation) {
+        Quaternion q = rotation.Normalized();
+        return Quaternion(-q.X, -q.Y, -q.Z, q.W);
+    }
+    static bool operator ==(Quaternion lhs, Quaternion rhs) { return lhs.Equals(rhs); }
+    static bool operator !=(Quaternion lhs, Quaternion rhs) { return !lhs.Equals(rhs); }
+    bool Equals(Quaternion other) { return X == other.X && Y == other.Y && Z == other.Z && W == other.W; }
+    static bool TryLookRotation(Vector3 forward, Vector3 up, Quaternion& rotation) {
+        rotation = Identity;
+        if (!Vector3.TryNormalize(forward, forward) || !Vector3.FkIsFinite(up)) return false;
+        rotation = LookRotation(forward, up);
+        return true;
+    }
+    static Quaternion FromToRotation(Vector3 from, Vector3 to) {
+        if (!Vector3.TryNormalize(from, from) || !Vector3.TryNormalize(to, to)) return Identity;
+        Vector3 unit;
+        Vector3 axis = Vector3.Cross(from, to);
+        float dot = Vector3.Dot(from, to);
+        if (Vector3.TryNormalize(axis, unit))
+            return AngleAxis(Mathf.Atan2(axis.Length(), dot) * Mathf.Rad2Deg, unit);
+        if (dot >= 0) return Identity;
+        return AngleAxis(180, Vector3.Cross(from, Mathf.Abs(from.Y) < 0.9f ? Vector3.Up : Vector3.Right));
+    }
+    static float Angle(Quaternion from, Quaternion to) {
+        Quaternion delta = Inverse(from) * to;
+        double length = Math.Sqrt<double>((double)delta.X * delta.X + (double)delta.Y * delta.Y + (double)delta.Z * delta.Z);
+        return (float)(2 * Math.Atan2<double>(length, Math.Abs<double>(delta.W)) * Mathf.Rad2Deg);
+    }
+    static Quaternion RotateTowards(Quaternion from, Quaternion to, float maxDegreesDelta) {
+        if (!Mathf.FkFinite(maxDegreesDelta) || maxDegreesDelta < 0) throw System.ArgumentOutOfRangeException("maxDegreesDelta");
+        float angle = Angle(from, to);
+        return angle <= maxDegreesDelta ? to.Normalized() : Slerp(from, to, maxDegreesDelta / angle);
+    }
+    static Quaternion Damp(Quaternion current, Quaternion target, float rate, float deltaTime) { return Slerp(current, target, Mathf.DampingFactor(rate, deltaTime)); }
+    Quaternion() {}
+    void Normalize() { Quaternion q = Normalized(); X = q.X; Y = q.Y; Z = q.Z; W = q.W; }
+    static Quaternion Normalize(Quaternion q) { return q.Normalized(); }
+    static Quaternion operator *(Quaternion left, Quaternion right) {
+        Quaternion a = left.Normalized(), b = right.Normalized();
+        return Quaternion(a.W*b.X + a.X*b.W + a.Y*b.Z - a.Z*b.Y,
+                          a.W*b.Y + a.Y*b.W + a.Z*b.X - a.X*b.Z,
+                          a.W*b.Z + a.Z*b.W + a.X*b.Y - a.Y*b.X,
+                          a.W*b.W - a.X*b.X - a.Y*b.Y - a.Z*b.Z).Normalized();
+    }
+    Vector3 RotateVector(Vector3 v) {
+        Quaternion q = Normalized();
+        Vector3 axis = Vector3(q.X, q.Y, q.Z);
+        Vector3 twiceCross = 2.0f * Vector3.Cross(axis, v);
+        return v + twiceCross * q.W + Vector3.Cross(axis, twiceCross);
+    }
+    static Vector3 operator *(Quaternion q, Vector3 v) { return q.RotateVector(v); }
+    static Quaternion Slerp(Quaternion from, Quaternion to, float t) {
+        Quaternion a = from.Normalized(), b = to.Normalized();
+        if (!Mathf.FkFinite(t)) return a;
+        t = Mathf.Clamp01(t);
+        float dot = a.X*b.X + a.Y*b.Y + a.Z*b.Z + a.W*b.W;
+        float sign = dot < 0.0f ? -1.0f : 1.0f;
+        dot = Mathf.Abs(dot);
+        float x = 1.0f - t, y = t;
+        if (dot < 0.999999f) {
+            float angle = Mathf.Acos(dot), scale = 1.0f / Mathf.Sin(angle);
+            x = Mathf.Sin(x * angle) * scale;
+            y = Mathf.Sin(t * angle) * scale;
+        }
+        y *= sign;
+        return Quaternion(a.X*x + b.X*y, a.Y*x + b.Y*y, a.Z*x + b.Z*y, a.W*x + b.W*y).Normalized();
+    }
+    static Quaternion LookRotation(Vector3 forward) { return LookRotation(forward, Vector3.Up); }
+    static Quaternion LookRotation(Vector3 forward, Vector3 up) {
+        if (!Vector3.TryNormalize(forward, forward)) return Identity;
+        Vector3.TryNormalize(up, up);
+        Vector3 right = Vector3.Cross(forward, up);
+        if (right.LengthSquared() < 1e-12f)
+            right = Vector3.Cross(forward, Mathf.Abs(forward.Y) < 0.999f ? Vector3.Up : Vector3.Right);
+        Vector3.TryNormalize(right, right);
+        up = Vector3.Cross(right, forward);
+        Vector3 back = -forward;
+        float trace = right.X + up.Y + back.Z;
+        if (trace > 0.0f) {
+            float s = Mathf.Sqrt(trace + 1.0f) * 2.0f;
+            return Quaternion((up.Z-back.Y)/s, (back.X-right.Z)/s, (right.Y-up.X)/s, 0.25f*s).Normalized();
+        }
+        if (right.X >= up.Y && right.X >= back.Z) {
+            float s = Mathf.Sqrt(1.0f + right.X - up.Y - back.Z) * 2.0f;
+            return Quaternion(0.25f*s, (up.X+right.Y)/s, (back.X+right.Z)/s, (up.Z-back.Y)/s).Normalized();
+        }
+        if (up.Y > back.Z) {
+            float s = Mathf.Sqrt(1.0f + up.Y - right.X - back.Z) * 2.0f;
+            return Quaternion((right.Y+up.X)/s, 0.25f*s, (back.Y+up.Z)/s, (back.X-right.Z)/s).Normalized();
+        }
+        float s = Mathf.Sqrt(1.0f + back.Z - right.X - up.Y) * 2.0f;
+        return Quaternion((right.Z+back.X)/s, (up.Z+back.Y)/s, 0.25f*s, (right.Y-up.X)/s).Normalized();
+    }
+    int GetHashCode() {
+        int hash = -2128831035;
+        hash = FkNumberFormat.Hash(hash, X);
+        hash = FkNumberFormat.Hash(hash, Y);
+        hash = FkNumberFormat.Hash(hash, Z);
+        hash = FkNumberFormat.Hash(hash, W);
+        return hash;
+    }
+    string ToString() { return "Quaternion(" + (string)X + ", " + (string)Y + ", " + (string)Z + ", " + (string)W + ")"; }
+}

@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "type": "RecipeDefinition",
+  "fields": {
+    "Id": "inserter",
+    "Result": "6865905726367670073",
+    "Amount": "1",
+    "Seconds": "1.2",
+    "CreativeOnly": "false",
+    "Ingredients": "\n\\n2353410425120650349\\n2\n\\n1758807086289073383\\n1\n\\n5641443796209399924\\n1"
+  }
+}

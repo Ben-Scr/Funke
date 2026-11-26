@@ -1,6 +1,6 @@
 ---
 name: funke-add-system
-description: Use when adding a native C++ per-scene system to the Funke engine, or deciding where per-frame engine logic should live. Triggers on "add a system", "new SceneSystem", "AddSystem", "AddStandardSceneSystems", "system execution order", "EnableSystem / DisableSystem / GetSystem", "OnPreRender", "FixedUpdate vs Update", "system runs in edit mode", "ISystem" (old name), or work in `Funke-Engine/src/Systems/`, `Scene/SceneSystem.hpp`, `SceneDefinition.hpp` or an app's `ConfigureScenes()`. Covers the `SceneSystem` hooks, registration (standard set vs per-definition), Funke.2D/Funke.3D module gating, real frame order (Update/FixedUpdate/OnPreRender vs 2D and 3D physics, layers, C# systems), editor edit-vs-play behavior, enable/disable, exceptions and tests. For C# game logic (EntityScript / SceneSystem / GlobalSystem) use `funke-game-scripting`; for editor UI use `funke-add-editor-panel`.
+description: "Implement a native C++ SceneSystem in Funke. Covers registration, execution order, fixed updates and edit-mode behavior."
 ---
 
 # Add a Native Scene System
@@ -19,51 +19,16 @@ Native systems derive from `Funke::SceneSystem` (`Funke-Engine/src/Scene/SceneSy
 
 ## 1. Header + source
 
-`Funke-Engine/src/Systems/MySystem.hpp`:
+Declare a `FUNKE_API` subclass of `SceneSystem` under `Funke-Engine/src/Systems/`. Override only the hooks it needs. Keep per-entity work in a helper such as `LocalizedTextSystem::Apply` so a test can exercise it without an application.
+
 ```cpp
-#pragma once
-#include "Core/Export.hpp"
-#include "Scene/SceneSystem.hpp"
-
-namespace Funke {
-	struct MyComponent;
-
-	class FUNKE_API MySystem : public SceneSystem {
-	public:
-		void Update(Scene& scene) override;
-
-		// Pure per-entity step, exposed so tests can drive it without an Application.
-		static void Step(MyComponent& component, float dt);
-	};
+void MySystem::Update(Scene& scene) {
+    const float dt = Time::GetDeltaTime();
+    auto view = scene.GetRegistry().view<MyComponent>(entt::exclude<DisabledTag>);
+    for (auto [entity, component] : view.each())
+        Step(component, dt);
 }
 ```
-
-`Funke-Engine/src/Systems/MySystem.cpp`:
-```cpp
-#include "pch.hpp"
-#include "Systems/MySystem.hpp"
-
-#include "Components/Tags.hpp"
-#include "Core/Application.hpp"
-#include "Core/Time.hpp"
-#include "Profiling/Profiler.hpp"
-#include "Scene/Scene.hpp"
-
-namespace Funke {
-	void MySystem::Step(MyComponent& component, float dt) { /* ... */ }
-
-	void MySystem::Update(Scene& scene) {
-		if (!Application::GetIsPlaying()) return;   // see "Edit mode" below
-		FUNKE_PROFILE_SCOPE("MySystem");
-		const float dt = Time::GetDeltaTime();
-		auto view = scene.GetRegistry().view<MyComponent>(entt::exclude<DisabledTag>);
-		for (auto [entity, component] : view.each()) {
-			Step(component, dt);
-		}
-	}
-}
-```
-Example of a per-entity helper exercised by tests: `Systems/LocalizedTextSystem.{hpp,cpp}` (`Apply`) + `Tests/Funke-Engine-Tests/src/GameLocalizationTests.cpp`. Include specific component headers, not the deprecated `Components/Components.hpp`. Respect `DisabledTag` (and `InheritedDisabledTag` is applied alongside it to children) in views.
 
 ## 2. Hooks (all optional, all take `Scene&`)
 
@@ -81,7 +46,7 @@ Every hook runs inside a `SceneExecutionScope`, so implicit-scene APIs (`Entity:
 
 ## 3. Register
 
-**Every scene (engine built-in):** add it to `AddStandardSceneSystems` in `Funke-Engine/src/Scene/SceneManager.cpp`, which `SceneManager::RegisterScene` calls for every definition (editor working/asset scenes, runtime build scenes, C#-loaded scenes). Current order ([2D]/[3D] = only while that engine module is active): [2D] `TransformHierarchySystem` / [3D] `Transform3DHierarchySystem`, `PhysicsInterpolationSystem3D` (first; everyone sees fresh world transforms) → `UILayoutSystem` → [2D] `ParticleUpdateSystem` → [3D] `Particle3DUpdateSystem`, `SkinnedMeshAnimationSystem` → `ScriptSystem` → `AnimatorSystem` → [3D] `PhysicsSystem3D` → `AudioUpdateSystem` → `UIFocusSystem` → `UIEventSystem`, `LocalizedTextSystem` (focus must precede event). Gate on `ApplicationConfig` (`EnableRenderer2D`, `EnableScripting`, `EnableAudio`) like the neighbors. A system using Funke.2D/Funke.3D types also needs the module gate: its include and `AddSystem` inside `#if FUNKE_WITH_2D` / `FUNKE_WITH_3D`, plus the `with2D`/`with3D` check (`EngineModules::IsActive`) — otherwise the `--without-2d|3d` runtime variants stop compiling. Placement relative to `ScriptSystem` decides whether scripts see your results this frame.
+**Every scene (engine built-in):** add it to `AddStandardSceneSystems` in `Funke-Engine/src/Scene/SceneManager.cpp`, which `SceneManager::RegisterScene` calls for every definition (editor working/asset scenes, runtime build scenes, C#-loaded scenes). Current order ([2D]/[3D] = only while that engine module is active): [2D] `TransformHierarchySystem` / [3D] `Transform3DHierarchySystem`, `PhysicsInterpolationSystem3D` (first; everyone sees fresh world transforms) → `UILayoutSystem` → [2D] `ParticleUpdateSystem` → [3D] `Particle3DUpdateSystem`, `SkinnedMeshAnimationSystem` → `ScriptSystem` → `AnimatorSystem` → [3D] `PhysicsSystem3D` → `AudioUpdateSystem` → `UIFocusSystem` → `UIEventSystem`, `LocalizedTextSystem` (focus must precede event). Gate on `ApplicationConfig` (`EnableSceneRendering`, `EnableScripting`, `EnableAudio`) like the neighbors. A system using Funke.2D/Funke.3D types also needs the module gate: its include and `AddSystem` inside `#if FUNKE_WITH_2D` / `FUNKE_WITH_3D`, plus the `with2D`/`with3D` check (`EngineModules::IsActive`) — otherwise the `--without-2d|3d` runtime variants stop compiling. Placement relative to `ScriptSystem` decides whether scripts see your results this frame.
 
 **One scene (app-specific):** in the app's `ConfigureScenes()` (`Funke-Runtime/src/RuntimeApplication.cpp`, `Funke-Editor/src/EditorApplication.cpp`, `Funke-Launcher/src/LauncherApplication.cpp`, tests):
 ```cpp
@@ -101,18 +66,12 @@ Fixed steps (accumulator-driven, catch-up capped) run first: `Application::Fixed
 ## Edit mode vs play mode (editor)
 
 - Scenes are loaded in edit mode, so `Awake`/`Start` run **without** play having started, and run again when Stop rebuilds scenes from the play snapshot. Pressing Play does not reload scenes or re-run Awake/Start for native systems. Initialize per-play state lazily in `Update` (SpriteAnimation's `Started` flag) or check `Application::GetIsPlaying()`.
-- `Update`/`FixedUpdate` don't run in edit mode; `OnPreRender` does — keep it cheap and don't mutate authored component data there (it would leak into the saved scene).
+- Keep edit-mode `OnPreRender` cheap and avoid changing authored fields that could be saved.
 - The runtime sets `Application::SetIsPlaying(true)` before scenes load; the editor sets it false.
 
 ## Runtime control
 
-```cpp
-scene.EnableSystem<MySystem>();      // calls OnEnable on transition
-scene.DisableSystem<MySystem>();     // calls OnDisable on transition
-scene.IsSystemEnabled<MySystem>();
-scene.HasSystem<MySystem>();
-MySystem* sys = scene.GetSystem<MySystem>();   // pointer; nullptr (trace log) if absent
-```
+Use `EnableSystem<T>()` and `DisableSystem<T>()` for transitions. Query with `IsSystemEnabled<T>()` or `HasSystem<T>()`. `GetSystem<T>()` returns a pointer and logs at trace level when absent.
 Disabled systems skip `Awake`, `Start`, and frame hooks. `OnDisable` runs on the transition, and an already-awakened system still receives `OnDestroy` during teardown even if it was later disabled. Reload creates new system instances with their initial enabled state. Lookups use `dynamic_cast` over the list — cache the pointer if called per entity.
 
 ## Exceptions

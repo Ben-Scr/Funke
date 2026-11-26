@@ -1,0 +1,51 @@
+import System
+import Math
+namespace Funke;
+
+public struct Vector2Int {
+public:
+    int X;
+    int Y;
+    static Vector2Int Zero => Vector2Int(0, 0);
+    static Vector2Int One => Vector2Int(1, 1);
+    static Vector2Int Right => Vector2Int(1, 0);
+    static Vector2Int Left => Vector2Int(-1, 0);
+    static Vector2Int Up => Vector2Int(0, 1);
+    static Vector2Int Down => Vector2Int(0, -1);
+    Vector2Int(int scalar = 0) { X = scalar; Y = scalar; }
+    Vector2Int(int x, int y) { X = x; Y = y; }
+    Vector2Int(Vector3Int v) { X = v.X; Y = v.Y; }
+    float Length() { return Mathf.Sqrt(LengthSquared()); }
+    int LengthSquared() { return X * X + Y * Y; }
+    void Clamp(Vector2Int min, Vector2Int max) {
+        X = Mathf.FkClampDouble(X, min.X, max.X);
+        Y = Mathf.FkClampDouble(Y, min.Y, max.Y);
+    }
+    static int Dot(Vector2Int a, Vector2Int b) { return a.X * b.X + a.Y * b.Y; }
+    static float Distance(Vector2Int a, Vector2Int b) { return (a - b).Length(); }
+    static Vector2Int Min(Vector2Int a, Vector2Int b) { return Vector2Int(Math.Min<double>(a.X, b.X), Math.Min<double>(a.Y, b.Y)); }
+    static Vector2Int Max(Vector2Int a, Vector2Int b) { return Vector2Int(Math.Max<double>(a.X, b.X), Math.Max<double>(a.Y, b.Y)); }
+    static Vector2Int operator +(Vector2Int a, Vector2Int b) { return Vector2Int(a.X + b.X, a.Y + b.Y); }
+    static Vector2Int operator -(Vector2Int a, Vector2Int b) { return Vector2Int(a.X - b.X, a.Y - b.Y); }
+    static Vector2Int operator *(Vector2Int a, Vector2Int b) { return Vector2Int(a.X * b.X, a.Y * b.Y); }
+    static Vector2Int operator /(Vector2Int a, Vector2Int b) { return Vector2Int(a.X / b.X, a.Y / b.Y); }
+    static Vector2Int operator *(Vector2Int v, int s) { return Vector2Int(v.X * s, v.Y * s); }
+    static Vector2Int operator *(int s, Vector2Int v) { return Vector2Int(s * v.X, s * v.Y); }
+    static Vector2Int operator /(Vector2Int v, int s) { return Vector2Int(v.X / s, v.Y / s); }
+    static Vector2Int operator -(Vector2Int v) { return Vector2Int(-v.X, -v.Y); }
+    static bool operator ==(Vector2Int a, Vector2Int b) { return a.Equals(b); }
+    static bool operator !=(Vector2Int a, Vector2Int b) { return !a.Equals(b); }
+    bool Equals(Vector2Int other) { return X == other.X && Y == other.Y; }
+    implicit Vector2() { return Vector2(X, Y); }
+    implicit Vector3() { return Vector3(X, Y, 0.0f); }
+    implicit Vector4() { return Vector4(X, Y, 0.0f, 0.0f); }
+    explicit Vector3Int() { return Vector3Int(X, Y, 0); }
+    explicit Vector4Int() { return Vector4Int(X, Y, 0, 0); }
+    int GetHashCode() {
+        int hash = -2128831035;
+        hash = FkNumberFormat.Hash(hash, Reinterpret<uint>(X));
+        hash = FkNumberFormat.Hash(hash, Reinterpret<uint>(Y));
+        return hash;
+    }
+    string ToString() { return "Vector2Int(" + (string)X + ", " + (string)Y + ")"; }
+}

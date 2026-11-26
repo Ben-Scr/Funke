@@ -1,0 +1,37 @@
+{
+  "fixedStep": 60,
+  "steps": [
+    {
+      "at": ".5s",
+      "command": "factory.assert menu"
+    },
+    {
+      "at": "1s",
+      "mouse": [
+        0.5,
+        0.607
+      ],
+      "button": "left"
+    },
+    {
+      "at": "2.2s",
+      "command": "factory.assert loaded"
+    },
+    {
+      "at": "2.5s",
+      "screenshot": "continued-factory"
+    },
+    {
+      "at": "3s",
+      "key": "E"
+    },
+    {
+      "at": "3.5s",
+      "screenshot": "continued-inventory"
+    },
+    {
+      "at": "4s",
+      "quit": true
+    }
+  ]
+}

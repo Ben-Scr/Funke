@@ -297,9 +297,18 @@ namespace Funke {
 			switch (event.type) {
 			case SDL_EVENT_WINDOW_FOCUS_GAINED: OnFocusChanged(true); break;
 			case SDL_EVENT_WINDOW_FOCUS_LOST:   OnFocusChanged(false); break;
-			case SDL_EVENT_WINDOW_MINIMIZED:    Application::SetWindowMinimized(true); break;
+			case SDL_EVENT_WINDOW_MINIMIZED:
+				Application::SetWindowMinimized(true);
+				ScriptEngine::RaiseWindowStateChange(ScriptEngine::WindowStateChange::Minimized);
+				break;
 			case SDL_EVENT_WINDOW_RESTORED:
-			case SDL_EVENT_WINDOW_MAXIMIZED:    Application::SetWindowMinimized(false); break;
+				Application::SetWindowMinimized(false);
+				ScriptEngine::RaiseWindowStateChange(ScriptEngine::WindowStateChange::Restored);
+				break;
+			case SDL_EVENT_WINDOW_MAXIMIZED:
+				Application::SetWindowMinimized(false);
+				ScriptEngine::RaiseWindowStateChange(ScriptEngine::WindowStateChange::Maximized);
+				break;
 			case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED: OnFramebufferResized(); break;
 			case SDL_EVENT_WINDOW_CLOSE_REQUESTED: {
 				// The app's close handler clears this when it takes over the quit flow.
@@ -373,6 +382,7 @@ namespace Funke {
 			const int64_t id = static_cast<int64_t>(event.tfinger.fingerID ^ (event.tfinger.touchID << 32));
 			if (event.type == SDL_EVENT_FINGER_DOWN) app->m_Input.m_Touches.OnDown(id, position);
 			else if (event.type == SDL_EVENT_FINGER_MOTION) app->m_Input.m_Touches.OnMove(id, position);
+			else if (event.type == SDL_EVENT_FINGER_CANCELED) app->m_Input.m_Touches.OnCancel(id);
 			else app->m_Input.m_Touches.OnUp(id, position);
 			break;
 		}

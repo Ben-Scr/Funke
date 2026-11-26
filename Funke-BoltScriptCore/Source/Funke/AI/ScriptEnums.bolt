@@ -1,0 +1,7 @@
+namespace Funke.AI;
+
+public enum BehaviorResult {
+    Running,
+    Success,
+    Failure
+}

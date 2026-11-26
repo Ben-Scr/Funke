@@ -27,7 +27,7 @@ public:
 		config.EnablePhysics2D = false;
 		// Scripting off: launcher never runs game code, and holding ScriptCore.dll would block the editor from rebuilding it.
 		config.EnableScripting = false;
-		config.EnableRenderer2D = false;
+		config.EnableSceneRendering = false;
 		config.EnableTextureManager = false;
 		config.EnablePackageHost = false;
 		// No project is open: the launcher draws only its own ImGui UI and loads its few images itself.

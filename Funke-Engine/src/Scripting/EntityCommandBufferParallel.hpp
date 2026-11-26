@@ -15,6 +15,12 @@
 #include "Components/Physics/Rigidbody2DComponent.hpp"
 #endif
 #endif
+#if FUNKE_WITH_3D
+#include "Components/General/Transform3DComponent.hpp"
+#if FUNKE_WITH_PHYSICS3D
+#include "Components/Physics3D/Rigidbody3DComponent.hpp"
+#endif
+#endif
 #include "Core/Log.hpp"
 #include "Jobs/JobSystem.hpp"
 
@@ -211,19 +217,19 @@ namespace Funke {
 	}
 
 	template<typename T>
-	void EcbRemoveBatch(Scene& scene, EcbComponentBatch& batch, EcbExecutor& execute, bool notify) {
+	void EcbRemoveBatch(Scene& scene, EcbComponentBatch& batch, EcbExecutor& execute,
+		typename entt::registry::storage_for_type<T>::bulk_remove_plan& plan, std::vector<uint64_t>& identities) {
 		if (batch.Handles.empty()) return;
 		auto& storage = scene.GetRegistry().storage<T>();
-		auto plan = storage.prepare_bulk_remove(batch.Handles.begin(), batch.Handles.end());
-		if (notify) {
-			std::vector<uint64_t> identities;
-			identities.reserve(batch.Handles.size());
-			for (const EntityHandle handle : batch.Handles) {
-				identities.push_back(scene.GetEntityPersistentID(handle));
-			}
-			scene.NotifyParallelEcbComponentsDestroying(batch.Info->storageHash, batch.Handles);
-			ScriptEngine::NotifyComponentsRemoved(identities.data(), static_cast<int>(identities.size()), batch.Info->typeIdU32);
+		storage.prepare_bulk_remove(plan, batch.Handles.begin(), batch.Handles.end());
+		identities.clear();
+		identities.reserve(batch.Handles.size());
+		const auto* uuids = std::as_const(scene.GetRegistry()).storage<UUIDComponent>();
+		for (const EntityHandle handle : batch.Handles) {
+			identities.push_back(uuids && uuids->contains(handle) ? static_cast<uint64_t>(uuids->get(handle).Id) : 0);
 		}
+		scene.NotifyParallelEcbComponentsDestroying(batch.Info->storageHash, batch.Handles);
+		ScriptEngine::NotifyComponentsRemoved(identities.data(), static_cast<int>(identities.size()), batch.Info->typeIdU32);
 		storage.bulk_remove(plan, execute);
 	}
 
@@ -234,6 +240,13 @@ namespace Funke {
 			uint8_t CertifiedOpcodes = 0;
 		};
 		EcbComponentBatch Transforms, Sprites;
+		std::vector<EntityHandle> Metadata, Uuids;
+#if FUNKE_WITH_2D
+		entt::registry::storage_for_type<Transform2DComponent>::bulk_remove_plan TransformRemoval;
+		entt::registry::storage_for_type<SpriteRendererComponent>::bulk_remove_plan SpriteRemoval;
+#endif
+		entt::registry::storage_for_type<EntityMetaDataComponent>::bulk_remove_plan MetadataRemoval;
+		entt::registry::storage_for_type<UUIDComponent>::bulk_remove_plan UuidRemoval;
 		ComponentPlan TransformPlan, SpritePlan;
 		std::vector<EntityHandle> Destroyed;
 		std::vector<EntityHandle> Created;
@@ -258,6 +271,77 @@ namespace Funke {
 		}
 	}
 
+#if FUNKE_WITH_3D
+	inline bool EcbTryTransform3DPlayback(Scene& scene, const EcbHeader& header, const uint8_t* cursor, int mode) {
+		// Opt-in only until end-to-end target-project measurements justify Auto.
+		if (mode != 2 || header.entityCount != 0 || header.commandCount == 0) return false;
+		auto& registry = scene.GetRegistry();
+		auto& components = SceneManager::GetComponentRegistry();
+		const auto* info = components.GetInfo<Transform3DComponent>();
+		if (!info) return false;
+		auto& storage = registry.storage<Transform3DComponent>();
+		if (!storage.on_construct().empty() || !storage.on_destroy().empty() || !storage.on_update().empty()) return false;
+		EcbComponentBatch batch;
+		batch.Info = info;
+		batch.Handles.reserve(header.commandCount);
+		batch.Payloads.reserve(header.commandCount);
+		const auto& sourceRegistry = std::as_const(registry);
+		std::vector<uint8_t> seen(sourceRegistry.storage<EntityHandle>()->size(), 0);
+		std::vector<const entt::registry::common_type*> conflicts;
+		for (const auto& conflict : info->conflictsWith) {
+			const auto found = components.All().find(conflict);
+			if (found != components.All().end() && found->second.has) {
+				const auto* pool = sourceRegistry.storage(found->second.storageHash);
+				if (pool && !pool->empty()) conflicts.push_back(pool);
+			}
+		}
+		const auto* hierarchy = sourceRegistry.storage<HierarchyComponent>();
+#if FUNKE_WITH_PHYSICS3D
+		const auto* rigidbodies = sourceRegistry.storage<Rigidbody3DComponent>();
+#endif
+		uint8_t certified = 0;
+		bool removing = cursor[0] == Ecb_RemoveComponent;
+		if (removing && !ScriptEngine::CanBatchComponentInvalidation()) return false;
+		for (uint32_t index = 0; index < header.commandCount; ++index) {
+			const uint8_t opcode = cursor[0];
+			const uint32_t target = EcbReadLE<uint32_t>(cursor + 1);
+			const uint32_t type = EcbReadLE<uint32_t>(cursor + 5);
+			const uint16_t size = EcbReadLE<uint16_t>(cursor + 9);
+			const uint8_t* payload = cursor + 11;
+			cursor = payload + size;
+			if (type != info->typeIdU32 || target != kEcbNoName || size < sizeof(uint64_t)) return false;
+			if (removing ? opcode != Ecb_RemoveComponent : (opcode != Ecb_AddComponent && opcode != Ecb_DefaultConstructComponent)) return false;
+			const uint8_t bit = static_cast<uint8_t>(1u << opcode);
+			if (!(certified & bit)) {
+				if (!EcbCertifiedComponent<Transform3DComponent>(*info, opcode)) return false;
+				certified |= bit;
+			}
+			EntityHandle handle;
+			if (!EcbResolveTarget<true>(scene, EcbReadLE<uint64_t>(payload), handle)) return false;
+			const auto slot = entt::to_entity(handle);
+			if (slot >= seen.size() || seen[slot]) return false;
+			seen[slot] = 1;
+			if (storage.contains(handle) != removing || (hierarchy && hierarchy->contains(handle))) return false;
+#if FUNKE_WITH_PHYSICS3D
+			if (rigidbodies && rigidbodies->contains(handle)) return false;
+#endif
+			if (!removing) for (const auto* conflict : conflicts) if (conflict->contains(handle)) return false;
+			batch.Handles.push_back(handle);
+			batch.Payloads.push_back(opcode == Ecb_AddComponent ? payload + sizeof(uint64_t) : nullptr);
+		}
+		EcbExecutor execute(true);
+		if (removing) {
+			entt::registry::storage_for_type<Transform3DComponent>::bulk_remove_plan plan;
+			std::vector<uint64_t> identities;
+			EcbRemoveBatch<Transform3DComponent>(scene, batch, execute, plan, identities);
+		}
+		else EcbInsertBatch<Transform3DComponent>(scene, batch, execute);
+		scene.MarkAllDirtyOnce();
+		execute.Report(mode, 0, header.commandCount);
+		return true;
+	}
+#endif
+
 	template<bool NativeTargets>
 	bool EcbTryParallelPlayback(Scene& scene, const EcbHeader& header, const uint8_t* cursor,
 		std::conditional_t<NativeTargets, EntityHandle, uint64_t>* output, int mode) {
@@ -268,6 +352,9 @@ namespace Funke {
 		};
 		if (mode == 1) return fallback("sequential_requested");
 		if (JobSystem::IsCallerWorker()) return fallback("worker_caller");
+#if FUNKE_WITH_3D
+		if constexpr (NativeTargets) if (EcbTryTransform3DPlayback(scene, header, cursor, mode)) return true;
+#endif
 		if (mode == 0 && std::max(header.entityCount, header.commandCount) < k_AutomaticMinimum)
 			return fallback("auto_below_threshold");
 		const bool create = header.entityCount != 0;
@@ -316,6 +403,8 @@ namespace Funke {
 		const auto* rigidbodies = sourceRegistry.storage<Rigidbody2DComponent>();
 #endif
 #endif
+		uint64_t previousIdentity = 0;
+		EntityHandle previousHandle = entt::null;
 		for (uint32_t command = 0; command < header.commandCount; ++command) {
 			const uint8_t opcode = cursor[0];
 			const uint32_t entityIndex = EcbReadLE<uint32_t>(cursor + 1);
@@ -332,8 +421,14 @@ namespace Funke {
 			action = next;
 			EntityHandle handle = static_cast<EntityHandle>(entityIndex);
 			if (!create) {
-				if (!EcbResolveTarget<NativeTargets>(scene, EcbReadLE<uint64_t>(payload), handle))
-					return fallback("stale_target", command, typeId);
+				const uint64_t identity = EcbReadLE<uint64_t>(payload);
+				// Planning invokes no callbacks or mutations; adjacent components can share target resolution.
+				if (previousHandle != entt::null && previousIdentity == identity) handle = previousHandle;
+				else {
+					if (!EcbResolveTarget<NativeTargets>(scene, identity, handle)) return fallback("stale_target", command, typeId);
+					previousIdentity = identity;
+					previousHandle = handle;
+				}
 				payload += sizeof(uint64_t);
 			}
 			const size_t slot = create ? entityIndex : entt::to_entity(handle);
@@ -465,47 +560,76 @@ namespace Funke {
 			else std::copy(identities.begin(), identities.end(), output);
 		}
 #if FUNKE_WITH_2D
-		if (action == Action::Add && !create) {
+		if (action == Action::Add && !create && (transforms.Handles.empty() || sprites.Handles.empty())) {
 			EcbInsertBatch<Transform2DComponent>(scene, transforms, execute);
 			EcbInsertBatch<SpriteRendererComponent>(scene, sprites, execute);
 		}
+		else if (action == Action::Add && !create) {
+			// Different pools can prepare sparse rows and construct payloads independently.
+			// Resolve pools on the caller, and publish lifecycle effects only after both workers join.
+			auto& transformPool = scene.GetRegistry().storage<Transform2DComponent>();
+			auto& spritePool = scene.GetRegistry().storage<SpriteRendererComponent>();
+			EcbSerialExecutor serial;
+			std::exception_ptr errors[2];
+			bool constructed[2]{};
+			execute.RunTasks(2, [&](size_t task) noexcept {
+				try {
+					if (task == 0) EcbConstructBatch<Transform2DComponent>(scene, transforms, transformPool, serial);
+					else EcbConstructBatch<SpriteRendererComponent>(scene, sprites, spritePool, serial);
+					constructed[task] = true;
+				}
+				catch (...) { errors[task] = std::current_exception(); }
+			});
+			if (constructed[0]) EcbNotifyConstructed<Transform2DComponent>(scene, transforms);
+			if (constructed[1]) EcbNotifyConstructed<SpriteRendererComponent>(scene, sprites);
+			for (const auto& error : errors) if (error) std::rethrow_exception(error);
+		}
 		else if (action == Action::Remove) {
-			EcbRemoveBatch<Transform2DComponent>(scene, transforms, execute, true);
-			EcbRemoveBatch<SpriteRendererComponent>(scene, sprites, execute, true);
+			EcbRemoveBatch<Transform2DComponent>(scene, transforms, execute, scratch.TransformRemoval, scratch.Identities);
+			EcbRemoveBatch<SpriteRendererComponent>(scene, sprites, execute, scratch.SpriteRemoval, scratch.Identities);
 		}
 #endif
 		if (action == Action::Destroy) {
 			auto& registry = scene.GetRegistry();
-			EcbComponentBatch metadata, ids;
-			for (const EntityHandle handle : destroyed) {
-#if FUNKE_WITH_2D
-				if (registry.all_of<Transform2DComponent>(handle)) transforms.Handles.push_back(handle);
-				if (registry.all_of<SpriteRendererComponent>(handle)) sprites.Handles.push_back(handle);
-#endif
-				if (registry.all_of<EntityMetaDataComponent>(handle)) metadata.Handles.push_back(handle);
-				if (registry.all_of<UUIDComponent>(handle)) ids.Handles.push_back(handle);
-			}
+			auto& metadata = scratch.Metadata;
+			auto& ids = scratch.Uuids;
+			metadata.clear();
+			ids.clear();
+			metadata.reserve(destroyed.size());
+			ids.reserve(destroyed.size());
 #if FUNKE_WITH_2D
 			auto& transformPool = registry.storage<Transform2DComponent>();
 			auto& spritePool = registry.storage<SpriteRendererComponent>();
-			auto transformPlan = transformPool.prepare_bulk_remove(transforms.Handles.begin(), transforms.Handles.end());
-			auto spritePlan = spritePool.prepare_bulk_remove(sprites.Handles.begin(), sprites.Handles.end());
+			transforms.Handles.reserve(destroyed.size());
+			sprites.Handles.reserve(destroyed.size());
 #endif
 			auto& metadataPool = registry.storage<EntityMetaDataComponent>();
 			auto& idPool = registry.storage<UUIDComponent>();
-			auto metadataPlan = metadataPool.prepare_bulk_remove(metadata.Handles.begin(), metadata.Handles.end());
-			auto idPlan = idPool.prepare_bulk_remove(ids.Handles.begin(), ids.Handles.end());
+			for (const EntityHandle handle : destroyed) {
+#if FUNKE_WITH_2D
+				if (transformPool.contains(handle)) transforms.Handles.push_back(handle);
+				if (spritePool.contains(handle)) sprites.Handles.push_back(handle);
+#endif
+				if (metadataPool.contains(handle)) metadata.push_back(handle);
+				if (idPool.contains(handle)) ids.push_back(handle);
+			}
+#if FUNKE_WITH_2D
+			transformPool.prepare_bulk_remove(scratch.TransformRemoval, transforms.Handles.begin(), transforms.Handles.end());
+			spritePool.prepare_bulk_remove(scratch.SpriteRemoval, sprites.Handles.begin(), sprites.Handles.end());
+#endif
+			metadataPool.prepare_bulk_remove(scratch.MetadataRemoval, metadata.begin(), metadata.end());
+			idPool.prepare_bulk_remove(scratch.UuidRemoval, ids.begin(), ids.end());
 			scene.PrepareParallelEcbDestroy(destroyed);
 			EcbSerialExecutor serial;
 			execute.RunTasks(4, [&](size_t task) noexcept {
 #if FUNKE_WITH_2D
-				if (task == 0) transformPool.bulk_remove(transformPlan, serial);
-				else if (task == 1) spritePool.bulk_remove(spritePlan, serial);
+				if (task == 0) transformPool.bulk_remove(scratch.TransformRemoval, serial);
+				else if (task == 1) spritePool.bulk_remove(scratch.SpriteRemoval, serial);
 #endif
-				if (task == 2) metadataPool.bulk_remove(metadataPlan, serial);
-				else if (task == 3) idPool.bulk_remove(idPlan, serial);
+				if (task == 2) metadataPool.bulk_remove(scratch.MetadataRemoval, serial);
+				else if (task == 3) idPool.bulk_remove(scratch.UuidRemoval, serial);
 			});
-			for (const EntityHandle handle : destroyed) scene.FinalizeParallelEcbDestroy(handle);
+			scene.FinalizeParallelEcbDestroy(destroyed);
 		}
 		scene.MarkAllDirtyOnce();
 		execute.Report(mode, header.entityCount, header.commandCount);

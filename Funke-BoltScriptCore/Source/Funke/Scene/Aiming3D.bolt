@@ -1,0 +1,69 @@
+import Math
+import System
+namespace Funke;
+
+public static class Aiming3D {
+private:
+    static float LaunchAxis(float start, float end, float acceleration, float duration) {
+        return (float)(((double)end - (double)start) / (double)duration - (double)acceleration * (0.5 * (double)duration));
+    }
+public:
+    static bool InViewCone(Vector3 origin, Vector3 forward, Vector3 point, float halfAngleDegrees, float range) {
+        if (!Mathf.FkFinite(range) || range < 0.0f || !Mathf.FkFinite(halfAngleDegrees) || halfAngleDegrees < 0.0f || halfAngleDegrees > 180.0f)
+            throw ArgumentOutOfRangeException("range or halfAngleDegrees");
+        Vector3.FkValidateFinite(origin, "origin");
+        Vector3.FkValidateFinite(point, "point");
+        if (!Vector3.TryNormalize(forward, forward)) return false;
+        Vector3 d = point - origin;
+        double squared = (double)d.X*d.X + (double)d.Y*d.Y + (double)d.Z*d.Z;
+        return squared <= (double)range * range && Vector3.Angle(forward, d) <= halfAngleDegrees;
+    }
+    static Vector3 LaunchVelocity(Vector3 origin, Vector3 target, Vector3 acceleration, float flightTime) {
+        if (!Mathf.FkFinite(flightTime) || flightTime <= 0.0f) throw ArgumentOutOfRangeException("flightTime");
+        Vector3 velocity = Vector3(LaunchAxis(origin.X, target.X, acceleration.X, flightTime),
+            LaunchAxis(origin.Y, target.Y, acceleration.Y, flightTime), LaunchAxis(origin.Z, target.Z, acceleration.Z, flightTime));
+        Vector3.FkValidateFinite(velocity, "velocity");
+        return velocity;
+    }
+    static bool TryIntercept(Vector3 origin, float speed, Vector3 target, Vector3 targetVelocity, float& time, Vector3& point) {
+        time = 0.0f;
+        point = default;
+        if (!Mathf.FkFinite(speed) || speed <= 0.0f || !Vector3.FkIsFinite(origin) || !Vector3.FkIsFinite(target) || !Vector3.FkIsFinite(targetVelocity)) return false;
+        double x = (double)target.X - origin.X, y = (double)target.Y - origin.Y, z = (double)target.Z - origin.Z;
+        double vx = (double)targetVelocity.X, vy = (double)targetVelocity.Y, vz = (double)targetVelocity.Z;
+        double a = vx*vx + vy*vy + vz*vz - (double)speed*speed;
+        double b = 2.0 * (x*vx + y*vy + z*vz);
+        double c = x*x + y*y + z*z;
+        if (c == 0.0) { point = target; return true; }
+        double t = 0.0;
+        if (a == 0.0) {
+            if (b >= 0.0) return false;
+            t = -c / b;
+        } else {
+            double discriminant = b*b - 4.0*a*c;
+            if (discriminant < 0.0) return false;
+            double root = Math.Sqrt<double>(discriminant);
+            double q = -0.5 * (b + (b < 0.0 ? -root : root));
+            double first = q/a;
+            double second = q != 0.0 ? c/q : -1.0;
+            if (first < 0.0 && second < 0.0) return false;
+            t = first < 0.0 ? second : (second < 0.0 ? first : Math.Min<double>(first, second));
+        }
+        if (!(t >= 0.0) || t > 3.4028234663852886e38) return false;
+        Vector3 hit = Vector3((float)((double)target.X + vx*t), (float)((double)target.Y + vy*t), (float)((double)target.Z + vz*t));
+        if (!Vector3.FkIsFinite(hit)) return false;
+        time = (float)t;
+        point = hit;
+        return true;
+    }
+    static bool HasClearLine(Vector3 origin, Vector3 target, PhysicsLayer obstacles, bool includeTriggers = false) {
+        Vector3.FkValidateFinite(origin, "origin");
+        Vector3.FkValidateFinite(target, "target");
+        Vector3 direction = target - origin;
+        float distance = direction.Length();
+        if (!Mathf.FkFinite(distance)) throw ArgumentOutOfRangeException("target");
+        Funke.Physics.RaycastHit3D hit;
+        return distance == 0.0f || !Funke.Physics.Physics3D.Raycast(origin, direction / distance, hit, obstacles, distance, includeTriggers);
+    }
+}
+

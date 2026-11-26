@@ -1,0 +1,20 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public static class FunkeText {
+public:
+    ulong Put(string value) {
+        byte[] bytes = value.ToUtf8();
+        FkTextByte(0ul, 1ul);
+        for (int i = 0; i < bytes.Length; i++) FkTextByte((ulong)bytes[i], 0ul);
+        return 0ul;
+    }
+    string Read(ulong size) {
+        byte[] bytes = new byte[(int)size];
+        for (int i = 0; i < bytes.Length; i++) bytes[i] = (byte)FkTextByte((ulong)i, 2ul);
+        return string.FromUtf8(bytes);
+    }
+}

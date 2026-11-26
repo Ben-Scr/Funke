@@ -108,10 +108,10 @@ TEST_CASE("Library thumbnails deduplicate pending and failed requests until refr
 	std::atomic<int> calls = 0;
 	std::promise<void> release;
 	auto gate = release.get_future().share();
-	LibraryThumbnails cache([&](const std::string&) {
+	LibraryThumbnails cache([&](const std::string&, const std::filesystem::path&) {
 		++calls;
 		gate.wait();
-		return std::unique_ptr<ImageData>{};
+		return false;
 	});
 	CHECK(cache.GetState("", "") == LibraryThumbnails::State::Missing);
 	cache.Request("fixture", "1");

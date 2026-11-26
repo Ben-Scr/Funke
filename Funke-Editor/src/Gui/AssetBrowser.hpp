@@ -3,6 +3,7 @@
 #include "Undo/AssetFileHistory.hpp"
 #include "Gui/AssetRenameInput.hpp"
 #include "Gui/PrefabThumbnailCache.hpp"
+#include "Gui/AssetPreview3DCache.hpp"
 #include "Gui/ThumbnailCache.hpp"
 #include "Scene/EntityHandle.hpp"
 #include "Serialization/Directory.hpp"
@@ -17,6 +18,7 @@
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace Funke {
@@ -42,6 +44,7 @@ namespace Funke {
 		void InvalidateAllThumbnails() {
 			m_Thumbnails.Clear();
 			m_PrefabThumbnails.MarkAllStale();
+			m_Asset3DThumbnails.MarkAllStale();
 		}
 
 		// Drop one cached thumbnail (keyed by absolute path) so its tile re-creates
@@ -50,9 +53,13 @@ namespace Funke {
 		void InvalidateThumbnail(const std::string& absolutePath) {
 			m_Thumbnails.Invalidate(absolutePath);
 			m_PrefabThumbnails.Invalidate(absolutePath);
+			m_Asset3DThumbnails.Invalidate(absolutePath);
 		}
 
-		void InvalidatePrefabThumbnails() { m_PrefabThumbnails.MarkAllStale(); }
+		void InvalidateRenderedThumbnails() {
+			m_PrefabThumbnails.MarkAllStale();
+			m_Asset3DThumbnails.MarkAllStale();
+		}
 
 		/// Returns true when the user is currently naming a new script (rename in progress).
 		bool IsCreatingScript() const { return m_PendingScriptType != PendingScriptType::None; }
@@ -69,6 +76,8 @@ namespace Funke {
 			m_PendingPrefabEdit.clear();
 			return p;
 		}
+
+		std::string TakePending3DPreview() { return std::exchange(m_Pending3DPreview, {}); }
 
 		// .anim / .animctrl the user opened; the layer shows it in the Animation / Animator window.
 		std::string TakePendingAnimationOpen() {
@@ -115,7 +124,7 @@ namespace Funke {
 		void UpdateExternalAssetImportProgressWindow();
 		// Async asset deletion (mirrors the import worker above): big folders / large
 		// assets are removed on a worker thread so the editor never blocks, with a
-		// grace-period Win32 progress popup. See AssetBrowserActions.cpp.
+		// grace-period Win32 progress popup. See AssetBrowserDeletion.cpp.
 		void PumpAssetDeletion();
 		void StartAssetDeletion(std::vector<std::string> paths);
 		void RunAssetDeletion();
@@ -202,6 +211,7 @@ namespace Funke {
 		void CopyPathToClipboard(const std::string& path);
 		void CreateFolder(const std::string& parentDir);
 		void CreateScript(const std::string& parentDir);
+		void CreateBoltScript(const std::string& parentDir);
 		void CreateCppScript(const std::string& parentDir);
 		void CreateManagedCSharpComponent(const std::string& parentDir);
 		void CreateNativeCSharpComponent(const std::string& parentDir);
@@ -213,6 +223,7 @@ namespace Funke {
 		void CreateDataAsset(const std::string& parentDir, const std::string& typeName);
 		void CreateMaterial(const std::string& parentDir);
 		void CreateAnimationAsset(const std::string& parentDir, bool controller);
+		void CreatePrefabVariant(const std::string& basePath);
 		void CreateEntityPrefab(const std::string& parentDir, EntityHandle sourceEntity = entt::null);
 		void CreateDefaultTexture(const std::string& parentDir,
 			const std::string& sourceFile, const std::string& displayName);
@@ -298,18 +309,20 @@ namespace Funke {
 		bool m_ItemRightClicked = false;
 		std::string m_PendingSceneLoad;
 		std::string m_PendingPrefabEdit;
+		std::string m_Pending3DPreview;
 		std::string m_PendingAnimationOpen;
 		std::vector<std::string> m_AssetClipboardPaths;
 		bool m_AssetClipboardCut = false;
 
 		// Deferred script creation - boilerplate/project script is written after rename is committed.
-		enum class PendingScriptType { None, CSharp, CSharpEmpty, CSharpComponent, CSharpNativeComponent, CSharpSceneSystem, CSharpGlobalSystem, CSharpDataAsset, Cpp, EntityPrefab };
+		enum class PendingScriptType { None, CSharp, CSharpEmpty, CSharpComponent, CSharpNativeComponent, CSharpSceneSystem, CSharpGlobalSystem, CSharpDataAsset, Bolt, Cpp, EntityPrefab };
 		PendingScriptType m_PendingScriptType = PendingScriptType::None;
 		std::string m_PendingScriptDir;  // parent directory for the new script
 		EntityHandle m_PendingPrefabSourceEntity = entt::null;
 
 		ThumbnailCache m_Thumbnails;
 		PrefabThumbnailCache m_PrefabThumbnails;
+		AssetPreview3DCache m_Asset3DThumbnails;
 
 		std::unordered_map<std::string, std::vector<SpriteSlice>> m_SliceCache;
 		size_t m_NextSliceEntry = 0;

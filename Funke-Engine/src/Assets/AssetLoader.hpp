@@ -37,7 +37,8 @@ namespace Funke {
 		static bool Cancel(uint64_t operationId);
 		// Release every request, including failures; releasing pending work cancels that observer.
 		static void Release(uint64_t operationId);
-		// Uploads remain on the main thread; each publication is indivisible.
+		// Main thread: at most maxPublications steps per pump. Textures transfer <=1 MiB
+		// (at least one row) per step; allocation/mip generation and other asset types remain indivisible.
 		static void Pump(double budgetMs = 2.0, size_t maxPublications = 1);
 		static void Invalidate(AssetKind kind);
 		static void RetainAsset(uint64_t assetId);

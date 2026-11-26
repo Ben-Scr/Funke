@@ -1,0 +1,22 @@
+import System
+import System.Threading
+import System.Threading.Tasks
+namespace Funke.Jobs;
+
+public class AtomicDouble {
+    private: System.Threading.Atomic<ulong> bits;
+    static ulong Encode(double v) { return Reinterpret<ulong>(v); }
+    static double Decode(ulong v) { return Reinterpret<double>(v); }
+    public: AtomicDouble() {}
+    AtomicDouble(double initialValue) { Store(initialValue); }
+    double Value {get { return Load(); } set { Store(value); } }
+    double Load() {return Decode(bits.Load());}
+    void Store(double v) {bits.Store(Encode(v));}
+    double Exchange(double v) {return Decode(bits.Exchange(Encode(v)));}
+    double CompareExchange(double v,double comparand) { ulong old=Encode(comparand); bits.CompareExchange(old,Encode(v));return Decode(old); }
+    double Add(double operand) { ulong old=bits.Load(); while(true) { double current=Decode(old); double next=current + operand; if(bits.CompareExchange(old,Encode(next))) return next; }return Decode(old); }
+    double FetchMin(double operand) { ulong old=bits.Load(); while(true) { double current=Decode(old); double next=operand < current ? operand : current; if(bits.CompareExchange(old,Encode(next))) return current; }return Decode(old); }
+    double FetchMax(double operand) { ulong old=bits.Load(); while(true) { double current=Decode(old); double next=operand > current ? operand : current; if(bits.CompareExchange(old,Encode(next))) return current; }return Decode(old); }
+    double Sub(double operand) {return Add(-operand);}
+    string ToString() { return (string)Load(); }
+}

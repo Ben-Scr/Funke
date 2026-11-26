@@ -7,6 +7,7 @@
 #include "Collections/Curve.hpp"
 #include "Gui/AssetBrowser.hpp"
 #include "Gui/EditorIcons.hpp"
+#include "Gui/GrabCursor.hpp"
 #include "Gui/HierarchyDragData.hpp"
 #include "Gui/ImGuiFonts.hpp"
 #include "Gui/EditorTheme.hpp"
@@ -398,7 +399,7 @@ namespace Funke::PropertyDrawer {
 			return false;
 		}
 
-		// ── Per-type drawers ─────────────────────────────────────────
+		// â”€â”€ Per-type drawers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 		bool DrawBool(std::span<const Entity> entities, const PropertyDescriptor& d) {
 			PropertyValue v;
@@ -407,7 +408,16 @@ namespace Funke::PropertyDrawer {
 			ImGuiUtils::BeginInspectorFieldRow(d.DisplayName.c_str());
 			if (!uniform) ImGui::PushItemFlag(static_cast<ImGuiItemFlags>(kMixedValueFlag), true);
 			bool tmp = v.BoolValue;
-			const bool changed = ImGuiUtils::Switch("##Value", &tmp, !uniform);
+			bool changed;
+			if (d.Metadata.ToggleButtonIcon.empty()) {
+				changed = ImGuiUtils::Switch("##Value", &tmp, !uniform);
+			}
+			else {
+				const char* icon = uniform ? d.Metadata.ToggleButtonIcon.c_str() : "minus";
+				changed = EditorUI::IconButton("##Value", icon, nullptr, uniform && tmp,
+					false, 0.0f, uniform ? d.DisplayName.c_str() : "-");
+				if (changed) tmp = !uniform || !tmp;
+			}
 			if (!uniform) ImGui::PopItemFlag();
 			ImGui::PopID();
 			if (changed) {
@@ -499,7 +509,7 @@ namespace Funke::PropertyDrawer {
 				PropertyValue out;
 				out.Type = d.Type;
 				// Plain integers parse exactly via strto*; only inputs with operators
-				// fall through to the evaluator, which is double-based — so a 64-bit
+				// fall through to the evaluator, which is double-based â€” so a 64-bit
 				// magnitude above 2^53 used *inside* an expression loses precision.
 				// Plain entry of any 64-bit value stays exact. (CharsDecimal limits
 				// typable operators to + - * / here; %, ^ and parens aren't reachable.)
@@ -737,7 +747,7 @@ namespace Funke::PropertyDrawer {
 				// float output each frame. Re-seeding from the stored value (which round-trips
 				// through the property Get/Set) makes ImGui's lossy RGB<->HSV hue backup
 				// mismatch, jumping the hue bar. The buffer must stay ImGui-owned for the WHOLE
-				// edit session — not just while an item is active — otherwise the re-seed on the
+				// edit session â€” not just while an item is active â€” otherwise the re-seed on the
 				// frame the SV square is released still jumps the hue.
 				static std::unordered_map<std::string, std::array<float, 4>> s_Working;
 				std::array<float, 4>& work = s_Working[fieldKey];
@@ -1050,7 +1060,7 @@ namespace Funke::PropertyDrawer {
 			}
 			// Scope the popup id per field: DrawReferenceField's PushID is already
 			// popped here, so without this every reference field in the component
-			// shares "##RefCtx" — a duplicate ImGui id plus one stacked "Clear" per field.
+			// shares "##RefCtx" â€” a duplicate ImGui id plus one stacked "Clear" per field.
 			ImGui::PushID(fieldKey.c_str());
 			const bool refCtxCleared = DrawReferenceContextMenu("##RefCtx");
 			ImGui::PopID();
@@ -1106,7 +1116,7 @@ namespace Funke::PropertyDrawer {
 		{
 			// Texture pickers get the thumbnail-grid layout (matching the
 			// SpriteRenderer's existing browser); other asset kinds keep the
-			// plain selectable list. The list contents are identical — only
+			// plain selectable list. The list contents are identical â€” only
 			// the visual layout differs.
 			const ReferencePicker::Style style = (kind == AssetKind::Texture)
 				? ReferencePicker::Style::Thumbnails
@@ -1164,7 +1174,7 @@ namespace Funke::PropertyDrawer {
 							const EntityHandle handle = static_cast<EntityHandle>(data->EntityHandle);
 							const Scene* scene = ResolveHierarchyPayloadScene(*data);
 							if (scene && scene->IsValid(handle)) {
-								// Persistent UUID — see ReferencePicker::CollectEntities for why.
+								// Persistent UUID â€” see ReferencePicker::CollectEntities for why.
 								outValue.UIntValue = scene->GetEntityPersistentID(handle);
 								outValue.StringValue.clear();
 								return outValue.UIntValue != 0;
@@ -1219,14 +1229,7 @@ namespace Funke::PropertyDrawer {
 							const EntityHandle handle = static_cast<EntityHandle>(data->EntityHandle);
 							const Scene* scene = ResolveHierarchyPayloadScene(*data);
 							if (scene && scene->IsValid(handle)) {
-								const ComponentInfo* info = nullptr;
-								SceneManager::GetComponentRegistry().ForEachComponentInfo(
-									[&](const std::type_index&, const ComponentInfo& candidate) {
-										if (info) return;
-										if (candidate.displayName == componentTypeName) info = &candidate;
-									});
-								Entity dropped = scene->GetEntity(handle);
-								if (info && info->has && info->has(dropped)) {
+								if (ReferencePicker::MatchesComponentTarget(scene->GetEntity(handle), componentTypeName)) {
 									outValue.UIntValue = scene->GetEntityPersistentID(handle);
 									outValue.StringValue = componentTypeName;
 									return outValue.UIntValue != 0;
@@ -1405,6 +1408,9 @@ namespace Funke::PropertyDrawer {
 		{
 			struct ReorderPayload { ImGuiID Owner; int Index; };
 			ImGui::InvisibleButton("##handle", ImVec2(handleW, rowH));
+			if (ImGui::IsItemHovered() || ImGui::IsItemActive()) {
+				GrabCursor::Request(ImGui::IsItemActive());
+			}
 			if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
 				const ImGuiIO& io = ImGui::GetIO();
 				if (io.KeyShift && sel.LastClicked >= 0 && sel.LastClicked < count) {
@@ -1626,7 +1632,7 @@ namespace Funke::PropertyDrawer {
 			return changed;
 		}
 
-		// ── List element clipboard (Duplicate / Copy / Paste context menu) ──
+		// â”€â”€ List element clipboard (Duplicate / Copy / Paste context menu) â”€â”€
 		struct ListElementClipboard {
 			bool HasValue = false;
 			PropertyValue Value;
@@ -1731,8 +1737,8 @@ namespace Funke::PropertyDrawer {
 			const ImGuiStyle& style = ImGui::GetStyle();
 			// The card fill MUST stay distinct from the field FrameBg/FrameBgHovered the
 			// value widgets paint themselves with (same token == invisible inset). Derive a
-			// recessed well from FrameBg (tracks theme edits); hover lifts only partway — NOT
-			// to FrameBgHovered — so a hovered field still reads as an inset on the card.
+			// recessed well from FrameBg (tracks theme edits); hover lifts only partway â€” NOT
+			// to FrameBgHovered â€” so a hovered field still reads as an inset on the card.
 			const ImVec4 frameBgCol = style.Colors[ImGuiCol_FrameBg];
 			const auto scaleRGB = [](const ImVec4& c, float k) {
 				return ImGui::GetColorU32(ImVec4(c.x * k, c.y * k, c.z * k, 1.0f));
@@ -2108,7 +2114,7 @@ namespace Funke::PropertyDrawer {
 			ImGui::PushID(d.Name.c_str());
 			ImGuiUtils::BeginInspectorFieldRow(d.DisplayName.c_str());
 			if (!uniform) {
-				ImGui::TextDisabled("— (multiple values, edits overwrite all)");
+				ImGui::TextDisabled("â€” (multiple values, edits overwrite all)");
 			}
 			else {
 				ImGui::TextDisabled("%d %s", static_cast<int>(items.size()),
@@ -2220,7 +2226,7 @@ namespace Funke::PropertyDrawer {
 				const int headerSize = std::clamp(d.Metadata.HeaderSize, 1, 100);
 				// FontSizeBase is the editor base font (zoom + DPI already folded in). Scale the
 				// bump by base/design so the header keeps the same prominence at any zoom/DPI.
-				// Fall back to the unscaled design size — never GetFontSize(), which is post-scale
+				// Fall back to the unscaled design size â€” never GetFontSize(), which is post-scale
 				// and double-applies global scale when fed to PushFont (see imgui.h PushFont docs).
 				const float baseFont = ImGui::GetStyle().FontSizeBase > 0.0f
 					? ImGui::GetStyle().FontSizeBase
@@ -2311,7 +2317,7 @@ namespace Funke::PropertyDrawer {
 			const bool tagUniform = SampleUniform(entities, d, tag);
 			ImGui::Indent(8.0f);
 			if (!tagUniform) {
-				ImGui::TextDisabled("Mixed variant — pick one to apply to all");
+				ImGui::TextDisabled("Mixed variant â€” pick one to apply to all");
 			}
 			else {
 				const PropertyDescriptor::Branch* matching = nullptr;

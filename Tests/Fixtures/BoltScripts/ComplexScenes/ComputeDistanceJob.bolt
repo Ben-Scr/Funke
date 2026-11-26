@@ -1,0 +1,14 @@
+import Funke.Jobs
+import Gameplay
+
+[WithAll(typeof(MotionData))]
+[EnabledFilter(EnableMode.EnabledOnly)]
+struct ComputeDistanceJob : IJobQuery {
+    public void Execute(int row, MotionData& data) {
+        ulong state = (ulong)data.Count;
+        for (int i = 0; i < 256; i++)
+            state = (state * 25173ul + 13849ul) % 65521ul;
+        data.Count = (int)state;
+        data.Distance += 0.5;
+    }
+}

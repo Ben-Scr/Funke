@@ -1,0 +1,108 @@
+import System
+import System.Threading
+import System.Threading.Tasks
+namespace Funke.Jobs;
+
+public static class Job {
+public:
+    void Wait(JobHandle handle) { handle.Complete(); }
+    bool IsComplete(JobHandle handle) { return handle.IsComplete; }
+    void WaitAll(JobHandle... handles) { CombineDependencies(handles).Complete(); }
+    JobHandle CombineDependencies(System.Collections.Generic.List<JobHandle> handles) {return FkCombineArray(handles.ToArray());}
+    JobHandle CombineDependencies<T>(T handles) {
+        System.Collections.Generic.List<JobHandle> list;
+        for (JobHandle handle : handles) list.Add(handle);
+        return FkCombineArray(list.ToArray());
+    }
+    JobHandle CombineDependencies(JobHandle... handles) { return FkCombineArray(handles); }
+    private JobHandle FkCombineArray(JobHandle[] handles) {
+        bool valid=false; for(int i=0;i<handles.Length;i++)if(handles[i].IsValid){valid=true;break;}
+        if(!valid)return default;
+        return Schedule(() => {
+            Bolt.Runtime.ExceptionState fault; bool failed=false;
+            for(int i=0;i<handles.Length;i++) {
+                try { handles[i].Complete(); }
+                catch(System.Exception& error){if(!failed){fault.Capture(error);failed=true;}}
+            }
+            if(failed)fault.Rethrow();
+        });
+    }
+    JobHandle Schedule(Action<> work, JobHandle dependency, CancellationToken cancellationToken = default) {
+        FkJobWork context;
+        context.Completion=Task<void>.CreatePending();context.Body=work;context.Dependency=dependency;context.Token=cancellationToken;
+        return FkSubmit<FkJobWork>(context,context.Completion);
+    }
+    JobHandle FkSubmit<T>(T context,Task<void> completion) {
+        void* capture=Bolt.Runtime.ThreadCallback.Capture<T>(context);
+        ulong handle=FkSubmitJob(/*module*/0ul,Bolt.Runtime.ThreadCallback.Entry<T>(),capture);
+        if(handle==0ul){Bolt.Runtime.ThreadCallback.Cancel(capture);throw InvalidOperationException("Job submission failed.");}
+        return JobHandle(completion,handle);
+    }
+    JobHandle Schedule(Action<> work, CancellationToken cancellationToken = default) {
+        return Schedule(work, JobHandle(), cancellationToken);
+    }
+    JobHandle Schedule<T>(T job, JobHandle dependency, CancellationToken cancellationToken = default) {
+        return Schedule(() => { job.Execute(); }, dependency, cancellationToken);
+    }
+    JobHandle Schedule<T>(T job, CancellationToken cancellationToken = default) {
+        return Schedule<T>(job, JobHandle(), cancellationToken);
+    }
+    JobHandle Schedule<T>(T job, int length, JobHandle dependency, CancellationToken cancellationToken = default) {
+        if (length < 0) throw ArgumentOutOfRangeException("Negative job length.");
+        if (length == 0) return default;
+        return Schedule(() => { for (int i=0; i<length; i++) { cancellationToken.ThrowIfCancellationRequested(); job.Execute(i); } }, dependency, cancellationToken);
+    }
+    JobHandle Schedule<T>(T job, int length, CancellationToken cancellationToken = default) {
+        return Schedule<T>(job, length, JobHandle(), cancellationToken);
+    }
+    JobHandle ScheduleParallelForRange(int begin, int end, Action<int,int> body, int batchSize, JobHandle dependency, CancellationToken cancellationToken = default) {
+        if (end < begin) throw ArgumentOutOfRangeException("Invalid job range.");
+        if (begin == end) return default;
+        long length = (long)end - (long)begin;
+        long batch = batchSize;
+        if (batch <= 0l) {
+            long chunks=(long)JobSystem.WorkerCount*4l;if(chunks<1l)chunks=1l;
+            batch=(length+chunks-1l)/chunks;
+        }
+        long count = (length + batch - 1l) / batch;
+        if (count > 2147483647l) throw ArgumentOutOfRangeException("Too many job batches.");
+        JobHandle[] handles = new JobHandle[(int)count];
+        try { for (int i=0; i<handles.Length; i++) {
+            int first = (int)((long)begin + (long)i * batch);
+            long next = (long)first + batch;
+            int last = next < (long)end ? (int)next : end;
+            handles[i] = Schedule(() => { body.Invoke(first,last); }, dependency, cancellationToken);
+        }
+        return CombineDependencies(handles);
+        } catch {for(int i=0;i<handles.Length;i++){try {handles[i].Complete();} catch {}} throw;}
+    }
+    JobHandle ScheduleParallelForRange(int begin, int end, Action<int,int> body, int batchSize = 0, CancellationToken cancellationToken = default) {
+        return ScheduleParallelForRange(begin,end,body,batchSize,JobHandle(),cancellationToken);
+    }
+    JobHandle ScheduleParallelFor(int begin, int end, Action<int> body, int batchSize, JobHandle dependency, CancellationToken cancellationToken = default) {
+        return ScheduleParallelForRange(begin,end,(int first,int last) => {
+            for (int i=first;i<last;i++) { cancellationToken.ThrowIfCancellationRequested(); body.Invoke(i); }
+        },batchSize,dependency,cancellationToken);
+    }
+    JobHandle ScheduleParallelFor(int begin,int end,Action<int> body,int batchSize = 0,CancellationToken cancellationToken = default) {
+        return ScheduleParallelFor(begin,end,body,batchSize,JobHandle(),cancellationToken);
+    }
+    JobHandle ScheduleParallelFor(int length,Action<int> body,int batchSize = 0,CancellationToken cancellationToken = default) {
+        return ScheduleParallelFor(0,length,body,batchSize,JobHandle(),cancellationToken);
+    }
+    JobHandle ScheduleParallelFor<T>(T job,int length,int batchSize,JobHandle dependency,CancellationToken cancellationToken = default) {
+        return ScheduleParallelFor(0,length,(int i) => { job.Execute(i); },batchSize,dependency,cancellationToken);
+    }
+    JobHandle ScheduleParallelFor<T>(T job,int length,int batchSize = 0,CancellationToken cancellationToken = default) {
+        return ScheduleParallelFor<T>(job,length,batchSize,JobHandle(),cancellationToken);
+    }
+    JobHandle ScheduleParallelFor(int length,Action<int> body,int batchSize,JobHandle dependency,CancellationToken cancellationToken=default) {
+        return ScheduleParallelFor(0,length,body,batchSize,dependency,cancellationToken);
+    }
+    void ParallelFor(int length, Action<int> body, int batchSize = 0) { ScheduleParallelFor(length,body,batchSize).Complete(); }
+    void ParallelFor(int begin,int end,Action<int> body,int batchSize = 0) { ScheduleParallelFor(begin,end,body,batchSize).Complete(); }
+    void ParallelForRange(int begin,int end,Action<int,int> body,int batchSize = 0) { ScheduleParallelForRange(begin,end,body,batchSize).Complete(); }
+    void ParallelFor<T>(T job,int length,int batchSize = 0) { ScheduleParallelFor<T>(job,length,batchSize).Complete(); }
+    void RunFor<T>(T job,int length) { Schedule<T>(job,length).Complete(); }
+}
+

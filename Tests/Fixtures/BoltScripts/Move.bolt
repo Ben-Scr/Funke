@@ -1,0 +1,10 @@
+extern "C" ulong FunkeEntity(ulong a, ulong b);
+extern "C" ulong FunkeMoveRight(ulong entity, ulong milliUnits);
+
+public static class Program {
+public:
+    int Main() {
+        FunkeMoveRight(FunkeEntity(0ul, 0ul), 1000ul);
+        return 0;
+    }
+}

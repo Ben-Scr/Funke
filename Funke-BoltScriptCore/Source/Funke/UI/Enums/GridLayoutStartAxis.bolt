@@ -1,0 +1,7 @@
+import Funke
+namespace Funke.UI;
+
+public enum GridLayoutStartAxis {
+    Horizontal = 0,
+    Vertical   = 1,
+}

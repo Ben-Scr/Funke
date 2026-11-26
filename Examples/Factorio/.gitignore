@@ -4,3 +4,9 @@ obj/
 *.user
 NativeScripts/build/
 Packages/
+UserData/
+Tests/UserData/
+Tests/Evidence/
+Tests/*.log
+Tools/__pycache__/
+!Assets/**/*.meta

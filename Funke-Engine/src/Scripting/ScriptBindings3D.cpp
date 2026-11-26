@@ -5,6 +5,7 @@
 
 #include "Components/General/Transform3DComponent.hpp"
 #include "Components/Graphics/Camera3DComponent.hpp"
+#include "Components/Graphics/CameraFollowRigComponent.hpp"
 #include "Components/Graphics/DirectionalLightComponent.hpp"
 #include "Components/Graphics/MeshRendererComponent.hpp"
 #include "Components/Graphics/ParticleSystem3DComponent.hpp"
@@ -99,9 +100,106 @@ namespace Funke {
 			const auto* c = Resolve<Transform3DComponent>(id);
 			WriteVec3(c ? c->GetWorldPosition() : Vec3(0.0f), x, y, z);
 		}
+		void Funke_Transform3D_GetRight(uint64_t id, float* x, float* y, float* z) {
+			const auto* c = Resolve<Transform3DComponent>(id);
+			WriteVec3(c ? c->Right() : Vec3(1.0f, 0.0f, 0.0f), x, y, z);
+		}
+		void Funke_Transform3D_GetUp(uint64_t id, float* x, float* y, float* z) {
+			const auto* c = Resolve<Transform3DComponent>(id);
+			WriteVec3(c ? c->Up() : Vec3(0.0f, 1.0f, 0.0f), x, y, z);
+		}
 		void Funke_Transform3D_GetForward(uint64_t id, float* x, float* y, float* z) {
 			const auto* c = Resolve<Transform3DComponent>(id);
 			WriteVec3(c ? c->Forward() : Vec3(0.0f, 0.0f, -1.0f), x, y, z);
+		}
+
+		uint64_t Funke_CameraFollowRig_GetTarget(uint64_t id) {
+			Scene* scene = nullptr;
+			EntityHandle handle = entt::null;
+			if (!ResolveEntityReference(id, scene, handle)) return 0;
+			const auto* rig = scene->GetRegistry().try_get<CameraFollowRigComponent>(handle);
+			return rig && scene->IsValid(rig->Target) ? GetEntityScriptId(*scene, rig->Target) : 0;
+		}
+
+		int Funke_CameraFollowRig_SetTarget(uint64_t id, uint64_t target) {
+			Scene* scene = nullptr;
+			EntityHandle handle = entt::null;
+			if (!ResolveEntityReference(id, scene, handle)) return 0;
+			auto* rig = scene->GetRegistry().try_get<CameraFollowRigComponent>(handle);
+			if (!rig) return 0;
+			Scene* other = nullptr;
+			EntityHandle next = entt::null;
+			if (target && (!ResolveEntityReference(target, other, next) || other != scene || next == handle || !scene->IsValid(next))) return 0;
+			if (next != rig->Target) rig->Initialized = false;
+			rig->Target = next;
+			return 1;
+		}
+
+		void Funke_CameraFollowRig_GetOffset(uint64_t id, float* x, float* y, float* z) {
+			const auto* rig = Resolve<CameraFollowRigComponent>(id);
+			WriteVec3(rig ? rig->Offset : Vec3(0.0f), x, y, z);
+		}
+
+		void Funke_CameraFollowRig_SetOffset(uint64_t id, float x, float y, float z) {
+			if (auto* rig = Resolve<CameraFollowRigComponent>(id)) rig->Offset = Vec3(x, y, z);
+		}
+
+		float Funke_CameraFollowRig_GetDamping(uint64_t id) {
+			const auto* rig = Resolve<CameraFollowRigComponent>(id);
+			return rig ? rig->Damping : 0.0f;
+		}
+
+		void Funke_CameraFollowRig_SetDamping(uint64_t id, float value) {
+			if (auto* rig = Resolve<CameraFollowRigComponent>(id)) rig->Damping = value;
+		}
+
+		int Funke_CameraFollowRig_GetOrbit(uint64_t id) {
+			const auto* rig = Resolve<CameraFollowRigComponent>(id);
+			return rig ? rig->Orbit : false;
+		}
+
+		void Funke_CameraFollowRig_SetOrbit(uint64_t id, int value) {
+			if (auto* rig = Resolve<CameraFollowRigComponent>(id)) rig->Orbit = value != 0;
+		}
+
+		float Funke_CameraFollowRig_GetYaw(uint64_t id) {
+			const auto* rig = Resolve<CameraFollowRigComponent>(id);
+			return rig ? rig->Yaw : 0.0f;
+		}
+
+		void Funke_CameraFollowRig_SetYaw(uint64_t id, float value) {
+			if (auto* rig = Resolve<CameraFollowRigComponent>(id)) rig->Yaw = value;
+		}
+
+		float Funke_CameraFollowRig_GetPitch(uint64_t id) {
+			const auto* rig = Resolve<CameraFollowRigComponent>(id);
+			return rig ? rig->Pitch : 0.0f;
+		}
+
+		void Funke_CameraFollowRig_SetPitch(uint64_t id, float value) {
+			if (auto* rig = Resolve<CameraFollowRigComponent>(id)) rig->Pitch = value;
+		}
+
+		float Funke_CameraFollowRig_GetDistance(uint64_t id) {
+			const auto* rig = Resolve<CameraFollowRigComponent>(id);
+			return rig ? rig->Distance : 0.0f;
+		}
+
+		void Funke_CameraFollowRig_SetDistance(uint64_t id, float value) {
+			if (auto* rig = Resolve<CameraFollowRigComponent>(id)) rig->Distance = value;
+		}
+
+		int Funke_CameraFollowRig_GetLookAtTarget(uint64_t id) {
+			const auto* rig = Resolve<CameraFollowRigComponent>(id);
+			return rig ? rig->LookAtTarget : false;
+		}
+
+		void Funke_CameraFollowRig_SetLookAtTarget(uint64_t id, int value) {
+			if (auto* rig = Resolve<CameraFollowRigComponent>(id)) rig->LookAtTarget = value != 0;
+		}
+
+		void Funke_CameraFollowRig_Reset(uint64_t id) {
+			if (auto* rig = Resolve<CameraFollowRigComponent>(id)) rig->Initialized = false;
 		}
 
 		// ── Camera3D ────────────────────────────────────────────────────
@@ -243,7 +341,10 @@ namespace Funke {
 			return c ? c->CustomMesh : 0;
 		}
 		void Funke_MeshRenderer_SetCustomMesh(uint64_t id, uint64_t meshGuid) {
-			if (auto* c = Resolve<MeshRendererComponent>(id)) c->CustomMesh = meshGuid;
+			if (auto* c = Resolve<MeshRendererComponent>(id)) {
+				if (c->CustomMesh != meshGuid) c->MaterialOverrides = {};
+				c->CustomMesh = meshGuid;
+			}
 		}
 
 		// ── Mesh asset (read-only) ──────────────────────────────────────
@@ -607,7 +708,10 @@ namespace Funke {
 		void Funke_SkinnedMeshRenderer_SetAsset(uint64_t id, int which, uint64_t guid) {
 			auto* c = Resolve<SkinnedMeshRendererComponent>(id);
 			if (!c) return;
-			if (which == 0) c->Model = guid;
+			if (which == 0) {
+                if (c->Model != guid) c->MaterialOverrides = {};
+                c->Model = guid;
+            }
 			else c->Material = guid;
 		}
 		void Funke_SkinnedMeshRenderer_Play(uint64_t id, const char* clip, float crossFade) {
@@ -682,6 +786,43 @@ namespace Funke {
 			for (int i = 0; i < 3; ++i) out.Put(up[i]);
 			return 1;
 		}
+        struct RendererSlots {
+            uint64_t Model = 0;
+            ModelMaterialOverrides* Overrides = nullptr;
+        };
+        RendererSlots ResolveRendererSlots(uint64_t id, int kind) {
+            if (kind == 0) { if (auto* c = Resolve<MeshRendererComponent>(id)) return {c->CustomMesh, &c->MaterialOverrides}; }
+            if (kind == 1) { if (auto* c = Resolve<SkinnedMeshRendererComponent>(id)) return {c->Model, &c->MaterialOverrides}; }
+            return {};
+        }
+        const ImportedMeshMaterial* ResolveRendererSlot(const RendererSlots& renderer, int slot) {
+            const auto* asset = MeshLibrary::Get(renderer.Model);
+            return asset && slot >= 0 && static_cast<size_t>(slot) < asset->Materials.size() ? &asset->Materials[slot] : nullptr;
+        }
+        int Funke_MeshRenderer_GetMaterialSlotCount(uint64_t id, int kind) {
+            const auto renderer = ResolveRendererSlots(id, kind);
+            const auto* asset = MeshLibrary::Get(renderer.Model);
+            return asset ? static_cast<int>(asset->Materials.size()) : 0;
+        }
+        int Funke_MeshRenderer_GetMaterialSlotName(uint64_t id, int kind, int slot, char* buffer, int capacity) {
+            const auto* material = ResolveRendererSlot(ResolveRendererSlots(id, kind), slot);
+            if (!material) return CopyToBuffer({}, buffer, capacity);
+            const std::string name = !material->Name.empty() ? material->Name : material->Key == "default" ? "Default" : "Material " + std::to_string(slot);
+            return CopyToBuffer(name, buffer, capacity);
+        }
+        uint64_t Funke_MeshRenderer_GetMaterialSlotOverride(uint64_t id, int kind, int slot) {
+            const auto renderer = ResolveRendererSlots(id, kind);
+            const auto* material = ResolveRendererSlot(renderer, slot);
+            return material ? renderer.Overrides->Get(renderer.Model, material->Key) : 0;
+        }
+        int Funke_MeshRenderer_SetMaterialSlotOverride(uint64_t id, int kind, int slot, uint64_t guid) {
+            const auto renderer = ResolveRendererSlots(id, kind);
+            const auto* material = ResolveRendererSlot(renderer, slot);
+            if (!material || !renderer.Overrides) return 0;
+            renderer.Overrides->Set(renderer.Model, material->Key, guid);
+            return 1;
+        }
+
 	}
 
 	// Entity.SetParent(worldPositionStays): keeps the Transform3D world pose across the reparent.

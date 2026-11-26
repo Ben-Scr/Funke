@@ -1,0 +1,12 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public enum ParticleShape3D {
+    Sphere = 0,
+    Hemisphere = 1,
+    Cone = 2,
+    Box = 3,
+}

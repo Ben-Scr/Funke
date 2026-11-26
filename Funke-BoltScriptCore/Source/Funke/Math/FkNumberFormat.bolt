@@ -1,0 +1,123 @@
+import System
+import System.Numerics
+namespace Funke;
+
+public static class FkNumberFormat {
+private:
+    // Convert the finite binary significand exactly before rounding decimal digits.
+    static string DecimalDigits(uint bits, int& point) {
+        int exponent = (int)((bits >> 23) & 255u);
+        uint mantissa = bits & 8388607u;
+        if (exponent != 0) mantissa |= 8388608u;
+        if (mantissa == 0u) { point = 1; return "0"; }
+        int shift = exponent == 0 ? -149 : exponent-150;
+        BigInteger integer = BigInteger((ulong)mantissa);
+        if (shift < 0) integer = integer * BigInteger(5l).Pow(-shift);
+        else if (shift > 0) integer = integer * BigInteger(2l).Pow(shift);
+        string digits = integer.ToString();
+        point = digits.Length + (shift < 0 ? shift : 0);
+        return digits;
+    }
+
+    static void RoundDigits(string& digits, int& point, int keep) {
+        if (keep >= digits.Length) return;
+        if (keep < 0) { digits = "0"; point = 1; return; }
+        char half = digits[keep];
+        bool up = half > '5';
+        if (half == '5') {
+            up = keep > 0 && ((((int)digits[keep-1] - (int)'0') & 1) != 0);
+            for (int i = keep+1; !up && i < digits.Length; i++) up = digits[i] != '0';
+        }
+        digits = digits.Substring(0,keep);
+        if (up) {
+            int i = keep-1;
+            while (i >= 0 && digits[i] == '9') i--;
+            if (i < 0) { digits = "1"; point++; }
+            else digits = digits.Substring(0,i) + (string)(char)((int)digits[i]+1);
+        }
+        if (digits.Length == 0) { digits = "0"; point = 1; }
+    }
+
+    static string Fixed(string digits, int point, int places, bool group) {
+        string whole = point <= 0 ? "0" : digits.PadRight(point,'0').Substring(0,point);
+        if (group) {
+            for (int i = whole.Length-3; i > 0; i -= 3) whole = whole.Insert(i,",");
+        }
+        if (places == 0) return whole;
+        string fraction = "";
+        if (point < 0) fraction = "".PadRight(-point,'0');
+        if (point < digits.Length) fraction += digits.Substring(point < 0 ? 0 : point);
+        return whole + "." + fraction.PadRight(places,'0').Substring(0,places);
+    }
+
+    static string Scientific(string digits, int point, int places, bool upper, int exponentWidth) {
+        int exponent = digits == "0" ? 0 : point-1;
+        string sign = exponent < 0 ? "-" : "+";
+        string power = (string)(exponent < 0 ? -exponent : exponent);
+        return Fixed(digits,1,places,false) + (upper ? "E" : "e") + sign + power.PadLeft(exponentWidth,'0');
+    }
+
+public:
+    static int Hash(int prior, uint bits) {
+        ulong word = (ulong)(Reinterpret<uint>(prior) ^ bits);
+        return Reinterpret<int>((uint)((word * 16777619ul) & 4294967295ul));
+    }
+    static int Hash(int prior, float value) { return Hash(prior, value == 0.0f ? 0u : Reinterpret<uint>(value)); }
+
+    static string Number(float value, string format) {
+        if (format.Length == 0) return (string)value;
+        char kind = format[0];
+        bool upper = kind >= 'A' && kind <= 'Z';
+        if (upper) kind = (char)((int)kind + 32);
+        int precision = -1;
+        for (int i = 1; i < format.Length; i++) {
+            int digit = (int)format[i] - (int)'0';
+            if (digit < 0 || digit > 9) throw System.FormatException("Invalid numeric format.");
+            if (precision < 0) precision = 0;
+            if (precision > 99999999) throw System.FormatException("Numeric precision is too large.");
+            precision = precision*10 + digit;
+        }
+        if (kind != 'f' && kind != 'n' && kind != 'p' && kind != 'e' && kind != 'g' && kind != 'r')
+            throw System.FormatException("Unsupported numeric format.");
+        uint bits = Reinterpret<uint>(value);
+        if ((bits & 2139095040u) == 2139095040u) {
+            if ((bits & 8388607u) != 0u) return "NaN";
+            return (bits >> 31) != 0u ? "-Infinity" : "Infinity";
+        }
+        if (kind == 'r' || (kind == 'g' && precision <= 0)) return (string)value;
+        int point;
+        string digits = DecimalDigits(bits,point);
+        string sign = (bits >> 31) != 0u ? "-" : "";
+        if (kind == 'g') {
+            RoundDigits(digits,point,precision);
+            int last = digits.Length;
+            while (last > 1 && digits[last-1] == '0') last--;
+            digits = digits.Substring(0,last);
+            if (point > precision || point <= -4)
+                return sign + Scientific(digits,point,digits.Length-1,upper,2);
+            return sign + Fixed(digits,point,digits.Length > point ? digits.Length-point : 0,false);
+        }
+        if (kind == 'e') {
+            if (precision < 0) precision = 6;
+            RoundDigits(digits,point,precision+1);
+            return sign + Scientific(digits,point,precision,upper,3);
+        }
+        if (precision < 0) precision = 2;
+        if (kind == 'p' && digits != "0") point += 2;
+        RoundDigits(digits,point,point+precision);
+        return sign + Fixed(digits,point,precision,kind == 'p' || kind == 'n') + (kind == 'p' ? " %" : "");
+    }
+
+    static bool Write(System.Span<char> destination, int& charsWritten, string value) {
+        charsWritten = 0;
+        if (value.Length > destination.Length) return false;
+        for (int i = 0; i < value.Length; i++) destination[i] = value[i];
+        charsWritten = value.Length;
+        return true;
+    }
+    static string ReadFormat(System.ReadOnlySpan<char> chars) {
+        string[] text = new string[chars.Length];
+        for (int i = 0; i < chars.Length; i++) text[i] = (string)chars[i];
+        return string.Join("",text);
+    }
+}

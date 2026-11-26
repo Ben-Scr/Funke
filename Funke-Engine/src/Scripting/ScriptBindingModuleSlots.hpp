@@ -153,6 +153,25 @@
 	X(Transform3D_GetScale) \
 	X(Transform3D_SetScale) \
 	X(Transform3D_GetWorldPosition) \
+	X(Transform3D_GetRight) \
+	X(Transform3D_GetUp) \
+	X(CameraFollowRig_GetTarget) \
+	X(CameraFollowRig_SetTarget) \
+	X(CameraFollowRig_GetOffset) \
+	X(CameraFollowRig_SetOffset) \
+	X(CameraFollowRig_GetDamping) \
+	X(CameraFollowRig_SetDamping) \
+	X(CameraFollowRig_GetOrbit) \
+	X(CameraFollowRig_SetOrbit) \
+	X(CameraFollowRig_GetYaw) \
+	X(CameraFollowRig_SetYaw) \
+	X(CameraFollowRig_GetPitch) \
+	X(CameraFollowRig_SetPitch) \
+	X(CameraFollowRig_GetDistance) \
+	X(CameraFollowRig_SetDistance) \
+	X(CameraFollowRig_GetLookAtTarget) \
+	X(CameraFollowRig_SetLookAtTarget) \
+	X(CameraFollowRig_Reset) \
 	X(Transform3D_GetForward) \
 	X(Camera3D_GetPostProcessingEnabled) \
 	X(Camera3D_SetPostProcessingEnabled) \
@@ -182,6 +201,10 @@
 	X(DirectionalLight_GetAmbient) \
 	X(DirectionalLight_SetAmbient) \
 	X(MeshRenderer_GetMaterial) \
+	X(MeshRenderer_GetMaterialSlotCount) \
+	X(MeshRenderer_GetMaterialSlotName) \
+	X(MeshRenderer_GetMaterialSlotOverride) \
+	X(MeshRenderer_SetMaterialSlotOverride) \
 	X(MeshRenderer_SetMaterial) \
 	X(MeshRenderer_GetCastShadows) \
 	X(MeshRenderer_SetCastShadows) \
@@ -238,6 +261,8 @@
 	X(Collider3D_Get) \
 	X(Collider3D_Set) \
 	X(Physics3D_Raycast) \
+	X(Physics3D_RaycastMasked) \
+	X(Physics3D_CheckSphere) \
 	X(Physics3D_GetGravity) \
 	X(Physics3D_SetGravity) \
 	X(MeshCollider3D_GetCustomMesh) \

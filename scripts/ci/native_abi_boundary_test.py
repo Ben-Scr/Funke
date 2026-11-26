@@ -20,7 +20,10 @@ def main():
     header = (root / "Funke-Engine/src/Scripting/NativeScriptField.hpp").read_text(encoding="utf-8")
     version = int(re.search(r"k_NativeScriptAbiVersion\s*=\s*(\d+)", header).group(1))
     source = root / "Tests/Fixtures/NativeScripts/AbiBoundary.cpp"
-    cmake = ["cmake_minimum_required(VERSION 3.20)", "project(AbiBoundary LANGUAGES CXX)"]
+    cmake = ["cmake_minimum_required(VERSION 3.20)",
+             "if(POLICY CMP0141)", "cmake_policy(SET CMP0141 NEW)",
+             "set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT Embedded)", "endif()",
+             "project(AbiBoundary LANGUAGES CXX)"]
     for name, abi, define in [("valid", version, ""), ("recovered", version, ""),
                               ("old", version - 1, ""), ("future", version + 1, ""),
                               ("no-abi", version, "MISSING_ABI"),

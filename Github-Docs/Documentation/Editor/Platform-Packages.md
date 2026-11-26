@@ -2,6 +2,8 @@
 
 The editor builds for its host desktop platform: Windows, Linux or macOS. Other export targets — Android, iOS and Web — come from a **platform package**: a folder with a `funke-package.lua` and a builder script. Without a compatible package, the target is unavailable in **Build Profiles**.
 
+The Mono package supplies the C# runtime. Native C++ gameplay libraries use the desktop export path. The Web, Android and iOS builders support the [Bolt AOT export path](../Scripting/Bolt.md#platform-package-exports). See [desktop build requirements](Building-and-Shipping.md) and [Bolt export support](../Scripting/Bolt.md#desktop-exports).
+
 First-party packages live in the engine checkout under `platforms/`:
 
 | Package | Kind | What it adds |

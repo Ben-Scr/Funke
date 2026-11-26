@@ -2,6 +2,7 @@
 #include "Animation/AnimationCulling.hpp"
 #include "Core/Export.hpp"
 #include "Collections/Color.hpp"
+#include "Graphics/ModelMaterialOverrides.hpp"
 
 #include <cstdint>
 #include <string>
@@ -14,8 +15,9 @@ namespace Funke {
 	struct FUNKE_API SkinnedMeshRendererComponent {
 		// Mesh asset GUID (.gltf/.glb); a model without a skeleton draws static.
 		uint64_t Model = 0;
-		// .material asset GUID; 0 = the default material (white, roughness 0.5, lit).
+		// Whole-model .material override; 0 uses slot overrides/imported materials, or the primitive default.
 		uint64_t Material = 0;
+		ModelMaterialOverrides MaterialOverrides;
 		Funke::Color Color{ 1.0f, 1.0f, 1.0f, 1.0f };
 		// Without a material: false draws the flat color and ignores lights. A material's own Lit flag wins.
 		bool Lit = true;

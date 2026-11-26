@@ -1,0 +1,7 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public enum TextAlignment { Left = 0, Center = 1, Right = 2 }

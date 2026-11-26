@@ -1,4 +1,5 @@
 #pragma once
+#include "Scene/ComponentAccess.hpp"
 #include "Scene/EntityHandle.hpp"
 #include "Core/Export.hpp"
 #include <Core/Assert.hpp>
@@ -22,6 +23,7 @@ namespace Funke {
 				FNK_CORE_WARN_TAG("ComponentUtils", "Component '{}' already exists on entity, returning existing.", typeid(TComponent).name());
 				return registry.get<TComponent>(entity);
 			}
+			ComponentAccess::BeforeMutation(registry);
 			ValidateAddition(registry, entity, typeid(TComponent));
 
 			if constexpr (std::is_constructible_v<TComponent, EntityHandle, Args...>) {
@@ -49,6 +51,7 @@ namespace Funke {
 				FNK_CORE_WARN_TAG("ComponentUtils", "Tag component '{}' already exists on entity, skipping.", typeid(TTag).name());
 				return;
 			}
+			ComponentAccess::BeforeMutation(registry);
 			ValidateAddition(registry, entity, typeid(TTag));
 			registry.emplace<TTag>(entity);
 		}
@@ -99,6 +102,12 @@ namespace Funke {
 			return registry.try_get<TComponent>(entity);
 		}
 
+		template<typename TComponent>
+		static const TComponent* TryGetComponent(const entt::registry& registry, EntityHandle entity) {
+			if (!registry.valid(entity)) return nullptr;
+			return registry.try_get<TComponent>(entity);
+		}
+
 
 		template<typename TComponent>
 		static void RemoveComponent(entt::registry& registry, EntityHandle entity) {
@@ -109,6 +118,7 @@ namespace Funke {
 				FNK_CORE_WARN_TAG("ComponentUtils", "Cannot remove component '{}': not found on entity.", typeid(TComponent).name());
 				return;
 			}
+			ComponentAccess::BeforeMutation(registry);
 			registry.remove<TComponent>(entity);
 		}
 	private:

@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "type": "ItemDefinition",
+  "fields": {
+    "Id": "assembler",
+    "DisplayName": "Assembler",
+    "Icon": "3799167722807270014",
+    "SpriteName": "assembler",
+    "StackSize": "100"
+  }
+}

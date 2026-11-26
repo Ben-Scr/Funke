@@ -1,0 +1,4 @@
+import Funke
+public class Health : Component {
+    public int Points = 12;
+}

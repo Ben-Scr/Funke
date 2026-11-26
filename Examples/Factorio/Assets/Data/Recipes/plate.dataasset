@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "type": "RecipeDefinition",
+  "fields": {
+    "Id": "plate",
+    "Result": "2353410425120650349",
+    "Amount": "1",
+    "Seconds": "2",
+    "CreativeOnly": "false",
+    "Ingredients": "\n\\n8354091683697080769\\n1"
+  }
+}

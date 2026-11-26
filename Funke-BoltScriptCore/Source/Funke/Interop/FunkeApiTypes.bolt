@@ -1,0 +1,50 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public static class FunkeApiTypes {
+public:
+    ulong OpenJobPlan(ulong mode,ulong key){return FkOpenJobView(mode,key);}
+    ulong RegisterJobPlan(string spec){FunkeText.Put(spec);return FkRememberQueryPlan(0ul,0ul);}
+    void** JobRows(ulong handle) { return (void**)FkJobRows(handle,0ul); }
+    void* DenseJobRows(ulong handle) {return FkJobRows(handle,1ul);}
+    void CloseJobView(ulong handle) { FkCloseJobView(handle,0ul); }
+    string NativeKey<T>() {
+        string name="bolt:"+Type.Name<T>();
+        FunkeText.Put(name);
+        if (FkNativeStructId((ulong)sizeof(T),0ul)!=0ul) return name;
+        name="type:"+Type.Name<T>(); FunkeText.Put(name);
+        if (FkNativeStructId((ulong)sizeof(T),0ul)==0ul) throw System.InvalidOperationException("Unknown native component layout: "+name);
+        return name;
+    }
+    System.Func<bool> ObserveTask(Funke.Jobs.JobHandle job) { return ObserveTask<void>(job.AsTask()); }
+    System.Func<bool> ObserveTask<T>(System.Threading.Tasks.Task<T> task) {
+        return () => { if (!task.IsCompleted) return false; task.Wait(); return true; };
+    }
+public:
+    ulong SystemSceneGuid() { return FkScene_GetActiveSceneGuid(0ul,0ul); }
+    string SystemSceneName() { return FunkeText.Read(FkSystemSceneName(0ul,0ul)); }
+    ulong CoroutineEpoch() { return FkCoroutineClock(0ul,0ul); }
+    float CoroutineDelta() { return Reinterpret<float>((uint)FkCoroutineClock(1ul,0ul)); }
+    void ScheduleCoroutine() { FkCoroutineSchedule(1ul,0ul); }
+    void KeepCoroutine(bool active) { FkCoroutineSchedule(active ? 1ul : 0ul,0ul); }
+    ulong Attachment() { return FkAttachment(0ul, 0ul); }
+    ulong EventId() { return FkEvent(0ul, 0ul); }
+    ulong EntityId() { return FkEntityId(0ul, 0ul); }
+    Vector3 DecodeVector3(ulong a, ulong b) { return Vector3.FromParts(a,b); }
+    Vector4 DecodeVector4(ulong a, ulong b) { return Vector4.FromParts(a,b); }
+    Color DecodeColor(ulong a, ulong b) { return Color.FromParts(a,b); }
+    Transform2D MakeTransform2D(ulong id) { return Transform2D(id); }
+    Entity Create2D(string name = "", Vector2 localPosition = Vector2(), float localRotationDegrees = 0.0f, Entity? parent = null) { return Entity.Create2D(name, localPosition, localRotationDegrees, parent); }
+    Entity Instantiate2D(Entity source, Vector2 localPosition = Vector2(), float localRotationDegrees = 0.0f, Entity? parent = null) { return Entity.Instantiate2D(source, localPosition, localRotationDegrees, parent); }
+    Entity Create3D(string name = "", Vector3 localPosition = Vector3(), Vector3 localRotationDegrees = Vector3(), Entity? parent = null) { return Entity.Create3D(name, localPosition, localRotationDegrees, parent); }
+    Entity Instantiate3D(Entity source, Vector3 localPosition = Vector3(), Vector3 localRotationDegrees = Vector3(), Entity? parent = null) { return Entity.Instantiate3D(source, localPosition, localRotationDegrees, parent); }
+    Entity Clone(Entity source, Vector3 position, float rotation, Entity? parent) { return Entity.Instantiate(source, position, rotation, parent); }
+    Entity Create(string name, Entity? parent) { return Entity.Create(name, parent); }
+    Entity Clone(Entity source, Entity? parent) { return Entity.Instantiate(source, parent); }
+    Entity? Find(string name) { return Entity.FindByName(name); }
+    Entity Create(string name) { return Entity.Create(name); }
+    Entity MakeEntity(ulong id) { return Entity(id); }
+}

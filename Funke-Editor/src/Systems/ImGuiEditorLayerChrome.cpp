@@ -627,7 +627,10 @@ namespace Funke {
 			if (!earlyPendingPrefabEdit.empty()) {
 				FNK_INFO_TAG("PrefabEdit", "Opening prefab from asset browser: {}", earlyPendingPrefabEdit);
 				OpenPrefabForEditing(earlyPendingPrefabEdit);
+				m_AssetPreview3D.Close();
 			}
+			const std::string pendingPreview = m_AssetBrowser.TakePending3DPreview();
+			if (!pendingPreview.empty()) m_AssetPreview3D.Open(pendingPreview);
 		}
 
 		if (m_ShowUnsavedWorkDialog) {
@@ -764,6 +767,7 @@ namespace Funke {
 				{ "branding", SettingsCategory::Branding }, { "build", SettingsCategory::Build },
 				{ "editor", SettingsCategory::Editor }, { "systems", SettingsCategory::Systems },
 				{ "physics", SettingsCategory::Physics },
+				{ "multithreading", SettingsCategory::Multithreading },
 			};
 			for (const auto& [name, category] : k_SettingsCategories) {
 				if (wants("projectsettings:" + std::string(name))) {
@@ -981,6 +985,7 @@ namespace Funke {
 		}
 
 		if (!activeScene) {
+			m_AssetPreview3D.Render();
 			return;
 		}
 		if (m_EditorSceneDefinitionsBySceneName.empty()
@@ -1026,6 +1031,7 @@ namespace Funke {
 		if (m_BuildState == 0 && m_ReserializeState == 0) {
 			std::string pendingLoad = m_AssetBrowser.TakePendingSceneLoad();
 			if (!pendingLoad.empty()) {
+				m_AssetPreview3D.Close();
 				if (Application::GetIsPlaying()) {
 					RequestPlayModeStop(std::move(pendingLoad));
 				}
@@ -1040,7 +1046,7 @@ namespace Funke {
 
 		// Ctrl+S priority: prefab-edit mode > prefab inspector > all dirty scenes.
 		// Prefab saves allowed during play (detached scene is independent); scene save blocked to avoid persisting play-mode state.
-		if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false) && m_BuildState == 0 && m_ReserializeState == 0) {
+		if (!m_AssetPreview3D.IsFocused() && ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false) && m_BuildState == 0 && m_ReserializeState == 0) {
 			if (IsInPrefabEditMode()) {
 				// Full prefab-edit mode: save the detached scene back to its
 				// .prefab without exiting edit mode. Without this branch,
@@ -1243,7 +1249,7 @@ namespace Funke {
 			&& scene.HasSystem<ScriptSystem>())
 		{
 			if (auto* scriptSys = scene.GetSystem<ScriptSystem>();
-				scriptSys && scriptSys->IsRebuilding())
+				scriptSys && (scriptSys->IsScriptRebuildRunning() || scriptSys->IsNativeRebuildRunning()))
 			{
 				RequestPlayModeStop();
 			}
@@ -1291,6 +1297,7 @@ namespace Funke {
 		if (!Application::GetIsPlaying() && ImGui::IsKeyChordPressed(EditorShortcuts::k_Profiler)) {
 			m_ShowProfiler = !m_ShowProfiler;
 		}
+		if (m_ShowStringTables) m_StringTablePanel.Render(&m_ShowStringTables);
 		if (m_ShowProfiler) {
 			m_ProfilerPanel.Render(&m_ShowProfiler);
 		}
@@ -1364,7 +1371,7 @@ namespace Funke {
 			popupProgress = m_ReserializeProgress;
 		} else if (auto* scriptSys = scene.HasSystem<ScriptSystem>()
 				? scene.GetSystem<ScriptSystem>() : nullptr;
-			scriptSys && (scriptSys->IsScriptRebuildRunning() || scriptSys->IsNativeRebuildRunning())) {
+			scriptSys && scriptSys->IsRebuilding()) {
 			showPopup = true;
 			popupTitle = scriptSys->IsNativeRebuildRunning()
 				? "Compiling Native Scripts..."

@@ -1,0 +1,143 @@
+import System
+import Funke.Graphics
+namespace Funke;
+
+extern "C" ulong FkRuntimeTexture(ulong operation, void* request, void* pixels);
+
+public struct FkRuntimeTextureRequest {
+public:
+    ulong Guid;
+    int Width, Height, Value, Capacity, LifetimeValue;
+}
+public class Texture {
+private:
+    ulong guid;
+    bool owned;
+    static FkRuntimeTextureRequest Info(ulong id) {
+        FkRuntimeTextureRequest r; r.Guid = id;
+        FkRuntimeTexture(1ul, &r, null);
+        return r;
+    }
+    FkRuntimeTextureRequest RequireBuffer() {
+        FkRuntimeTextureRequest r = Info(guid);
+        if (r.Width == 0) throw InvalidOperationException("A runtime texture created by Texture.Create is required.");
+        return r;
+    }
+    static void ValidateLifetime(RuntimeTextureLifetime lifetime) {
+        if ((int)lifetime < 0 || (int)lifetime > 2)
+            throw ArgumentOutOfRangeException("Invalid runtime texture lifetime.");
+    }
+    static uint Channel(float value) { return (uint)(Mathf.Clamp01(value) * 255.0f + 0.5f); }
+    static uint Pack(Color c) { return Channel(c.R) | (Channel(c.G) << 8) | (Channel(c.B) << 16) | (Channel(c.A) << 24); }
+    static Color Unpack(uint bits) {
+        return Color((float)(bits & 255u) / 255.0f, (float)((bits >> 8) & 255u) / 255.0f,
+            (float)((bits >> 16) & 255u) / 255.0f, (float)(bits >> 24) / 255.0f);
+    }
+    byte[] ReadBytes() {
+        FkRuntimeTextureRequest r = RequireBuffer();
+        r.Capacity = r.Width * r.Height * 4;
+        byte[] data = new byte[r.Capacity];
+        FkRuntimeTexture(4ul, &r, &data[0]);
+        return data;
+    }
+public:
+    ulong UUID { get { return owned && Info(guid).Width == 0 ? 0ul : guid; } }
+    ulong FkKind() { return 1ul; }
+    void FkSetGuid(ulong id) { guid = id; owned = Info(id).Width != 0; }
+    bool IsRuntime => owned && UUID != 0ul;
+    bool IsValid => UUID != 0ul && (owned || FkService.Texture_LoadAsset(guid) != 0);
+    string Path { get { return UUID == 0ul || owned ? "" : FunkeText.Read(FkAsset_GetPathBuffer(guid, 0ul)); } }
+    string Name {
+        get {
+            if (UUID == 0ul) return "(None)";
+            if (owned) return "<runtime>";
+            string name = FunkeText.Read(FkAsset_GetDisplayNameBuffer(guid, 0ul));
+            return name.Length == 0 ? "(Missing Asset)" : name;
+        }
+    }
+    int Width { get { return owned ? Info(guid).Width : (int)FkTexture_GetWidth(UUID, 0ul); } }
+    int Height { get { return owned ? Info(guid).Height : (int)FkTexture_GetHeight(UUID, 0ul); } }
+    static Texture? Create(int width, int height, TextureFilter filter = TextureFilter.Point,
+                           RuntimeTextureLifetime lifetime = RuntimeTextureLifetime.Automatic) {
+        if (width <= 0 || height <= 0 || width > int.MaxValue / 4 / height) return null;
+        byte[] rgba = new byte[width * height * 4];
+        return Create(width, height, rgba, filter, lifetime);
+    }
+    static Texture? Create(int width, int height, byte[] rgba, TextureFilter filter = TextureFilter.Bilinear,
+                           RuntimeTextureLifetime lifetime = RuntimeTextureLifetime.Automatic) {
+        if (width <= 0 || height <= 0 || width > rgba.Length / 4 / height) return null;
+        ValidateLifetime(lifetime);
+        FkRuntimeTextureRequest r;
+        r.Width = width; r.Height = height; r.Value = (int)filter; r.LifetimeValue = (int)lifetime; r.Capacity = rgba.Length;
+        ulong id = FkRuntimeTexture(0ul, &r, &rgba[0]);
+        if (id == 0ul) return null;
+        Texture t; t.guid = id; t.owned = true; return t;
+    }
+    void SetLifetime(RuntimeTextureLifetime lifetime) {
+        FkRuntimeTextureRequest r = RequireBuffer();
+        ValidateLifetime(lifetime);
+        r.LifetimeValue = (int)lifetime;
+        FkRuntimeTexture(7ul, &r, null);
+    }
+    static byte[]? DecodeImage(byte[] data, int maxSize, int& width, int& height) {
+        width = 0; height = 0;
+        if (data.Length == 0) return null;
+        int needed = FkService.Image_Decode(&data[0], data.Length, maxSize, null, 0, &width, &height);
+        if (needed <= 0) return null;
+        byte[] pixels = new byte[needed];
+        if (FkService.Image_Decode(&data[0], data.Length, maxSize, &pixels[0], needed, &width, &height) != needed) return null;
+        return pixels;
+    }
+    void SetPixel(Vector2Int cell, Color color) {
+        FkRuntimeTextureRequest r = RequireBuffer(); r.Width = cell.X; r.Height = cell.Y; r.Value = Reinterpret<int>(Pack(color));
+        FkRuntimeTexture(3ul, &r, null);
+    }
+    Color GetPixel(Vector2Int cell) {
+        FkRuntimeTextureRequest r = RequireBuffer(); r.Width = cell.X; r.Height = cell.Y;
+        FkRuntimeTexture(2ul, &r, null);
+        return Unpack(Reinterpret<uint>(r.Value));
+    }
+    void SetPixels(Color[] colors) {
+        FkRuntimeTextureRequest r = RequireBuffer();
+        int count = r.Width * r.Height;
+        if (colors.Length != count) throw InvalidOperationException("The color array is shorter than the texture.");
+        uint[] data = new uint[count];
+        for (int i = 0; i < count; i++) data[i] = Pack(colors[i]);
+        r.Capacity = count * 4; FkRuntimeTexture(5ul, &r, &data[0]);
+    }
+    Color[] GetPixels() {
+        FkRuntimeTextureRequest r = RequireBuffer();
+        int count = r.Width * r.Height;
+        uint[] data = new uint[count];
+        r.Capacity = count * 4; FkRuntimeTexture(4ul, &r, &data[0]);
+        Color[] colors = new Color[count];
+        for (int i = 0; i < count; i++) colors[i] = Unpack(data[i]);
+        return colors;
+    }
+    void Apply() { FkRuntimeTextureRequest r; r.Guid = guid; FkRuntimeTexture(6ul, &r, null); }
+    bool SaveToPng(string path) {
+        if (!IsRuntime) return false;
+        try { byte[] data = ReadBytes(); Funke.Graphics.Png.Save(path, Width, Height, System.ReadOnlySpan<byte>(data)); return true; }
+        catch (System.Exception& error) { Log.Error("Could not save texture to " + path); return false; }
+    }
+    void Dispose() { FkRuntimeTextureRequest r; r.Guid = guid; FkRuntimeTexture(8ul, &r, null); guid = 0ul; owned = false; }
+    static Texture? FromAssetUUID(ulong id) {
+        if (id == 0ul) return null;
+        if (Info(id).Width > 0) { Texture t; t.guid = id; t.owned = true; return t; }
+        return AssetManager.LoadByGUID<Texture>(id);
+    }
+    static Texture? GetDefault(DefaultTexture which) { return FromAssetUUID(FkService.Texture_GetDefaultAssetUUID((byte)(int)which)); }
+    static Texture? Square => GetDefault(DefaultTexture.Square);
+    static Texture? Pixel => GetDefault(DefaultTexture.Pixel);
+    static Texture? Circle => GetDefault(DefaultTexture.Circle);
+    static Texture? Capsule => GetDefault(DefaultTexture.Capsule);
+    static Texture? IsometricDiamond => GetDefault(DefaultTexture.IsometricDiamond);
+    static Texture? HexagonFlatTop => GetDefault(DefaultTexture.HexagonFlatTop);
+    static Texture? HexagonPointedTop => GetDefault(DefaultTexture.HexagonPointedTop);
+    static Texture? NineSliced => GetDefault(DefaultTexture.NineSliced);
+    static Texture? Invisible => GetDefault(DefaultTexture.Invisible);
+    bool Equals(Texture? other) { return other != null && UUID == other.Value.UUID; }
+    int GetHashCode() { ulong id = UUID; return Reinterpret<int>((uint)((id ^ (id >> 32)) & 4294967295ul)); }
+    string ToString() { return Name; }
+}
+

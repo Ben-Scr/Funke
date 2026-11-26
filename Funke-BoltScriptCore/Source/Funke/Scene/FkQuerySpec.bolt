@@ -1,0 +1,44 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public class FkQuerySpec {
+public:
+    string SceneName, Required, Excluded;
+    int Filter = 1;
+    System.Collections.Generic.List<System.Func<ulong, bool>> Conditions;
+    void Require<T...>() { Required += Keys(Key<T>()...); }
+    void Exclude<T...>() { Excluded += Keys(Key<T>()...); }
+    private static string Key<T>() {
+        if (FkRegisteredComponent<T>.Name.Length != 0) return FkRegisteredComponent<T>.Name;
+        T component;
+        return component.FkQueryKey();
+    }
+    private static string Keys(string... keys) {
+        string joined = "";
+        for (string key : keys) joined += key + "|";
+        return joined;
+    }
+
+    void AddCondition<T>(System.Func<T,bool> predicate) {
+        Required += Key<T>() + "|";
+        Conditions.Add((ulong id) => { T item; item.ID = id; return predicate.Invoke(item); });
+    }
+    ulong[] Ids() {
+        ulong count=FkSceneQuery(FunkeText.Put(SceneName + "\n" + Required + "\n" + Excluded), (ulong)Filter);
+        ulong[] ids=new ulong[(int)count];
+        for(int i=0;i<ids.Length;i++) ids[i]=FkQueryResult((ulong)i,0ul);
+        if (Conditions.Count == 0) return ids;
+        System.Collections.Generic.List<ulong> matches;
+        for (int i=0; i<ids.Length; i++) {
+            bool passed = true;
+            for (int j=0; j<Conditions.Count; j++) {
+                if (!Conditions[j].Invoke(ids[i])) { passed = false; break; }
+            }
+            if (passed) matches.Add(ids[i]);
+        }
+        return matches.ToArray();
+    }
+}

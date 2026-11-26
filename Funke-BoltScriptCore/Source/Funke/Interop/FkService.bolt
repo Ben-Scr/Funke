@@ -1,0 +1,482 @@
+import System
+namespace Funke;
+
+public static class FkService {
+public:
+    static byte[] CString(string text) {
+        byte[] bytes = text.ToUtf8();
+        byte[] result = new byte[bytes.Length + 1];
+        for (int i = 0; i < bytes.Length; i++) result[i] = bytes[i];
+        return result;
+    }
+    static string ReadText(byte[] buffer, int length) {
+        byte[] bytes = new byte[length];
+        for (int i = 0; i < length; i++) bytes[i] = buffer[i];
+        return string.FromUtf8(bytes);
+    }
+    static int Asset_FindAllBuffer(string a0, int a1, void* a2, int a3) {
+        byte[] bytes0 = CString(a0);
+        ulong[] words = {FkNativeSlot.Pointer(&bytes0[0]), (ulong)Reinterpret<uint>(a1), FkNativeSlot.Pointer(a2), (ulong)Reinterpret<uint>(a3)};
+        return Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.Asset_FindAllBuffer, &words[0], null) & 4294967295ul));
+    }
+    static void AudioStream_Close(uint a0) {
+        ulong[] words = {(ulong)a0};
+        FkNativeInvoke(FkNativeSlot.AudioStream_Close, &words[0], null);
+    }
+    static float AudioStream_GetCursor(uint a0) {
+        ulong[] words = {(ulong)a0};
+        return Reinterpret<float>((uint)FkNativeInvoke(FkNativeSlot.AudioStream_GetCursor, &words[0], null));
+    }
+    static float AudioStream_GetLength(uint a0) {
+        ulong[] words = {(ulong)a0};
+        return Reinterpret<float>((uint)FkNativeInvoke(FkNativeSlot.AudioStream_GetLength, &words[0], null));
+    }
+    static int AudioStream_GetLoop(uint a0) {
+        ulong[] words = {(ulong)a0};
+        return Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.AudioStream_GetLoop, &words[0], null) & 4294967295ul));
+    }
+    static float AudioStream_GetVolume(uint a0) {
+        ulong[] words = {(ulong)a0};
+        return Reinterpret<float>((uint)FkNativeInvoke(FkNativeSlot.AudioStream_GetVolume, &words[0], null));
+    }
+    static int AudioStream_IsAtEnd(uint a0) {
+        ulong[] words = {(ulong)a0};
+        return Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.AudioStream_IsAtEnd, &words[0], null) & 4294967295ul));
+    }
+    static int AudioStream_IsPlaying(uint a0) {
+        ulong[] words = {(ulong)a0};
+        return Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.AudioStream_IsPlaying, &words[0], null) & 4294967295ul));
+    }
+    static uint AudioStream_Open(string a0) {
+        byte[] bytes0 = CString(a0);
+        ulong[] words = {FkNativeSlot.Pointer(&bytes0[0])};
+        return (uint)FkNativeInvoke(FkNativeSlot.AudioStream_Open, &words[0], null);
+    }
+    static void AudioStream_Pause(uint a0) {
+        ulong[] words = {(ulong)a0};
+        FkNativeInvoke(FkNativeSlot.AudioStream_Pause, &words[0], null);
+    }
+    static int AudioStream_Play(uint a0) {
+        ulong[] words = {(ulong)a0};
+        return Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.AudioStream_Play, &words[0], null) & 4294967295ul));
+    }
+    static void AudioStream_Seek(uint a0, float a1) {
+        ulong[] words = {(ulong)a0, (ulong)Reinterpret<uint>(a1)};
+        FkNativeInvoke(FkNativeSlot.AudioStream_Seek, &words[0], null);
+    }
+    static void AudioStream_SetLoop(uint a0, int a1) {
+        ulong[] words = {(ulong)a0, (ulong)Reinterpret<uint>(a1)};
+        FkNativeInvoke(FkNativeSlot.AudioStream_SetLoop, &words[0], null);
+    }
+    static void AudioStream_SetVolume(uint a0, float a1) {
+        ulong[] words = {(ulong)a0, (ulong)Reinterpret<uint>(a1)};
+        FkNativeInvoke(FkNativeSlot.AudioStream_SetVolume, &words[0], null);
+    }
+    static void AudioStream_Stop(uint a0) {
+        ulong[] words = {(ulong)a0};
+        FkNativeInvoke(FkNativeSlot.AudioStream_Stop, &words[0], null);
+    }
+    static int Audio_LoadAsset(ulong a0) {
+        ulong[] words = {a0};
+        return Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.Audio_LoadAsset, &words[0], null) & 4294967295ul));
+    }
+    static void Audio_PlayOneShotAsset(ulong a0, float a1) {
+        ulong[] words = {a0, (ulong)Reinterpret<uint>(a1)};
+        FkNativeInvoke(FkNativeSlot.Audio_PlayOneShotAsset, &words[0], null);
+    }
+    static void Audio_PlayOneShotAt(ulong a0, void* a1, int a2) {
+        ulong[] words = {a0, FkNativeSlot.Pointer(a1), (ulong)Reinterpret<uint>(a2)};
+        FkNativeInvoke(FkNativeSlot.Audio_PlayOneShotAt, &words[0], null);
+    }
+    static int Cursor_GetMode() {
+        return Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.Cursor_GetMode, null, null) & 4294967295ul));
+    }
+    static ulong Cursor_GetTexture() {
+        return FkNativeInvoke(FkNativeSlot.Cursor_GetTexture, null, null);
+    }
+    static void Cursor_SetMode(int a0) {
+        ulong[] words = {(ulong)Reinterpret<uint>(a0)};
+        FkNativeInvoke(FkNativeSlot.Cursor_SetMode, &words[0], null);
+    }
+    static void Cursor_SetTexture(ulong a0, int a1, int a2) {
+        ulong[] words = {a0, (ulong)Reinterpret<uint>(a1), (ulong)Reinterpret<uint>(a2)};
+        FkNativeInvoke(FkNativeSlot.Cursor_SetTexture, &words[0], null);
+    }
+    static int DebugStats_GetSnapshot(void* a0, int a1) {
+        ulong[] words = {FkNativeSlot.Pointer(a0), (ulong)Reinterpret<uint>(a1)};
+        return Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.DebugStats_GetSnapshot, &words[0], null) & 4294967295ul));
+    }
+    static int DevConsole_GetState() {
+        return Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.DevConsole_GetState, null, null) & 4294967295ul));
+    }
+    static int EditorGUI_Button(string a0, float a1, float a2) {
+        byte[] bytes0 = CString(a0);
+        ulong[] words = {FkNativeSlot.Pointer(&bytes0[0]), (ulong)Reinterpret<uint>(a1), (ulong)Reinterpret<uint>(a2)};
+        return Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.EditorGUI_Button, &words[0], null) & 4294967295ul));
+    }
+    static float EditorGUI_FloatField(string a0, float a1, float a2) {
+        byte[] bytes0 = CString(a0);
+        ulong[] words = {FkNativeSlot.Pointer(&bytes0[0]), (ulong)Reinterpret<uint>(a1), (ulong)Reinterpret<uint>(a2)};
+        return Reinterpret<float>((uint)FkNativeInvoke(FkNativeSlot.EditorGUI_FloatField, &words[0], null));
+    }
+    static void EditorGUI_Layout(int a0, float a1) {
+        ulong[] words = {(ulong)Reinterpret<uint>(a0), (ulong)Reinterpret<uint>(a1)};
+        FkNativeInvoke(FkNativeSlot.EditorGUI_Layout, &words[0], null);
+    }
+    static int EditorGUI_Popup(string a0, int a1, string a2, int a3) {
+        byte[] bytes0 = CString(a0);
+        byte[] bytes2 = CString(a2);
+        ulong[] words = {FkNativeSlot.Pointer(&bytes0[0]), (ulong)Reinterpret<uint>(a1), FkNativeSlot.Pointer(&bytes2[0]), (ulong)Reinterpret<uint>(a3)};
+        return Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.EditorGUI_Popup, &words[0], null) & 4294967295ul));
+    }
+    static void EditorGUI_ProgressBar(float a0, float a1, float a2, string a3) {
+        byte[] bytes3 = CString(a3);
+        ulong[] words = {(ulong)Reinterpret<uint>(a0), (ulong)Reinterpret<uint>(a1), (ulong)Reinterpret<uint>(a2), FkNativeSlot.Pointer(&bytes3[0])};
+        FkNativeInvoke(FkNativeSlot.EditorGUI_ProgressBar, &words[0], null);
+    }
+    static void EditorGUI_PushId(string a0) {
+        byte[] bytes0 = CString(a0);
+        ulong[] words = {FkNativeSlot.Pointer(&bytes0[0])};
+        FkNativeInvoke(FkNativeSlot.EditorGUI_PushId, &words[0], null);
+    }
+    static float EditorGUI_Query(int a0) {
+        ulong[] words = {(ulong)Reinterpret<uint>(a0)};
+        return Reinterpret<float>((uint)FkNativeInvoke(FkNativeSlot.EditorGUI_Query, &words[0], null));
+    }
+    static int EditorGUI_Selectable(string a0, int a1) {
+        byte[] bytes0 = CString(a0);
+        ulong[] words = {FkNativeSlot.Pointer(&bytes0[0]), (ulong)Reinterpret<uint>(a1)};
+        return Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.EditorGUI_Selectable, &words[0], null) & 4294967295ul));
+    }
+    static float EditorGUI_Slider(string a0, float a1, float a2, float a3, string a4) {
+        byte[] bytes0 = CString(a0);
+        byte[] bytes4 = CString(a4);
+        ulong[] words = {FkNativeSlot.Pointer(&bytes0[0]), (ulong)Reinterpret<uint>(a1), (ulong)Reinterpret<uint>(a2), (ulong)Reinterpret<uint>(a3), FkNativeSlot.Pointer(&bytes4[0])};
+        return Reinterpret<float>((uint)FkNativeInvoke(FkNativeSlot.EditorGUI_Slider, &words[0], null));
+    }
+    static void EditorGUI_Text(string a0, int a1) {
+        byte[] bytes0 = CString(a0);
+        ulong[] words = {FkNativeSlot.Pointer(&bytes0[0]), (ulong)Reinterpret<uint>(a1)};
+        FkNativeInvoke(FkNativeSlot.EditorGUI_Text, &words[0], null);
+    }
+    static int EditorGUI_TextField(string a0, void* a1, int a2) {
+        byte[] bytes0 = CString(a0);
+        ulong[] words = {FkNativeSlot.Pointer(&bytes0[0]), FkNativeSlot.Pointer(a1), (ulong)Reinterpret<uint>(a2)};
+        return Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.EditorGUI_TextField, &words[0], null) & 4294967295ul));
+    }
+    static int EditorGUI_Toggle(string a0, int a1) {
+        byte[] bytes0 = CString(a0);
+        ulong[] words = {FkNativeSlot.Pointer(&bytes0[0]), (ulong)Reinterpret<uint>(a1)};
+        return Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.EditorGUI_Toggle, &words[0], null) & 4294967295ul));
+    }
+    static float EditorGUI_VerticalSlider(string a0, float a1, float a2, float a3, float a4, float a5, string a6) {
+        byte[] bytes0 = CString(a0);
+        byte[] bytes6 = CString(a6);
+        ulong[] words = {FkNativeSlot.Pointer(&bytes0[0]), (ulong)Reinterpret<uint>(a1), (ulong)Reinterpret<uint>(a2), (ulong)Reinterpret<uint>(a3), (ulong)Reinterpret<uint>(a4), (ulong)Reinterpret<uint>(a5), FkNativeSlot.Pointer(&bytes6[0])};
+        return Reinterpret<float>((uint)FkNativeInvoke(FkNativeSlot.EditorGUI_VerticalSlider, &words[0], null));
+    }
+    static int Font_LoadAsset(ulong a0) {
+        ulong[] words = {a0};
+        return Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.Font_LoadAsset, &words[0], null) & 4294967295ul));
+    }
+    static void Gizmo_DrawBox(float a0, float a1, float a2, float a3, float a4, float a5, float a6, float a7, float a8) {
+        ulong[] words = {(ulong)Reinterpret<uint>(a0), (ulong)Reinterpret<uint>(a1), (ulong)Reinterpret<uint>(a2), (ulong)Reinterpret<uint>(a3), (ulong)Reinterpret<uint>(a4), (ulong)Reinterpret<uint>(a5), (ulong)Reinterpret<uint>(a6), (ulong)Reinterpret<uint>(a7), (ulong)Reinterpret<uint>(a8)};
+        FkNativeInvoke(FkNativeSlot.Gizmo_DrawBox, &words[0], null);
+    }
+    static void Gizmo_DrawCircle(float a0, float a1, float a2, int a3) {
+        ulong[] words = {(ulong)Reinterpret<uint>(a0), (ulong)Reinterpret<uint>(a1), (ulong)Reinterpret<uint>(a2), (ulong)Reinterpret<uint>(a3)};
+        FkNativeInvoke(FkNativeSlot.Gizmo_DrawCircle, &words[0], null);
+    }
+    static void Gizmo_DrawLine(float a0, float a1, float a2, float a3) {
+        ulong[] words = {(ulong)Reinterpret<uint>(a0), (ulong)Reinterpret<uint>(a1), (ulong)Reinterpret<uint>(a2), (ulong)Reinterpret<uint>(a3)};
+        FkNativeInvoke(FkNativeSlot.Gizmo_DrawLine, &words[0], null);
+    }
+    static void Gizmo_DrawLine3D(float a0, float a1, float a2, float a3, float a4, float a5) {
+        ulong[] words = {(ulong)Reinterpret<uint>(a0), (ulong)Reinterpret<uint>(a1), (ulong)Reinterpret<uint>(a2), (ulong)Reinterpret<uint>(a3), (ulong)Reinterpret<uint>(a4), (ulong)Reinterpret<uint>(a5)};
+        FkNativeInvoke(FkNativeSlot.Gizmo_DrawLine3D, &words[0], null);
+    }
+    static void Gizmo_DrawSphere(float a0, float a1, float a2, float a3, int a4) {
+        ulong[] words = {(ulong)Reinterpret<uint>(a0), (ulong)Reinterpret<uint>(a1), (ulong)Reinterpret<uint>(a2), (ulong)Reinterpret<uint>(a3), (ulong)Reinterpret<uint>(a4)};
+        FkNativeInvoke(FkNativeSlot.Gizmo_DrawSphere, &words[0], null);
+    }
+    static void Gizmo_DrawSquare(float a0, float a1, float a2, float a3, float a4) {
+        ulong[] words = {(ulong)Reinterpret<uint>(a0), (ulong)Reinterpret<uint>(a1), (ulong)Reinterpret<uint>(a2), (ulong)Reinterpret<uint>(a3), (ulong)Reinterpret<uint>(a4)};
+        FkNativeInvoke(FkNativeSlot.Gizmo_DrawSquare, &words[0], null);
+    }
+    static void Gizmo_DrawText(string a0, float a1, float a2, float a3, float a4) {
+        byte[] bytes0 = CString(a0);
+        ulong[] words = {FkNativeSlot.Pointer(&bytes0[0]), (ulong)Reinterpret<uint>(a1), (ulong)Reinterpret<uint>(a2), (ulong)Reinterpret<uint>(a3), (ulong)Reinterpret<uint>(a4)};
+        FkNativeInvoke(FkNativeSlot.Gizmo_DrawText, &words[0], null);
+    }
+    static void Gizmo_DrawWireCircle(float a0, float a1, float a2, int a3) {
+        ulong[] words = {(ulong)Reinterpret<uint>(a0), (ulong)Reinterpret<uint>(a1), (ulong)Reinterpret<uint>(a2), (ulong)Reinterpret<uint>(a3)};
+        FkNativeInvoke(FkNativeSlot.Gizmo_DrawWireCircle, &words[0], null);
+    }
+    static void Gizmo_DrawWireSquare(float a0, float a1, float a2, float a3, float a4) {
+        ulong[] words = {(ulong)Reinterpret<uint>(a0), (ulong)Reinterpret<uint>(a1), (ulong)Reinterpret<uint>(a2), (ulong)Reinterpret<uint>(a3), (ulong)Reinterpret<uint>(a4)};
+        FkNativeInvoke(FkNativeSlot.Gizmo_DrawWireSquare, &words[0], null);
+    }
+    static void Gizmo_GetColor(void* a0, void* a1, void* a2, void* a3) {
+        ulong[] words = {FkNativeSlot.Pointer(a0), FkNativeSlot.Pointer(a1), FkNativeSlot.Pointer(a2), FkNativeSlot.Pointer(a3)};
+        FkNativeInvoke(FkNativeSlot.Gizmo_GetColor, &words[0], null);
+    }
+    static int Gizmo_GetEnabled() {
+        return Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.Gizmo_GetEnabled, null, null) & 4294967295ul));
+    }
+    static float Gizmo_GetLineWidth() {
+        return Reinterpret<float>((uint)FkNativeInvoke(FkNativeSlot.Gizmo_GetLineWidth, null, null));
+    }
+    static int Gizmo_GetMaxVertices() {
+        return Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.Gizmo_GetMaxVertices, null, null) & 4294967295ul));
+    }
+    static int Gizmo_GetRegisteredVertices() {
+        return Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.Gizmo_GetRegisteredVertices, null, null) & 4294967295ul));
+    }
+    static void Gizmo_SetColor(float a0, float a1, float a2, float a3) {
+        ulong[] words = {(ulong)Reinterpret<uint>(a0), (ulong)Reinterpret<uint>(a1), (ulong)Reinterpret<uint>(a2), (ulong)Reinterpret<uint>(a3)};
+        FkNativeInvoke(FkNativeSlot.Gizmo_SetColor, &words[0], null);
+    }
+    static void Gizmo_SetEnabled(int a0) {
+        ulong[] words = {(ulong)Reinterpret<uint>(a0)};
+        FkNativeInvoke(FkNativeSlot.Gizmo_SetEnabled, &words[0], null);
+    }
+    static void Gizmo_SetLineWidth(float a0) {
+        ulong[] words = {(ulong)Reinterpret<uint>(a0)};
+        FkNativeInvoke(FkNativeSlot.Gizmo_SetLineWidth, &words[0], null);
+    }
+    static void Gizmo_SetMaxVertices(int a0) {
+        ulong[] words = {(ulong)Reinterpret<uint>(a0)};
+        FkNativeInvoke(FkNativeSlot.Gizmo_SetMaxVertices, &words[0], null);
+    }
+    static int Image_Decode(void* a0, int a1, int a2, void* a3, int a4, void* a5, void* a6) {
+        ulong[] words = {FkNativeSlot.Pointer(a0), (ulong)Reinterpret<uint>(a1), (ulong)Reinterpret<uint>(a2), FkNativeSlot.Pointer(a3), (ulong)Reinterpret<uint>(a4), FkNativeSlot.Pointer(a5), FkNativeSlot.Pointer(a6)};
+        return Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.Image_Decode, &words[0], null) & 4294967295ul));
+    }
+    static int Localization_GetBuffer(string a0, void* a1, int a2) {
+        byte[] bytes0 = CString(a0);
+        ulong[] words = {FkNativeSlot.Pointer(&bytes0[0]), FkNativeSlot.Pointer(a1), (ulong)Reinterpret<uint>(a2)};
+        return Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.Localization_GetBuffer, &words[0], null) & 4294967295ul));
+    }
+    static int Localization_GetLanguageBuffer(int a0, void* a1, int a2) {
+        ulong[] words = {(ulong)Reinterpret<uint>(a0), FkNativeSlot.Pointer(a1), (ulong)Reinterpret<uint>(a2)};
+        return Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.Localization_GetLanguageBuffer, &words[0], null) & 4294967295ul));
+    }
+    static int Localization_GetLanguagesBuffer(void* a0, int a1) {
+        ulong[] words = {FkNativeSlot.Pointer(a0), (ulong)Reinterpret<uint>(a1)};
+        return Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.Localization_GetLanguagesBuffer, &words[0], null) & 4294967295ul));
+    }
+    static int Localization_HasKey(string a0) {
+        byte[] bytes0 = CString(a0);
+        ulong[] words = {FkNativeSlot.Pointer(&bytes0[0])};
+        return Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.Localization_HasKey, &words[0], null) & 4294967295ul));
+    }
+    static int Localization_SetLanguage(string a0) {
+        byte[] bytes0 = CString(a0);
+        ulong[] words = {FkNativeSlot.Pointer(&bytes0[0])};
+        return Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.Localization_SetLanguage, &words[0], null) & 4294967295ul));
+    }
+    static int Material_Get(ulong a0, void* a1, int a2) {
+        ulong[] words = {a0, FkNativeSlot.Pointer(a1), (ulong)Reinterpret<uint>(a2)};
+        return Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.Material_Get, &words[0], null) & 4294967295ul));
+    }
+    static int Material_GetProperty(ulong a0, string a1, void* a2, void* a3) {
+        byte[] bytes1 = CString(a1);
+        ulong[] words = {a0, FkNativeSlot.Pointer(&bytes1[0]), FkNativeSlot.Pointer(a2), FkNativeSlot.Pointer(a3)};
+        return Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.Material_GetProperty, &words[0], null) & 4294967295ul));
+    }
+    static ulong Material_GetShader(ulong a0) {
+        ulong[] words = {a0};
+        return FkNativeInvoke(FkNativeSlot.Material_GetShader, &words[0], null);
+    }
+    static ulong Material_GetTexture(ulong a0) {
+        ulong[] words = {a0};
+        return FkNativeInvoke(FkNativeSlot.Material_GetTexture, &words[0], null);
+    }
+    static void Material_Set(ulong a0, void* a1, int a2) {
+        ulong[] words = {a0, FkNativeSlot.Pointer(a1), (ulong)Reinterpret<uint>(a2)};
+        FkNativeInvoke(FkNativeSlot.Material_Set, &words[0], null);
+    }
+    static int Material_SetProperty(ulong a0, string a1, int a2, void* a3, ulong a4) {
+        byte[] bytes1 = CString(a1);
+        ulong[] words = {a0, FkNativeSlot.Pointer(&bytes1[0]), (ulong)Reinterpret<uint>(a2), FkNativeSlot.Pointer(a3), a4};
+        return Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.Material_SetProperty, &words[0], null) & 4294967295ul));
+    }
+    static void Material_SetShader(ulong a0, ulong a1) {
+        ulong[] words = {a0, a1};
+        FkNativeInvoke(FkNativeSlot.Material_SetShader, &words[0], null);
+    }
+    static void Material_SetTexture(ulong a0, ulong a1) {
+        ulong[] words = {a0, a1};
+        FkNativeInvoke(FkNativeSlot.Material_SetTexture, &words[0], null);
+    }
+    static int Media_PollCommand(void* a0) {
+        ulong[] words = {FkNativeSlot.Pointer(a0)};
+        return Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.Media_PollCommand, &words[0], null) & 4294967295ul));
+    }
+    static void Media_SetNowPlaying(string a0, string a1, string a2, float a3, void* a4, int a5, int a6) {
+        byte[] bytes0 = CString(a0);
+        byte[] bytes1 = CString(a1);
+        byte[] bytes2 = CString(a2);
+        ulong[] words = {FkNativeSlot.Pointer(&bytes0[0]), FkNativeSlot.Pointer(&bytes1[0]), FkNativeSlot.Pointer(&bytes2[0]), (ulong)Reinterpret<uint>(a3), FkNativeSlot.Pointer(a4), (ulong)Reinterpret<uint>(a5), (ulong)Reinterpret<uint>(a6)};
+        FkNativeInvoke(FkNativeSlot.Media_SetNowPlaying, &words[0], null);
+    }
+    static void Media_SetPlaybackState(int a0, float a1) {
+        ulong[] words = {(ulong)Reinterpret<uint>(a0), (ulong)Reinterpret<uint>(a1)};
+        FkNativeInvoke(FkNativeSlot.Media_SetPlaybackState, &words[0], null);
+    }
+    static ulong Mesh_CreateRuntime() {
+        return FkNativeInvoke(FkNativeSlot.Mesh_CreateRuntime, null, null);
+    }
+    static int Mesh_DestroyRuntime(ulong a0) {
+        ulong[] words = {a0};
+        return Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.Mesh_DestroyRuntime, &words[0], null) & 4294967295ul));
+    }
+    static int Mesh_GetInfo(ulong a0, void* a1, int a2) {
+        ulong[] words = {a0, FkNativeSlot.Pointer(a1), (ulong)Reinterpret<uint>(a2)};
+        return Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.Mesh_GetInfo, &words[0], null) & 4294967295ul));
+    }
+    static int Mesh_IsRuntime(ulong a0) {
+        ulong[] words = {a0};
+        return Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.Mesh_IsRuntime, &words[0], null) & 4294967295ul));
+    }
+    static int Mesh_SetData(ulong a0, void* a1, void* a2, void* a3, int a4, void* a5, int a6) {
+        ulong[] words = {a0, FkNativeSlot.Pointer(a1), FkNativeSlot.Pointer(a2), FkNativeSlot.Pointer(a3), (ulong)Reinterpret<uint>(a4), FkNativeSlot.Pointer(a5), (ulong)Reinterpret<uint>(a6)};
+        return Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.Mesh_SetData, &words[0], null) & 4294967295ul));
+    }
+    static int Physics2D_ContainsPoint(float a0, float a1, int a2, void* a3) {
+        ulong[] words = {(ulong)Reinterpret<uint>(a0), (ulong)Reinterpret<uint>(a1), (ulong)Reinterpret<uint>(a2), FkNativeSlot.Pointer(a3)};
+        return Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.Physics2D_ContainsPoint, &words[0], null) & 4294967295ul));
+    }
+    static int Physics2D_ContainsPointAll(float a0, float a1, void* a2, int a3) {
+        ulong[] words = {(ulong)Reinterpret<uint>(a0), (ulong)Reinterpret<uint>(a1), FkNativeSlot.Pointer(a2), (ulong)Reinterpret<uint>(a3)};
+        return Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.Physics2D_ContainsPointAll, &words[0], null) & 4294967295ul));
+    }
+    static void Physics2D_GetGravity(void* a0, void* a1) {
+        ulong[] words = {FkNativeSlot.Pointer(a0), FkNativeSlot.Pointer(a1)};
+        FkNativeInvoke(FkNativeSlot.Physics2D_GetGravity, &words[0], null);
+    }
+    static int Physics2D_OverlapBox(float a0, float a1, float a2, float a3, float a4, int a5, void* a6) {
+        ulong[] words = {(ulong)Reinterpret<uint>(a0), (ulong)Reinterpret<uint>(a1), (ulong)Reinterpret<uint>(a2), (ulong)Reinterpret<uint>(a3), (ulong)Reinterpret<uint>(a4), (ulong)Reinterpret<uint>(a5), FkNativeSlot.Pointer(a6)};
+        return Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.Physics2D_OverlapBox, &words[0], null) & 4294967295ul));
+    }
+    static int Physics2D_OverlapBoxAll(float a0, float a1, float a2, float a3, float a4, void* a5, int a6) {
+        ulong[] words = {(ulong)Reinterpret<uint>(a0), (ulong)Reinterpret<uint>(a1), (ulong)Reinterpret<uint>(a2), (ulong)Reinterpret<uint>(a3), (ulong)Reinterpret<uint>(a4), FkNativeSlot.Pointer(a5), (ulong)Reinterpret<uint>(a6)};
+        return Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.Physics2D_OverlapBoxAll, &words[0], null) & 4294967295ul));
+    }
+    static int Physics2D_OverlapCircle(float a0, float a1, float a2, int a3, void* a4) {
+        ulong[] words = {(ulong)Reinterpret<uint>(a0), (ulong)Reinterpret<uint>(a1), (ulong)Reinterpret<uint>(a2), (ulong)Reinterpret<uint>(a3), FkNativeSlot.Pointer(a4)};
+        return Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.Physics2D_OverlapCircle, &words[0], null) & 4294967295ul));
+    }
+    static int Physics2D_OverlapCircleAll(float a0, float a1, float a2, void* a3, int a4) {
+        ulong[] words = {(ulong)Reinterpret<uint>(a0), (ulong)Reinterpret<uint>(a1), (ulong)Reinterpret<uint>(a2), FkNativeSlot.Pointer(a3), (ulong)Reinterpret<uint>(a4)};
+        return Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.Physics2D_OverlapCircleAll, &words[0], null) & 4294967295ul));
+    }
+    static int Physics2D_OverlapPolygon(float a0, float a1, void* a2, int a3, int a4, void* a5) {
+        ulong[] words = {(ulong)Reinterpret<uint>(a0), (ulong)Reinterpret<uint>(a1), FkNativeSlot.Pointer(a2), (ulong)Reinterpret<uint>(a3), (ulong)Reinterpret<uint>(a4), FkNativeSlot.Pointer(a5)};
+        return Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.Physics2D_OverlapPolygon, &words[0], null) & 4294967295ul));
+    }
+    static int Physics2D_OverlapPolygonAll(float a0, float a1, void* a2, int a3, void* a4, int a5) {
+        ulong[] words = {(ulong)Reinterpret<uint>(a0), (ulong)Reinterpret<uint>(a1), FkNativeSlot.Pointer(a2), (ulong)Reinterpret<uint>(a3), FkNativeSlot.Pointer(a4), (ulong)Reinterpret<uint>(a5)};
+        return Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.Physics2D_OverlapPolygonAll, &words[0], null) & 4294967295ul));
+    }
+    static int Physics2D_Raycast(float a0, float a1, float a2, float a3, float a4, void* a5, void* a6, void* a7, void* a8, void* a9, void* a10) {
+        ulong[] words = {(ulong)Reinterpret<uint>(a0), (ulong)Reinterpret<uint>(a1), (ulong)Reinterpret<uint>(a2), (ulong)Reinterpret<uint>(a3), (ulong)Reinterpret<uint>(a4), FkNativeSlot.Pointer(a5), FkNativeSlot.Pointer(a6), FkNativeSlot.Pointer(a7), FkNativeSlot.Pointer(a8), FkNativeSlot.Pointer(a9), FkNativeSlot.Pointer(a10)};
+        return Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.Physics2D_Raycast, &words[0], null) & 4294967295ul));
+    }
+    static void Physics2D_SetGravity(float a0, float a1) {
+        ulong[] words = {(ulong)Reinterpret<uint>(a0), (ulong)Reinterpret<uint>(a1)};
+        FkNativeInvoke(FkNativeSlot.Physics2D_SetGravity, &words[0], null);
+    }
+    static void Physics2D_SetQueryLayerMask(ulong a0) {
+        ulong[] words = {a0};
+        FkNativeInvoke(FkNativeSlot.Physics2D_SetQueryLayerMask, &words[0], null);
+    }
+    static int Physics3D_CheckSphere(float a0, float a1, float a2, float a3, ulong a4, int a5) {
+        ulong[] words = {(ulong)Reinterpret<uint>(a0), (ulong)Reinterpret<uint>(a1), (ulong)Reinterpret<uint>(a2), (ulong)Reinterpret<uint>(a3), a4, (ulong)Reinterpret<uint>(a5)};
+        return Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.Physics3D_CheckSphere, &words[0], null) & 4294967295ul));
+    }
+    static void Physics3D_GetGravity(void* a0, void* a1, void* a2) {
+        ulong[] words = {FkNativeSlot.Pointer(a0), FkNativeSlot.Pointer(a1), FkNativeSlot.Pointer(a2)};
+        FkNativeInvoke(FkNativeSlot.Physics3D_GetGravity, &words[0], null);
+    }
+    static int Physics3D_Raycast(float a0, float a1, float a2, float a3, float a4, float a5, float a6, void* a7, void* a8, int a9) {
+        ulong[] words = {(ulong)Reinterpret<uint>(a0), (ulong)Reinterpret<uint>(a1), (ulong)Reinterpret<uint>(a2), (ulong)Reinterpret<uint>(a3), (ulong)Reinterpret<uint>(a4), (ulong)Reinterpret<uint>(a5), (ulong)Reinterpret<uint>(a6), FkNativeSlot.Pointer(a7), FkNativeSlot.Pointer(a8), (ulong)Reinterpret<uint>(a9)};
+        return Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.Physics3D_Raycast, &words[0], null) & 4294967295ul));
+    }
+    static int Physics3D_RaycastMasked(float a0, float a1, float a2, float a3, float a4, float a5, float a6, ulong a7, int a8, void* a9, void* a10, int a11) {
+        ulong[] words = {(ulong)Reinterpret<uint>(a0), (ulong)Reinterpret<uint>(a1), (ulong)Reinterpret<uint>(a2), (ulong)Reinterpret<uint>(a3), (ulong)Reinterpret<uint>(a4), (ulong)Reinterpret<uint>(a5), (ulong)Reinterpret<uint>(a6), a7, (ulong)Reinterpret<uint>(a8), FkNativeSlot.Pointer(a9), FkNativeSlot.Pointer(a10), (ulong)Reinterpret<uint>(a11)};
+        return Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.Physics3D_RaycastMasked, &words[0], null) & 4294967295ul));
+    }
+    static void Physics3D_SetGravity(float a0, float a1, float a2) {
+        ulong[] words = {(ulong)Reinterpret<uint>(a0), (ulong)Reinterpret<uint>(a1), (ulong)Reinterpret<uint>(a2)};
+        FkNativeInvoke(FkNativeSlot.Physics3D_SetGravity, &words[0], null);
+    }
+    static int PhysicsLayer_GetIndex(string a0) {
+        byte[] bytes0 = CString(a0);
+        ulong[] words = {FkNativeSlot.Pointer(&bytes0[0])};
+        return Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.PhysicsLayer_GetIndex, &words[0], null) & 4294967295ul));
+    }
+    static int PhysicsLayer_GetName(ulong a0, void* a1, int a2) {
+        ulong[] words = {a0, FkNativeSlot.Pointer(a1), (ulong)Reinterpret<uint>(a2)};
+        return Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.PhysicsLayer_GetName, &words[0], null) & 4294967295ul));
+    }
+    static int RenderSettings_Apply(float a0, int a1, int a2, int a3, int a4) {
+        ulong[] words = {(ulong)Reinterpret<uint>(a0), (ulong)Reinterpret<uint>(a1), (ulong)Reinterpret<uint>(a2), (ulong)Reinterpret<uint>(a3), (ulong)Reinterpret<uint>(a4)};
+        return Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.RenderSettings_Apply, &words[0], null) & 4294967295ul));
+    }
+    static int RenderSettings_Apply3D(int a0, float a1, int a2, float a3, int a4) {
+        ulong[] words = {(ulong)Reinterpret<uint>(a0), (ulong)Reinterpret<uint>(a1), (ulong)Reinterpret<uint>(a2), (ulong)Reinterpret<uint>(a3), (ulong)Reinterpret<uint>(a4)};
+        return Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.RenderSettings_Apply3D, &words[0], null) & 4294967295ul));
+    }
+    static int RenderSettings_ApplyAnimation(void* a0, int a1) {
+        ulong[] words = {FkNativeSlot.Pointer(a0), (ulong)Reinterpret<uint>(a1)};
+        return Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.RenderSettings_ApplyAnimation, &words[0], null) & 4294967295ul));
+    }
+    static int RenderSettings_ApplyQuality(int a0, int a1, int a2, int a3) {
+        ulong[] words = {(ulong)Reinterpret<uint>(a0), (ulong)Reinterpret<uint>(a1), (ulong)Reinterpret<uint>(a2), (ulong)Reinterpret<uint>(a3)};
+        return Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.RenderSettings_ApplyQuality, &words[0], null) & 4294967295ul));
+    }
+    static void RenderSettings_Get(void* a0, void* a1, void* a2, void* a3, void* a4) {
+        ulong[] words = {FkNativeSlot.Pointer(a0), FkNativeSlot.Pointer(a1), FkNativeSlot.Pointer(a2), FkNativeSlot.Pointer(a3), FkNativeSlot.Pointer(a4)};
+        FkNativeInvoke(FkNativeSlot.RenderSettings_Get, &words[0], null);
+    }
+    static void RenderSettings_Get3D(void* a0, void* a1, void* a2, void* a3, void* a4) {
+        ulong[] words = {FkNativeSlot.Pointer(a0), FkNativeSlot.Pointer(a1), FkNativeSlot.Pointer(a2), FkNativeSlot.Pointer(a3), FkNativeSlot.Pointer(a4)};
+        FkNativeInvoke(FkNativeSlot.RenderSettings_Get3D, &words[0], null);
+    }
+    static void RenderSettings_GetAnimation(void* a0, int a1) {
+        ulong[] words = {FkNativeSlot.Pointer(a0), (ulong)Reinterpret<uint>(a1)};
+        FkNativeInvoke(FkNativeSlot.RenderSettings_GetAnimation, &words[0], null);
+    }
+    static void RenderSettings_GetQuality(void* a0, void* a1, void* a2, void* a3) {
+        ulong[] words = {FkNativeSlot.Pointer(a0), FkNativeSlot.Pointer(a1), FkNativeSlot.Pointer(a2), FkNativeSlot.Pointer(a3)};
+        FkNativeInvoke(FkNativeSlot.RenderSettings_GetQuality, &words[0], null);
+    }
+    static int RenderSettings_ResetToDefaults() {
+        return Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.RenderSettings_ResetToDefaults, null, null) & 4294967295ul));
+    }
+    static int RuntimePoints_Create(void* a0, int a1) {
+        ulong[] words = {FkNativeSlot.Pointer(a0), (ulong)Reinterpret<uint>(a1)};
+        return Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.RuntimePoints_Create, &words[0], null) & 4294967295ul));
+    }
+    static int RuntimePoints_Destroy(void* a0, int a1) {
+        ulong[] words = {FkNativeSlot.Pointer(a0), (ulong)Reinterpret<uint>(a1)};
+        return Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.RuntimePoints_Destroy, &words[0], null) & 4294967295ul));
+    }
+    static int RuntimePoints_Read(void* a0, int a1, void* a2) {
+        ulong[] words = {FkNativeSlot.Pointer(a0), (ulong)Reinterpret<uint>(a1), FkNativeSlot.Pointer(a2)};
+        return Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.RuntimePoints_Read, &words[0], null) & 4294967295ul));
+    }
+    static int RuntimePoints_Translate(void* a0, int a1, float a2, float a3) {
+        ulong[] words = {FkNativeSlot.Pointer(a0), (ulong)Reinterpret<uint>(a1), (ulong)Reinterpret<uint>(a2), (ulong)Reinterpret<uint>(a3)};
+        return Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.RuntimePoints_Translate, &words[0], null) & 4294967295ul));
+    }
+    static ulong Texture_GetDefaultAssetUUID(byte a0) {
+        ulong[] words = {(ulong)a0};
+        return FkNativeInvoke(FkNativeSlot.Texture_GetDefaultAssetUUID, &words[0], null);
+    }
+    static int Texture_LoadAsset(ulong a0) {
+        ulong[] words = {a0};
+        return Reinterpret<int>((uint)(FkNativeInvoke(FkNativeSlot.Texture_LoadAsset, &words[0], null) & 4294967295ul));
+    }
+}

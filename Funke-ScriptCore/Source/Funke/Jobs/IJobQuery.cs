@@ -367,36 +367,36 @@ public static class JobQueryExtensions
 
         int poolCount = plan.PoolCount;
 
-        const int kInitialRowGuess = 64;
-        JobQueryPinPool.PinnedBuffer pinBuf =
-            JobQueryPinPool.Rent(kInitialRowGuess * poolCount);
-        int rowCount;
-        while (true)
-        {
-            int rowCap = pinBuf.Array.Length / poolCount;
-            rowCount = InternalCalls.Scene_OpenQueryView(
-                filters.SceneName, filters.WriteNames, filters.ReadonlyNames,
-                filters.MustHaveNames, filters.WithoutNames, filters.EnableFilter,
-                (void**)pinBuf.PinnedBase, rowCap);
-            if (rowCount <= rowCap) break;
-            // Undersize: return current buffer, rent fitted, retry. Rare path —
-            // only happens when the matched-entity count grew past the previous
-            // high-water mark since the last schedule of this shape.
-            JobQueryPinPool.Return(pinBuf);
-            pinBuf = JobQueryPinPool.Rent(rowCount * poolCount);
-        }
-
-        if (rowCount == 0)
-        {
-            JobQueryPinPool.Return(pinBuf);
-            return default;
-        }
-
-        IntPtr pinnedBase = pinBuf.PinnedBase;
-
-        JobHandle handle;
+        ulong borrow = InternalCalls.Scene_BeginJobQueryBorrow(scene.Name, plan.WriteNames, plan.ReadonlyNames);
+        if (borrow == 0)
+            throw new InvalidOperationException("Cannot schedule query job: scene unavailable, wrong thread, or conflicting component access. Complete conflicting jobs first.");
+        JobQueryPinPool.PinnedBuffer? pinBuf = null;
         try
         {
+            pinBuf = JobQueryPinPool.Rent(64 * poolCount);
+            int rowCount;
+            while (true)
+            {
+                int rowCap = pinBuf.Array.Length / poolCount;
+                rowCount = InternalCalls.Scene_OpenQueryView(
+                    filters.SceneName, filters.WriteNames, filters.ReadonlyNames,
+                    filters.MustHaveNames, filters.WithoutNames, filters.EnableFilter,
+                    (void**)pinBuf.PinnedBase, rowCap);
+                if (rowCount < 0) throw new InvalidOperationException("Failed to acquire query job component view.");
+                if (rowCount <= rowCap) break;
+                JobQueryPinPool.Return(pinBuf);
+                pinBuf = null;
+                pinBuf = JobQueryPinPool.Rent(checked(rowCount * poolCount));
+            }
+            if (rowCount == 0)
+            {
+                JobQueryPinPool.Return(pinBuf);
+                pinBuf = null;
+                InternalCalls.Scene_EndJobQueryBorrow(borrow);
+                return default;
+            }
+            IntPtr pinnedBase = pinBuf.PinnedBase;
+            JobHandle handle;
             // Capture by-value so the closures see a stable snapshot.
             TJob capturedJob = job;
 
@@ -429,18 +429,24 @@ public static class JobQueryExtensions
                 }, cancellationToken);
             }
 
-            JobQueryPinPool.PinnedBuffer capturedPinBuf = pinBuf;
-            handle.AsTask().ContinueWith(_ =>
-            {
-                JobQueryPinPool.Return(capturedPinBuf);
-            }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+            // Completion includes cleanup, including fault and cancellation paths.
+            return new JobHandle(FinishQuery(handle.AsTask(), pinBuf, borrow));
         }
         catch
         {
-            JobQueryPinPool.Return(pinBuf);
+            if (pinBuf != null) JobQueryPinPool.Return(pinBuf);
+            InternalCalls.Scene_EndJobQueryBorrow(borrow);
             throw;
         }
+    }
 
-        return handle;
+    private static async Task FinishQuery(Task work, JobQueryPinPool.PinnedBuffer buffer, ulong borrow)
+    {
+        try { await work.ConfigureAwait(false); }
+        finally
+        {
+            JobQueryPinPool.Return(buffer);
+            InternalCalls.Scene_EndJobQueryBorrow(borrow);
+        }
     }
 }

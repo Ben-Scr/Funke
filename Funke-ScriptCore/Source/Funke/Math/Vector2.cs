@@ -38,6 +38,15 @@ public struct Vector2 : IEquatable<Vector2>, ISpanFormattable
 
     public static float Distance(Vector2 a, Vector2 b) => (a - b).Length();
 
+    public static Vector2 SmoothDamp(Vector2 current, Vector2 target, ref Vector2 velocity, float smoothTime,
+        float deltaTime, float maxSpeed = float.PositiveInfinity)
+    {
+        Vector3 v = new(velocity);
+        Vector2 result = Vector3.SmoothDamp(new(current), new(target), ref v, smoothTime, deltaTime, maxSpeed).XY;
+        velocity = v.XY;
+        return result;
+    }
+
     public static Vector2 Lerp(Vector2 a, Vector2 b, float t)
     {
         t = Mathf.Clamp01(t);

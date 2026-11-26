@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "type": "RecipeDefinition",
+  "fields": {
+    "Id": "furnace",
+    "Result": "4811867560209642681",
+    "Amount": "1",
+    "Seconds": "3",
+    "CreativeOnly": "false",
+    "Ingredients": "\n\\n8868858783520673027\\n8"
+  }
+}

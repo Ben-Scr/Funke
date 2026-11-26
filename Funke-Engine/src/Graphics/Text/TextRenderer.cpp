@@ -688,7 +688,12 @@ namespace Funke {
 	}
 
 	const TextLayout::Layout& TextRenderer::GetLayout(const TextDrawCmd& cmd) {
-		const TextLayout::Settings settings{ cmd.LetterSpacing, cmd.LineSpacing, cmd.WrapWidthPixels,
+		float familyAscent, familyDescent, familyHeight;
+        FontManager::GetFamilyMetrics(*cmd.FontPtr, familyAscent, familyDescent, familyHeight);
+        static uint64_t lastFamilyRevision = 0;
+        const auto revision = FontManager::GetFallbackRevision();
+        if (revision != lastFamilyRevision) { g_Layouts.Clear(); lastFamilyRevision = revision; }
+        const TextLayout::Settings settings{ cmd.LetterSpacing, cmd.LineSpacing, cmd.WrapWidthPixels,
 			cmd.Wrap, cmd.Align, cmd.VAlign, cmd.RichText, cmd.FontSize, cmd.Bold, cmd.Italic };
 		return g_Layouts.Get(cmd.FontPtr->GetAtlasTexture(), cmd.Text, settings,
 			[&](TextLayout::Layout& result) {

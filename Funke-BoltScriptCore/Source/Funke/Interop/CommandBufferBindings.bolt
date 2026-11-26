@@ -1,0 +1,7 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+extern "C" ulong FkEcb(ulong buffer,void* request,void* payload);

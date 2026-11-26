@@ -15,9 +15,7 @@ Every new game starts here, before the first scene, script or texture. The outpu
 
 ## 1. Ask
 
-Ask in the user's language. Use an available user-input tool according to its current schema and mode restrictions; otherwise ask a short numbered list in chat. Put your recommendation first. Ask only for unresolved choices that materially affect the result, and preserve decisions and autonomy already given in the request.
-
-**Skip what the request already answers.** "Make a pixel-art roguelike for phones in portrait, dark fantasy" already settles platform, orientation, style and mood, so don't ask those again.
+Ask only about decisions the user has neither made nor delegated. Offer concrete options with the recommendation first.
 
 ### Round 0: how much does the user want to decide?
 

@@ -20,6 +20,7 @@
 #include "Components/Graphics/ParticleSystem2DComponent.hpp"
 #include "Components/Graphics/ParticleSystem3DComponent.hpp"
 #include "Components/Graphics/SkinnedMeshRendererComponent.hpp"
+#include "Components/Graphics/MeshRendererComponent.hpp"
 #include "Components/Graphics/TextRendererComponent.hpp"
 #include "Components/Physics/BoxCollider2DComponent.hpp"
 #include "Components/Physics/CircleCollider2DComponent.hpp"
@@ -87,6 +88,7 @@ namespace Funke {
 			// Custom-only: variant types + per-shape branches don't map cleanly.
 			Bind<ParticleSystem2DComponent>(DrawParticleSystem2DInspector),
 			Bind<ParticleSystem3DComponent>(DrawParticleSystem3DInspector),
+			Bind<MeshRendererComponent>(DrawMeshRendererInspector),
 			Bind<SkinnedMeshRendererComponent>(DrawSkinnedMeshRendererInspector),
 
 			Bind<RectTransform2DComponent>(DrawRectTransform2DInspector),

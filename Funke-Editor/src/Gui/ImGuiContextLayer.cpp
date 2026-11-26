@@ -13,6 +13,7 @@
 #include "Gui/EditorTheme.hpp"
 #include "Gui/EditorWindowIcons.hpp"
 #include "Gui/ImGuiFonts.hpp"
+#include "Gui/ReorderUI.hpp"
 #include "Serialization/File.hpp"
 #include "Serialization/Path.hpp"
 #include "Utils/ExpressionEvaluator.hpp"
@@ -268,6 +269,7 @@ namespace Funke {
 		// We flushed above (or kept a pending preset). DestroyContext must not overwrite that file again.
 		ImGui::GetIO().IniFilename = nullptr;
 		ColorPickerEyedropper::Shutdown();
+		GrabCursor::Shutdown();
 		EditorWindowIcons::SetTextureProvider(nullptr);
 		EditorRuntime::ImGuiContextSetup::ShutdownBackends();
 		m_IniFilePath.clear();
@@ -304,6 +306,8 @@ namespace Funke {
 		if (!m_IsInitialized) {
 			return;
 		}
+		ReorderUI::ApplyDragCursor();
+		GrabCursor::Apply();
 		EditorRuntime::ImGuiContextSetup::RenderAndPresent();
 
 		FlushSettingsIfDirtyOrPeriodic();

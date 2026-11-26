@@ -1,0 +1,12 @@
+import System
+import System.Threading
+import System.Threading.Tasks
+namespace Funke.Coroutines;
+
+public struct WaitUntil {
+    private System.Func<bool>? saved;
+    private CancellationToken cancellation;
+    public WaitUntil(System.Func<bool> predicate, System.Threading.CancellationToken token=default) {saved=predicate;cancellation=token;}
+    public Task<void> AsTask(){return CoroutineContext.Wait(0,0.0f,false,saved,cancellation);}
+    public CoroutineAwaiter GetAwaiter() { return CoroutineAwaiter(0,0.0f,false,saved,cancellation); }
+}

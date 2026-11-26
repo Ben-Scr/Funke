@@ -1,0 +1,66 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public class Rigidbody2D : Component {
+public:
+    protected override ulong FkType() { return 33ul; }
+    float AngularVelocity { get { return Reinterpret<float>((uint)FkRigidbody2D_GetAngularVelocity(ID, 0ul)); } set { FkRigidbody2D_SetAngularVelocity(ID, (ulong)Reinterpret<uint>(value)); } }
+    BodyType BodyType { get { return (BodyType)FkRigidbody2D_GetBodyType(ID, 0ul); } set { FkRigidbody2D_SetBodyType(ID, (ulong)value); } }
+    float GravityScale { get { return Reinterpret<float>((uint)FkRigidbody2D_GetGravityScale(ID, 0ul)); } set { FkRigidbody2D_SetGravityScale(ID, (ulong)Reinterpret<uint>(value)); } }
+    float Mass { get { return Reinterpret<float>((uint)FkRigidbody2D_GetMass(ID, 0ul)); } set { FkRigidbody2D_SetMass(ID, (ulong)Reinterpret<uint>(value)); } }
+    bool FreezePositionX { get { return (FkRigidbody2D_GetFreezePositionX(ID, 0ul) != 0ul); } set { FkRigidbody2D_SetFreezePositionX(ID, (value ? 1ul : 0ul)); } }
+    bool FreezePositionY { get { return (FkRigidbody2D_GetFreezePositionY(ID, 0ul) != 0ul); } set { FkRigidbody2D_SetFreezePositionY(ID, (value ? 1ul : 0ul)); } }
+    bool FreezeRotation { get { return (FkRigidbody2D_GetFreezeRotation(ID, 0ul) != 0ul); } set { FkRigidbody2D_SetFreezeRotation(ID, (value ? 1ul : 0ul)); } }
+    Vector2 LinearVelocity { get { return Vector2.FromBits(FkRigidbody2D_GetLinearVelocity(ID, 0ul)); } set { FkRigidbody2D_SetLinearVelocity(ID, value.Bits()); } }
+    RigidbodyConstraints2D Constraints {
+        get {
+            int mask = (FreezePositionX ? 1 : 0) | (FreezePositionY ? 2 : 0) | (FreezeRotation ? 4 : 0);
+            return (RigidbodyConstraints2D)mask;
+        }
+        set {
+            int mask = (int)value;
+            FreezePositionX = (mask & 1) != 0;
+            FreezePositionY = (mask & 2) != 0;
+            FreezeRotation = (mask & 4) != 0;
+        }
+    }
+    void ApplyForce(Vector2 force, bool wake = true) {
+        FkWriteExtra(wake ? 1ul : 0ul, 0ul);
+        FkRigidbody2D_ApplyForce(ID, force.Bits());
+    }
+    void ApplyForceAtPoint(Vector2 force, Vector2 worldPoint, bool wake = true) {
+        FkWriteExtra(worldPoint.Bits(), 0ul);
+        FkWriteExtra(0ul, 1ul);
+        FkWriteExtra(wake ? 1ul : 0ul, 2ul);
+        FkRigidbody2D_ApplyAtPoint(ID, force.Bits());
+    }
+    void ApplyTorque(float amount, bool wake = true) {
+        FkWriteExtra(0ul, 0ul);
+        FkWriteExtra(wake ? 1ul : 0ul, 1ul);
+        FkRigidbody2D_ApplyAngular(ID, (ulong)Reinterpret<uint>(amount));
+    }
+    void ApplyImpulse(Vector2 impulse, bool wake = true) {
+        FkWriteExtra(wake ? 1ul : 0ul, 0ul);
+        FkRigidbody2D_ApplyImpulse(ID, impulse.Bits());
+    }
+    void ApplyImpulseAtPoint(Vector2 impulse, Vector2 worldPoint, bool wake = true) {
+        FkWriteExtra(worldPoint.Bits(), 0ul);
+        FkWriteExtra(1ul, 1ul);
+        FkWriteExtra(wake ? 1ul : 0ul, 2ul);
+        FkRigidbody2D_ApplyAtPoint(ID, impulse.Bits());
+    }
+    void ApplyAngularImpulse(float amount, bool wake = true) {
+        FkWriteExtra(1ul, 0ul);
+        FkWriteExtra(wake ? 1ul : 0ul, 1ul);
+        FkRigidbody2D_ApplyAngular(ID, (ulong)Reinterpret<uint>(amount));
+    }
+    float LinearDamping { get { return Reinterpret<float>((uint)FkGetRigidbody2D_LinearDamping(ID, 0ul)); } set { FkSetRigidbody2D_LinearDamping(ID, (ulong)Reinterpret<uint>(value)); } }
+    float AngularDamping { get { return Reinterpret<float>((uint)FkGetRigidbody2D_AngularDamping(ID, 0ul)); } set { FkSetRigidbody2D_AngularDamping(ID, (ulong)Reinterpret<uint>(value)); } }
+    bool IsBullet { get { return Reinterpret<float>((uint)FkGetRigidbody2D_IsBullet(ID, 0ul)) != 0.0f; } set { FkSetRigidbody2D_IsBullet(ID, (ulong)Reinterpret<uint>((value ? 1.0f : 0.0f))); } }
+    float Inertia => Reinterpret<float>((uint)FkGetRigidbody2D_Inertia(ID, 0ul));
+    Vector2 LocalCenterOfMass => Vector2.FromBits(FkGetRigidbody2D_LocalCenterOfMass(ID, 0ul));
+    Vector2 WorldCenterOfMass => Vector2.FromBits(FkGetRigidbody2D_WorldCenterOfMass(ID, 0ul));
+}

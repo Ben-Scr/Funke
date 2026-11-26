@@ -164,6 +164,20 @@ TEST_CASE("StreamingAssets always ships") {
 	CHECK(plan.KeepsProjectFile("StreamingAssets/Levels/1.txt"));
 }
 
+TEST_CASE("OBJ material libraries and diffuse maps survive asset pruning") {
+	ScopedPruningFixture f;
+	const auto guid = f.AddAsset("Meshes/ship.obj", 129001ull, "mtllib mats/ship paint.mtl\n");
+	f.AddAsset("Meshes/mats/ship paint.mtl", 129002ull, "newmtl Hull\nmap_Kd ../hull paint.png\n");
+	f.AddAsset("Meshes/hull paint.png", 129003ull);
+	f.AddAsset("Meshes/unused.png", 129004ull);
+	f.Write(f.Assets / "Scenes" / "Main.scene", R"({ "meshAsset": ")" + guid + R"(" })");
+	const auto plan = f.Compute();
+	REQUIRE(plan.Valid);
+	CHECK(plan.KeepsProjectFile("Meshes/mats/ship paint.mtl"));
+	CHECK(plan.KeepsProjectFile("Meshes/hull paint.png"));
+	CHECK_FALSE(plan.KeepsProjectFile("Meshes/unused.png"));
+}
+
 TEST_CASE("glTF dependencies resolve relative segments and encoded filenames") {
 	const std::vector<std::pair<std::string, std::string>> cases{
 		{ "../Buffers/ship.bin", "Meshes/Buffers/ship.bin" },
@@ -208,6 +222,62 @@ TEST_CASE("Game language files always ship") {
 	CHECK_FALSE(plan.KeepsBuiltInFile("Localization/de.json"));
 	CHECK_FALSE(plan.KeepsBuiltInFile("Localization/languages.json"));
 	CHECK_FALSE(plan.KeepsBuiltInFile("Localization/README.md"));
+}
+
+TEST_CASE("Imported glTF and GLB material image dependencies survive asset stripping") {
+    for (bool binary : {false,true}) {
+        ScopedPruningFixture f;
+        std::string json=R"({"asset":{"version":"2.0"},"images":[{"uri":"../Textures/base%20color.png"},{"uri":"../Textures/normal.png"},{"uri":"data:image/png;base64,AAAA"}]})";
+        std::string model=json;
+        if(binary){
+            while(json.size()%4) json.push_back(' ');
+            model.clear();
+            const auto append=[&](uint32_t value){for(int i=0;i<4;++i)model+=static_cast<char>((value>>(i*8))&255);};
+            append(0x46546c67);append(2);append(static_cast<uint32_t>(20+json.size()));
+            append(static_cast<uint32_t>(json.size()));append(0x4e4f534a);model+=json;
+        }
+        const auto guid=f.AddAsset(binary?"Models/model.glb":"Models/model.gltf",490001,model);
+        f.AddAsset("Textures/base color.png",490002);
+        f.AddAsset("Textures/normal.png",490003);
+        f.AddAsset("Textures/unused.png",490004);
+        f.Write(f.Assets/"Scenes/Main.scene",R"({"mesh":")"+guid+R"("})");
+        const auto plan=f.Compute();
+        REQUIRE(plan.Valid);
+        CHECK(plan.KeepsProjectFile("Textures/base color.png"));
+        CHECK(plan.KeepsProjectFile("Textures/normal.png"));
+        CHECK_FALSE(plan.KeepsProjectFile("Textures/unused.png"));
+    }
+}
+
+TEST_CASE("All standard PBR material maps survive asset stripping") {
+    ScopedPruningFixture f;
+    Json::Value material=Json::Value::MakeObject();
+    const char* fields[]={"normalTexture","metallicRoughnessTexture","emissiveTexture","occlusionTexture"};
+    for(uint64_t i=0;i<4;++i)
+        material.AddMember(fields[i],f.AddAsset(std::string("Textures/")+fields[i]+".png",491001+i));
+    const auto guid=f.AddAsset("Materials/surface.material",491010,Json::Stringify(material));
+    f.AddAsset("Textures/unused.png",491011);
+    f.Write(f.Assets/"Scenes/Main.scene",R"({"material":")"+guid+R"("})");
+    const auto plan=f.Compute();
+    REQUIRE(plan.Valid);
+    for(auto field:fields)CHECK(plan.KeepsProjectFile(std::string("Textures/")+field+".png"));
+    CHECK_FALSE(plan.KeepsProjectFile("Textures/unused.png"));
+}
+
+TEST_CASE("Per-model slot materials retain their maps during asset stripping") {
+    ScopedPruningFixture f;
+    const auto texture = f.AddAsset("Textures/slot.png", 492001);
+    const auto material = f.AddAsset("Materials/slot.material", 492002,
+        R"({"normalTexture":")" + texture + R"("})");
+    f.AddAsset("Materials/unused.material", 492003);
+    f.Write(f.Assets / "Scenes/Main.scene",
+        R"({"MeshRenderer":{"materialOverrides":{"model":"492004","slots":[{"slot":"name:Leaf","material":")"
+        + material + R"("}]}}})");
+    const auto plan = f.Compute();
+    REQUIRE(plan.Valid);
+    CHECK(plan.KeepsProjectFile("Materials/slot.material"));
+    CHECK(plan.KeepsProjectFile("Textures/slot.png"));
+    CHECK_FALSE(plan.KeepsProjectFile("Materials/unused.material"));
 }
 
 TEST_CASE("Built-in assets ship when loaded by fixed path or referenced") {
@@ -327,4 +397,20 @@ TEST_CASE("Backlog GLB JSON retains relative external buffers") {
 	CHECK(plan.KeepsProjectFile("Models/ship.glb"));
 	CHECK(plan.KeepsProjectFile("Models/sub/external data.bin"));
 	CHECK_FALSE(plan.KeepsProjectFile("unused.bin"));
+}
+
+TEST_CASE("Invalid serialized assets are retained unless reachability proves them unused") {
+    ScopedPruningFixture fixture;
+    fixture.AddAsset("Unused.dataasset", 9001, "");
+    auto plan = fixture.Compute();
+    REQUIRE(plan.Valid);
+    CHECK_FALSE(plan.KeepsProjectFile("Unused.dataasset"));
+    fixture.Write(fixture.Assets / "Scenes/Main.scene", R"({"asset":"Assets/Unused.dataasset"})");
+    plan = fixture.Compute();
+    CHECK(plan.KeepsProjectFile("Unused.dataasset"));
+    fixture.Write(fixture.Assets / "Scripts/Native.cpp", "// Native references cannot be fully enumerated");
+    plan = fixture.Compute();
+    CHECK_FALSE(plan.Valid);
+    CHECK_FALSE(plan.Error.empty());
+    CHECK((!plan.Valid || plan.KeepsProjectFile("Unused.dataasset")));
 }

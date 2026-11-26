@@ -1,0 +1,11 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public enum CapsuleDirection {
+    X = 0,
+    Y = 1,
+    Z = 2,
+}

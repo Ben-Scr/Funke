@@ -1,0 +1,37 @@
+import Funke
+namespace System.Globalization;
+
+extern "C" ulong FkLocale(ulong operation, void* tag, void* arguments);
+
+public struct NumberFormatInfo {
+public:
+    string NumberDecimalSeparator, NumberGroupSeparator;
+}
+public struct CultureInfo {
+private:
+    string name;
+    static string Read(ulong op, string code) {
+        byte[] buffer = Funke.FkService.CString(code);
+        return Funke.FunkeText.Read(FkLocale(op, &buffer[0], null));
+    }
+public:
+    CultureInfo() {}
+    CultureInfo(string code) : name(Read(0ul, code)) {}
+    static CultureInfo GetCultureInfo(string code) { return CultureInfo(code); }
+    static CultureInfo InvariantCulture => CultureInfo();
+    string Name => name;
+    string ToString() { return name; }
+    NumberFormatInfo NumberFormat {
+        get {
+            NumberFormatInfo data;
+            data.NumberDecimalSeparator = Read(1ul, name);
+            data.NumberGroupSeparator = Read(2ul, name);
+            return data;
+        }
+    }
+    string FkNumber(ulong category, ulong bits, string format) {
+        byte[] code = Funke.FkService.CString(name), spec = Funke.FkService.CString(format);
+        ulong[] args = { Funke.FkNativeSlot.Pointer(&spec[0]), bits };
+        return Funke.FunkeText.Read(FkLocale(category, &code[0], &args[0]));
+    }
+}

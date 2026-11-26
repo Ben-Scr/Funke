@@ -1,0 +1,63 @@
+import System
+import Math
+namespace Funke;
+
+public struct CurveKey {
+public:
+    Vector2 Position, InTangent, OutTangent;
+    CurveKey() {}
+    CurveKey(Vector2 position, Vector2 inTangent, Vector2 outTangent) : Position(position), InTangent(inTangent), OutTangent(outTangent) {}
+}
+
+public class Graph {
+public:
+    System.Collections.Generic.List<CurveKey> Keys;
+    Graph() { Keys = DefaultKeys(); }
+    static System.Collections.Generic.List<CurveKey> DefaultKeys() {
+        System.Collections.Generic.List<CurveKey> keys;
+        keys.Add(CurveKey(Vector2(0,1), Vector2(-0.2f,0), Vector2(0.2f,0)));
+        keys.Add(CurveKey(Vector2(1,1), Vector2(-0.2f,0), Vector2(0.2f,0)));
+        return keys;
+    }
+    float Evaluate(float t01)
+    {
+        if (Keys.Count == 0) return 1.0f;
+        if (Keys.Count == 1 || t01 <= Keys[0].Position.X) return Keys[0].Position.Y;
+        if (t01 >= Keys[Keys.Count - 1].Position.X) return Keys[Keys.Count - 1].Position.Y;
+
+        for (int i = 1; i < Keys.Count; i++)
+        {
+            if (t01 <= Keys[i].Position.X)
+            {
+                CurveKey a = Keys[i - 1], b = Keys[i];
+                Vector2 p0 = a.Position;
+                Vector2 p1 = Vector2(a.Position.X + a.OutTangent.X, a.Position.Y + a.OutTangent.Y);
+                Vector2 p2 = Vector2(b.Position.X + b.InTangent.X, b.Position.Y + b.InTangent.Y);
+                Vector2 p3 = b.Position;
+                // x is monotonic in t (the editor clamps handle x): bisect for t(x).
+                float lo = 0f, hi = 1.0f;
+                for (int iter = 0; iter < 16; iter++)
+                {
+                    float mid = 0.5f * (lo + hi);
+                    if (BezierX(p0, p1, p2, p3, mid) < t01) lo = mid; else hi = mid;
+                }
+                return BezierY(p0, p1, p2, p3, 0.5f * (lo + hi));
+            }
+        }
+        return Keys[Keys.Count - 1].Position.Y;
+    }
+
+    private static float BezierX(Vector2 p0, Vector2 p1, Vector2 p2, Vector2 p3, float t)
+    {
+        float u = 1.0f - t;
+        return u * u * u * p0.X + 3.0f * u * u * t * p1.X + 3.0f * u * t * t * p2.X + t * t * t * p3.X;
+    }
+
+    private static float BezierY(Vector2 p0, Vector2 p1, Vector2 p2, Vector2 p3, float t)
+    {
+        float u = 1.0f - t;
+        return u * u * u * p0.Y + 3.0f * u * u * t * p1.Y + 3.0f * u * t * t * p2.Y + t * t * t * p3.Y;
+    }
+
+}
+

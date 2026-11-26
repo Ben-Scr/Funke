@@ -35,6 +35,7 @@ project "Funke-Runtime"
             path.join(ROOT_DIR, "Funke-Editor/src/Gui/ProfilerPanel.cpp"),
             path.join(ROOT_DIR, "Funke-Editor/src/Gui/EditorUI.cpp"),
             path.join(ROOT_DIR, "Funke-Editor/src/Gui/ImGuiUtils.cpp"),
+            path.join(ROOT_DIR, "Funke-Editor/src/Gui/GrabCursor.cpp"),
             path.join(ROOT_DIR, "Funke-Editor/src/Gui/EditorIcons.cpp")
         }
         includedirs { path.join(ROOT_DIR, "Funke-Editor/src") }

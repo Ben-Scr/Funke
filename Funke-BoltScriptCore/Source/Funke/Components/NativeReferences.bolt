@@ -1,0 +1,25 @@
+import System
+namespace Funke.Components;
+
+public struct TextureHandle {
+public:
+    ushort Index, Generation;
+    static const ushort InvalidIndex = 65535;
+    [ReadOnly] bool IsValid => Index != InvalidIndex;
+}
+
+public struct Ref<T> {
+private:
+    T* address;
+public:
+    T& Value { get { if (address == null) throw InvalidOperationException("Component is absent."); return *address; } }
+    static Ref<T> FkBorrow(T* value) { Ref<T> result; result.address = value; return result; }
+}
+
+public struct RefRO<T> {
+private:
+    T* address;
+public:
+    T Value { get { if (address == null) throw InvalidOperationException("Component is absent."); return *address; } }
+    static RefRO<T> FkBorrow(T* value) { RefRO<T> result; result.address = value; return result; }
+}

@@ -70,14 +70,17 @@ namespace Funke {
 		static void RaiseSceneLoaded(const std::string& sceneName);
 		static void RaiseSceneLoadCompleted(uint64_t operationId, int status, const std::string& sceneName, uint64_t sceneGuid);
 		static void PumpSceneLoadRequests();
+        static void DispatchAndroidMessage(const std::string& channel, const std::string& message);
 		static void NotifyAssetLoadsCompleted(const uint64_t* operationIds, const uint64_t* assetIds, const int* statuses, int count);
 		static void RaiseBeforeSceneUnloaded(const std::string& sceneName);
 		static void RaiseSceneUnloaded(const std::string& sceneName);
-		static void RaiseUiEventDispatch();
+		static void RaiseUiEventDispatch(Scene& scene);
 		// Fired by Application::DispatchEvent on WindowResizeEvent — the
 		// managed `Funke.Window.Resized` event runs same-frame as the window's
 		// framebuffer-size callback.
 		static void RaiseWindowResize();
+		enum class WindowStateChange { Maximized, Minimized, Restored };
+		static void RaiseWindowStateChange(WindowStateChange state);
 
 		// Strips static-event subscribers from the user assembly; safe to call from runtime (no-op when uninitialized).
 		static void OnPlayModeExited();
@@ -94,12 +97,12 @@ namespace Funke {
 		static bool CanBatchEntityInvalidation();
 		static bool CanBatchComponentInvalidation();
 
-		// The player's language choice from PlayerPrefs ("" when none or scripting is down).
+		// The player's language choice from the active scripting preference store.
 		static std::string GetSavedLanguage();
-		// Raises C# Localization.LanguageChanged.
+		// Notifies scripting hosts that the active game language changed.
 		static void RaiseLanguageChanged();
 
-		static uint32_t CreateSceneSystemInstance(const std::string& className, const std::string& sceneName);
+		static uint32_t CreateSceneSystemInstance(const std::string& className, const std::string& sceneName, Scene* owner = nullptr);
 		static void DestroySceneSystemInstance(uint32_t handle);
 		static void InvokeSceneSystemStart(uint32_t handle);
 		static void InvokeSceneSystemUpdate(uint32_t handle);
@@ -154,6 +157,7 @@ namespace Funke {
 		static const ManagedCallbacks& GetCallbacks() { return s_Callbacks; }
 
 		// Resolves an [UnmanagedCallersOnly] method of another assembly on the running runtime; null before LoadCoreAssembly.
+		static void* GetCoreEntryPoint(const std::filesystem::path& core, std::string_view typeName, std::string_view methodName);
 		static void* GetUnmanagedEntryPoint(const std::filesystem::path& assemblyPath, std::string_view assemblyName,
 			std::string_view typeName, std::string_view methodName);
 

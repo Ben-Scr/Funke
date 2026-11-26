@@ -1,4 +1,7 @@
 #include "pch.hpp"
+#include <atomic>
+#include "Scene/ComponentAccess.hpp"
+#include "Diagnostics/LoadingDiagnostics.hpp"
 #include "Scene/Scene.hpp"
 #include "Scene/Entity.hpp"
 #include "Scene/SceneExtensions.hpp"
@@ -226,7 +229,7 @@ namespace Funke {
 					return false;
 				}
 
-				m_Handle = ScriptEngine::CreateSceneSystemInstance(m_ClassName, scene.GetName());
+				m_Handle = ScriptEngine::CreateSceneSystemInstance(m_ClassName, scene.GetName(), &scene);
 				ApplyFieldOverrides(scene);
 				return m_Handle != 0;
 			}
@@ -715,14 +718,31 @@ namespace Funke {
 			if (m_Registry.valid(entity)) required = std::max(required, static_cast<size_t>(entt::to_entity(entity)) + 1);
 		}
 		m_EntityDestructionMarks.resize(required, entt::null);
-		if (m_LifecycleSuspended || m_SuppressEntityDestructionCallbacks || !ScriptEngine::CanBatchEntityInvalidation()) {
+		const bool notify = !m_LifecycleSuspended && !m_SuppressEntityDestructionCallbacks;
+		if (notify && !ScriptEngine::CanBatchEntityInvalidation()) {
 			for (EntityHandle entity : entities) PrepareParallelEcbDestroy(entity);
 			return;
 		}
-		std::vector<uint64_t> identities;
+		struct DestroyScratch {
+			std::vector<uint64_t> Identities;
+			std::vector<EntityHandle> Prepared;
+			bool InUse = false;
+		};
+		static thread_local DestroyScratch shared;
+		DestroyScratch local;
+		auto& scratch = shared.InUse ? local : shared;
+		struct ScratchScope {
+			DestroyScratch& Value;
+			~ScratchScope() { Value.InUse = false; }
+		} scope{ scratch };
+		scratch.InUse = true;
+		auto& identities = scratch.Identities;
+		auto& prepared = scratch.Prepared;
+		identities.clear();
+		prepared.clear();
 		identities.reserve(entities.size());
-		std::vector<EntityHandle> prepared;
 		prepared.reserve(entities.size());
+		const auto* uuids = std::as_const(m_Registry).storage<UUIDComponent>();
 #if FUNKE_WITH_2D
 		const auto* transforms = std::as_const(m_Registry).storage<Transform2DComponent>();
 		const auto* sprites = std::as_const(m_Registry).storage<SpriteRendererComponent>();
@@ -733,8 +753,10 @@ namespace Funke {
 			prepared.push_back(entity);
 			TrackEntityDestruction(entity);
 			m_PendingDestroys.Cancel(entity);
-			const uint64_t persistentId = GetEntityPersistentID(entity);
-			if (persistentId != 0 && !IsPersistentIdLiveInOtherScene(*this, persistentId)) identities.push_back(persistentId);
+			if (notify && uuids && uuids->contains(entity)) {
+				const uint64_t persistentId = static_cast<uint64_t>(uuids->get(entity).Id);
+				if (persistentId != 0 && !IsPersistentIdLiveInOtherScene(*this, persistentId)) identities.push_back(persistentId);
+			}
 #if FUNKE_WITH_2D
 			const bool hasTransform = transforms && transforms->contains(entity);
 			if (hasTransform) m_TransformHierarchyDirty = true;
@@ -754,7 +776,7 @@ namespace Funke {
 			}
 			MarkAllDirtyOnce();
 		}
-		ScriptEngine::NotifyEntitiesDestroyed(identities.data(), static_cast<int>(identities.size()));
+		if (notify) ScriptEngine::NotifyEntitiesDestroyed(identities.data(), static_cast<int>(identities.size()));
 	}
 
 	void Scene::FinalizeParallelEcbDestroy(EntityHandle entity)
@@ -765,10 +787,22 @@ namespace Funke {
 		UntrackEntityDestruction(entity);
 	}
 
+	void Scene::FinalizeParallelEcbDestroy(std::span<const EntityHandle> entities)
+	{
+		auto& storage = m_Registry.storage<EntityHandle>();
+		for (EntityHandle entity : entities) {
+			if (!m_Registry.valid(entity) || !IsEntityBeingDestroyed(entity)) continue;
+			storage.erase(entity);
+			if (m_EntityCount > 0) --m_EntityCount;
+			UntrackEntityDestruction(entity);
+		}
+	}
+
 	void Scene::CreateEntitiesBulk(std::size_t n, std::span<EntityHandle> out) {
 		if (n == 0) {
 			return;
 		}
+		ComponentAccess::BeforeMutation(m_Registry);
 		EnsureEntityCapacity(m_EntityCount, n);
 		if (out.size() < n || out.data() == nullptr) {
 			FNK_THROW(FunkeErrorCode::InvalidArgument,
@@ -781,7 +815,132 @@ namespace Funke {
 		MarkHierarchyStructureDirty();
 	}
 
+	namespace {
+		struct RuntimePoint {
+			uint32_t Stamp;
+			float X, Y;
+		};
+		std::atomic<uint64_t> s_NextPointBatch{1};
+
+		template<class Pool>
+		auto FindRuntimePoint(Pool& points, uint64_t id) -> decltype(&points.get(EntityHandle{})) {
+			auto handle = static_cast<EntityHandle>(static_cast<uint32_t>(id));
+			if (!points.contains(handle)) return nullptr;
+			auto& point = points.get(handle);
+			return point.Stamp == (id >> 32) ? &point : nullptr;
+		}
+	}
+
+	void Scene::CreateRuntimePoints(std::span<uint64_t> ids) {
+		if (ids.empty()) return;
+		auto& points = m_Registry.storage<RuntimePoint>();
+		auto& entities = m_Registry.storage<EntityHandle>();
+		ComponentAccess::BeforeMutation(m_Registry);
+		EnsureEntityCapacity(m_EntityCount, ids.size());
+		const uint64_t stamp = s_NextPointBatch.fetch_add(1, std::memory_order_relaxed);
+		if (stamp > UINT32_MAX) FNK_THROW(FunkeErrorCode::OutOfRange, "Runtime point ID space exhausted");
+		ReserveGeometrically(points, CheckedReservationSize(points.size(), ids.size()));
+		ReserveGeometrically(entities, CheckedReservationSize(entities.free_list(), ids.size()));
+		size_t created = 0;
+		try {
+			for (uint64_t& id : ids) {
+				const EntityHandle handle = m_Registry.create();
+				id = (stamp << 32) | entt::to_integral(handle);
+				++created;
+				++m_EntityCount;
+				points.emplace(handle, static_cast<uint32_t>(stamp), 0.f, 0.f);
+			}
+		} catch (...) {
+			for (uint64_t id : ids.first(created)) DestroyEntity(static_cast<EntityHandle>(static_cast<uint32_t>(id)));
+			std::fill(ids.begin(), ids.end(), uint64_t{0});
+			throw;
+		}
+		MarkHierarchyStructureDirty();
+	}
+
+	int Scene::TranslateRuntimePoints(std::span<const uint64_t> ids, float dx, float dy) {
+		auto& points = m_Registry.storage<RuntimePoint>();
+		int matched = 0;
+		for (uint64_t id : ids) {
+			if (auto* point = FindRuntimePoint(points, id)) {
+				point->X += dx;
+				point->Y += dy;
+				++matched;
+			}
+		}
+		return matched;
+	}
+
+	int Scene::ReadRuntimePoints(std::span<const uint64_t> ids, float* xy) const {
+		const auto* points = m_Registry.storage<RuntimePoint>();
+		int matched = 0;
+		for (uint64_t id : ids) {
+			const RuntimePoint* point = points ? FindRuntimePoint(*points, id) : nullptr;
+			if (xy) {
+				*xy++ = point ? point->X : 0.f;
+				*xy++ = point ? point->Y : 0.f;
+			}
+			if (point) ++matched;
+		}
+		return matched;
+	}
+
+	int Scene::DestroyRuntimePoints(std::span<const uint64_t> ids) {
+		if (ids.empty()) return 0;
+		ComponentAccess::BeforeMutation(m_Registry);
+		auto& points = m_Registry.storage<RuntimePoint>();
+		auto& entities = m_Registry.storage<EntityHandle>();
+		// Native systems can attach other components. Preserve their hierarchy, script and destruction callbacks.
+		bool plain = entities.on_destroy().empty() && points.on_destroy().empty();
+		for (auto [hash, storage] : m_Registry.storage()) {
+			if (!plain) break;
+			if (hash == entt::type_hash<RuntimePoint>::value() || hash == entt::type_hash<EntityHandle>::value() || storage.empty()) continue;
+			if (storage.size() < ids.size()) {
+				for (EntityHandle entity : storage) {
+					if (points.contains(entity)) { plain = false; break; }
+				}
+			} else {
+				for (uint64_t id : ids) {
+					if (storage.contains(static_cast<EntityHandle>(static_cast<uint32_t>(id)))) { plain = false; break; }
+				}
+			}
+		}
+		if (plain && Application::GetInstance() && Application::GetInstance()->GetSceneManager()) {
+			SceneManager::GetComponentRegistry().ForEachComponentInfo([&](const std::type_index&, const ComponentInfo& info) {
+				if (!plain || !info.dynamicStorage) return;
+				const auto view = info.dynamicStorage->GetSceneView(m_Registry);
+				if (view.Size() < ids.size()) {
+					for (EntityHandle entity : view.Entities()) {
+						if (points.contains(entity)) { plain = false; break; }
+					}
+				} else {
+					for (uint64_t id : ids) {
+						if (view.Contains(static_cast<EntityHandle>(static_cast<uint32_t>(id)))) { plain = false; break; }
+					}
+				}
+			});
+		}
+		int destroyed = 0;
+		for (uint64_t id : ids) {
+			if (!FindRuntimePoint(points, id)) continue;
+			const auto handle = static_cast<EntityHandle>(static_cast<uint32_t>(id));
+			if (IsEntityBeingDestroyed(handle)) continue;
+			if (plain) {
+				if (m_PendingDestroys.Size()) m_PendingDestroys.Cancel(handle);
+				points.erase(handle);
+				entities.erase(handle);
+				--m_EntityCount;
+			} else {
+				DestroyEntity(handle);
+			}
+			++destroyed;
+		}
+		if (plain && destroyed) MarkHierarchyStructureDirty();
+		return destroyed;
+	}
+
 	EntityHandle Scene::CreateEntityHandle(EntityOrigin origin, AssetGUID prefabGuid, AssetGUID sceneGuid, EntityID runtimeId) {
+		ComponentAccess::BeforeMutation(m_Registry);
 		EnsureEntityCapacity(m_EntityCount, 1);
 		EntityHandle entityHandle = m_Registry.create();
 		++m_EntityCount;
@@ -1122,12 +1281,7 @@ namespace Funke {
 	Entity Scene::CloneEntity(Entity source) {
 		if (!source.IsValid()) return Entity::Null;
 		const std::string cloneName = source.GetName() + " (Clone)";
-		// Tree-aware snapshot (same path as the editor's Duplicate): clones the whole
-		// child subtree and remaps entity references that point inside it.
-		// SerializeEntityFull serializes only the root, which silently dropped children.
-		const Json::Value snapshot = SceneSerializer::SerializeEntityForClipboard(*source.GetScene(), source.GetHandle());
-		const EntityHandle cloneHandle = SceneSerializer::DeserializeEntityFromValue(
-			*this, snapshot, EntityOrigin::Runtime);
+		const EntityHandle cloneHandle = SceneSerializer::CloneRuntimeEntity(*this, source);
 		if (cloneHandle == entt::null || !IsValid(cloneHandle)) return Entity::Null;
 		Entity clone(cloneHandle, *this);
 
@@ -1185,6 +1339,8 @@ namespace Funke {
 	}
 
 	void Scene::ClearEntities() {
+        LoadingScope releaseTiming("Scene.EntitiesRelease", -1, m_EntityCount);
+		ComponentAccess::BeforeMutation(m_Registry);
 		FUNKE_PROFILE_SCOPE("Scene.Teardown");
 		// Gate m_TearingDown so Camera2D destroy hooks don't re-enter RefreshMainCameraSelection mid-iteration.
 		m_MainCameraEntity = entt::null;
@@ -1660,6 +1816,7 @@ namespace Funke {
 	void Scene::DestroyEntityInternal(EntityHandle nativeEntity, bool markDirty) {
 		if (nativeEntity == entt::null || !m_Registry.valid(nativeEntity) || IsEntityBeingDestroyed(nativeEntity)) return;
 
+		ComponentAccess::BeforeMutation(m_Registry);
 		TrackEntityDestruction(nativeEntity);
 		m_PendingDestroys.Cancel(nativeEntity);
 		try {
@@ -1727,6 +1884,7 @@ namespace Funke {
 				++(*enteredSystemCount);
 			}
 
+			LoadingScope callbackTiming("Scene.LifecycleCallback");
 			func(system);
 		}
 	}
@@ -1745,6 +1903,7 @@ namespace Funke {
 			if (enteredSystemCount) {
 				++(*enteredSystemCount);
 			}
+			LoadingScope callbackTiming("Scene.AwakeCallback");
 			system.Awake(*this);
 		}
 	}
@@ -1812,6 +1971,7 @@ namespace Funke {
 	}
 
 	void Scene::DestroyScene(size_t awakenedSystemCount) {
+		ComponentAccess::BeforeMutation(m_Registry);
 		SceneExecutionScope executionScope(*this);
 		std::vector<SceneSystem*> systemsToDestroy;
 		systemsToDestroy.reserve(m_Systems.size());
@@ -1850,6 +2010,7 @@ namespace Funke {
 		std::exception_ptr firstFailure;
 		for (auto it = systemsToDestroy.rbegin(); it != systemsToDestroy.rend(); ++it) {
 			try {
+				LoadingScope callbackTiming("Scene.DestroyCallback");
 				(*it)->OnDestroy(*this);
 			}
 			catch (const std::exception& e) {
@@ -1971,21 +2132,15 @@ namespace Funke {
 
 	std::vector<EntityHandle> Scene::ConsumeDirtyTransformEntities()
 	{
-		std::vector<EntityHandle> dirty;
-		ConsumeDirtyTransformEntities(dirty);
-		return dirty;
-	}
-
-	void Scene::ConsumeDirtyTransformEntities(std::vector<EntityHandle>& destination)
-	{
 		m_TransformHierarchyDirty = false;
 		m_TransformDirtyAll = false;
 		for (EntityHandle entity : m_DirtyTransformEntities) {
 			m_DirtyTransformEntityMarks[static_cast<size_t>(entt::to_entity(entity))] = entt::null;
 		}
 
-		destination.clear();
-		destination.swap(m_DirtyTransformEntities);
+		std::vector<EntityHandle> dirty;
+		dirty.swap(m_DirtyTransformEntities);
+		return dirty;
 	}
 
 	void Scene::MarkStaticRenderDataDirty()

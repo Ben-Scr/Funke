@@ -345,3 +345,7 @@ error: Assets/Materials/Lava.material: shader: GUID 123 matches no .meta; the ma
 - Editor View picking doesn't run the vertex stage; it widens the mesh bounds by `@displacement` instead.
 - Shaders compile on first use; a large shader can cause a short hitch the first time it appears.
 - Only `.wgsl` files are selectable shaders. Legacy `.vs`, `.fs`, `.vert`, `.frag`, `.glsl`, `.hlsl` and `.shader` files remain editable source files, marked **Source only** in the Asset Browser. Dropping them into a shader slot explains that they must be ported to WGSL; Funke does not modify or convert them automatically.
+
+### Hardware texture budget verification
+
+The rebuilt Windows Release suite used the Radeon RX 7800 XT D3D12 backend. Mesh3D, Sprite2D, UI, PostProcess and Skybox all accepted 0 and 6 textures and rejected 7 and 16. In the sprite render test, adding a seventh texture named `image6` produced the expected diagnostic and preserved the previous framebuffer pixels. Restoring the shader updated both shared material references.

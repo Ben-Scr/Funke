@@ -234,7 +234,7 @@ public enum TouchPhase
     Began = 0,
     Moved = 1,
     Stationary = 2,
-    /// <summary>The finger was lifted (or the touch was cancelled); it is gone next frame.</summary>
+    /// <summary>The finger was lifted and is gone next frame. Cancelled fingers disappear without a release.</summary>
     Ended = 3,
 }
 

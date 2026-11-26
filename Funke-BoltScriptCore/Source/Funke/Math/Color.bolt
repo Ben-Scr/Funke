@@ -1,0 +1,116 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public struct Color {
+public:
+    static Color White => Color(1.0f, 1.0f, 1.0f);
+    static Color Black => Color(0.0f, 0.0f, 0.0f);
+    static Color Red => Color(1.0f, 0.0f, 0.0f);
+    static Color Green => Color(0.0f, 1.0f, 0.0f);
+    static Color Blue => Color(0.0f, 0.0f, 1.0f);
+    static Color Yellow => Color(1.0f, 1.0f, 0.0f);
+    static Color Cyan => Color(0.0f, 1.0f, 1.0f);
+    static Color Magenta => Color(1.0f, 0.0f, 1.0f);
+    static Color Gray => Color(0.5f, 0.5f, 0.5f);
+    static Color Clear => Color(0.0f, 0.0f, 0.0f, 0.0f);
+    static Color LightGray => Color(0.75f, 0.75f, 0.75f);
+    static Color Silver => Color(0.83f, 0.83f, 0.83f);
+    static Color Orange => Color(1.0f, 0.65f, 0.0f);
+    static Color Gold => Color(1.0f, 0.84f, 0.0f);
+    static Color Pink => Color(1.0f, 0.75f, 0.8f);
+    static Color SkyBlue => Color(0.53f, 0.81f, 0.92f);
+    static Color LightGreen => Color(0.56f, 0.93f, 0.56f);
+    static Color Lavender => Color(0.9f, 0.9f, 0.98f);
+    static Color Peach => Color(1.0f, 0.8f, 0.6f);
+    static Color Cream => Color(1.0f, 0.99f, 0.82f);
+    static Color DarkGray => Color(0.25f, 0.25f, 0.25f);
+    static Color DarkRed => Color(0.5f, 0.0f, 0.0f);
+    static Color DarkGreen => Color(0.0f, 0.39f, 0.0f);
+    static Color DarkBlue => Color(0.0f, 0.0f, 0.5f);
+    static Color Navy => Color(0.0f, 0.0f, 0.28f);
+    static Color Brown => Color(0.4f, 0.26f, 0.13f);
+    static Color Maroon => Color(0.5f, 0.0f, 0.25f);
+    static Color Purple => Color(0.5f, 0.0f, 0.5f);
+    static Color Indigo => Color(0.29f, 0.0f, 0.51f);
+    static Color Teal => Color(0.0f, 0.5f, 0.5f);
+    static Color Olive => Color(0.42f, 0.42f, 0.12f);
+    float X { get { return R; } set { R = value; } }
+    float Y { get { return G; } set { G = value; } }
+    float Z { get { return B; } set { B = value; } }
+    float W { get { return A; } set { A = value; } }
+    Color SetR(float value) { return Color(value, G, B, A); }
+    Color SetG(float value) { return Color(R, value, B, A); }
+    Color SetB(float value) { return Color(R, G, value, A); }
+    Color SetA(float value) { return Color(R, G, B, value); }
+    static Color operator *(float s, Color v) { return v * s; }
+    static bool operator ==(Color a, Color b) { return a.R == b.R && a.G == b.G && a.B == b.B && a.A == b.A; }
+    static bool operator !=(Color a, Color b) { return !(a == b); }
+    implicit Vector4() { return Vector4(R, G, B, A); }
+    float R, G, B, A;
+    Color(float r = 0.0f, float g = 0.0f, float b = 0.0f, float a = 1.0f) : R(r), G(g), B(b), A(a) {}
+    ulong LowBits() { return Vector2(R, G).Bits(); }
+    ulong HighBits() { return Vector2(B, A).Bits(); }
+    static Color FromParts(ulong low, ulong high) {
+        Vector2 a = Vector2.FromBits(low); Vector2 b = Vector2.FromBits(high);
+        return Color(a.X, a.Y, b.X, b.Y);
+    }
+    static Color operator +(Color a, Color b) { return Color(a.R + b.R, a.G + b.G, a.B + b.B, a.A + b.A); }
+    static Color operator -(Color a, Color b) { return Color(a.R - b.R, a.G - b.G, a.B - b.B, a.A - b.A); }
+    static Color operator *(Color a, float b) { return Color(a.R * b, a.G * b, a.B * b, a.A * b); }
+    static Color operator /(Color a, float b) { return Color(a.R / b, a.G / b, a.B / b, a.A / b); }
+    bool Equals(Color other) { return this == other; }
+    explicit Vector3() { return Vector3(R, G, B); }
+    explicit Vector2() { return Vector2(R, G); }
+    static Color Lerp(Color a, Color b, float t) {
+        return a + (b - a) * Mathf.Clamp01(t);
+    }
+    private static int HexDigit(byte c) {
+        if (c >= 48 && c <= 57) return (int)c - 48;
+        if (c >= 65 && c <= 70) return (int)c - 55;
+        if (c >= 97 && c <= 102) return (int)c - 87;
+        return -1;
+    }
+    static bool TryFromHex(string hex, Color& color) {
+        color = White;
+        byte[] bytes = hex.Trim().ToUtf8();
+        int start = bytes.Length > 0 && bytes[0] == 35 ? 1 : 0;
+        int length = bytes.Length - start;
+        bool shortForm = length == 3 || length == 4;
+        if (!shortForm && length != 6 && length != 8) return false;
+        float[] c = {1.0f, 1.0f, 1.0f, 1.0f};
+        int count = shortForm ? length : length / 2;
+        for (int i = 0; i < count; ++i) {
+            int high = HexDigit(bytes[start++]);
+            int low = shortForm ? high : HexDigit(bytes[start++]);
+            if (high < 0 || low < 0) return false;
+            c[i] = (float)(high * 16 + low) / 255.0f;
+        }
+        color = Color(c[0], c[1], c[2], c[3]);
+        return true;
+    }
+    static Color FromHex(string hex) {
+        Color color;
+        if (!TryFromHex(hex, color)) throw System.FormatException("Invalid hexadecimal color.");
+        return color;
+    }
+    private static string HexChannel(float channel) {
+        int value = (int)Mathf.Round(Mathf.Clamp01(channel) * 255.0f);
+        string digits = "0123456789ABCDEF";
+        return digits.Substring(value >> 4, 1) + digits.Substring(value & 15, 1);
+    }
+    string ToHex(bool includeAlpha = false) {
+        return "#" + HexChannel(R) + HexChannel(G) + HexChannel(B) + (includeAlpha ? HexChannel(A) : "");
+    }
+    int GetHashCode() {
+        int hash = -2128831035;
+        hash = FkNumberFormat.Hash(hash, R);
+        hash = FkNumberFormat.Hash(hash, G);
+        hash = FkNumberFormat.Hash(hash, B);
+        hash = FkNumberFormat.Hash(hash, A);
+        return hash;
+    }
+    string ToString() { return "Color(" + (string)R + ", " + (string)G + ", " + (string)B + ", " + (string)A + ")"; }
+}

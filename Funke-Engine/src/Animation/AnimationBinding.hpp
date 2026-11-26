@@ -63,6 +63,7 @@ namespace Funke {
 		std::string Component;
 		std::string Property;
 
+		uint64_t RegistryGeneration = 0;
 		const ComponentInfo* Info = nullptr;
 		const PropertyDescriptor* Descriptor = nullptr;
 		bool IsTransform = false;

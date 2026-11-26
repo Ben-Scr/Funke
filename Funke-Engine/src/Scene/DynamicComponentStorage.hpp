@@ -1,4 +1,5 @@
 #pragma once
+#include "Scene/ComponentAccess.hpp"
 
 #include "Scene/EntityHandle.hpp"
 
@@ -105,6 +106,7 @@ namespace Funke {
 		void Remove(const entt::registry& registry, EntityHandle entity) {
 			SceneStorage* sceneStorage = FindSceneStorage(registry);
 			if (!sceneStorage || !Contains(registry, entity)) return;
+			ComponentAccess::BeforeMutation(registry);
 			RemoveInternal(*sceneStorage, entity);
 			if (sceneStorage->Entities.empty()) {
 				m_SceneStorages.erase(&registry);
@@ -112,10 +114,13 @@ namespace Funke {
 		}
 
 		void Clear(const entt::registry& registry) {
+			ComponentAccess::BeforeMutation(registry);
 			m_SceneStorages.erase(&registry);
 		}
 
 		void Clear() {
+			ComponentAccess::RequireNoBorrows();
+			for (const auto& [registry, storage] : m_SceneStorages) ComponentAccess::BeforeMutation(*registry);
 			m_SceneStorages.clear();
 		}
 
@@ -182,6 +187,7 @@ namespace Funke {
 
 		void AddInternal(entt::registry& registry, EntityHandle entity, const void* bytes) {
 			if (Contains(registry, entity)) return;
+			ComponentAccess::BeforeMutation(registry);
 
 			auto& sceneStoragePtr = m_SceneStorages[&registry];
 			if (!sceneStoragePtr) sceneStoragePtr = std::make_shared<SceneStorage>();

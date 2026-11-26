@@ -1,0 +1,13 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public class PointLight : Component {
+public:
+    protected override ulong FkType() { return 27ul; }
+    Color Color { get { return FunkeApiTypes.DecodeColor(FkGetPointLight_Color(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkSetPointLight_Color(ID, value.LowBits()); } }
+    float Intensity { get { return Reinterpret<float>((uint)FkGetPointLight_Intensity(ID, 0ul)); } set { FkSetPointLight_Intensity(ID, (ulong)Reinterpret<uint>(value)); } }
+    float Range { get { return Reinterpret<float>((uint)FkGetPointLight_Range(ID, 0ul)); } set { FkSetPointLight_Range(ID, (ulong)Reinterpret<uint>(value)); } }
+}

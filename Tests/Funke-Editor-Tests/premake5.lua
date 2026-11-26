@@ -25,6 +25,9 @@ project "Funke-Editor-Tests"
     files
     {
         path.join(ROOT_DIR, "Funke-Editor/src/Build/GameBuilder.cpp"),
+        path.join(ROOT_DIR, "Funke-Editor/src/Build/SerializedAssetExport.cpp"),
+        path.join(ROOT_DIR, "Funke-Editor/src/Editor/AnimationPreview.cpp"),
+        path.join(ROOT_DIR, "Funke-Editor/src/Editor/ImportedMaterialAssets.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Inspector/InspectorSelectionCache.cpp"),
         path.join(ROOT_DIR, "Funke-Launcher/src/Systems/LauncherSettings.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Bridge/EditorSceneEdit.cpp"),
@@ -48,6 +51,9 @@ project "Funke-Editor-Tests"
         path.join(ROOT_DIR, "Funke-Editor/src/Editor/EditorRestart.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Scripting/StructFieldBytes.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Undo/UndoStack.cpp"),
+        path.join(ROOT_DIR, "Funke-Editor/src/Undo/EditorHistorySession.cpp"),
+        path.join(ROOT_DIR, "Funke-Editor/src/Gui/PrefabAuthoring.cpp"),
+        path.join(ROOT_DIR, "Funke-Editor/src/Gui/StringTableDocument.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Undo/AssetFileHistory.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Undo/TransformEditCommand.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Undo/InspectorEditCommand.cpp"),

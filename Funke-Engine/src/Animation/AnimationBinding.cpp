@@ -346,7 +346,7 @@ namespace Funke {
 	}
 
 	int AnimationTargetSet::Resolve(Scene& scene, Entity root, const AnimationTrack& track, int& outChannel, std::string& outError) {
-		const AnimationPropertyPath path = ParseAnimationProperty(track.Property);
+		AnimationPropertyPath path = ParseAnimationProperty(track.Property);
 		outChannel = path.Channel;
 
 		Entity entity = ResolveAnimationPath(root, track.Path);
@@ -355,18 +355,21 @@ namespace Funke {
 			return -1;
 		}
 		const EntityHandle handle = entity.GetHandle();
+		const ComponentInfo* info = SceneManager::GetComponentRegistryOrBuiltIn().FindBySerializedName(track.Component);
+		// An exact nested scalar name wins over interpreting its last segment as a vector channel.
+		if (info && FindDescriptor(*info, track.Property)) { path.Base = track.Property; path.Channel = -1; outChannel = -1; }
 
 		for (size_t i = 0; i < m_Targets.size(); ++i) {
 			const AnimationTarget& t = m_Targets[i];
-			if (t.EntityId == handle && t.Component == track.Component && EqualsIgnoreCase(t.Property, path.Base)) return static_cast<int>(i);
+			if (t.RegistryGeneration == SceneManager::GetComponentRegistryOrBuiltIn().GetGeneration() && t.EntityId == handle && t.Component == track.Component && EqualsIgnoreCase(t.Property, path.Base)) return static_cast<int>(i);
 		}
 
 		AnimationTarget target;
+		target.RegistryGeneration = SceneManager::GetComponentRegistryOrBuiltIn().GetGeneration();
 		target.EntityId = handle;
 		target.Component = track.Component;
 		target.Property = path.Base;
 
-		const ComponentInfo* info = SceneManager::GetComponentRegistryOrBuiltIn().FindBySerializedName(track.Component);
 		if (info) {
 			if (!info->has || !info->has(entity)) {
 				outError = "entity has no " + track.Component;
@@ -419,18 +422,21 @@ namespace Funke {
 	PropertyType AnimationTargetSet::GetType(int target) const {
 		if (target < 0 || target >= static_cast<int>(m_Targets.size())) return PropertyType::None;
 		const AnimationTarget& t = m_Targets[static_cast<size_t>(target)];
+		if (t.RegistryGeneration != SceneManager::GetComponentRegistryOrBuiltIn().GetGeneration()) return PropertyType::None;
 		return t.TargetKind == AnimationTarget::Kind::Property ? t.Descriptor->Type : t.ScriptType;
 	}
 
 	RotationProperty AnimationTargetSet::GetRotation(int target) const {
 		if (target < 0 || target >= static_cast<int>(m_Targets.size())) return RotationProperty::None;
 		const AnimationTarget& t = m_Targets[static_cast<size_t>(target)];
+		if (t.RegistryGeneration != SceneManager::GetComponentRegistryOrBuiltIn().GetGeneration()) return RotationProperty::None;
 		return t.Descriptor ? t.Descriptor->Metadata.Rotation : RotationProperty::None;
 	}
 
 	bool AnimationTargetSet::Read(Scene& scene, int target, PropertyValue& outValue) {
 		if (target < 0 || target >= static_cast<int>(m_Targets.size())) return false;
 		AnimationTarget& t = m_Targets[static_cast<size_t>(target)];
+		if (t.RegistryGeneration != SceneManager::GetComponentRegistryOrBuiltIn().GetGeneration()) return false;
 		if (!scene.GetRegistry().valid(t.EntityId)) return false;
 		if (t.TargetKind == AnimationTarget::Kind::ScriptField) {
 			const ScriptInstance* script = FindScript(scene, t.EntityId, t.ScriptClass);
@@ -451,6 +457,7 @@ namespace Funke {
 	bool AnimationTargetSet::Write(Scene& scene, int target, const PropertyValue& value) {
 		if (target < 0 || target >= static_cast<int>(m_Targets.size())) return false;
 		AnimationTarget& t = m_Targets[static_cast<size_t>(target)];
+		if (t.RegistryGeneration != SceneManager::GetComponentRegistryOrBuiltIn().GetGeneration()) return false;
 		auto& registry = scene.GetRegistry();
 		if (!registry.valid(t.EntityId)) return false;
 

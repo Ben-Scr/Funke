@@ -1,0 +1,50 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public class Camera2D : Component {
+public:
+    protected override ulong FkType() { return 6ul; }
+    bool PostProcessingEnabled { get { return (FkCamera2D_GetPostProcessingEnabled(ID, 0ul) != 0ul); } set { FkCamera2D_SetPostProcessingEnabled(ID, (value ? 1ul : 0ul)); } }
+    float OrthographicSize { get { return Reinterpret<float>((uint)FkCamera2D_GetOrthographicSize(ID, 0ul)); } set { FkCamera2D_SetOrthographicSize(ID, (ulong)Reinterpret<uint>(value)); } }
+    float Zoom { get { return Reinterpret<float>((uint)FkCamera2D_GetZoom(ID, 0ul)); } set { FkCamera2D_SetZoom(ID, (ulong)Reinterpret<uint>(value)); } }
+    Vector4 ClearColor { get { return FunkeApiTypes.DecodeVector4(FkCamera2D_GetClearColor(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkCamera2D_SetClearColor(ID, value.LowBits()); } }
+    float ViewportWidth => Reinterpret<float>((uint)FkCamera2D_GetViewportWidth(ID, 0ul));
+    float ViewportHeight => Reinterpret<float>((uint)FkCamera2D_GetViewportHeight(ID, 0ul));
+    static Camera2D? Main {
+        get {
+            ulong id = FkCamera2D_GetMainEntity(0ul, 0ul);
+            if (id == 0ul) return null;
+            return FunkeApiTypes.MakeEntity(id).GetComponent<Camera2D>();
+        }
+    }
+    Vector2 ScreenToWorld(Vector2 screenPos) {
+        return Vector2.FromBits(FkCamera2D_ScreenToWorld(ID, screenPos.Bits()));
+    }
+    Vector2 WorldToScreen(Vector2 worldPos) {
+        float width = ViewportWidth;
+        float height = ViewportHeight;
+        if (width <= 0.0f || height <= 0.0f) return Vector2.Zero;
+        float halfHeight = OrthographicSize * Zoom;
+        float halfWidth = halfHeight * (width / height);
+        if (halfWidth <= Mathf.Epsilon || halfHeight <= Mathf.Epsilon) return Vector2.Zero;
+        Funke.Entity owner = FunkeApiTypes.MakeEntity(ID);
+        Transform2D? transform = owner.GetComponent<Transform2D>();
+        if (transform == null) throw System.InvalidOperationException("Camera2D requires a Transform2D.");
+        Vector2 delta = worldPos - transform.Value.Position;
+        float angle = transform.Value.Rotation * Mathf.Deg2Rad;
+        float c = Mathf.Cos(angle);
+        float s = Mathf.Sin(angle);
+        return Vector2((1.0f + (c * delta.X + s * delta.Y) / halfWidth) * 0.5f * width,
+                       (1.0f - (c * delta.Y - s * delta.X) / halfHeight) * 0.5f * height);
+    }
+    AABB Frustum {
+        get {
+            Vector2 min = Vector2.FromBits(FkCamera2D_GetFrustum(ID, 0ul));
+            return AABB(min, Vector2.FromBits(FkReadExtra(0ul, 0ul)));
+        }
+    }
+    Vector2 FrustumSize => Frustum.Size;
+}

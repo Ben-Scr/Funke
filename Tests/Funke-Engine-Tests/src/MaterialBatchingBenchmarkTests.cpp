@@ -3,7 +3,11 @@
 #include "Assets/AssetRegistry.hpp"
 #include "Components/General/Transform2DComponent.hpp"
 #include "Components/General/Transform3DComponent.hpp"
+#include "Components/General/HierarchyComponent.hpp"
+#include "Components/Graphics/DirectionalLightComponent.hpp"
 #include "Components/Graphics/MeshRendererComponent.hpp"
+#include "Components/Graphics/ParticleSystem2DComponent.hpp"
+#include "Components/Graphics/ParticleSystem3DComponent.hpp"
 #include "Components/Graphics/SkinnedMeshRendererComponent.hpp"
 #include "Components/Graphics/SpriteRendererComponent.hpp"
 #include "Components/Tags.hpp"
@@ -21,6 +25,7 @@
 #include "Graphics/SkeletalAnimation.hpp"
 #include "Graphics/TextureManager.hpp"
 #include "Jobs/JobSystem.hpp"
+#include "Math/Random.hpp"
 #include "Profiling/Profiler.hpp"
 #include "Profiling/GpuTimer.hpp"
 #include "Scene/Entity.hpp"
@@ -29,6 +34,7 @@
 #include "Serialization/Json.hpp"
 #include "Serialization/Path.hpp"
 #include "Systems/TransformHierarchySystem.hpp"
+#include "Systems/Transform3DHierarchySystem.hpp"
 
 #include <glm/ext/matrix_clip_space.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -113,7 +119,7 @@ fn surface(in: SurfaceInput) -> SurfaceOutput {
 			config.SetWindowIcon = false;
 			config.RunInBackground = true;
 			config.Vsync = false;
-			if (Environment("FUNKE_SPRITE_MATRIX") == "1") {
+			if (Environment("FUNKE_SPRITE_MATRIX") == "1" || Environment("FUNKE_PARALLEL_MATRIX") == "1") {
 				config.JobSystemWorkerCount = std::stoi(Environment("FUNKE_SPRITE_WORKERS", "4"));
 				config.EnableJobSystem = config.JobSystemWorkerCount > 0;
 			}
@@ -620,8 +626,199 @@ fn surface(in: SurfaceInput) -> SurfaceOutput {
 			Require(metadata.good(), "Cannot write skinning completion");
 		}
 
+		void MeasureParallelWork() {
+			Profiler::SetBackgroundTracking(false);
+			const bool extended = Environment("FUNKE_PARALLEL_EXTENDED") == "1";
+			const int samples = Setting("FUNKE_BATCH_SAMPLES", 60);
+			std::ofstream raw(m_Output / "parallel.samples.csv");
+			raw << std::setprecision(12) << "case,count,sample,cpu_ms,workers\n";
+			std::ofstream states(m_Output / "particles.state.txt");
+			states << std::setprecision(17);
+			auto measure = [&](const std::string& name, int count, auto&& run) {
+				for (int sample = -10; sample < samples; ++sample) {
+					const auto begin = BenchmarkClock::now();
+					run();
+					const double ms = Milliseconds(begin);
+					if (sample >= 0) raw << name << ',' << count << ',' << sample << ',' << ms << ',' << JobSystem::GetWorkerCount() << '\n';
+				}
+			};
+			for (int count : (extended ? std::vector<int>{} : std::vector<int>{ 1000, 10000, 100000 })) {
+				for (bool modules : { false, true }) {
+					Random::SetSeed(1234);
+					ParticleSystem2DComponent p2;
+					p2.RenderingSettings.MaxParticles = count;
+					p2.ParticleSettings.LifeTime = 1000;
+					p2.ParticleSettings.UseGravity = true;
+					p2.ParticleSettings.ScaleOverLifetime.Enabled = modules;
+					p2.ParticleSettings.ColorOverLifetime.Enabled = modules;
+					p2.Play(); p2.Emit(count); p2.Stop();
+					const auto suffix = modules ? "-curves" : "-simple";
+					measure(std::string("particles2d") + suffix, count, [&] { p2.PreviewUpdate(1.0f / 120.0f); });
+					Require(p2.GetParticles().size() == size_t(count), "2D particle count changed");
+					for (const auto& p : p2.GetParticles()) states << p.Transform.Position.x << ',' << p.Transform.Position.y << ',' << p.LifeTime << ',' << p.Transform.Scale.x << ',' << p.Color.a << '\n';
+					Random::SetSeed(1234);
+					ParticleSystem3DComponent p3;
+					p3.MaxParticles = count; p3.LifeTime = 1000; p3.UseGravity = true;
+					p3.ScaleOverLifetimeEnabled = modules; p3.ColorOverLifetimeEnabled = modules;
+					p3.Play(); p3.Emit(count); p3.Stop();
+					measure(std::string("particles3d") + suffix, count, [&] { p3.Simulate(1.0f / 120.0f, glm::mat4(1), ParticleQualityLevel::High); });
+					Require(p3.GetParticleCount() == size_t(count), "3D particle count changed");
+					for (const auto& p : p3.GetParticles()) states << p.Position.x << ',' << p.Position.y << ',' << p.Position.z << ',' << p.LifeTime << ',' << p.Size << ',' << p.Color.a << '\n';
+				}
+			}
+			constexpr uint64_t modelId = k_Shader + 2000;
+			AssetRegistry::RegisterBuiltInAsset(Environment("FUNKE_SKINNING_MODEL"), modelId, AssetKind::Mesh);
+			const auto* asset = MeshLibrary::Get(modelId);
+			Require(asset && asset->Skin && !asset->Skin->Clips.empty(), "Missing animated model");
+			const glm::vec3 extent = asset->BoundsMax - asset->BoundsMin;
+			const float modelScale = 0.7f / std::max({ extent.x, extent.y, extent.z });
+			const glm::vec3 center = (asset->BoundsMin + asset->BoundsMax) * 0.5f;
+			Renderer3D renderer;
+			Require(renderer.Initialize(), "No 3D renderer");
+			struct Cleanup { Renderer3D& Renderer; ~Cleanup() { RenderApi::BindDefaultFramebuffer(); Renderer.Shutdown(); } } cleanup{ renderer };
+			renderer.SetSkipBeginFrameRender(true);
+			GraphicsSettings settings;
+			settings.ShadowQuality = ShadowQualityLevel::Off;
+			settings.ToneMapping = ToneMappingMode::None;
+			renderer.SetGraphicsSettings(settings);
+			Framebuffer target(k_Width, k_Height);
+			Camera3DView view;
+			view.Position = { 0, 0, 30 };
+			view.View = glm::lookAtRH(view.Position, glm::vec3(0), glm::vec3(0, 1, 0));
+			for (int mode : (extended ? std::vector<int>{ 3, 4 } : std::vector<int>{ 0, 1, 2 })) {
+				const bool animated = mode == 1 || mode == 2;
+				const auto counts = mode == 3 ? std::vector<int>{ 50000 } : mode == 4 ? std::vector<int>{ 10000 }
+					: animated ? std::vector<int>{ 1, 32, 256 } : std::vector<int>{ 100, 1000, 10000 };
+				for (int count : counts) {
+					auto scene = Scene::CreateDetachedScene("Parallel render work");
+					EntityHandle parent = entt::null;
+					if (mode == 4) for (int depth = 0; depth < 8; ++depth) {
+						auto node = scene->CreateEmptyEntity();
+						node.AddComponent<Transform3DComponent>().Position = { 0.01f, 0.01f, 0.0f };
+						node.AddComponent<HierarchyComponent>().Parent = parent;
+						if (parent != entt::null) scene->GetRegistry().get<HierarchyComponent>(parent).Children.push_back(node.GetHandle());
+						parent = node.GetHandle();
+					}
+					const int side = static_cast<int>(std::ceil(std::sqrt(float(count))));
+					const float half = float(side) * 0.55f;
+					view.Projection = glm::orthoRH_ZO(-half, half, -half, half, 0.1f, 80.0f);
+					for (int i = 0; i < count; ++i) {
+						auto entity = scene->CreateEmptyEntity();
+						auto& transform = entity.AddComponent<Transform3DComponent>();
+						transform.Scale = glm::vec3(animated ? modelScale : 0.7f);
+						transform.Position = glm::vec3(float(i % side) - float(side - 1) * 0.5f, float(i / side) - float(side - 1) * 0.5f, 0) - (animated ? center * modelScale : glm::vec3(0));
+						if (parent != entt::null) {
+							entity.AddComponent<HierarchyComponent>().Parent = parent;
+							scene->GetRegistry().get<HierarchyComponent>(parent).Children.push_back(entity.GetHandle());
+						}
+						if (animated) {
+							auto& mesh = entity.AddComponent<SkinnedMeshRendererComponent>();
+							mesh.Model = modelId; mesh.Lit = false; mesh.CastShadows = false;
+						} else {
+							auto& mesh = entity.AddComponent<MeshRendererComponent>();
+							mesh.Lit = false; mesh.CastShadows = false;
+						}
+					}
+					Transform3DHierarchySystem::Propagate(*scene);
+					std::vector<uint8_t> pixels;
+					const std::string name = mode == 3 ? "render-flat-large" : mode == 4 ? "render-hierarchy"
+						: mode == 0 ? "render-static" : mode == 1 ? "render-animated" : "render-held";
+					for (int sample = -10; sample < samples; ++sample) {
+						if (mode == 1) for (auto [entity, mesh] : scene->GetRegistry().view<SkinnedMeshRendererComponent>().each()) mesh.Time = float(sample + 11) * 0.01f;
+						renderer.BeginFrame();
+						RenderApi::BindFramebuffer(target);
+						RenderApi::SetViewport(0, 0, k_Width, k_Height);
+						RenderApi::SetClearColor(Color::Black());
+						RenderApi::Clear(ClearFlags::Color | ClearFlags::Depth);
+						const auto begin = BenchmarkClock::now();
+						renderer.RenderScene(*scene, view);
+						const double ms = Milliseconds(begin);
+						RenderApi::BindDefaultFramebuffer();
+						pixels = Pixels(target);
+						Require(renderer.GetRenderedMeshCount() == uint32_t(count), "Visible render count changed");
+						if (sample >= 0) raw << name << ',' << count << ',' << sample << ',' << ms << ',' << JobSystem::GetWorkerCount() << '\n';
+					}
+					SaveImage(pixels, name + '-' + std::to_string(count) + ".ppm");
+				}
+			}
+			for (bool animated : { false, true }) {
+				auto scene = Scene::CreateDetachedScene("Parallel render equivalence");
+				auto parent = scene->CreateEmptyEntity();
+				parent.AddComponent<Transform3DComponent>().Position = { 0.2f, 0.1f, 0.0f };
+				parent.AddComponent<HierarchyComponent>();
+				auto light = scene->CreateEmptyEntity();
+				light.AddComponent<Transform3DComponent>();
+				light.AddComponent<DirectionalLightComponent>();
+				Material transparent;
+				transparent.Surface = MaterialSurface::Transparent;
+				transparent.BaseColor = Color(0.8f, 0.2f, 0.1f, 0.45f);
+				const uint64_t materialId = k_FirstMaterial + 900;
+				MaterialLibrary::Set(materialId, transparent);
+				const int count = animated ? 257 : 10001;
+				for (int i = 0; i < count; ++i) {
+					auto entity = scene->CreateEmptyEntity();
+					auto& transform = entity.AddComponent<Transform3DComponent>();
+					transform.Position = { float(i % 32) * 0.3f - 4.5f, float((i / 32) % 32) * 0.3f - 4.5f, float(i % 7) * -0.1f };
+					if (i % 5 == 0) transform.Position.x += 100;
+					transform.Scale = animated ? glm::vec3(modelScale * 0.25f) : glm::vec3(i % 3 ? 0.25f : -0.25f, 0.2f, 0.3f);
+					entity.AddComponent<HierarchyComponent>().Parent = parent.GetHandle();
+					parent.GetComponent<HierarchyComponent>().Children.push_back(entity.GetHandle());
+					if (i % 13 == 0) entity.AddComponent<DisabledTag>();
+					if (animated) {
+						auto& mesh = entity.AddComponent<SkinnedMeshRendererComponent>();
+						mesh.Model = modelId;
+						mesh.Time = float(i % 23) * 0.03f;
+						mesh.PreviousClip = 0; mesh.PreviousTime = 0.8f; mesh.Fade = 0.3f;
+					} else {
+						auto& mesh = entity.AddComponent<MeshRendererComponent>();
+						mesh.Material = i % 3 ? 0 : materialId;
+					}
+				}
+				Transform3DHierarchySystem::Propagate(*scene);
+				settings.ShadowQuality = ShadowQualityLevel::Low;
+				renderer.SetGraphicsSettings(settings);
+				view.Projection = glm::orthoRH_ZO(-6.0f, 6.0f, -6.0f, 6.0f, 0.1f, 80.0f);
+				for (int pass = 0; pass < 2; ++pass) {
+					std::vector<uint8_t> reference;
+					uint32_t visible = 0, draws = 0;
+					for (int workers : { 0, 1, 4, 16 }) {
+						JobSystem::Shutdown();
+						if (workers) JobSystem::Initialize({ workers });
+						// A fresh renderer exercises pose evaluation in both runs.
+						Renderer3D checkedRenderer;
+						Require(checkedRenderer.Initialize(), "No equivalence renderer");
+						checkedRenderer.SetSkipBeginFrameRender(true);
+						checkedRenderer.SetGraphicsSettings(settings);
+						checkedRenderer.BeginFrame();
+						RenderApi::BindFramebuffer(target);
+						RenderApi::SetViewport(0, 0, k_Width, k_Height);
+						RenderApi::SetClearColor(Color::Black());
+						RenderApi::Clear(ClearFlags::Color | ClearFlags::Depth);
+						checkedRenderer.RenderScene(*scene, view);
+						RenderApi::BindDefaultFramebuffer();
+						auto pixels = Pixels(target);
+						if (!workers) { reference = pixels; visible = checkedRenderer.GetRenderedMeshCount(); draws = checkedRenderer.GetDrawCallsCount(); }
+						else {
+							Require(reference == pixels, "Parallel render pixels differ");
+							Require(visible == checkedRenderer.GetRenderedMeshCount() && draws == checkedRenderer.GetDrawCallsCount(), "Parallel render counts differ");
+						}
+						checkedRenderer.Shutdown();
+					}
+					parent.GetComponent<Transform3DComponent>().Position.x += 0.4f;
+					Transform3DHierarchySystem::Propagate(*scene);
+				}
+			}
+			Require(raw.good() && states.good(), "Could not write parallel benchmark");
+			std::ofstream(m_Output / "parallel.complete.txt") << "complete\n";
+		}
+
 		void Measure() {
 			Require(RenderApi::IsInitialized(), "No render backend");
+			if (Environment("FUNKE_PARALLEL_MATRIX") == "1") {
+				MeasureParallelWork();
+				Completed = true;
+				return;
+			}
 			if (Environment("FUNKE_SHADER_BUDGET") == "1") {
 				for (const auto target : { ShaderTarget::Mesh3D, ShaderTarget::Sprite2D, ShaderTarget::UI,
 					ShaderTarget::PostProcess, ShaderTarget::Skybox }) {

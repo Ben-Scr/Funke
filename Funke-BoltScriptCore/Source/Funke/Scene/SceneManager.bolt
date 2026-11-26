@@ -1,0 +1,115 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public static class SceneManager {
+public:
+    static event System.Action<Funke.Scene> BeforeSceneLoaded;
+    static event System.Action<Funke.Scene> SceneLoaded;
+    static event System.Action<Funke.Scene> BeforeSceneUnloaded;
+    static event System.Action<Funke.Scene> SceneUnloaded;
+    static void FkRaiseEvent(ulong eventId) {
+        Funke.Scene scene;
+        scene.Name = FunkeText.Read(FkEventText(0ul, 0ul));
+        if (eventId == 48ul) BeforeSceneLoaded.Invoke(scene);
+        if (eventId == 49ul) SceneLoaded.Invoke(scene);
+        if (eventId == 50ul) BeforeSceneUnloaded.Invoke(scene);
+        if (eventId == 51ul) SceneUnloaded.Invoke(scene);
+    }
+    void EnableGlobalSystem<T>() { T system; FkToggleGlobalSystem(FunkeText.Put(system.FkSystemName()), 1ul); }
+    void DisableGlobalSystem<T>() { T system; FkToggleGlobalSystem(FunkeText.Put(system.FkSystemName()), 0ul); }
+    int LoadedSceneCount => (int)FkScene_GetLoadedCount(0ul, 0ul);
+    Scene? GetActiveScene() {
+        Scene result;
+        result.Name = FunkeText.Read(FkScene_GetActiveSceneNameBuffer(0ul, 0ul));
+        if (result.Name.Length == 0) return null;
+        result.Guid = FkScene_GetActiveSceneGuid(0ul, 0ul);
+        return result;
+    }
+    Scene[] GetLoadedScenes() {
+        Scene[] scenes = new Scene[LoadedSceneCount];
+        for (int i = 0; i < scenes.Length; i++) {
+            Scene item;
+            item.Name = FunkeText.Read(FkScene_GetLoadedSceneNameAtBuffer((ulong)i, 0ul));
+            scenes[i] = item;
+        }
+        return scenes;
+    }
+    Scene? GetLoadedSceneByName(string name) {
+        Scene[] scenes = GetLoadedScenes();
+        for (int i = 0; i < scenes.Length; i++)
+            if (scenes[i].Name.ToLower() == name.ToLower()) return scenes[i];
+        return null;
+    }
+    bool IsSceneLoaded(string name) { return GetLoadedSceneByName(name) != null; }
+    bool IsSceneLoaded(ulong guid) {
+        if (guid == 0ul) return false;
+        Scene asset;
+        asset.FkSetGuid(guid);
+        return IsSceneLoaded(asset.Name);
+    }
+    Scene? LoadScene(string name, LoadSceneMode mode = LoadSceneMode.Single) {
+        ulong key = FunkeText.Put(name);
+        ulong loaded = mode == LoadSceneMode.Additive ? FkScene_LoadAdditive(key,0ul) : FkScene_Load(key,0ul);
+        if (loaded == 0ul) return null;
+        Scene result;
+        result.Name = name;
+        return result;
+    }
+    Scene? LoadScene(ulong guid, LoadSceneMode mode = LoadSceneMode.Single) {
+        if (guid == 0ul) return null;
+        ulong loaded = mode == LoadSceneMode.Additive ? FkScene_LoadAdditiveByGuid(guid,0ul) : FkScene_LoadByGuid(guid,0ul);
+        if (loaded == 0ul) return null;
+        Scene result;
+        result.FkSetGuid(guid);
+        return result;
+    }
+    bool DoesSceneExist(string name) { return FkScene_DoesSceneExist(FunkeText.Put(name), 0ul) != 0ul; }
+    bool DoesSceneExist(ulong guid) { return FkScene_DoesSceneExistByGuid(guid, 0ul) != 0ul; }
+    bool ReloadScene(string name) { return FkScene_Reload(FunkeText.Put(name), 0ul) != 0ul; }
+    bool ReloadScene(ulong guid) { return FkScene_ReloadByGuid(guid, 0ul) != 0ul; }
+    bool SetActiveScene(string name) { return FkScene_SetActive(FunkeText.Put(name), 0ul) != 0ul; }
+    bool SetActiveScene(ulong guid) { return FkScene_SetActiveByGuid(guid, 0ul) != 0ul; }
+    System.Threading.Tasks.Task<Scene?> LoadSceneAsync(string name, LoadSceneMode mode = LoadSceneMode.Single, System.Threading.CancellationToken cancellationToken = default, System.Action<SceneLoadProgress>? progress = null) {
+        if (cancellationToken.IsCancellationRequested) return FkSceneLoads.Canceled<Scene?>();
+        if (name.Trim().Length == 0) return System.Threading.Tasks.Task.FromResult<Scene?>(null);
+        byte[] key = FkSceneAccess.CString(name);
+        ulong operation = FkSceneAccess.Call(FkNativeSlot.Scene_BeginLoadAsync, FkNativeSlot.Pointer(&key[0]), mode == LoadSceneMode.Additive ? 1ul : 0ul);
+        return FkSceneLoads.Track(operation, 0ul, cancellationToken, progress);
+    }
+    System.Threading.Tasks.Task<PreloadedScene?> PreloadSceneAsync(string name, System.Threading.CancellationToken cancellationToken = default, System.Action<SceneLoadProgress>? progress = null) {
+        if (cancellationToken.IsCancellationRequested) return FkSceneLoads.Canceled<PreloadedScene?>();
+        if (name.Trim().Length == 0) return System.Threading.Tasks.Task.FromResult<PreloadedScene?>(null);
+        byte[] key = FkSceneAccess.CString(name);
+        ulong operation = FkSceneAccess.Call(FkNativeSlot.Scene_PreloadAsync, FkNativeSlot.Pointer(&key[0]));
+        return FkSceneLoads.Prepare(operation, 0ul, cancellationToken, progress);
+    }
+    System.Threading.Tasks.Task<void> UnloadSceneAsync(string name) {
+        UnloadScene(name);
+        System.Threading.Tasks.Task<void> done = System.Threading.Tasks.Task<void>.CreatePending();
+        done.Complete();
+        return done;
+    }
+    System.Threading.Tasks.Task<Scene?> LoadSceneAsync(ulong guid, LoadSceneMode mode = LoadSceneMode.Single, System.Threading.CancellationToken cancellationToken = default, System.Action<SceneLoadProgress>? progress = null) {
+        if (cancellationToken.IsCancellationRequested) return FkSceneLoads.Canceled<Scene?>();
+        if (guid == 0ul) return System.Threading.Tasks.Task.FromResult<Scene?>(null);
+        ulong operation = FkSceneAccess.Call(FkNativeSlot.Scene_BeginLoadByGuidAsync, guid, mode == LoadSceneMode.Additive ? 1ul : 0ul);
+        return FkSceneLoads.Track(operation, guid, cancellationToken, progress);
+    }
+    System.Threading.Tasks.Task<PreloadedScene?> PreloadSceneAsync(ulong guid, System.Threading.CancellationToken cancellationToken = default, System.Action<SceneLoadProgress>? progress = null) {
+        if (cancellationToken.IsCancellationRequested) return FkSceneLoads.Canceled<PreloadedScene?>();
+        if (guid == 0ul) return System.Threading.Tasks.Task.FromResult<PreloadedScene?>(null);
+        ulong operation = FkSceneAccess.Call(FkNativeSlot.Scene_PreloadByGuidAsync, guid);
+        return FkSceneLoads.Prepare(operation, guid, cancellationToken, progress);
+    }
+    System.Threading.Tasks.Task<void> UnloadSceneAsync(ulong guid) {
+        UnloadScene(guid);
+        System.Threading.Tasks.Task<void> done = System.Threading.Tasks.Task<void>.CreatePending();
+        done.Complete();
+        return done;
+    }
+    void UnloadScene(string name) { FkScene_Unload(FunkeText.Put(name), 0ul); }
+    void UnloadScene(ulong guid) { FkScene_UnloadByGuid(guid, 0ul); }
+}

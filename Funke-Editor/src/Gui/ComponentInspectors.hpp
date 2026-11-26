@@ -15,6 +15,7 @@ namespace Funke {
 	// Declarative fields plus bursts and the lifetime curve/gradient editors.
 	void DrawParticleSystem3DInspector(std::span<const Entity> entities);
 	// Declarative fields plus a clip picker and the model's skeleton/clip summary.
+	void DrawMeshRendererInspector(std::span<const Entity> entities);
 	void DrawSkinnedMeshRendererInspector(std::span<const Entity> entities);
 
 	void DrawRectTransform2DInspector(std::span<const Entity> entities);

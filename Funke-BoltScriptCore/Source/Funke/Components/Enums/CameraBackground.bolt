@@ -1,0 +1,10 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public enum CameraBackground {
+    Skybox = 0,
+    SolidColor = 1,
+}

@@ -1,0 +1,14 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public class BoxCollider2D : Collider2D {
+public:
+    [ReadOnly] public override ulong FkShapeKind() { return 0ul; }
+    protected override ulong FkType() { return 3ul; }
+    Vector2 Scale => Vector2.FromBits(FkBoxCollider2D_GetScale(ID, 0ul));
+    Vector2 Center => Vector2.FromBits(FkBoxCollider2D_GetCenter(ID, 0ul));
+    bool Enabled { set { FkBoxCollider2D_SetEnabled(ID, (value ? 1ul : 0ul)); } }
+}

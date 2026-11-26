@@ -143,6 +143,35 @@ public class PlayerPrefsTests : IDisposable
 public class SaveDataTests : IDisposable
 {
     [Fact]
+    public void FailedAtomicPublicationCleansOnlyItsPrivateTemporaryFile()
+    {
+        string path = Path.Combine(m_Dir.Path, "blocked.json");
+        Directory.CreateDirectory(path);
+        File.WriteAllText(path + ".tmp", "another writer");
+        Exception? failure = Record.Exception(() => SaveData.Save("blocked", new Inventory()));
+        Assert.True(failure is IOException or UnauthorizedAccessException);
+        Assert.Equal("another writer", File.ReadAllText(path + ".tmp"));
+        Assert.Empty(Directory.GetFiles(m_Dir.Path, "blocked.json.*.tmp"));
+        Assert.True(Directory.Exists(path));
+    }
+
+    [Fact]
+    public void ExistingTemporaryFileDoesNotBlockOrGetOverwrittenByMigration()
+    {
+        SaveData.SaveVersioned("staged", new Inventory { Gold = 1 }, 0);
+        string path = Path.Combine(m_Dir.Path, "staged.json");
+        File.WriteAllText(path + ".tmp", "another writer");
+        using (var held = new FileStream(path + ".tmp", FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            Assert.True(SaveData.TryLoadVersioned("staged", 1, out Inventory? value, out string? error,
+                (_, node) => { node["Gold"] = 2; return node; }, persistMigration: true), error);
+            Assert.Equal(2, value!.Gold);
+        }
+        Assert.Equal("another writer", File.ReadAllText(path + ".tmp"));
+        Assert.Empty(Directory.GetFiles(m_Dir.Path, "staged.json.*.tmp"));
+    }
+
+    [Fact]
     public void VersionedSaveMigratesInOrderAndPersistsOnlyOnRequest()
     {
         SaveData.SaveVersioned("versioned", new Inventory { Gold = 5, Name = "Before" }, 1);

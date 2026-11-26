@@ -1,0 +1,685 @@
+import System
+import System.Threading
+import System.Text
+import System.Memory
+import System.Collections.Generic
+namespace Funke.Collections.Native;
+
+public interface FkClearPool { void Clear(); }
+
+public static class NativeMemoryPool {
+private:
+    static Mutex gate = Mutex();
+    static Allocator allocator = Allocator();
+    static List<MemoryBlock> active;
+    static List<MemoryBlock> available;
+    static List<FkClearPool> clearTypedPools;
+
+    static ulong ByteCount<T>(int count) {
+        if (count < 0) throw System.ArgumentOutOfRangeException("count");
+        ulong bytes = (ulong)count * (ulong)sizeof(T);
+        if (bytes > 2147483647ul) throw System.OutOfMemoryException("Native memory block exceeds supported size.");
+        return bytes;
+    }
+public:
+    static T* Rent<T>(int count, bool zeroFill = false) {
+        ulong size = ByteCount<T>(count);
+        if (size == 0ul) return null;
+        LockGuard hold(gate);
+        MemoryBlock block;
+        for (int i = available.Count-1; i >= 0; i--) {
+            if (available[i].Length != size) continue;
+            block = available[i];
+            available.RemoveAt(i);
+            break;
+        }
+        if (!block.IsAlive) block = allocator.Allocate(size);
+        if (zeroFill) System.Memory.Memory.Set(block.Data, 0, size);
+        active.Add(block);
+        return (T*)block.Data;
+    }
+    static void Release<T>(T* pointer, int count, bool returnToPool, bool clear = false) {
+        if (pointer == null) return;
+        ulong size = ByteCount<T>(count);
+        LockGuard hold(gate);
+        for (int i = 0; i < active.Count; i++) {
+            MemoryBlock block = active[i];
+            if (block.Data != (byte*)pointer) continue;
+            if ((returnToPool || clear) && size != block.Length)
+                throw System.ArgumentException("Returned memory must match its allocated size.");
+            if (clear) System.Memory.Memory.Set(block.Data, 0, size);
+            if (returnToPool) available.Add(block);
+            else allocator.Free(block);
+            active.RemoveAt(i);
+            return;
+        }
+        throw System.InvalidOperationException("Pointer is not an active native memory allocation.");
+    }
+    static void Return<T>(T* pointer, int count, bool clear = false) {
+        Release<T>(pointer, count, true, clear);
+    }
+    static void FkRegister(FkClearPool clearPool) {
+        LockGuard hold(gate);
+        clearTypedPools.Add(clearPool);
+    }
+    static void Clear() {
+        FkClearPool[] pools;
+        {
+            LockGuard hold(gate);
+            pools = clearTypedPools.ToArray();
+            for (int i = 0; i < available.Count; i++) available[i].Close();
+            available.Clear();
+        }
+        for (int i = 0; i < pools.Length; i++) pools[i].Clear();
+    }
+}
+
+/* A typed backing array preserves construction and destruction for Bolt values. */
+public class FkSequenceBlock<T> {
+public:
+    T[] Items;
+}
+
+public class FkSequencePoolState<T> {
+public:
+    Mutex Gate;
+    List<Shared<FkSequenceBlock<T>>> Free;
+}
+
+public class FkSequencePoolHandle<T> : FkClearPool {
+private:
+    Shared<FkSequencePoolState<T>> state;
+public:
+    FkSequencePoolHandle() { state = Shared<FkSequencePoolState<T>>.Create(); }
+    FkSequencePoolState<T>& Get() { return state.Get(); }
+    void Clear() {
+        LockGuard hold(state.Get().Gate);
+        state.Get().Free.Clear();
+    }
+}
+
+public static class FkSequencePool<T> {
+private:
+    static FkSequencePoolHandle<T> state = FkSequencePoolHandle<T>();
+    static bool registered;
+public:
+    static Shared<FkSequenceBlock<T>> Rent(int count) {
+        LockGuard hold(state.Get().Gate);
+        if (!registered) {
+            NativeMemoryPool.FkRegister(state);
+            registered = true;
+        }
+        for (int i = state.Get().Free.Count-1; i >= 0; i--) {
+            if (state.Get().Free[i].Get().Items.Length != count) continue;
+            var block = state.Get().Free[i];
+            state.Get().Free.RemoveAt(i);
+            return block;
+        }
+        var block = Shared<FkSequenceBlock<T>>.Create();
+        block.Get().Items = new T[count];
+        return block;
+    }
+    static void Return(Shared<FkSequenceBlock<T>> block) {
+        if (!block.HasValue || block.Get().Items.Length == 0) return;
+        for (int i = 0; i < block.Get().Items.Length; i++) block.Get().Items[i] = default;
+        LockGuard hold(state.Get().Gate);
+        state.Get().Free.Add(block);
+    }
+}
+
+public class FkNativeSequence<T> {
+public:
+    T[] Items;
+    Shared<FkSequenceBlock<T>> pooledBlock;
+    bool pooled;
+    int Capacity;
+    T& Slot(int index) {
+        if (pooled) return pooledBlock.Get().Items[index];
+        return Items[index];
+    }
+    int Count, Head;
+    ulong Version;
+    bool Disposed;
+    void Check() { if (Disposed) throw System.InvalidOperationException("Collection is disposed."); }
+    void Init(int capacity, bool usePool = false) {
+        if (capacity < 0) throw System.ArgumentOutOfRangeException("capacity");
+        pooled = usePool;
+        Capacity = capacity;
+        if (pooled) pooledBlock = FkSequencePool<T>.Rent(capacity);
+        else Items = new T[capacity];
+        Count = 0; Head = 0; Disposed = false;
+    }
+    int Physical(int logical) { return (int)(((long)Head + logical) % Capacity); }
+    T& At(int index) {
+        Check();
+        if (index < 0 || index >= Count) throw System.ArgumentOutOfRangeException("index");
+        return Slot(Physical(index));
+    }
+    void Reserve(int capacity) {
+        Check();
+        if (capacity < 0) throw System.ArgumentOutOfRangeException("capacity");
+        if (capacity <= Capacity) return;
+        if (pooled) {
+            var fresh = FkSequencePool<T>.Rent(capacity);
+            for (int i = 0; i < Count; i++) fresh.Get().Items[i] = At(i);
+            FkSequencePool<T>.Return(pooledBlock);
+            pooledBlock = fresh;
+        } else {
+            T[] fresh = new T[capacity];
+            for (int i = 0; i < Count; i++) fresh[i] = At(i);
+            Items = fresh;
+        }
+        Capacity = capacity; Head = 0; Version++;
+    }
+    void Grow() {
+        if (Count == Capacity) {
+            int size = Capacity == 0 ? 4 : (Capacity <= 1073741823 ? Capacity * 2 : int.MaxValue);
+            if (size <= Count) throw System.OutOfMemoryException("Collection capacity exhausted.");
+            Reserve(size);
+        }
+    }
+    void Add(T value, bool first = false) {
+        Check(); Grow();
+        if (first) { Head = Head == 0 ? Capacity-1 : Head-1; Slot(Head) = value; }
+        else Slot(Physical(Count)) = value;
+        Count++; Version++;
+    }
+    T Pop(bool first) {
+        Check();
+        if (Count == 0) throw System.InvalidOperationException("Collection is empty.");
+        int index = first ? Head : Physical(Count-1);
+        T value = Slot(index);
+        Slot(index) = default;
+        if (first) Head = Physical(1);
+        Count--; Version++;
+        return value;
+    }
+    void RemoveAt(int index) {
+        At(index);
+        for (int i = index+1; i < Count; i++) Slot(Physical(i-1)) = Slot(Physical(i));
+        Pop(false);
+    }
+    void Clear() { Check(); while (Count > 0) Pop(false); Head = 0; }
+    void Dispose() {
+        if (Disposed) return;
+        if (pooled && pooledBlock.HasValue) {
+            FkSequencePool<T>.Return(pooledBlock);
+            pooledBlock = default;
+        }
+        Items = new T[0]; Capacity = 0; Count = 0; Head = 0; Version++; Disposed = true;
+    }
+}
+
+public struct FkSequenceEnumerator<T> {
+private:
+    Shared<FkNativeSequence<T>> state;
+    ulong captured;
+    int index = -1;
+    void Check() {
+        state.Get().Check();
+        if (state.Get().Version != captured) throw System.InvalidOperationException("Collection changed during enumeration.");
+    }
+public:
+    FkSequenceEnumerator(Shared<FkNativeSequence<T>> owner) : state(owner), captured(owner.Get().Version) {}
+    T Current { get { Check(); return state.Get().At(index); } }
+    bool MoveNext() { Check(); index++; return index < state.Get().Count; }
+}
+
+public class NativeArray<T> {
+private:
+    Shared<FkNativeSequence<T>> state;
+public:
+    struct Enumerator {
+    private:
+        FkSequenceEnumerator<T> iterator;
+    public:
+        Enumerator(Shared<FkNativeSequence<T>> owner) : iterator(FkSequenceEnumerator<T>(owner)) {}
+        T Current => iterator.Current;
+        bool MoveNext() { return iterator.MoveNext(); }
+    }
+
+    struct WriteOnly {
+    private:
+        Shared<FkNativeSequence<T>> state;
+    public:
+        WriteOnly(Shared<FkNativeSequence<T>> owner) : state(owner) {}
+        int Length { get { state.Get().Check(); return state.Get().Count; } }
+        T this[int index] { set { state.Get().At(index) = value; } }
+        T* GetUnsafeWritePtr() { if (Length == 0) return null; return &state.Get().At(0); }
+    }
+
+    struct ReadOnly {
+    private:
+        Shared<FkNativeSequence<T>> state;
+    public:
+        ReadOnly(Shared<FkNativeSequence<T>> owner) : state(owner) {}
+        int Length { get { state.Get().Check(); return state.Get().Count; } }
+        T this[int index] { get { return state.Get().At(index); } }
+        T* GetUnsafeReadOnlyPtr() { if (Length == 0) return null; return &state.Get().At(0); }
+    }
+
+    NativeArray(int length) {
+        state = Shared<FkNativeSequence<T>>.Create();
+        state.Get().Init(length); state.Get().Count = length;
+    }
+    bool IsCreated => state.HasValue && !state.Get().Disposed && state.Get().Capacity != 0;
+    void Dispose() { if (state.HasValue) state.Get().Dispose(); }
+    int Length { get { state.Get().Check(); return state.Get().Count; } }
+    T& this[int index] { get { return state.Get().At(index); } }
+    T* GetUnsafePtr() { if (Length == 0) return null; return &state.Get().At(0); }
+    void Fill(T value) { for (int i = 0; i < Length; i++) state.Get().At(i) = value; }
+    void CopyFrom(T[] source) {
+        if (source.Length != Length) throw System.ArgumentException("Array length mismatch.");
+        for (int i = 0; i < Length; i++) state.Get().At(i) = source[i];
+    }
+    void CopyTo(T[]& destination) {
+        if (destination.Length != Length) throw System.ArgumentException("Array length mismatch.");
+        for (int i = 0; i < Length; i++) destination[i] = state.Get().At(i);
+    }
+    ReadOnly AsReadOnly() { state.Get().Check(); return ReadOnly(state); }
+    WriteOnly AsWriteOnly() { state.Get().Check(); return WriteOnly(state); }
+    Enumerator GetEnumerator() { state.Get().Check(); return Enumerator(state); }
+}
+
+public class NativeBuffer {
+private:
+    Shared<FkNativeSequence<byte>> state;
+public:
+    NativeBuffer(int length) {
+        state = Shared<FkNativeSequence<byte>>.Create();
+        state.Get().Init(length); state.Get().Count = length;
+    }
+    bool IsCreated => state.HasValue && !state.Get().Disposed;
+    void Dispose() { if (state.HasValue) state.Get().Dispose(); }
+    int Length { get { state.Get().Check(); return state.Get().Count; } }
+    byte& this[int index] { get { return state.Get().At(index); } }
+    byte* GetUnsafePtr() { if (Length == 0) return null; return &state.Get().At(0); }
+    void Fill(byte value) { for (int i = 0; i < Length; i++) state.Get().At(i) = value; }
+    void CopyFrom(byte[] source) {
+        if (source.Length != Length) throw System.ArgumentException("Array length mismatch.");
+        for (int i = 0; i < Length; i++) state.Get().At(i) = source[i];
+    }
+    void CopyTo(byte[]& destination) {
+        if (destination.Length != Length) throw System.ArgumentException("Array length mismatch.");
+        for (int i = 0; i < Length; i++) destination[i] = state.Get().At(i);
+    }
+}
+
+public class NativeList<T> {
+private:
+    Shared<FkNativeSequence<T>> state;
+public:
+    struct Enumerator {
+    private:
+        FkSequenceEnumerator<T> iterator;
+    public:
+        Enumerator(Shared<FkNativeSequence<T>> owner) : iterator(FkSequenceEnumerator<T>(owner)) {}
+        T Current => iterator.Current;
+        bool MoveNext() { return iterator.MoveNext(); }
+    }
+
+    NativeList(int initialCapacity) {
+        state = Shared<FkNativeSequence<T>>.Create();
+        if (initialCapacity < 0) throw System.ArgumentOutOfRangeException("initialCapacity");
+        state.Get().Init(initialCapacity);
+    }
+    bool IsCreated => state.HasValue && !state.Get().Disposed && state.Get().Capacity != 0;
+    void Dispose() { if (state.HasValue) state.Get().Dispose(); }
+    int Length { get { state.Get().Check(); return state.Get().Count; } }
+    T& this[int index] { get { return state.Get().At(index); } }
+    int Capacity { get { state.Get().Check(); return state.Get().Capacity; } }
+    void Reserve(int minimum) { state.Get().Reserve(minimum); }
+    Enumerator GetEnumerator() { state.Get().Check(); return Enumerator(state); }
+    void Add(T value) { state.Get().Add(value); }
+    void RemoveAt(int index) { state.Get().RemoveAt(index); }
+    int IndexOf(T value) { for (int i = 0; i < Length; i++) if (state.Get().At(i) == value) return i; return -1; }
+    bool Remove(T value) { int i = IndexOf(value); if (i < 0) return false; RemoveAt(i); return true; }
+}
+
+public class NativeQueue<T> {
+private:
+    Shared<FkNativeSequence<T>> state;
+public:
+    NativeQueue(int initialCapacity) {
+        state = Shared<FkNativeSequence<T>>.Create();
+        if (initialCapacity < 0) throw System.ArgumentOutOfRangeException("initialCapacity");
+        state.Get().Init(initialCapacity);
+    }
+    bool IsCreated => state.HasValue && !state.Get().Disposed && state.Get().Capacity != 0;
+    void Dispose() { if (state.HasValue) state.Get().Dispose(); }
+    int Count { get { state.Get().Check(); return state.Get().Count; } }
+    int Capacity { get { state.Get().Check(); return state.Get().Capacity; } }
+    void EnsureCapacity(int minimum) { state.Get().Reserve(minimum); }
+    void Clear() { state.Get().Clear(); }
+    void Enqueue(T value) { state.Get().Add(value, false); }
+    T Dequeue() { return state.Get().Pop(true); }
+    bool TryDequeue(T& value) { if (Count == 0) { value = default; return false; } value = Dequeue(); return true; }
+    T Peek() { if (Count == 0) throw System.InvalidOperationException("Collection is empty."); return state.Get().At(0); }
+    bool IsEmpty => Count == 0;
+    bool TryPeek(T& value) { if (IsEmpty) { value = default; return false; } value = Peek(); return true; }
+}
+
+public class NativeDeque<T> {
+private:
+    Shared<FkNativeSequence<T>> state;
+public:
+    NativeDeque(int initialCapacity, bool usePool = false) {
+        state = Shared<FkNativeSequence<T>>.Create();
+        if (initialCapacity < 0) throw System.ArgumentOutOfRangeException("initialCapacity");
+        state.Get().Init(initialCapacity, usePool);
+    }
+    bool IsCreated => state.HasValue && !state.Get().Disposed && state.Get().Capacity != 0;
+    void Dispose() { if (state.HasValue) state.Get().Dispose(); }
+    int Count { get { state.Get().Check(); return state.Get().Count; } }
+    int Capacity { get { state.Get().Check(); return state.Get().Capacity; } }
+    void EnsureCapacity(int minimum) { state.Get().Reserve(minimum); }
+    void Clear() { state.Get().Clear(); }
+    void AddFirst(T value) { state.Get().Add(value, true); }
+    T RemoveFirst() { return state.Get().Pop(true); }
+    bool TryRemoveFirst(T& value) { if (Count == 0) { value = default; return false; } value = RemoveFirst(); return true; }
+    T PeekFirst() { if (Count == 0) throw System.InvalidOperationException("Collection is empty."); return state.Get().At(0); }
+    void AddLast(T value) { state.Get().Add(value, false); }
+    T RemoveLast() { return state.Get().Pop(false); }
+    bool TryRemoveLast(T& value) { if (Count == 0) { value = default; return false; } value = RemoveLast(); return true; }
+    T PeekLast() { if (Count == 0) throw System.InvalidOperationException("Collection is empty."); return state.Get().At(Count-1); }
+}
+
+public class NativeStack<T> {
+private:
+    Shared<FkNativeSequence<T>> state;
+public:
+    NativeStack(int initialCapacity, bool usePool = false) {
+        state = Shared<FkNativeSequence<T>>.Create();
+        if (initialCapacity < 0) throw System.ArgumentOutOfRangeException("initialCapacity");
+        state.Get().Init(initialCapacity, usePool);
+    }
+    bool IsCreated => state.HasValue && !state.Get().Disposed && state.Get().Capacity != 0;
+    void Dispose() { if (state.HasValue) state.Get().Dispose(); }
+    int Count { get { state.Get().Check(); return state.Get().Count; } }
+    int Capacity { get { state.Get().Check(); return state.Get().Capacity; } }
+    void Reserve(int minimum) { state.Get().Reserve(minimum); }
+    void Clear() { state.Get().Clear(); }
+    void Push(T value) { state.Get().Add(value, false); }
+    T Pop() { return state.Get().Pop(false); }
+    bool TryPop(T& value) { if (Count == 0) { value = default; return false; } value = Pop(); return true; }
+    T Peek() { if (Count == 0) throw System.InvalidOperationException("Collection is empty."); return state.Get().At(Count-1); }
+}
+
+public struct NativeBool {
+private:
+    byte data;
+    void Validate(int index) { if (index < 0 || index > 7) throw System.ArgumentOutOfRangeException("index"); }
+public:
+    NativeBool(bool value = false) { data = value ? 255u : 0u; }
+    bool Get(int index) { Validate(index); return (((int)data >> index) & 1) != 0; }
+    void Set(int index, bool value) {
+        Validate(index);
+        int bits = (int)data, mask = 1 << index;
+        data = (byte)(value ? bits | mask : bits & ~mask);
+    }
+    byte ToByte() { return data; }
+    void FromByte(byte value) { data = value; }
+    explicit bool() { return Get(0); }
+    string ToString() {
+        string text = "[";
+        for (int i = 0; i < 8; ++i) { if (i != 0) text += ", "; text += Get(i) ? "True" : "False"; }
+        return text + "]";
+    }
+}
+
+public class NativeBitArray {
+private:
+    NativeBuffer bytes;
+    int bits;
+    void Validate(int index) {
+        if (index < 0 || index >= Length) throw System.ArgumentOutOfRangeException("index");
+    }
+public:
+    NativeBitArray(int bitLength) : bytes(NativeBuffer((int)(((long)bitLength+7)/8))), bits(bitLength) {
+        if (bitLength < 0) throw System.ArgumentOutOfRangeException("bitLength");
+    }
+    int Length { get { if (!bytes.IsCreated) throw System.InvalidOperationException("Collection is disposed."); return bits; } }
+    bool IsCreated => bytes.IsCreated && bits != 0;
+    bool this[int index] { get { return Get(index); } set { Set(index,value); } }
+    bool Get(int index) { Validate(index); return (((int)bytes[index >> 3] >> (index & 7)) & 1) != 0; }
+    void Set(int index, bool value) {
+        Validate(index);
+        int mask = 1 << (index & 7), old = bytes[index >> 3];
+        bytes[index >> 3] = (byte)(value ? old | mask : old & ~mask);
+    }
+    void SetBit(int index) { Set(index, true); }
+    void ClearBit(int index) { Set(index, false); }
+    void Clear() { SetAll(false); }
+    void SetAll(bool value) {
+        bytes.Fill(value ? 255 : 0);
+        if (value && (bits & 7) != 0) bytes[bytes.Length-1] = (byte)((1 << (bits & 7)) - 1);
+    }
+    byte* GetUnsafePtr() { return bytes.GetUnsafePtr(); }
+    void Dispose() { bytes.Dispose(); }
+}
+
+public class FkNativeMap<K,V> {
+public:
+    Dictionary<K,V> Entries;
+    ulong Version;
+    bool Disposed;
+    void Check() { if (Disposed) throw System.InvalidOperationException("Collection is disposed."); }
+}
+
+public class NativeDictionary<K,V> {
+private:
+    Shared<FkNativeMap<K,V>> state;
+    Dictionary<K,V>& Map() { state.Get().Check(); return state.Get().Entries; }
+public:
+    struct Enumerator {
+    private:
+        Shared<FkNativeMap<K,V>> state;
+        ulong captured;
+        int index = -1;
+        KeyValuePair<K,V> current = KeyValuePair<K,V>(default,default);
+        void Check() {
+            state.Get().Check();
+            if (state.Get().Version != captured) throw System.InvalidOperationException("Dictionary changed during enumeration.");
+        }
+    public:
+        Enumerator(Shared<FkNativeMap<K,V>> owner) : state(owner), captured(owner.Get().Version) {}
+        KeyValuePair<K,V> Current { get { Check(); return current; } }
+        bool MoveNext() {
+            Check();
+            if (index+1 >= state.Get().Entries.Count) return false;
+            index++;
+            current = state.Get().Entries.EntryAt(index);
+            return true;
+        }
+    }
+
+    NativeDictionary(int initialCapacity) {
+        if (initialCapacity < 0) throw System.ArgumentOutOfRangeException("initialCapacity");
+        state = Shared<FkNativeMap<K,V>>.Create(); Map().Reserve(initialCapacity);
+    }
+    int Count => Map().Count;
+    int Capacity => Map().Capacity;
+    bool IsCreated => state.HasValue && !state.Get().Disposed && state.Get().Entries.Capacity > 0;
+    void Add(K key, V value) { Map().Add(key, value); state.Get().Version++; }
+    bool TryAdd(K key,V value) {
+        if (Map().ContainsKey(key)) return false;
+        Map().Add(key, value); state.Get().Version++; return true;
+    }
+    bool TryGetValue(K key, V& value) { return Map().TryGetValue(key, value); }
+    bool ContainsKey(K key) { return Map().ContainsKey(key); }
+    bool Remove(K key) { if (!Map().Remove(key)) return false; state.Get().Version++; return true; }
+    V this[K key] { get { return Map()[key]; } set { Map()[key] = value; state.Get().Version++; } }
+    void Clear() { Map().Clear(); state.Get().Version++; }
+    void EnsureCapacity(int min) {
+        if (min < 0) throw System.ArgumentOutOfRangeException("min");
+        if (min > Capacity) { Map().Reserve(min); state.Get().Version++; }
+    }
+    Enumerator GetEnumerator() { state.Get().Check(); return Enumerator(state); }
+    void Dispose() {
+        if (state.HasValue && !state.Get().Disposed) {
+            state.Get().Entries.Clear();
+            state.Get().Entries = Dictionary<K,V>(); state.Get().Disposed = true;
+        }
+    }
+}
+
+public class FkNativeSet<T> {
+public:
+    HashSet<T> Entries;
+    ulong Version;
+    List<T> Custom;
+    Func<T,T,bool>? Equal;
+    bool Disposed;
+    int Index(T value) {
+        for (int i = 0; i < Custom.Length; ++i) if (Equal.Value.Invoke(value,Custom[i])) return i;
+        return -1;
+    }
+    void Check() { if (Disposed) throw System.InvalidOperationException("Collection is disposed."); }
+}
+
+public class NativeHashset<T> {
+private:
+    Shared<FkNativeSet<T>> state;
+    FkNativeSet<T>& Set() { state.Get().Check(); return state.Get(); }
+public:
+    struct Enumerator {
+    private:
+        Shared<FkNativeSet<T>> state;
+        ulong captured;
+        int index = -1;
+        T current;
+        void Check() {
+            state.Get().Check();
+            if (state.Get().Version != captured) throw System.InvalidOperationException("Set changed during enumeration.");
+        }
+    public:
+        Enumerator(Shared<FkNativeSet<T>> owner) : state(owner), captured(owner.Get().Version) {}
+        T Current { get { Check(); return current; } }
+        bool MoveNext() {
+            Check();
+            var native = state.Get().Equal == null;
+            int length = native ? state.Get().Entries.Count : state.Get().Custom.Count;
+            if (index+1 >= length) return false;
+            index++;
+            current = native ? state.Get().Entries.ItemAt(index) : state.Get().Custom[index];
+            return true;
+        }
+    }
+
+    NativeHashset(int initialCapacity, Func<T,T,bool>? comparer = null) {
+        if (initialCapacity < 0) throw System.ArgumentOutOfRangeException("initialCapacity");
+        state = Shared<FkNativeSet<T>>.Create();
+        state.Get().Equal = comparer; EnsureCapacity(initialCapacity);
+    }
+    int Count => Set().Equal == null ? Set().Entries.Count : Set().Custom.Count;
+    int Capacity => Set().Equal == null ? Set().Entries.Capacity : Set().Custom.Capacity;
+    bool IsCreated => state.HasValue && !state.Get().Disposed && Capacity > 0;
+    bool Add(T value) {
+        if (Set().Equal == null) {
+            if (!Set().Entries.Add(value)) return false;
+            Set().Version++; return true;
+        }
+        if (Set().Index(value) >= 0) return false;
+        Set().Custom.Add(value); Set().Version++; return true;
+    }
+    bool Contains(T value) { return Set().Equal == null ? Set().Entries.Contains(value) : Set().Index(value) >= 0; }
+    bool Remove(T value) {
+        if (Set().Equal == null) {
+            if (!Set().Entries.Remove(value)) return false;
+            Set().Version++; return true;
+        }
+        int i = Set().Index(value); if (i < 0) return false;
+        Set().Custom.RemoveAt(i); Set().Version++; return true;
+    }
+    void EnsureCapacity(int min) {
+        if (min < 0) throw System.ArgumentOutOfRangeException("min");
+        if (Capacity >= min) return;
+        Set().Version++;
+        if (Set().Equal == null) Set().Entries.Reserve(min);
+        else Set().Custom.Reserve(min);
+    }
+    void Clear() { Set().Entries.Clear(); Set().Custom.Clear(); Set().Version++; }
+    void Reset(bool clearMemory = false) { Clear(); }
+    Enumerator GetEnumerator() { Set().Check(); return Enumerator(state); }
+    void Dispose() {
+        if (state.HasValue && !state.Get().Disposed) {
+            Clear(); state.Get().Entries = HashSet<T>(); state.Get().Custom = List<T>(); state.Get().Disposed = true;
+        }
+    }
+}
+
+public class NativePriorityQueue<T> {
+private:
+    Shared<FkNativeSequence<T>> state;
+    Func<T,T,int>? compare;
+    int Compare(T a,T b) {
+        if (compare != null) return compare.Value.Invoke(a,b);
+        return a < b ? -1 : (b < a ? 1 : 0);
+    }
+    void Swap(int a,int b) {
+        T old = state.Get().At(a); state.Get().At(a) = state.Get().At(b); state.Get().At(b) = old;
+    }
+public:
+    NativePriorityQueue(int initialCapacity, Func<T,T,int>? comparer = null, bool usePool = false) {
+        state = Shared<FkNativeSequence<T>>.Create(); state.Get().Init(initialCapacity, usePool); compare = comparer;
+    }
+    int Count { get { state.Get().Check(); return state.Get().Count; } }
+    int Capacity { get { state.Get().Check(); return state.Get().Capacity; } }
+    bool IsCreated => state.HasValue && !state.Get().Disposed && state.Get().Capacity != 0;
+    void Reserve(int minimum) { state.Get().Reserve(minimum); }
+    void Enqueue(T item) {
+        state.Get().Add(item); int i = Count-1;
+        while (i > 0) {
+            int parent = (i-1)/2;
+            if (Compare(state.Get().At(i),state.Get().At(parent)) >= 0) break;
+            Swap(i,parent); i = parent;
+        }
+    }
+    T Peek() { if (Count == 0) throw System.InvalidOperationException("Queue is empty."); return state.Get().At(0); }
+    T Dequeue() {
+        T value = Peek(), tail = state.Get().Pop(false);
+        if (Count == 0) return value;
+        state.Get().At(0) = tail;
+        int i = 0;
+        while (i < Count/2) {
+            int child = i*2+1;
+            if (child+1 < Count && Compare(state.Get().At(child+1),state.Get().At(child)) < 0) child++;
+            if (Compare(state.Get().At(i),state.Get().At(child)) <= 0) break;
+            Swap(i,child); i = child;
+        }
+        return value;
+    }
+    bool TryDequeue(T& value) { if (Count == 0) { value = default; return false; } value = Dequeue(); return true; }
+    void Clear() { state.Get().Clear(); }
+    void Dispose() { if (state.HasValue) state.Get().Dispose(); }
+}
+
+public class NativeString {
+private:
+    NativeArray<char> data;
+public:
+    NativeString(System.ReadOnlySpan<char> text) : data(NativeArray<char>(text.Length+1)) {
+        for (int i = 0; i < text.Length; i++) data[i] = text[i];
+        data[text.Length] = (char)0;
+    }
+    NativeString(string text) : data(NativeArray<char>(text.Length+1)) {
+        for (int i = 0; i < text.Length; i++) data[i] = text[i];
+        data[text.Length] = (char)0;
+    }
+    static NativeString? FromString(string? value) {
+        if (value == null) return null;
+        return NativeString(value.Value);
+    }
+    bool IsNull => Ptr == null;
+    int Length => data.Length-1;
+    char* Ptr => data.GetUnsafePtr();
+    System.ReadOnlySpan<char> AsSpan() { return System.ReadOnlySpan<char>(Ptr, Length); }
+    string ToString() {
+        string[] chars = new string[Length];
+        for (int i = 0; i < chars.Length; ++i) chars[i] = (string)data[i];
+        return string.Join("", chars);
+    }
+    implicit string() { return ToString(); }
+    void Dispose() { data.Dispose(); }
+}
+

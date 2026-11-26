@@ -42,6 +42,45 @@
 
 using namespace Funke;
 
+TEST_CASE("Bolt struct storage survives managed unload and scene save without a script attachment") {
+	class TestApp final : public Application {
+		ApplicationConfig GetConfiguration() const override { return ApplicationConfig::Headless(); }
+	} app;
+	REQUIRE(app.BeginRun());
+	struct Finish { Application& App; ~Finish() { App.FinishRunCycle(); } } finish{app};
+	auto& registry = SceneManager::GetComponentRegistry();
+	const auto id = registry.RegisterDynamic("MoveComponent", "bolt:MoveComponent", "Native Components (Bolt)",
+		ComponentCategory::Component, sizeof(float), alignof(float));
+	const auto managedId = registry.RegisterDynamic("type:ManagedMove", "type:ManagedMove", "Native Components (C#)",
+		ComponentCategory::Component, sizeof(float), alignof(float));
+	const auto* info = registry.GetByTypeId(id);
+	REQUIRE(info);
+	REQUIRE(managedId != 0);
+	auto source = Scene::CreateDetachedScene("BoltSave");
+	auto mover = source->CreateEntity("Mover");
+	REQUIRE(registry.AddWithDependencies(mover, *info));
+	*static_cast<float*>(info->getRaw(mover)) = 7.25f;
+	registry.UnregisterManagedDynamic();
+	REQUIRE(registry.GetByTypeId(id) == info);
+	CHECK(registry.GetByTypeId(managedId) == nullptr);
+	CHECK_FALSE(mover.HasComponent<ScriptComponent>());
+
+	const auto path = std::filesystem::temp_directory_path() / ("FunkeBoltSave-"
+		+ std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".scene");
+	struct Cleanup { std::filesystem::path Path; ~Cleanup() { std::error_code ec; std::filesystem::remove(Path, ec); } } cleanup{path};
+	for (auto format : {SceneSerializationFormat::Json, SceneSerializationFormat::Binary}) {
+		REQUIRE(SceneSerializer::SaveToFile(*source, path.string(), format));
+		auto reopened = Scene::CreateDetachedScene("BoltLoad");
+		REQUIRE(SceneSerializer::LoadFromFile(*reopened, path.string()));
+		auto names = reopened->GetRegistry().view<NameComponent>();
+		REQUIRE(names.begin() != names.end());
+		auto entity = reopened->GetEntity(*names.begin());
+		REQUIRE(info->has(entity));
+		CHECK(*static_cast<const float*>(info->getRaw(entity)) == 7.25f);
+		CHECK_FALSE(entity.HasComponent<ScriptComponent>());
+	}
+}
+
 TEST_CASE("Unsupported scene and prefab versions cannot replace existing files") {
 	const auto path = std::filesystem::temp_directory_path() / ("FunkeVersionGuard-"
 		+ std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".prefab");

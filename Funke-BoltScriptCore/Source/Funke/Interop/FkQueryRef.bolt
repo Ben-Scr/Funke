@@ -1,0 +1,90 @@
+import System
+import System.Memory
+import Type
+namespace Funke;
+
+public class FkQueryRefSpec {
+public:
+    string SceneName, Writes, Reads, Required, Excluded;
+    int EnableFilter = 1;
+    static string Key<T>() {
+        T component;
+        string name = component.FkQueryKey();
+        FunkeText.Put(name);
+        if (FkNativeStructId((ulong)sizeof(T), 0ul) == 0ul) throw InvalidOperationException("The native component layout is unavailable for " + name);
+        return name + "|";
+    }
+}
+
+public class FkQueryRefData {
+public:
+    ulong Token;
+    int Count, Width;
+    void*[] Cells;
+    ulong[] Ids;
+
+    ~FkQueryRefData() { Close(); }
+    void Close() {
+        if (Token != 0ul) FkSceneQueryBorrow(2ul, Token);
+        Token = 0ul;
+    }
+    void Check() {
+        if (Token == 0ul) throw ObjectDisposedException("QueryRef enumerator");
+        if (FkSceneQueryBorrow(1ul, Token) == 0ul)
+            throw InvalidOperationException("A borrowed query row belongs to its active scene callback.");
+    }
+    void Open(FkQueryRefSpec spec, int width, bool withEntities) {
+        Width = width;
+        FunkeText.Put(spec.SceneName);
+        Token = FkSceneQueryBorrow(0ul, 0ul);
+        if (Token == 0ul) return;
+        byte[] scene = FkSceneAccess.CString(spec.SceneName);
+        byte[] writes = FkSceneAccess.CString(spec.Writes);
+        byte[] reads = FkSceneAccess.CString(spec.Reads);
+        byte[] required = FkSceneAccess.CString(spec.Required);
+        byte[] excluded = FkSceneAccess.CString(spec.Excluded);
+        int capacity = 64;
+        while (true) {
+            if (capacity > 2147483647 / width) throw InvalidOperationException("Query view exceeds the supported row count.");
+            Cells = new void*[capacity * width];
+            if (withEntities) Ids = new ulong[capacity];
+            ulong[] args = {FkNativeSlot.Pointer(&scene[0]), FkNativeSlot.Pointer(&writes[0]),
+                FkNativeSlot.Pointer(&reads[0]), FkNativeSlot.Pointer(&required[0]), FkNativeSlot.Pointer(&excluded[0]),
+                (ulong)spec.EnableFilter, FkNativeSlot.Pointer(&Cells[0]), 0ul, (ulong)capacity};
+            if (withEntities) args[7] = FkNativeSlot.Pointer(&Ids[0]);
+            Count = FkSceneAccess.Int(FkNativeInvoke(FkNativeSlot.Scene_OpenQueryViewWithEntities, &args[0], null));
+            if (Count < 0) throw InvalidOperationException("Could not open a borrowed scene query.");
+            if (Count <= capacity) return;
+            capacity = Count;
+        }
+    }
+    void* Cell(int row, int column) {
+        Check();
+        if (row < 0 || row >= Count || column < 0 || column >= Width) throw InvalidOperationException("The query has no current row.");
+        return Cells[row * Width + column];
+    }
+    EntityRef EntityAt(int row) {
+        Check();
+        if (row < 0 || row >= Count || row >= Ids.Length) throw InvalidOperationException("The query has no current entity.");
+        EntityRef result;
+        result.Live = Ids[row];
+        return result;
+    }
+}
+
+public class FkQueryRefCursor {
+public:
+    Shared<FkQueryRefData> Data;
+    int Index = -1;
+    void Open(FkQueryRefSpec spec, int width, bool withEntities) {
+        Data = Shared<FkQueryRefData>.Create();
+        Data.Get().Open(spec, width, withEntities);
+    }
+    bool MoveNext() {
+        if (!Data.HasValue || Data.Get().Count == 0) return false;
+        Data.Get().Check();
+        if (Index < Data.Get().Count) ++Index;
+        return Index < Data.Get().Count;
+    }
+    void Dispose() { if (Data.HasValue) Data.Get().Close(); }
+}

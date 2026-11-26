@@ -1,0 +1,36 @@
+import System
+import System.Threading
+import System.Threading.Tasks
+namespace Funke.Coroutines;
+
+public static class CoroutineContext {
+    public static Task<void> Wait(int frames,float seconds,bool fixedStep,System.Func<bool>? predicate,CancellationToken token) {
+        return FkWait(frames,seconds,fixedStep,predicate,token,null);
+    }
+    public static Task<void> FkWait(int frames,float seconds,bool fixedStep,System.Func<bool>? predicate,
+                                    CancellationToken token,System.Action<Task<void>>? finished) {
+        var task=Task<void>.CreatePending();
+        ulong last=Funke.FunkeApiTypes.CoroutineEpoch();
+        bool done = false;
+        System.Func<bool,bool> tick=(bool destroying) => {
+            if (done) return true;
+            try {
+                if(destroying)throw System.OperationCanceledException("Coroutine owner was destroyed.");
+                token.ThrowIfCancellationRequested();
+                ulong epoch=Funke.FunkeApiTypes.CoroutineEpoch();
+                if(epoch==last || Funke.FunkeApiTypes.EventId()!=(fixedStep?27ul:26ul))return false;
+                last=epoch;
+                if(frames>0)frames--;
+                if(seconds>0.0f)seconds-=Funke.FunkeApiTypes.CoroutineDelta();
+                if(frames>0 || seconds>0.0f || (predicate!=null && !predicate.Value.Invoke()))return false;
+            } catch(System.OperationCanceledException& error){task.SetCanceled(error);}
+            catch(System.Exception& error){task.SetException(error);}
+            done = true;
+            task.Complete();
+            if (finished != null) finished.Value.Invoke(task);
+            return true;
+        };
+        Funke.ManagedTasks.Watch(tick);
+        return task;
+    }
+}

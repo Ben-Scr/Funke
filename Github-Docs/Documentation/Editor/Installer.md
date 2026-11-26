@@ -1,6 +1,6 @@
 # Install Funke on Windows
 
-As of 3 November 2026, [Releases](https://github.com/Ben-Scr/Funke/releases) has no public engine release. Use the [Windows source build](../../../README.md#getting-started), or obtain a temporary installer artifact from a successful [CI run](https://github.com/Ben-Scr/Funke/actions/workflows/ci.yml) if available to your GitHub account. To create an installer yourself, follow [Installer development](../../../installer/README.md#build).
+Check [Releases](https://github.com/Ben-Scr/Funke/releases) for a Windows installer matching the version you need. You can also [build from source](../../../README.md#build-from-source), use a temporary artifact from a successful [CI run](https://github.com/Ben-Scr/Funke/actions/workflows/ci.yml) when available, or [build the installer](../../../installer/README.md#build).
 
 When you have `FunkeSetup-<version>-Windows-x64.exe`, open it on Windows 10 or 11 x64. The recommended installation includes the Launcher, Editor, Windows game runtimes and project templates. An installed build does not require Git, Visual Studio or the engine source code for ordinary C# projects. Windows on Arm is not currently supported by this installer.
 

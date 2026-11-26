@@ -75,6 +75,7 @@ namespace Funke {
 		void ApplyClipPose(Scene& scene);
 
 		Scene* m_Scene = nullptr;
+		uint64_t m_FrameRegistryGeneration = 0;
 		Scene* m_ClipScene = nullptr;
 		EntityHandle m_ClipRoot = entt::null;
 		uint64_t m_ClipGuid = 0;

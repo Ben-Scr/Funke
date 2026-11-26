@@ -1,0 +1,75 @@
+import Funke
+import Funke.UI
+
+public class ScriptApi : EntityScript {
+    public int Stage;
+    private static int exits, changed, resized;
+    private static void OnSlider(float value) { if (value == 0.75f) changed++; }
+    private static void OnResize() { resized++; }
+    private static void CountExit() { exits++; }
+    public override void OnUpdate() {
+        if (Stage >= 4) Stage = 4 + exits + changed * 10 + resized * 100;
+    }
+    public override void OnDestroy() {
+        if (Stage >= 4) {
+            Application.PlayModeExited -= CountExit;
+            Window.Resized -= OnResize;
+        }
+    }
+    public override void OnStart() {
+        if (Application.ProcessorCount < 1 || Engine.Version.Length == 0) return;
+        Stage = 1;
+        Camera2D? main = Camera2D.Main;
+        if (main == null || main.Value.Entity.ID != Entity.ID) return;
+        Camera2D camera = main.Value;
+        camera.OrthographicSize = 4.0f;
+        camera.Zoom = 1.0f;
+        AABB bounds = camera.Frustum;
+        if (camera.FrustumSize != bounds.Size) return;
+        if (camera.ViewportWidth != 800.0f || camera.ViewportHeight != 600.0f) return;
+        Transform2D.Position = Vector2(3.0f, -1.0f);
+        Transform2D.Rotation = 90.0f;
+        Vector2 projected = camera.WorldToScreen(Vector2(3.0f, 1.0f));
+        if (Vector2.Distance(projected, Vector2(550.0f, 300.0f)) > 0.01f) return;
+        Vector2 unprojected = camera.ScreenToWorld(projected);
+        if (unprojected != Vector2.Zero && Vector2.Distance(unprojected, Vector2(3.0f, 1.0f)) > 0.01f) return;
+        Stage = 2;
+        Entity lamp = Create3D("Lamp");
+        PointLight light = lamp.AddComponent<PointLight>().Value;
+        light.Intensity = 2.5f;
+        light.Color = Color(0.25f, 0.5f, 0.75f, 1.0f);
+        if (light.Intensity != 2.5f || light.Color.B != 0.75f) return;
+        Stage = 3;
+        BoxCollider2D collider = AddComponent<BoxCollider2D>().Value;
+        collider.CollisionMask = (1ul << 57) | 3ul;
+        collider.GroupIndex = -7;
+        if (collider.CollisionMask != ((1ul << 57) | 3ul) || collider.GroupIndex != -7) return;
+        PostProcessing2D post = AddComponent<PostProcessing2D>().Value;
+        PostProcessing2D.BloomSettings bloom = PostProcessing2D.BloomSettings.Default;
+        bloom.Enabled = true;
+        bloom.Intensity = 1.25f;
+        post.Bloom = bloom;
+        bloom = post.Bloom;
+        if (!bloom.Enabled || bloom.Intensity != 1.25f || bloom.Tint.B != 1.0f) return;
+        Funke.Entity polygonOwner = Create2D("Outline");
+        PolygonCollider2D polygon = polygonOwner.AddComponent<PolygonCollider2D>().Value;
+        Vector2[] triangle = {Vector2(0.0f, 0.0f), Vector2(3.0f, 0.0f), Vector2(0.0f, 2.0f)};
+        polygon.SetPoints(triangle);
+        if (polygon.VertexCount != 3) return;
+        Vector2[][] paths = {triangle, triangle};
+        polygon.SetPaths(paths);
+        if (polygon.PathCount != 2 || polygon.GetPath(1)[2] != triangle[2] || polygon.GetPath(-1).Length != 0) return;
+        Vector2[] world = new Vector2[2];
+        if (polygon.GetWorldPoints(world) != 0) return;
+        Funke.Entity ui = Funke.Entity.FindByName("Controls").Value;
+        Slider slider = ui.GetComponent<Slider>().Value;
+        slider.Value = 0.75f;
+        slider.Events.ValueChanged += OnSlider;
+        slider.ValueChanged.Subscribe(OnSlider);
+        ui.GetComponent<Slider>().Value.ValueChanged.Unsubscribe(OnSlider);
+        if (Window.WindowCenter != Vector2Int(Window.Width / 2, Window.Height / 2)) return;
+        Window.Resized += OnResize;
+        Application.PlayModeExited += CountExit;
+        Stage = 4;
+    }
+}

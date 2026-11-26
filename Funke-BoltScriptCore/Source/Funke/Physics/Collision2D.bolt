@@ -1,0 +1,20 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public class Collision2D {
+public:
+    Entity Self, Other, EntityA, EntityB;
+    Vector2 ContactPoint;
+    bool IsTrigger;
+    Collision2D(bool trigger) {
+        Self = FunkeApiTypes.MakeEntity(FkEntityId(0ul,0ul));
+        Other = FunkeApiTypes.MakeEntity(FkContact(0ul,0ul));
+        EntityA = FunkeApiTypes.MakeEntity(FkContact(1ul,0ul));
+        EntityB = FunkeApiTypes.MakeEntity(FkContact(2ul,0ul));
+        ContactPoint = Vector2.FromBits(FkContact(3ul,0ul));
+        IsTrigger = trigger;
+    }
+}

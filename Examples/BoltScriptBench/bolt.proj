@@ -1,0 +1,6 @@
+format = 1
+[project]
+name = "FunkeScripts"
+kind = "static-library"
+[sources]
+roots = ["Assets", ".funke/Bolt"]

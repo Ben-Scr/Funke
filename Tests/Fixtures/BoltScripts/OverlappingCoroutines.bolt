@@ -1,0 +1,18 @@
+import Funke
+import System.Threading.Tasks
+
+public class OverlappingCoroutines : EntityScript {
+    public int Trace;
+    public override void OnStart() {
+        RunCoroutine(() => Sequence(1));
+        RunCoroutine(() => Sequence(2));
+    }
+    private void Spawn() { RunCoroutine(() => Sequence(3)); }
+    private async Task<void> Sequence(int id) {
+        await WaitForNextFrame();
+        Trace=Trace*10+id;
+        if (id==1) Spawn();
+        await WaitForNextFrame();
+        Trace=Trace*10+id;
+    }
+}

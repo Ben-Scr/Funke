@@ -1,0 +1,88 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public class EntityScript : Component {
+public:
+    Transform2D Transform2D;
+    Transform2D Transform;
+    Transform3D Transform3D;
+    T* GetNativeComponent<T>() { return Entity.GetNativeComponent<T>(); }
+    ReadOnlyComponentRef<T> GetNativeComponentReadOnly<T>() { return Entity.GetNativeComponentReadOnly<T>(); }
+    T& GetRefOrThrow<T>() { return Entity.GetRefOrThrow<T>(); }
+    bool HasComponent<T>() { return Entity.HasComponent<T>(); }
+    EntityScriptRef? GetScript(string name) { return Entity.GetScript(name); }
+    NamedComponentRef? GetComponent(string name) { return Entity.GetComponent(name); }
+    T? GetComponent<T>() { return Entity.GetComponent<T>(); }
+    bool TryGetComponent<T>(T?& component) { return Entity.TryGetComponent<T>(component); }
+    T? AddComponent<T>() { return Entity.AddComponent<T>(); }
+    bool RemoveComponent<T>() { return Entity.RemoveComponent<T>(); }
+    void Destroy(Entity target) { target.Destroy(); }
+    Entity Create2D(string name = "", Vector2 localPosition = Vector2(), float localRotationDegrees = 0.0f, Entity? parent = null) { return FunkeApiTypes.Create2D(name, localPosition, localRotationDegrees, parent); }
+    Entity Instantiate2D(Entity source, Vector2 localPosition = Vector2(), float localRotationDegrees = 0.0f, Entity? parent = null) { return FunkeApiTypes.Instantiate2D(source, localPosition, localRotationDegrees, parent); }
+    Entity Create3D(string name = "", Vector3 localPosition = Vector3(), Vector3 localRotationDegrees = Vector3(), Entity? parent = null) { return FunkeApiTypes.Create3D(name, localPosition, localRotationDegrees, parent); }
+    Entity Instantiate3D(Entity source, Vector3 localPosition = Vector3(), Vector3 localRotationDegrees = Vector3(), Entity? parent = null) { return FunkeApiTypes.Instantiate3D(source, localPosition, localRotationDegrees, parent); }
+    Entity Instantiate(Entity source, Entity? parent = null) { return FunkeApiTypes.Clone(source, parent); }
+    Entity Instantiate(Entity source, Vector3 position, float rotation = 0.0f, Entity? parent = null) { return FunkeApiTypes.Clone(source, position, rotation, parent); }
+    Entity Create(string name, Entity? parent) { return FunkeApiTypes.Create(name, parent); }
+    Entity Create(Entity source) { return FunkeApiTypes.Clone(source, null); }
+    void Print(string message) { Log.Print(message); }
+    Entity? FindEntityByName(string name) { return FunkeApiTypes.Find(name); }
+    [Inline]
+    Entity Create() { return Funke.Entity(FkCreateUnnamedEntity(0ul, 0ul)); }
+    Entity Create(string name) { return Funke.Entity.Create(name); }
+    void FkBind(ulong id) {
+        ID = id;
+        Transform2D = FunkeApiTypes.MakeTransform2D(id);
+        Transform = Transform2D;
+        Transform3D.ID = id;
+    }
+    virtual void FkApplyFields() {}
+    public System.Threading.Tasks.Task<void> WaitForNextFrame(System.Threading.CancellationToken token=default) {return Funke.Coroutines.CoroutineContext.Wait(1,0.0f,false,null,token);}
+    public System.Threading.Tasks.Task<void> WaitForFrames(int frames, System.Threading.CancellationToken token=default) {return Funke.Coroutines.CoroutineContext.Wait(frames,0.0f,false,null,token);}
+    public System.Threading.Tasks.Task<void> WaitForSeconds(float seconds, System.Threading.CancellationToken token=default) {return Funke.Coroutines.CoroutineContext.Wait(0,seconds,false,null,token);}
+    public System.Threading.Tasks.Task<void> WaitForFixedUpdate(System.Threading.CancellationToken token=default) {return Funke.Coroutines.CoroutineContext.Wait(0,0.0f,true,null,token);}
+    public System.Threading.Tasks.Task<void> WaitUntil(System.Func<bool> predicate, System.Threading.CancellationToken token=default) {return Funke.Coroutines.CoroutineContext.Wait(0,0.0f,false,predicate,token);}
+    void RunCoroutine(System.Func<System.Threading.Tasks.Task<void>> routine) { ManagedTasks.ObserveRoutine(routine.Invoke()); }
+    private System.Threading.CancellationTokenSource? fkDestroySource;
+    protected bool fkOwnerCanceled;
+    public System.Threading.CancellationToken DestroyToken {
+        get {
+            if(fkDestroySource==null){
+                System.Threading.CancellationTokenSource source;
+                if(fkOwnerCanceled)source.Cancel();
+                fkDestroySource=source;
+            }
+            return fkDestroySource.Value.Token;
+        }
+    }
+    protected void FkCancelOwner(){fkOwnerCanceled=true; if(fkDestroySource!=null)fkDestroySource.Value.Cancel();}
+    virtual void FkCancel() { FkCancelOwner(); }
+    virtual bool FkPump(bool fixedStep, float deltaTime, ulong epoch) { return false; }
+    virtual void FkReadFields() {}
+    virtual void OnAwake() {}
+    virtual void OnEnable() {}
+    virtual void OnStart() {}
+    virtual void OnUpdate() {}
+    virtual void OnFixedUpdate() {}
+    virtual void OnDisable() {}
+    virtual void OnCollisionEnter2D(Collision2D collision) {}
+    virtual void OnCollisionStay2D(Collision2D collision) {}
+    virtual void OnCollisionExit2D(Collision2D collision) {}
+    virtual void OnTriggerEnter2D(Collision2D collision) {}
+    virtual void OnTriggerStay2D(Collision2D collision) {}
+    virtual void OnTriggerExit2D(Collision2D collision) {}
+    virtual void OnCollisionEnter3D(Collision3D collision) {}
+    virtual void OnCollisionStay3D(Collision3D collision) {}
+    virtual void OnCollisionExit3D(Collision3D collision) {}
+    virtual void OnTriggerEnter3D(Collision3D collision) {}
+    virtual void OnTriggerStay3D(Collision3D collision) {}
+    virtual void OnTriggerExit3D(Collision3D collision) {}
+    virtual void OnApplicationStart() {}
+    virtual void OnApplicationPaused() {}
+    virtual void OnApplicationQuit() {}
+    virtual void OnFocusChanged(bool focused) {}
+    virtual void OnDestroy() {}
+}

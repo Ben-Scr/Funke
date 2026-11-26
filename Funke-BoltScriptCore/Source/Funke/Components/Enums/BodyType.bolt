@@ -1,0 +1,7 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public enum BodyType { Static = 0, Kinematic = 1, Dynamic = 2 }

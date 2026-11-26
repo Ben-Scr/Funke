@@ -1,0 +1,24 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public class Transform2D : Component {
+public:
+    protected override ulong FkType() { return 0ul; }
+    Transform2D(ulong entity = 0ul) { ID = entity; }
+    Vector2 Position { get { return Vector2.FromBits(FkTransform2D_GetPosition(ID, 0ul)); } set { FkTransform2D_SetPosition(ID, value.Bits()); } }
+    Vector2 Scale { get { return Vector2.FromBits(FkTransform2D_GetScale(ID, 0ul)); } set { FkTransform2D_SetScale(ID, value.Bits()); } }
+    Vector2 LocalPosition { get { return Vector2.FromBits(FkTransform2D_GetLocalPosition(ID, 0ul)); } set { FkTransform2D_SetLocalPosition(ID, value.Bits()); } }
+    Vector2 LocalScale { get { return Vector2.FromBits(FkTransform2D_GetLocalScale(ID, 0ul)); } set { FkTransform2D_SetLocalScale(ID, value.Bits()); } }
+    float Rotation { get { return Reinterpret<float>((uint)(FkTransform2D_GetRotation(ID, 0ul))) * 57.29577951f; } set { FkTransform2D_SetRotation(ID, (ulong)Reinterpret<uint>(value * 0.01745329252f)); } }
+    float LocalRotation { get { return Reinterpret<float>((uint)(FkTransform2D_GetLocalRotation(ID, 0ul))) * 57.29577951f; } set { FkTransform2D_SetLocalRotation(ID, (ulong)Reinterpret<uint>(value * 0.01745329252f)); } }
+    Vector2 WorldPosition { get { return Position; } set { Position = value; } }
+    Vector2 LocalTransform { get { return LocalPosition; } set { LocalPosition = value; } }
+    float RotationDegrees { get { return Rotation; } set { Rotation = value; } }
+    Vector2 Up => Vector2(-Mathf.Sin(Rotation * Mathf.Deg2Rad), Mathf.Cos(Rotation * Mathf.Deg2Rad));
+    Vector2 Down => Up * -1.0f;
+    Vector2 Right => Vector2(Mathf.Cos(Rotation * Mathf.Deg2Rad), Mathf.Sin(Rotation * Mathf.Deg2Rad));
+    Vector2 Left => Right * -1.0f;
+}

@@ -18,7 +18,8 @@ namespace Funke {
 
 	// glTF 2.0, text (.gltf, buffers external or base64 data uris) or binary (.glb). Every triangle primitive of every
 	// mesh node is merged into one mesh. Skins, node hierarchy and TRS animations land in outAsset.Skin (also for
-	// rigid node animation); outAsset.Data holds the rest pose. Materials, textures and morph targets are ignored.
+	// rigid node animation); outAsset.Data holds the rest pose. Submeshes retain primitive material assignments;
+	// Materials/Textures contain standard PBR data and decoded images. Morph targets are ignored.
 	FUNKE_API bool ParseGltf(std::span<const uint8_t> bytes, const GltfExternalReader& readExternal, MeshAsset& outAsset,
 		std::string* outError = nullptr);
 

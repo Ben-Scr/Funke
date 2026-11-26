@@ -1,0 +1,124 @@
+import System
+import Math
+namespace Funke;
+
+public class PerlinNoise2D {
+public:
+    private static const int TableSize = 256;
+    private static const int TableMask = 255;
+
+    private int[] perm = new int[512];
+    private int seed;
+
+    private static float OutputScale => Mathf.Sqrt(2.0f);
+
+    PerlinNoise2D()
+    {
+        int s = Reinterpret<int>((uint)(System.Random().State >> 32));
+        SetSeed(s);
+    }
+
+    PerlinNoise2D(int seed)
+    {
+        SetSeed(seed);
+    }
+
+    void SetSeed(int seed)
+    {
+        this.seed = seed;
+        BuildPermutationTable(seed);
+    }
+
+    int GetSeed() { return seed; }
+
+    private void BuildPermutationTable(int seed)
+    {
+        for (int i = 0; i < TableSize; i++)
+            perm[i] = i;
+
+        uint state = Reinterpret<uint>(seed);
+        if (state == 0) state = 2654435761u;
+
+        for (int i = 255; i > 0; i--)
+        {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+
+            int j = (int)(state % (uint)(i + 1));
+            int old = perm[i]; perm[i] = perm[j]; perm[j] = old;
+        }
+
+        for (int i = 0; i < TableSize; i++)
+            perm[TableSize + i] = perm[i];
+    }
+
+    float Sample(float x, float y)
+    {
+        int xi = (int)Mathf.Floor(x) & TableMask;
+        int yi = (int)Mathf.Floor(y) & TableMask;
+
+        float xf = x - Mathf.Floor(x);
+        float yf = y - Mathf.Floor(y);
+
+        float u = Fade(xf);
+        float v = Fade(yf);
+
+        int aa = perm[perm[xi]     + yi];
+        int ab = perm[perm[xi]     + yi + 1];
+        int ba = perm[perm[xi + 1] + yi];
+        int bb = perm[perm[xi + 1] + yi + 1];
+
+        float x1 = Mathf.LerpUnclamped(Grad(aa, xf,         yf),         Grad(ba, xf - 1.0f, yf),         u);
+        float x2 = Mathf.LerpUnclamped(Grad(ab, xf,         yf - 1.0f),  Grad(bb, xf - 1.0f, yf - 1.0f),  u);
+
+        return Mathf.LerpUnclamped(x1, x2, v) * OutputScale;
+    }
+
+    float Sample01(float x, float y) { return Mathf.Clamp01(Sample(x, y) * 0.5f + 0.5f); }
+
+    float SampleFractal(float x, float y, int octaves, float persistence, float lacunarity)
+    {
+        if (octaves <= 0) throw System.ArgumentOutOfRangeException("octaves");
+        if (lacunarity <= 0.0f) throw System.ArgumentOutOfRangeException("lacunarity");
+
+        float amplitude = 1.0f;
+        float frequency = 1.0f;
+        float sum = 0.0f;
+        float maxAmplitude = 0.0f;
+
+        for (int i = 0; i < octaves; i++)
+        {
+            sum += Sample(x * frequency, y * frequency) * amplitude;
+            maxAmplitude += amplitude;
+            amplitude *= persistence;
+            frequency *= lacunarity;
+        }
+
+        return maxAmplitude > 0.0f ? sum / maxAmplitude : 0.0f;
+    }
+
+    float SampleFractal01(float x, float y, int octaves, float persistence, float lacunarity) { return Mathf.Clamp01(SampleFractal(x, y, octaves, persistence, lacunarity) * 0.5f + 0.5f); }
+
+    private static float Fade(float t) { return t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f); }
+
+    private static float Grad(int hash, float x, float y)
+    {
+        
+        switch (hash & 7)
+        {
+            case 0: return  x + y;
+            case 1: return -x + y;
+            case 2: return  x - y;
+            case 3: return -x - y;
+            case 4: return  x;
+            case 5: return -x;
+            case 6: return  y;
+            default: return -y;
+        }
+    }
+}
+
+
+
+

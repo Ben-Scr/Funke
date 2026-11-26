@@ -1,0 +1,101 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public class SkinnedMeshRenderer : Component {
+public:
+    protected override ulong FkType() { return 37ul; }
+    void Pause() { FkSkinnedMeshRenderer_Control(ID, 0ul); }
+    void Resume() { FkSkinnedMeshRenderer_Control(ID, 1ul); }
+    void Stop() { FkSkinnedMeshRenderer_Control(ID, 2ul); }
+    int MaterialSlotCount => (int)FkSceneAccess.Call(FkNativeSlot.MeshRenderer_GetMaterialSlotCount, ID, 1ul);
+    private void CheckMaterialSlot(int slot) {
+        if (slot < 0 || slot >= MaterialSlotCount) throw System.ArgumentOutOfRangeException("slot");
+    }
+    string GetMaterialSlotName(int slot) {
+        CheckMaterialSlot(slot);
+        ulong[] args = {ID, 1ul, (ulong)slot, 0ul, 0ul};
+        return FkSceneAccess.Text(FkNativeSlot.MeshRenderer_GetMaterialSlotName, args);
+    }
+    Funke.Material? GetMaterialOverride(int slot) {
+        CheckMaterialSlot(slot);
+        return Funke.Material.FromAssetUUID(FkSceneAccess.Call(FkNativeSlot.MeshRenderer_GetMaterialSlotOverride, ID, 1ul, (ulong)slot));
+    }
+    void SetMaterialOverride(int slot, Funke.Material? material) {
+        CheckMaterialSlot(slot);
+        ulong guid = 0ul;
+        if (material != null) guid = material.Value.UUID;
+        if (FkSceneAccess.Call(FkNativeSlot.MeshRenderer_SetMaterialSlotOverride, ID, 1ul, (ulong)slot, guid) == 0ul)
+            throw System.InvalidOperationException("The model material slot is no longer available.");
+    }
+    string Clip {
+        get {
+            ulong[] args = {ID, 0ul, 0ul};
+            return FkSceneAccess.Text(FkNativeSlot.SkinnedMeshRenderer_GetClip, args);
+        }
+    }
+    void Play(string clip, float crossFade = 0.2f) {
+        byte[] name = FkSceneAccess.CString(clip);
+        FkSceneAccess.Call(FkNativeSlot.SkinnedMeshRenderer_Play, ID, FkNativeSlot.Pointer(&name[0]), (ulong)Reinterpret<uint>(crossFade));
+    }
+    string[] ClipNames {
+        get {
+            int count = (int)FkSceneAccess.Call(FkNativeSlot.SkinnedMeshRenderer_GetClipCount, ID);
+            string[] names = new string[count];
+            for (int i = 0; i < count; i++) {
+                ulong[] args = {ID, (ulong)i, 0ul, 0ul};
+                names[i] = FkSceneAccess.Text(FkNativeSlot.SkinnedMeshRenderer_GetClipName, args);
+            }
+            return names;
+        }
+    }
+    float GetClipLength(string clip) {
+        string[] names = ClipNames;
+        for (int i = 0; i < names.Length; i++) {
+            if (clip == names[i])
+                return Reinterpret<float>((uint)FkSceneAccess.Call(FkNativeSlot.SkinnedMeshRenderer_GetClipDuration, ID, (ulong)i));
+        }
+        return 0.0f;
+    }
+    bool TryGetBone(string bone, Vector3& position, Vector3& forward, Vector3& up) {
+        byte[] name = FkSceneAccess.CString(bone);
+        Vector3[] axes = new Vector3[3];
+        ulong found = FkSceneAccess.Call(FkNativeSlot.SkinnedMeshRenderer_GetBone, ID, FkNativeSlot.Pointer(&name[0]), FkNativeSlot.Pointer(&axes[0]), 9ul);
+        position = axes[0];
+        forward = axes[1];
+        up = axes[2];
+        return found != 0ul;
+    }
+    float Speed { get { return Reinterpret<float>((uint)FkGetSkinnedMeshRenderer_Speed(ID, 0ul)); } set { FkSetSkinnedMeshRenderer_Speed(ID, (ulong)Reinterpret<uint>(value)); } }
+    bool Loop { get { return Reinterpret<float>((uint)FkGetSkinnedMeshRenderer_Loop(ID, 0ul)) != 0.0f; } set { FkSetSkinnedMeshRenderer_Loop(ID, (ulong)Reinterpret<uint>((value ? 1.0f : 0.0f))); } }
+    bool PlayOnAwake { get { return Reinterpret<float>((uint)FkGetSkinnedMeshRenderer_PlayOnAwake(ID, 0ul)) != 0.0f; } set { FkSetSkinnedMeshRenderer_PlayOnAwake(ID, (ulong)Reinterpret<uint>((value ? 1.0f : 0.0f))); } }
+    float Time { get { return Reinterpret<float>((uint)FkGetSkinnedMeshRenderer_Time(ID, 0ul)); } set { FkSetSkinnedMeshRenderer_Time(ID, (ulong)Reinterpret<uint>(value)); } }
+    bool IsPlaying => Reinterpret<float>((uint)FkGetSkinnedMeshRenderer_IsPlaying(ID, 0ul)) != 0.0f;
+    bool Lit { get { return Reinterpret<float>((uint)FkGetSkinnedMeshRenderer_Lit(ID, 0ul)) != 0.0f; } set { FkSetSkinnedMeshRenderer_Lit(ID, (ulong)Reinterpret<uint>((value ? 1.0f : 0.0f))); } }
+    bool CastShadows { get { return Reinterpret<float>((uint)FkGetSkinnedMeshRenderer_CastShadows(ID, 0ul)) != 0.0f; } set { FkSetSkinnedMeshRenderer_CastShadows(ID, (ulong)Reinterpret<uint>((value ? 1.0f : 0.0f))); } }
+    Color Color { get { return FunkeApiTypes.DecodeColor(FkGetSkinnedMeshRenderer_Color(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkSetSkinnedMeshRenderer_Color(ID, value.LowBits()); } }
+    AnimationCullingMode CullingMode { get { return (AnimationCullingMode)(int)Reinterpret<float>((uint)FkGetSkinnedMeshRenderer_CullingMode(ID, 0ul)); } set { FkSetSkinnedMeshRenderer_CullingMode(ID, (ulong)Reinterpret<uint>((float)(int)value)); } }
+    AnimationDistanceRate DistanceRate { get { return (AnimationDistanceRate)(int)Reinterpret<float>((uint)FkGetSkinnedMeshRenderer_DistanceRate(ID, 0ul)); } set { FkSetSkinnedMeshRenderer_DistanceRate(ID, (ulong)Reinterpret<uint>((float)(int)value)); } }
+    float HalfRateDistance { get { return Reinterpret<float>((uint)FkGetSkinnedMeshRenderer_HalfRateDistance(ID, 0ul)); } set { FkSetSkinnedMeshRenderer_HalfRateDistance(ID, (ulong)Reinterpret<uint>(value)); } }
+    float QuarterRateDistance { get { return Reinterpret<float>((uint)FkGetSkinnedMeshRenderer_QuarterRateDistance(ID, 0ul)); } set { FkSetSkinnedMeshRenderer_QuarterRateDistance(ID, (ulong)Reinterpret<uint>(value)); } }
+    Funke.Mesh? Model {
+        get { return Funke.Mesh.FromAssetUUID(FkSkinnedMeshRenderer_GetAsset(ID, 0ul)); }
+        set {
+            ulong guid = 0ul;
+            if (value != null) guid = value.Value.UUID;
+            FkWriteExtra(0ul, 0ul);
+            FkSkinnedMeshRenderer_SetAsset(ID, guid);
+        }
+    }
+    Funke.Material? Material {
+        get { return Funke.Material.FromAssetUUID(FkSkinnedMeshRenderer_GetAsset(ID, 1ul)); }
+        set {
+            ulong guid = 0ul;
+            if (value != null) guid = value.Value.UUID;
+            FkWriteExtra(1ul, 0ul);
+            FkSkinnedMeshRenderer_SetAsset(ID, guid);
+        }
+    }
+}

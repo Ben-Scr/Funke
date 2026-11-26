@@ -1,5 +1,7 @@
 #pragma once
 #include "Core/Export.hpp"
+#include "Core/PlatformDetection.hpp"
+#include <chrono>
 #include <atomic>
 #include <condition_variable>
 #include <filesystem>
@@ -76,6 +78,9 @@ namespace Funke {
 		std::unordered_set<std::string> m_PendingPaths;
 		Snapshot m_FileTimestamps;
 		std::thread m_Worker;
+#if !FNK_PLATFORM_HAS_THREADS
+		std::chrono::steady_clock::time_point m_NextPoll{};
+#endif
 		std::condition_variable m_WakeCondition;
 		std::mutex m_StateMutex;
 		// Win32 event so Stop() interrupts the native wait at once; null off-Windows / polling path.

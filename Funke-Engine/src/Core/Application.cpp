@@ -44,6 +44,7 @@
 #include "Scripting/ScriptBindings.hpp"
 #include "Memory/FrameArenas.hpp"
 #include "Profiling/Profiler.hpp"
+#include "Diagnostics/LoadingDiagnostics.hpp"
 #include "Scene/Scene.hpp"
 #include "Scripting/ScriptEngine.hpp"
 #include "Serialization/Path.hpp"
@@ -310,6 +311,7 @@ namespace Funke {
 		const float vsyncMs = std::chrono::duration<float, std::milli>(frameStart - vsyncStart).count();
 		float deltaTime = std::chrono::duration<float>(frameStart - m_LastFrameTime).count();
         Diagnostics::DebugStats::BeginFrame(static_cast<double>(deltaTime) * 1000.0);
+        LoadingDiagnostics::Record("Frame.Interval", static_cast<double>(deltaTime) * 1000.0);
 
 		// --fixed-step: identical game time per frame however long the frame really took (reproducible test runs).
 		if (const float automationStep = RunAutomation::GetFixedStep(); automationStep > 0.0f) {
@@ -570,8 +572,14 @@ namespace Funke {
 #endif
 
 		Timer timer = Timer();
-		if (m_Configuration.EnableJobSystem) {
-			JobSystem::Initialize(JobSystemSpec{ m_Configuration.JobSystemWorkerCount });
+		m_ThreadingSettings = {};
+		m_ThreadingSettings.WorkerCount = m_Configuration.JobSystemWorkerCount > 0 ? m_Configuration.JobSystemWorkerCount : -1;
+		if (const FunkeProject* project = ProjectManager::GetCurrentProject()) m_ThreadingSettings = project->Threading;
+		m_ThreadingSettings.Clamp();
+		if (!m_Configuration.EnableJobSystem) m_ThreadingSettings.WorkerCount = 0;
+		JobSystem::SetParallelWorkloads(m_ThreadingSettings.GetParallelWorkloads());
+		if (m_ThreadingSettings.WorkerCount != 0) {
+			JobSystem::Initialize(JobSystemSpec{ m_ThreadingSettings.WorkerCount });
 			FNK_INFO_TAG("JobSystem", "Initialization took " + StringHelper::ToString(timer));
 		}
 
@@ -628,7 +636,7 @@ namespace Funke {
 					flag = false;
 				}
 			};
-			disable(m_Configuration.EnableRenderer2D,     "EnableRenderer2D");
+			disable(m_Configuration.EnableSceneRendering,     "EnableSceneRendering");
 			disable(m_Configuration.EnableGuiRenderer,    "EnableGuiRenderer");
 			disable(m_Configuration.EnableGizmoRenderer,  "EnableGizmoRenderer");
 			disable(m_Configuration.EnableTextureManager, "EnableTextureManager");
@@ -652,7 +660,7 @@ namespace Funke {
 			FNK_INFO_TAG("ShaderManager", "Initialization took " + StringHelper::ToString(timer));
 		}
 
-		if (m_Configuration.EnableRenderer2D) {
+		if (m_Configuration.EnableSceneRendering) {
 #if FUNKE_WITH_2D
 			if (EngineModules::IsActive(EngineModule::TwoD)) {
 			timer.Reset();
@@ -670,7 +678,6 @@ namespace Funke {
 #endif
 
 #if FUNKE_WITH_3D
-			// Scene rendering is one switch: whoever disables Renderer2D (launcher, headless) wants no 3D either.
 			timer.Reset();
 			auto renderer3D = EngineModules::IsActive(EngineModule::ThreeD) ? std::make_unique<Renderer3D>() : nullptr;
 			if (renderer3D && renderer3D->Initialize()) {
@@ -714,7 +721,7 @@ namespace Funke {
 #endif
 		}
 
-		if (m_Configuration.EnableTextureManager && m_Configuration.EnableRenderer2D) {
+		if (m_Configuration.EnableTextureManager && m_Configuration.EnableSceneRendering) {
 			timer.Reset();
 			FontManager::Initialize();
 			FNK_INFO_TAG("FontManager", "Initialization took " + StringHelper::ToString(timer));
@@ -948,7 +955,7 @@ namespace Funke {
 #endif
 				FUNKE_TRY_CATCH_LOG(m_Renderer2D->BeginFrame());
 			}
-			else if (!rendered3D && m_Window && m_Configuration.EnableRenderer2D) {
+			else if (!rendered3D && m_Window && m_Configuration.EnableSceneRendering) {
 				// No scene renderer drew this frame (no 2D module, no 3D camera): clear what UI draws over.
 				RenderApi::BindDefaultFramebuffer();
 				RenderApi::SetClearColor(Color::Background());
@@ -1393,7 +1400,7 @@ namespace Funke {
 			guardedShutdownStatic("SceneManager", [&]{ m_SceneManager->Shutdown(); });
 		}
 		guardedShutdownStatic("PrefabRootCache", []{ SceneSerializer::ClearCachedPrefabRoots(); });
-		if (ScriptEngine::IsInitialized()) guardedShutdownStatic("ScriptEngine", []{ ScriptEngine::Shutdown(); });
+		guardedShutdownStatic("ScriptEngine", []{ ScriptEngine::Shutdown(); });
 		// Assembly unload unregisters dynamic components through the still-owned scene registry.
 		m_SceneManager.reset();
 		if (FontManager::IsInitialized()) guardedShutdownStatic("FontManager", []{ FontManager::Shutdown(); });

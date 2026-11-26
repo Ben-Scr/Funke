@@ -1,0 +1,61 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public class Camera3D : Component {
+public:
+    protected override ulong FkType() { return 7ul; }
+    bool PostProcessingEnabled { get { return (FkCamera3D_GetPostProcessingEnabled(ID, 0ul) != 0ul); } set { FkCamera3D_SetPostProcessingEnabled(ID, (value ? 1ul : 0ul)); } }
+    CameraProjection Projection { get { return (CameraProjection)FkCamera3D_GetProjection(ID, 0ul); } set { FkCamera3D_SetProjection(ID, (ulong)value); } }
+    float FieldOfView { get { return Reinterpret<float>((uint)FkCamera3D_GetFieldOfView(ID, 0ul)); } set { FkCamera3D_SetFieldOfView(ID, (ulong)Reinterpret<uint>(value)); } }
+    float OrthographicSize { get { return Reinterpret<float>((uint)FkCamera3D_GetOrthographicSize(ID, 0ul)); } set { FkCamera3D_SetOrthographicSize(ID, (ulong)Reinterpret<uint>(value)); } }
+    float NearClip { get { return Reinterpret<float>((uint)FkCamera3D_GetNearClip(ID, 0ul)); } set { FkCamera3D_SetNearClip(ID, (ulong)Reinterpret<uint>(value)); } }
+    float FarClip { get { return Reinterpret<float>((uint)FkCamera3D_GetFarClip(ID, 0ul)); } set { FkCamera3D_SetFarClip(ID, (ulong)Reinterpret<uint>(value)); } }
+    Color ClearColor { get { return FunkeApiTypes.DecodeColor(FkCamera3D_GetClearColor(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkCamera3D_SetClearColor(ID, value.LowBits()); } }
+    Funke.Material? SkyboxMaterial { get { return Funke.Material.FromAssetUUID(FkCamera3D_GetSkyboxMaterial(ID, 0ul)); } set { ulong guid = 0ul; if (value != null) guid = value.Value.UUID; FkCamera3D_SetSkyboxMaterial(ID, guid); } }
+    private static bool IsFinite(float value) { return Mathf.Abs(value) < Mathf.Infinity; }
+    Ray ScreenPointToRay(Vector2 point) {
+        Ray ray;
+        if (TryScreenPointToRay(point, ray)) return ray;
+        return Ray(Vector3.Zero, Vector3.Forward);
+    }
+    bool TryScreenPointToRay(Vector2 point, Ray& ray) {
+        ray = default;
+        if (!IsFinite(point.X) || !IsFinite(point.Y)) return false;
+        if (FkCamera3D_ScreenPointToRay(ID, point.Bits()) == 0ul) return false;
+        Vector2 a = Vector2.FromBits(FkReadExtra(0ul, 0ul));
+        Vector2 b = Vector2.FromBits(FkReadExtra(1ul, 0ul));
+        Vector2 c = Vector2.FromBits(FkReadExtra(2ul, 0ul));
+        Vector3 direction = Vector3(b.Y, c.X, c.Y);
+        if (!IsFinite(a.X) || !IsFinite(a.Y) || !IsFinite(b.X) ||
+            !IsFinite(direction.LengthSquared()) || direction.LengthSquared() <= Mathf.Epsilon * Mathf.Epsilon) return false;
+        ray = Ray(Vector3(a.X, a.Y, b.X), direction);
+        return true;
+    }
+    bool WorldToScreenPoint(Vector3 world, Vector3& screen) {
+        FkWriteExtra(world.HighBits(), 0ul);
+        bool visible = FkCamera3D_WorldToScreenPoint(ID, world.LowBits()) != 0ul;
+        screen = Vector3.FromParts(FkReadExtra(0ul, 0ul), FkReadExtra(1ul, 0ul));
+        return visible;
+    }
+    static Camera3D? Main {
+        get {
+            ulong id = FkCamera3D_GetMainEntity(0ul, 0ul);
+            if (id == 0ul) return null;
+            return FunkeApiTypes.MakeEntity(id).GetComponent<Camera3D>();
+        }
+    }
+    CameraBackground Background { get { return (CameraBackground)(int)Reinterpret<float>((uint)FkGetCamera3D_Background(ID, 0ul)); } set { FkSetCamera3D_Background(ID, (ulong)Reinterpret<uint>((float)(int)value)); } }
+    Color SkyTopColor { get { return FunkeApiTypes.DecodeColor(FkGetCamera3D_SkyTopColor(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkSetCamera3D_SkyTopColor(ID, value.LowBits()); } }
+    Color SkyHorizonColor { get { return FunkeApiTypes.DecodeColor(FkGetCamera3D_SkyHorizonColor(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkSetCamera3D_SkyHorizonColor(ID, value.LowBits()); } }
+    Color SkyGroundColor { get { return FunkeApiTypes.DecodeColor(FkGetCamera3D_SkyGroundColor(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkSetCamera3D_SkyGroundColor(ID, value.LowBits()); } }
+    float SunSize { get { return Reinterpret<float>((uint)FkGetCamera3D_SunSize(ID, 0ul)); } set { FkSetCamera3D_SunSize(ID, (ulong)Reinterpret<uint>(value)); } }
+    float SkyAmbient { get { return Reinterpret<float>((uint)FkGetCamera3D_SkyAmbient(ID, 0ul)); } set { FkSetCamera3D_SkyAmbient(ID, (ulong)Reinterpret<uint>(value)); } }
+    bool AmbientFromSkybox { get { return Reinterpret<float>((uint)FkGetCamera3D_AmbientFromSkybox(ID, 0ul)) != 0.0f; } set { FkSetCamera3D_AmbientFromSkybox(ID, (ulong)Reinterpret<uint>((value ? 1.0f : 0.0f))); } }
+    bool FogEnabled { get { return Reinterpret<float>((uint)FkGetCamera3D_FogEnabled(ID, 0ul)) != 0.0f; } set { FkSetCamera3D_FogEnabled(ID, (ulong)Reinterpret<uint>((value ? 1.0f : 0.0f))); } }
+    Color FogColor { get { return FunkeApiTypes.DecodeColor(FkGetCamera3D_FogColor(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkSetCamera3D_FogColor(ID, value.LowBits()); } }
+    float FogStart { get { return Reinterpret<float>((uint)FkGetCamera3D_FogStart(ID, 0ul)); } set { FkSetCamera3D_FogStart(ID, (ulong)Reinterpret<uint>(value)); } }
+    float FogEnd { get { return Reinterpret<float>((uint)FkGetCamera3D_FogEnd(ID, 0ul)); } set { FkSetCamera3D_FogEnd(ID, (ulong)Reinterpret<uint>(value)); } }
+}

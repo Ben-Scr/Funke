@@ -6,15 +6,20 @@
 
 namespace Funke {
 
-	enum class ScriptType : uint8_t { Unknown, Managed, Native };
+	enum class ScriptType : uint8_t { Unknown, Managed, Native, Bolt };
 
 	inline constexpr const char* ScriptTypeToString(ScriptType type)
 	{
 		switch (type) {
+			case ScriptType::Bolt:    return "Bolt";
 			case ScriptType::Managed: return "Managed";
 			case ScriptType::Native:  return "Native";
 			default:                  return "Unknown";
 		}
+	}
+
+	inline constexpr bool CanBeManagedScript(ScriptType type) {
+		return type == ScriptType::Managed || type == ScriptType::Unknown;
 	}
 
 	inline bool ScriptTypeEqualsIgnoreCase(std::string_view a, std::string_view b)
@@ -38,6 +43,7 @@ namespace Funke {
 
 	inline ScriptType ScriptTypeFromString(std::string_view value)
 	{
+		if (ScriptTypeEqualsIgnoreCase(value, "Bolt")) return ScriptType::Bolt;
 		if (ScriptTypeEqualsIgnoreCase(value, "Managed") || ScriptTypeEqualsIgnoreCase(value, "CSharp") || value == "C#") {
 			return ScriptType::Managed;
 		}

@@ -35,7 +35,7 @@ namespace Funke {
 			};
 			for (const auto& name : ManagedComponents) propose(name);
 			for (const auto& [name, _] : PendingDynamicComponentValues) propose(name);
-			for (const auto& script : Scripts) if (script.GetType() != ScriptType::Native) propose(script.GetClassName());
+			for (const auto& script : Scripts) if (CanBeManagedScript(script.GetType())) propose(script.GetClassName());
 			bool changed = false;
 			for (const auto& [oldName, newName] : mappings) {
 				if (HasScript(newName) || HasManagedComponent(newName)) continue;
@@ -67,7 +67,7 @@ namespace Funke {
 					node.key() = newName;
 					PendingDynamicComponentValues.insert(std::move(node));
 				}
-				for (auto& script : Scripts) if (script.GetType() != ScriptType::Native && script.GetClassName() == oldName) { script.SetClassName(newName); script.SetType(ScriptType::Managed); }
+				for (auto& script : Scripts) if (CanBeManagedScript(script.GetType()) && script.GetClassName() == oldName) { script.SetClassName(newName); script.SetType(ScriptType::Managed); }
 				for (auto& name : ManagedComponents) if (name == oldName) name = newName;
 				changed = true;
 			}

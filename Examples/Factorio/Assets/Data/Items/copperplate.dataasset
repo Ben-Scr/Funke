@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "type": "ItemDefinition",
+  "fields": {
+    "Id": "copperplate",
+    "DisplayName": "Copper plate",
+    "Icon": "3799167722807270014",
+    "SpriteName": "plate",
+    "StackSize": "100",
+    "Tint": "1,0.57,0.3,1"
+  }
+}

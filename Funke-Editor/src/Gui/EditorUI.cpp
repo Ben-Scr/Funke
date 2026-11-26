@@ -616,8 +616,8 @@ namespace Funke::EditorUI {
 			height = vp->Size.y * screenFraction;
 			width = height * aspect;
 		}
-		ImGui::SetNextWindowSize(ImVec2(std::round(width), std::round(height)), ImGuiCond_Appearing);
-		ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+		ImGui::SetNextWindowSize(ImVec2(std::round(width), std::round(height)), ImGuiCond_FirstUseEver);
+		ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
 	}
 
 	void BeginToolbar(const char* id) {
@@ -861,6 +861,47 @@ namespace Funke::EditorUI {
 		ImGui::PushStyleColor(ImGuiCol_Text, ToneColor(tone));
 		ImGui::TextWrapped("%s", text);
 		ImGui::PopStyleColor();
+	}
+
+	void DrawToast(const char* text, const char* iconName, float elapsed, const ImVec2& topCenter) {
+		constexpr float fadeIn = 0.15f, hold = 1.3f, fadeOut = 0.5f;
+		const float total = fadeIn + hold + fadeOut;
+		float alpha = 1.0f;
+		if (elapsed < fadeIn) alpha = elapsed / fadeIn;
+		else if (elapsed < fadeIn + hold) alpha = 1.0f;
+		else if (elapsed < total) alpha = 1.0f - (elapsed - fadeIn - hold) / fadeOut;
+		else alpha = 0.0f;
+		alpha = std::clamp(alpha, 0.0f, 1.0f);
+		if (alpha <= 0.0f) return;
+
+		ImDrawList* dl = ImGui::GetForegroundDrawList(ImGui::GetWindowViewport());
+
+		const float iconSize = std::round(ImGui::GetFontSize() * 1.2f);
+		constexpr float padX = 12.0f, padY = 8.0f, gap = 8.0f;
+		const ImVec2 textSize = ImGui::CalcTextSize(text);
+		const float boxW = iconSize + gap + textSize.x + padX * 2.0f;
+		const float boxH = std::max(iconSize, textSize.y) + padY * 2.0f;
+		const float boxX = topCenter.x - boxW * 0.5f;
+		const float boxY = topCenter.y + 18.0f;
+
+		const ImU32 bg = ImGui::GetColorU32(ImGuiCol_PopupBg, 0.92f * alpha);
+		const ImU32 border = ImGui::GetColorU32(ImGuiCol_Border, alpha);
+		const ImU32 textCol = ImGui::GetColorU32(ImGuiCol_Text, alpha);
+
+		dl->AddRectFilled(ImVec2(boxX, boxY), ImVec2(boxX + boxW, boxY + boxH), bg, 6.0f);
+		dl->AddRect(ImVec2(boxX, boxY), ImVec2(boxX + boxW, boxY + boxH), border, 6.0f);
+
+		const float iconX = boxX + padX;
+		const float iconY = boxY + (boxH - iconSize) * 0.5f;
+		const uint64_t icon = EditorIcons::Get(iconName, static_cast<int>(std::ceil(iconSize * ImGui::GetWindowViewport()->DpiScale)));
+		if (icon != 0) {
+			dl->AddImage(static_cast<ImTextureID>(static_cast<intptr_t>(icon)),
+				ImVec2(iconX, iconY), ImVec2(iconX + iconSize, iconY + iconSize),
+				ImVec2(0, 1), ImVec2(1, 0), textCol);
+		}
+		const float textX = iconX + iconSize + gap;
+		const float textY = boxY + (boxH - textSize.y) * 0.5f;
+		dl->AddText(ImVec2(textX, textY), textCol, text);
 	}
 
 	// ── Dialogs ─────────────────────────────────────────────────────

@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "type": "Prefab",
+  "Entities": [
+    {
+      "uuid": "1001",
+      "name": "Cargo",
+      "Transform2D": {
+        "posX": 0.0,
+        "posY": 0.0,
+        "rotation": 0.0,
+        "scaleX": 0.55,
+        "scaleY": 0.55
+      },
+      "SpriteRenderer": {
+        "textureAsset": "3799167722807270014",
+        "sortOrder": 21,
+        "sortLayer": 0,
+        "r": 1.0,
+        "g": 1.0,
+        "b": 1.0,
+        "a": 1.0,
+        "spriteName": "ore"
+      }
+    }
+  ]
+}

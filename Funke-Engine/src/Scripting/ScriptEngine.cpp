@@ -1,5 +1,6 @@
 #include "pch.hpp"
 #include "Scripting/ScriptEngine.hpp"
+#include "Scripting/BoltScriptHost.hpp"
 #include "DevTools/DevConsole.hpp"
 #include "Scripting/InspectorEventDispatch.hpp"
 #include "Scripting/ScriptBindings.hpp"
@@ -18,12 +19,17 @@
 #include "Core/Log.hpp"
 #include "Localization/GameLocalization.hpp"
 #include "Serialization/Json.hpp"
+#include "Project/ProjectManager.hpp"
+#include "Project/FunkeProject.hpp"
 #include "Serialization/Path.hpp"
 #if FUNKE_WITH_RENDER
 #include "Systems/UILayoutSystem.hpp"
 #endif
 
 #include <algorithm>
+#include <bit>
+#include "Scripting/ScriptPreferences.hpp"
+#include "Core/Platform.hpp"
 #include <cstring>
 #include <filesystem>
 
@@ -55,6 +61,10 @@ namespace Funke {
 		if (s_Initialized)
 			return;
 
+        static const auto callback = GameLocalization::RegisterChangeCallback([] { ScriptEngine::RaiseLanguageChanged(); });
+        (void)callback;
+        GameLocalization::SetSavedLanguageProvider([] { return ScriptEngine::GetSavedLanguage(); });
+
 		FNK_CORE_INFO_TAG("ScriptEngine", "ScriptEngine ready (deferred runtime init)");
 	}
 
@@ -73,21 +83,8 @@ namespace Funke {
 		s_HasUserAssembly = false;
 		GameLocalization::SetSavedLanguageProvider(nullptr);
 
-		// Move out first: reentrant SetGlobalSystemEnabled calls during OnDestroy must see an empty container.
-		auto local = std::move(s_GlobalSystems);
-		s_GlobalSystems.clear();
-
-		if (s_Callbacks.DestroyGlobalSystemInstance) {
-			for (auto& instance : local)
-			{
-				if (instance.Handle != 0) {
-					if (s_Callbacks.InvokeGlobalSystemDisable) {
-						s_Callbacks.InvokeGlobalSystemDisable(static_cast<int32_t>(instance.Handle));
-					}
-					s_Callbacks.DestroyGlobalSystemInstance(static_cast<int32_t>(instance.Handle));
-				}
-			}
-		}
+		ShutdownGlobalSystems();
+		BoltScriptHost::UpdateManagedComponents(nullptr, nullptr, {});
 
 		// A .NET runtime can only init once per process - never close host, only unload assemblies.
 		if (s_Callbacks.UnloadUserAssembly)
@@ -104,6 +101,7 @@ namespace Funke {
 
 	void ScriptEngine::LoadCoreAssembly(const std::string& path)
 	{
+        Init();
 		// Re-init is unsupported: Shutdown can't undo CoreCLR; re-populating s_Callbacks would leak prior GCHandles.
 		if (s_Initialized)
 		{
@@ -125,26 +123,10 @@ namespace Funke {
 		auto asmPath = std::filesystem::canonical(std::filesystem::path(path));
 		FNK_CORE_INFO_TAG("ScriptEngine", "Assembly: {}", asmPath.string());
 
-		if (!s_Host)
-		{
-			s_Host = ScriptRuntimeHosts::CreatePreferred();
-			if (!s_Host) return;
-			FNK_CORE_INFO_TAG("ScriptEngine", "Script runtime backend: {}", s_Host->GetName());
-		}
-		if (!s_Host->IsInitialized())
-		{
-			if (!s_Host->Initialize(asmPath))
-			{
-				FNK_CORE_ERROR_TAG("ScriptEngine", "Failed to initialize the .NET runtime ({})", s_Host->GetName());
-				return;
-			}
-		}
-
 		// Trailing handshake args: an older 2-arg managed entry ignores them; a newer one rejects garbage from an older caller.
 		using InitializeFn = int(*)(void* nativeBindings, void* managedCallbacks,
 			int32_t nativeBindingsSize, int32_t managedCallbacksSize, int32_t layoutVersion);
-		InitializeFn initFn = reinterpret_cast<InitializeFn>(s_Host->GetUnmanagedEntryPoint(
-			asmPath, "Funke-ScriptCore", "Funke.Interop.ScriptHostBridge", "Initialize"));
+		InitializeFn initFn = reinterpret_cast<InitializeFn>(GetCoreEntryPoint(asmPath, "Funke.Interop.ScriptHostBridge", "Initialize"));
 
 		if (!initFn)
 		{
@@ -209,21 +191,14 @@ namespace Funke {
 		g_TrustedComponentBatchInvalidation = managedCallbacks.NotifyComponentsRemoved;
 		s_Initialized = true;
 		FNK_CORE_INFO_TAG("ScriptEngine", "Core assembly loaded: {}", path);
-
-		// The game's string tables are native; C# keeps the player's choice (PlayerPrefs) and the LanguageChanged event.
-		static bool s_LanguageChangeForwarded = false;
-		if (!s_LanguageChangeForwarded) {
-			s_LanguageChangeForwarded = true;
-			GameLocalization::RegisterChangeCallback([] { ScriptEngine::RaiseLanguageChanged(); });
-		}
 		GameLocalization::SetSavedLanguageProvider([] { return ScriptEngine::GetSavedLanguage(); });
 	}
 
 	std::string ScriptEngine::GetSavedLanguage()
 	{
-		if (!s_Initialized || !s_Callbacks.GetSavedLanguage) return {};
+		if (!s_Initialized || !s_Callbacks.GetSavedLanguage) return BoltScriptHost::GetSavedLanguage();
 		const int required = s_Callbacks.GetSavedLanguage(nullptr, 0);
-		if (required <= 1) return {};
+		if (required <= 1) return BoltScriptHost::GetSavedLanguage();
 		std::string language(static_cast<size_t>(required), '\0');
 		s_Callbacks.GetSavedLanguage(language.data(), required);
 		language.resize(std::strlen(language.c_str()));
@@ -232,7 +207,17 @@ namespace Funke {
 
 	void ScriptEngine::RaiseLanguageChanged()
 	{
+		BoltScriptHost::BroadcastApplicationEvent(BoltScriptHost::Event::LanguageChanged);
 		if (s_Initialized && s_Callbacks.RaiseLanguageChanged) s_Callbacks.RaiseLanguageChanged();
+	}
+
+	void* ScriptEngine::GetCoreEntryPoint(const std::filesystem::path& core, std::string_view typeName, std::string_view methodName)
+	{
+		static std::mutex runtimeMutex;
+		std::scoped_lock lock(runtimeMutex);
+		if (!s_Host) s_Host = ScriptRuntimeHosts::CreatePreferred();
+		if (!s_Host || (!s_Host->IsInitialized() && !s_Host->Initialize(core))) return nullptr;
+		return s_Host->GetUnmanagedEntryPoint(core, "Funke-ScriptCore", typeName, methodName);
 	}
 
 	void* ScriptEngine::GetUnmanagedEntryPoint(const std::filesystem::path& assemblyPath, std::string_view assemblyName,
@@ -288,6 +273,12 @@ namespace Funke {
 
 			if (ok > 0) {
 				s_UserAssemblyPath = candidatePath;
+				const auto* project = ProjectManager::GetCurrentProject();
+				const char* description = s_Callbacks.GetClassFieldDefs ? s_Callbacks.GetClassFieldDefs("bolt:components") : nullptr;
+				const std::string schema = description ? description : "[]";
+				auto access = schema == "[]" ? nullptr : reinterpret_cast<BoltScriptHost::ManagedFieldAccess>(GetUnmanagedEntryPoint(
+					Path::FromUtf8(s_CoreAssemblyPath), "Funke-ScriptCore", "Funke.Interop.ScriptInstanceManager", "AccessBoltComponentField"));
+				BoltScriptHost::UpdateManagedComponents(schema.c_str(), access, project ? Path::FromUtf8(project->RootDirectory) : std::filesystem::path{});
 				FNK_CORE_INFO_TAG("ScriptEngine", "User assembly loaded: {}", path);
 
 				// Re-hydrate data-asset instances the assembly swap dropped (no-op on first load).
@@ -587,21 +578,30 @@ namespace Funke {
 
 	void ScriptEngine::RaiseApplicationStart()
 	{
+		BoltScriptHost::Broadcast(BoltScriptHost::Event::ApplicationStart);
+		BoltScriptHost::BroadcastApplicationEvent(BoltScriptHost::Event::NotifyStarted);
 		if (s_Initialized && s_Callbacks.RaiseApplicationStart) s_Callbacks.RaiseApplicationStart();
 	}
 
 	void ScriptEngine::RaiseApplicationPaused()
 	{
+		BoltScriptHost::Broadcast(BoltScriptHost::Event::ApplicationPaused);
+		BoltScriptHost::BroadcastApplicationEvent(BoltScriptHost::Event::NotifyPaused);
 		if (s_Initialized && s_Callbacks.RaiseApplicationPaused) s_Callbacks.RaiseApplicationPaused();
 	}
 
 	void ScriptEngine::RaiseApplicationQuit()
 	{
+		BoltScriptHost::Broadcast(BoltScriptHost::Event::ApplicationQuit);
+		BoltScriptHost::BroadcastApplicationEvent(BoltScriptHost::Event::NotifyQuitting);
 		if (s_Initialized && s_Callbacks.RaiseApplicationQuit) s_Callbacks.RaiseApplicationQuit();
+        ScriptPreferences::SavePending();
 	}
 
 	void ScriptEngine::RaiseFocusChanged(bool focused)
 	{
+		BoltScriptHost::Broadcast(focused ? BoltScriptHost::Event::FocusGained : BoltScriptHost::Event::FocusLost);
+		BoltScriptHost::BroadcastApplicationEvent(focused ? BoltScriptHost::Event::WindowFocusGained : BoltScriptHost::Event::WindowFocusLost);
 		if (s_Initialized && s_Callbacks.RaiseFocusChanged) s_Callbacks.RaiseFocusChanged(focused ? 1 : 0);
 	}
 
@@ -609,54 +609,67 @@ namespace Funke {
 	{
 		// Typing in the dev console must not drive the game; releases still pass so held keys never stick.
 		if (DevConsole::IsOpen()) return;
+		BoltScriptHost::BroadcastApplicationEvent(BoltScriptHost::Event::InputKeyDown, nullptr, {uint32_t(key), {}});
 		if (s_Initialized && s_Callbacks.RaiseKeyDown) s_Callbacks.RaiseKeyDown(key);
 	}
 
 	void ScriptEngine::RaiseKeyUp(int key)
 	{
+		BoltScriptHost::BroadcastApplicationEvent(BoltScriptHost::Event::InputKeyUp, nullptr, {uint32_t(key), {}});
 		if (s_Initialized && s_Callbacks.RaiseKeyUp) s_Callbacks.RaiseKeyUp(key);
 	}
 
 	void ScriptEngine::RaiseEnterChar(uint32_t codepoint)
 	{
 		if (DevConsole::IsOpen()) return;
+		if (codepoint <= 65535 && codepoint >= 32 && !(codepoint >= 127 && codepoint <= 159))
+            BoltScriptHost::BroadcastApplicationEvent(BoltScriptHost::Event::InputCharEntered, nullptr, {codepoint, {}});
 		if (s_Initialized && s_Callbacks.RaiseEnterChar) s_Callbacks.RaiseEnterChar(codepoint);
 	}
 
 	void ScriptEngine::RaiseMouseDown(int button)
 	{
 		if (DevConsole::IsOpen()) return;
+		BoltScriptHost::BroadcastApplicationEvent(BoltScriptHost::Event::InputMouseDown, nullptr, {uint32_t(button), {}});
 		if (s_Initialized && s_Callbacks.RaiseMouseDown) s_Callbacks.RaiseMouseDown(button);
 	}
 
 	void ScriptEngine::RaiseMouseUp(int button)
 	{
+		BoltScriptHost::BroadcastApplicationEvent(BoltScriptHost::Event::InputMouseUp, nullptr, {uint32_t(button), {}});
 		if (s_Initialized && s_Callbacks.RaiseMouseUp) s_Callbacks.RaiseMouseUp(button);
 	}
 
 	void ScriptEngine::RaiseMouseScroll(float delta)
 	{
 		if (DevConsole::IsOpen()) return;
+		BoltScriptHost::BroadcastApplicationEvent(BoltScriptHost::Event::InputMouseScroll, nullptr, {std::bit_cast<uint32_t>(delta), {}});
 		if (s_Initialized && s_Callbacks.RaiseMouseScroll) s_Callbacks.RaiseMouseScroll(delta);
 	}
 
 	void ScriptEngine::RaiseMouseMove(float x, float y)
 	{
+		BoltScriptHost::BroadcastApplicationEvent(BoltScriptHost::Event::InputMouseMove, nullptr, {std::bit_cast<uint32_t>(x) | (uint64_t(std::bit_cast<uint32_t>(y)) << 32), {}});
 		if (s_Initialized && s_Callbacks.RaiseMouseMove) s_Callbacks.RaiseMouseMove(x, y);
 	}
 
 	void ScriptEngine::RaiseBeforeSceneLoaded(const std::string& sceneName)
 	{
+		if (!sceneName.empty()) BoltScriptHost::BroadcastApplicationEvent(BoltScriptHost::Event::BeforeSceneLoaded, nullptr, {0, sceneName});
 		if (s_Initialized && s_Callbacks.RaiseBeforeSceneLoaded) s_Callbacks.RaiseBeforeSceneLoaded(sceneName.c_str());
 	}
 
 	void ScriptEngine::RaiseSceneLoaded(const std::string& sceneName)
 	{
+		if (!sceneName.empty()) BoltScriptHost::BroadcastApplicationEvent(BoltScriptHost::Event::SceneLoaded, nullptr, {0, sceneName});
 		if (s_Initialized && s_Callbacks.RaiseSceneLoaded) s_Callbacks.RaiseSceneLoaded(sceneName.c_str());
 	}
 
 	void ScriptEngine::RaiseSceneLoadCompleted(uint64_t operationId, int status, const std::string& sceneName, uint64_t sceneGuid)
 	{
+		using Event = BoltScriptHost::Event;
+        const auto event = status == 1 ? Event::SceneLoadSucceeded : status == -1 ? Event::SceneLoadCanceled : Event::SceneLoadFailed;
+        BoltScriptHost::BroadcastApplicationEvent(event, nullptr, {operationId, sceneName, sceneGuid});
 		if (s_Initialized && s_Callbacks.SceneLoadCompleted)
 			s_Callbacks.SceneLoadCompleted(operationId, status, sceneName.c_str(), sceneGuid);
 	}
@@ -666,35 +679,63 @@ namespace Funke {
 			s_Callbacks.AssetLoadsCompleted(operationIds, assetIds, statuses, count);
 	}
 
+	void ScriptEngine::DispatchAndroidMessage(const std::string& channel, const std::string& message) {
+            BoltScriptHost::BroadcastApplicationEvent(BoltScriptHost::Event::AndroidMessage, nullptr, {0, message, 0, channel});
+            if (s_Initialized && s_Callbacks.PlatformEvent)
+                s_Callbacks.PlatformEvent(3, channel.data(), static_cast<int>(channel.size()), message.data(), static_cast<int>(message.size()));
+    }
+
 	void ScriptEngine::PumpSceneLoadRequests()
 	{
+		std::string channel, message;
+        for (int i = 0; i < 256 && Platform::PollJavaMessage(channel, message); ++i) {
+            DispatchAndroidMessage(channel, message);
+        }
+        BoltScriptHost::BroadcastApplicationEvent(BoltScriptHost::Event::PumpSceneLoads);
 		if (s_Initialized && s_Callbacks.PumpSceneLoadRequests)
 			s_Callbacks.PumpSceneLoadRequests();
 	}
 
 	void ScriptEngine::RaiseBeforeSceneUnloaded(const std::string& sceneName)
 	{
+		if (!sceneName.empty()) BoltScriptHost::BroadcastApplicationEvent(BoltScriptHost::Event::BeforeSceneUnloaded, nullptr, {0, sceneName});
 		if (s_Initialized && s_Callbacks.RaiseBeforeSceneUnloaded) s_Callbacks.RaiseBeforeSceneUnloaded(sceneName.c_str());
 	}
 
 	void ScriptEngine::RaiseSceneUnloaded(const std::string& sceneName)
 	{
+		if (!sceneName.empty()) BoltScriptHost::BroadcastApplicationEvent(BoltScriptHost::Event::SceneUnloaded, nullptr, {0, sceneName});
 		if (s_Initialized && s_Callbacks.RaiseSceneUnloaded) s_Callbacks.RaiseSceneUnloaded(sceneName.c_str());
 	}
 
-	void ScriptEngine::RaiseUiEventDispatch()
+	void ScriptEngine::RaiseUiEventDispatch(Scene& scene)
 	{
+		BoltScriptHost::BroadcastApplicationEvent(BoltScriptHost::Event::UiDispatch, &scene);
 		if (s_Initialized && s_Callbacks.RaiseUiEventDispatch) s_Callbacks.RaiseUiEventDispatch();
+	}
+
+	void ScriptEngine::RaiseWindowStateChange(WindowStateChange state)
+	{
+		using Event = BoltScriptHost::Event;
+        if (s_Initialized && s_Callbacks.PlatformEvent) s_Callbacks.PlatformEvent(static_cast<int>(state), nullptr, 0, nullptr, 0);
+		switch (state) {
+		case WindowStateChange::Maximized: BoltScriptHost::BroadcastApplicationEvent(Event::WindowMaximized); break;
+		case WindowStateChange::Minimized: BoltScriptHost::BroadcastApplicationEvent(Event::WindowMinimized); break;
+		case WindowStateChange::Restored: BoltScriptHost::BroadcastApplicationEvent(Event::WindowRestored); break;
+		}
 	}
 
 	void ScriptEngine::RaiseWindowResize()
 	{
+		BoltScriptHost::BroadcastApplicationEvent(BoltScriptHost::Event::WindowResize);
 		if (s_Initialized && s_Callbacks.RaiseWindowResize) s_Callbacks.RaiseWindowResize();
 	}
 
 	void ScriptEngine::OnPlayModeExited()
 	{
+		BoltScriptHost::BroadcastApplicationEvent(BoltScriptHost::Event::NotifyPlayModeExited);
 		if (s_Initialized && s_Callbacks.OnPlayModeExited) s_Callbacks.OnPlayModeExited();
+        ScriptPreferences::SavePending();
 		// Meshes scripts built during play would otherwise outlive the session that owns them.
 #if FUNKE_WITH_3D
 		MeshLibrary::DestroyAllRuntime();
@@ -730,6 +771,7 @@ namespace Funke {
 
 	bool ScriptEngine::ResetRegisteredPlayState()
 	{
+		if (!BoltScriptHost::ResetRegisteredPlayState()) return false;
 		if (!s_HasUserAssembly) return true;
 		if (!s_Initialized || !s_Host) return false;
 		const auto reset = reinterpret_cast<int(*)()>(s_Host->GetUnmanagedEntryPoint(
@@ -783,57 +825,65 @@ namespace Funke {
 			|| s_Callbacks.NotifyComponentRemoved == g_TrustedComponentInvalidation;
 	}
 
-	uint32_t ScriptEngine::CreateSceneSystemInstance(const std::string& className, const std::string& sceneName)
+	uint32_t ScriptEngine::CreateSceneSystemInstance(const std::string& className, const std::string& sceneName, Scene* owner)
 	{
+		if (BoltScriptHost::IsSystemAsset(className, false)) return BoltScriptHost::CreateSystem(className, owner, false);
 		if (!s_Initialized || !s_Callbacks.CreateSceneSystemInstance) return 0;
 		return static_cast<uint32_t>(s_Callbacks.CreateSceneSystemInstance(className.c_str(), sceneName.c_str()));
 	}
 
 	void ScriptEngine::DestroySceneSystemInstance(uint32_t handle)
 	{
+		if (BoltScriptHost::IsSystemHandle(handle)) return BoltScriptHost::ReleaseSystem(handle);
 		if (handle == 0 || !s_Callbacks.DestroySceneSystemInstance) return;
 		s_Callbacks.DestroySceneSystemInstance(static_cast<int32_t>(handle));
 	}
 
 	void ScriptEngine::InvokeSceneSystemStart(uint32_t handle)
 	{
+		if (BoltScriptHost::IsSystemHandle(handle)) return BoltScriptHost::InvokeSystem(handle, BoltScriptHost::Event::Start);
 		if (handle == 0 || !s_Callbacks.InvokeSceneSystemStart) return;
 		s_Callbacks.InvokeSceneSystemStart(static_cast<int32_t>(handle));
 	}
 
 	void ScriptEngine::InvokeSceneSystemUpdate(uint32_t handle)
 	{
+		if (BoltScriptHost::IsSystemHandle(handle)) return BoltScriptHost::InvokeSystem(handle, BoltScriptHost::Event::Update);
 		if (handle == 0 || !s_Callbacks.InvokeSceneSystemUpdate) return;
 		s_Callbacks.InvokeSceneSystemUpdate(static_cast<int32_t>(handle));
 	}
 
 	void ScriptEngine::InvokeSceneSystemEnable(uint32_t handle)
 	{
+		if (BoltScriptHost::IsSystemHandle(handle)) return BoltScriptHost::InvokeSystem(handle, BoltScriptHost::Event::Enable);
 		if (handle == 0 || !s_Callbacks.InvokeSceneSystemEnable) return;
 		s_Callbacks.InvokeSceneSystemEnable(static_cast<int32_t>(handle));
 	}
 
 	void ScriptEngine::InvokeSceneSystemDisable(uint32_t handle)
 	{
+		if (BoltScriptHost::IsSystemHandle(handle)) return BoltScriptHost::InvokeSystem(handle, BoltScriptHost::Event::Disable);
 		if (handle == 0 || !s_Callbacks.InvokeSceneSystemDisable) return;
 		s_Callbacks.InvokeSceneSystemDisable(static_cast<int32_t>(handle));
 	}
 
 	void ScriptEngine::InvokeSceneSystemDestroy(uint32_t handle)
 	{
+		if (BoltScriptHost::IsSystemHandle(handle)) return BoltScriptHost::InvokeSystem(handle, BoltScriptHost::Event::Destroy);
 		if (handle == 0 || !s_Callbacks.InvokeSceneSystemDestroy) return;
 		s_Callbacks.InvokeSceneSystemDestroy(static_cast<int32_t>(handle));
 	}
 
 	bool ScriptEngine::SceneSystemClassExists(const std::string& className)
 	{
+		if (BoltScriptHost::IsSystemAsset(className, false)) return true;
 		if (!s_Initialized || !s_Callbacks.SceneSystemClassExists) return false;
 		return s_Callbacks.SceneSystemClassExists(className.c_str()) != 0;
 	}
 
 	void ScriptEngine::InitializeGlobalSystems(const std::vector<std::string>& classNames)
 	{
-		if (!s_Initialized || !s_HasUserAssembly || !s_Callbacks.CreateGlobalSystemInstance) return;
+		const bool managedReady = s_Initialized && s_HasUserAssembly && s_Callbacks.CreateGlobalSystemInstance;
 
 		for (const std::string& className : classNames)
 		{
@@ -847,6 +897,15 @@ namespace Funke {
 				continue;
 			}
 
+			if (BoltScriptHost::IsSystemAsset(className, true)) {
+				if (auto handle = BoltScriptHost::CreateSystem(className, nullptr, true)) {
+					s_GlobalSystems.push_back({className, handle, true});
+					BoltScriptHost::InvokeSystem(handle, BoltScriptHost::Event::Enable);
+					BoltScriptHost::InvokeSystem(handle, BoltScriptHost::Event::Start);
+				}
+				continue;
+			}
+			if (!managedReady) continue;
 			if (!GlobalSystemClassExists(className)) {
 				FNK_CORE_WARN_TAG("ScriptEngine", "GlobalSystem '{}' was registered but no matching class was found", className);
 				continue;
@@ -869,7 +928,6 @@ namespace Funke {
 	}
 
     size_t ScriptEngine::GetEnabledGlobalSystemCount() {
-        if (!s_Initialized) return 0;
         size_t count = 0;
         for (const auto& instance : s_GlobalSystems) if (instance.Handle != 0 && instance.Enabled) ++count;
         return count;
@@ -877,44 +935,43 @@ namespace Funke {
 
 	void ScriptEngine::UpdateGlobalSystems()
 	{
-		if (!s_Initialized || !s_Callbacks.InvokeGlobalSystemUpdate) return;
 		// Runs before the scene systems, so a UI write here must not be skipped by the layout gate.
 #if FUNKE_WITH_RENDER
 #endif
 		for (const auto& instance : s_GlobalSystems)
 		{
 			if (instance.Handle != 0 && instance.Enabled) {
-				s_Callbacks.InvokeGlobalSystemUpdate(static_cast<int32_t>(instance.Handle));
+				if (BoltScriptHost::IsSystemHandle(instance.Handle)) BoltScriptHost::InvokeSystem(instance.Handle, BoltScriptHost::Event::Update);
+				else if (s_Initialized && s_Callbacks.InvokeGlobalSystemUpdate) s_Callbacks.InvokeGlobalSystemUpdate(static_cast<int32_t>(instance.Handle));
 			}
 		}
 	}
 
 	void ScriptEngine::ShutdownGlobalSystems()
 	{
-		if (s_Callbacks.DestroyGlobalSystemInstance) {
-			for (auto& instance : s_GlobalSystems)
-			{
-				if (instance.Handle != 0) {
-					if (s_Callbacks.InvokeGlobalSystemDisable) {
-						s_Callbacks.InvokeGlobalSystemDisable(static_cast<int32_t>(instance.Handle));
-					}
-					s_Callbacks.DestroyGlobalSystemInstance(static_cast<int32_t>(instance.Handle));
-				}
+		auto instances = std::exchange(s_GlobalSystems, {});
+		for (const auto& instance : instances) {
+			if (BoltScriptHost::IsSystemHandle(instance.Handle)) {
+				if (instance.Enabled) BoltScriptHost::InvokeSystem(instance.Handle, BoltScriptHost::Event::Disable);
+				BoltScriptHost::ReleaseSystem(instance.Handle);
+			} else if (instance.Handle && s_Callbacks.DestroyGlobalSystemInstance) {
+				if (s_Callbacks.InvokeGlobalSystemDisable) s_Callbacks.InvokeGlobalSystemDisable(static_cast<int32_t>(instance.Handle));
+				s_Callbacks.DestroyGlobalSystemInstance(static_cast<int32_t>(instance.Handle));
 			}
 		}
-		s_GlobalSystems.clear();
 	}
 
 	void ScriptEngine::SetGlobalSystemEnabled(const std::string& className, bool enabled)
 	{
-		if (!s_Initialized) return;
-
 		auto it = std::find_if(s_GlobalSystems.begin(), s_GlobalSystems.end(),
 			[&className](const GlobalSystemInstance& instance) { return ManagedTypeNamesMatch(instance.ClassName, className); });
 		if (it == s_GlobalSystems.end() || it->Handle == 0) return;
 		if (it->Enabled == enabled) return;
 
 		it->Enabled = enabled;
+		if (BoltScriptHost::IsSystemHandle(it->Handle)) {
+			return BoltScriptHost::InvokeSystem(it->Handle, enabled ? BoltScriptHost::Event::Enable : BoltScriptHost::Event::Disable);
+		}
 
 		if (enabled) {
 			if (s_Callbacks.InvokeGlobalSystemEnable) {
@@ -928,6 +985,7 @@ namespace Funke {
 
 	bool ScriptEngine::GlobalSystemClassExists(const std::string& className)
 	{
+		if (BoltScriptHost::IsSystemAsset(className, true)) return true;
 		if (!s_Initialized || !s_Callbacks.GlobalSystemClassExists) return false;
 		return s_Callbacks.GlobalSystemClassExists(className.c_str()) != 0;
 	}
@@ -946,12 +1004,14 @@ namespace Funke {
 
 	void ScriptEngine::InvokeSceneSystemAwake(uint32_t handle)
 	{
+		if (BoltScriptHost::IsSystemHandle(handle)) return BoltScriptHost::InvokeSystem(handle, BoltScriptHost::Event::Awake);
 		if (handle == 0 || !s_Callbacks.InvokeSceneSystemAwake) return;
 		s_Callbacks.InvokeSceneSystemAwake(static_cast<int32_t>(handle));
 	}
 
 	void ScriptEngine::InvokeSceneSystemFixedUpdate(uint32_t handle)
 	{
+		if (BoltScriptHost::IsSystemHandle(handle)) return BoltScriptHost::InvokeSystem(handle, BoltScriptHost::Event::FixedUpdate);
 		if (handle == 0 || !s_Callbacks.InvokeSceneSystemFixedUpdate) return;
 		s_Callbacks.InvokeSceneSystemFixedUpdate(static_cast<int32_t>(handle));
 	}
@@ -964,70 +1024,92 @@ namespace Funke {
 
 	void ScriptEngine::FixedUpdateGlobalSystems()
 	{
-		if (!s_Initialized || !s_Callbacks.InvokeGlobalSystemFixedUpdate) return;
 		for (const auto& instance : s_GlobalSystems)
 		{
 			if (instance.Handle != 0 && instance.Enabled) {
-				s_Callbacks.InvokeGlobalSystemFixedUpdate(static_cast<int32_t>(instance.Handle));
+				if (BoltScriptHost::IsSystemHandle(instance.Handle)) BoltScriptHost::InvokeSystem(instance.Handle, BoltScriptHost::Event::FixedUpdate);
+				else if (s_Initialized && s_Callbacks.InvokeGlobalSystemFixedUpdate) s_Callbacks.InvokeGlobalSystemFixedUpdate(static_cast<int32_t>(instance.Handle));
 			}
 		}
 	}
 
 	const char* ScriptEngine::GetSceneSystemFields(uint32_t handle)
 	{
+		if (BoltScriptHost::IsSystemHandle(handle)) return BoltScriptHost::SystemFields(handle);
 		if (handle == 0 || !s_Callbacks.GetSceneSystemFields) return "[]";
 		return s_Callbacks.GetSceneSystemFields(static_cast<int32_t>(handle));
 	}
 
 	void ScriptEngine::SetSceneSystemField(uint32_t handle, const char* fieldName, const char* value)
 	{
+		if (BoltScriptHost::IsSystemHandle(handle)) return BoltScriptHost::SetSystemField(handle, fieldName, value);
 		if (handle == 0 || !s_Callbacks.SetSceneSystemField) return;
 		s_Callbacks.SetSceneSystemField(static_cast<int32_t>(handle), fieldName, value);
 	}
 
 	int ScriptEngine::CreateDataAssetInstance(const std::string& typeName, uint64_t guid)
 	{
+		if (typeName.starts_with("bolt:")) return BoltScriptHost::CreateDataAsset(typeName, guid);
 		if (!s_Initialized || !s_Callbacks.CreateDataAssetInstance) return 0;
 		return s_Callbacks.CreateDataAssetInstance(typeName.c_str(), guid);
 	}
 
 	void ScriptEngine::DestroyDataAssetInstance(uint64_t guid)
 	{
+		if (BoltScriptHost::HasDataAsset(guid)) return BoltScriptHost::DestroyDataAsset(guid);
 		if (!s_Callbacks.DestroyDataAssetInstance) return;
 		s_Callbacks.DestroyDataAssetInstance(guid);
 	}
 
 	const char* ScriptEngine::GetDataAssetFields(uint64_t guid)
 	{
+		if (BoltScriptHost::HasDataAsset(guid)) {
+            static thread_local std::string fields;
+            fields = BoltScriptHost::GetDataAssetFields(guid);
+            return fields.c_str();
+        }
 		if (guid == 0 || !s_Callbacks.GetDataAssetFields) return "[]";
 		return s_Callbacks.GetDataAssetFields(guid);
 	}
 
 	void ScriptEngine::SetDataAssetField(uint64_t guid, const char* fieldName, const char* value)
 	{
+		if (BoltScriptHost::HasDataAsset(guid)) return BoltScriptHost::SetDataAssetField(guid, fieldName, value);
 		if (guid == 0 || !s_Callbacks.SetDataAssetField) return;
 		s_Callbacks.SetDataAssetField(guid, fieldName, value);
 	}
 
 	bool ScriptEngine::DataAssetClassExists(const std::string& typeName)
 	{
+		if (typeName.starts_with("bolt:")) return BoltScriptHost::HasDataAssetClass(typeName);
 		if (!s_Initialized || !s_Callbacks.DataAssetClassExists) return false;
 		return s_Callbacks.DataAssetClassExists(typeName.c_str()) != 0;
 	}
 
 	int ScriptEngine::GetDataAssetTypes(char* outBuffer, int capacity)
 	{
-		if (!s_Initialized || !s_Callbacks.GetDataAssetTypes)
-		{
-			if (outBuffer && capacity > 0) outBuffer[0] = 0;
-			return 0;
-		}
-		return s_Callbacks.GetDataAssetTypes(outBuffer, capacity);
+        std::string managed;
+        if (s_Initialized && s_Callbacks.GetDataAssetTypes) {
+            const int required = s_Callbacks.GetDataAssetTypes(nullptr, 0);
+            if (required > 0) {
+                managed.resize(required);
+                s_Callbacks.GetDataAssetTypes(managed.data(), required);
+                managed.resize(std::strlen(managed.c_str()));
+            }
+        }
+        const auto types = BoltScriptHost::AppendDataAssetTypes(managed);
+        const int size = static_cast<int>(types.size());
+        if (!outBuffer || capacity <= size) {
+            if (outBuffer && capacity > 0) outBuffer[0] = 0;
+            return size + 1;
+        }
+        std::memcpy(outBuffer, types.c_str(), size + 1);
+        return size;
 	}
 
 	std::string ScriptEngine::GetEditorWindowTypes()
 	{
-		if (!s_Initialized || !s_Callbacks.GetEditorWindowTypes) return "[]";
+		if (!s_Initialized || !s_Callbacks.GetEditorWindowTypes) return BoltScriptHost::AppendEditorWindowTypes("[]");
 		std::string buffer(4096, '\0');
 		int needed = s_Callbacks.GetEditorWindowTypes(buffer.data(), static_cast<int>(buffer.size()));
 		if (needed > static_cast<int>(buffer.size())) {
@@ -1035,7 +1117,7 @@ namespace Funke {
 			needed = s_Callbacks.GetEditorWindowTypes(buffer.data(), static_cast<int>(buffer.size()));
 		}
 		buffer.resize(std::strlen(buffer.c_str()));
-		return buffer.empty() ? "[]" : buffer;
+		return BoltScriptHost::AppendEditorWindowTypes(buffer);
 	}
 
 	std::string ScriptEngine::GetPackageScriptTypes()
@@ -1053,12 +1135,14 @@ namespace Funke {
 
 	int ScriptEngine::DrawEditorWindow(const char* typeName)
 	{
+		if (typeName && std::string_view(typeName).starts_with("bolt:")) return BoltScriptHost::DrawEditorWindow(typeName + 5);
 		if (!s_Initialized || !s_Callbacks.DrawEditorWindow || !typeName) return 0;
 		return s_Callbacks.DrawEditorWindow(typeName);
 	}
 
 	void ScriptEngine::CloseEditorWindow(const char* typeName)
 	{
+		if (typeName && std::string_view(typeName).starts_with("bolt:")) return BoltScriptHost::CloseEditorWindow(typeName + 5);
 		if (s_Initialized && s_Callbacks.CloseEditorWindow && typeName) s_Callbacks.CloseEditorWindow(typeName);
 	}
 
@@ -1088,11 +1172,13 @@ namespace Funke {
 
 	void ScriptEngine::PumpCoroutinesUpdate(float deltaTime)
 	{
+		BoltScriptHost::PumpCoroutines(false, deltaTime);
 		if (s_Initialized && s_Callbacks.PumpCoroutinesUpdate) s_Callbacks.PumpCoroutinesUpdate(deltaTime);
 	}
 
 	void ScriptEngine::PumpCoroutinesFixedUpdate()
 	{
+		BoltScriptHost::PumpCoroutines(true, 0.0f);
 		if (s_Initialized && s_Callbacks.PumpCoroutinesFixedUpdate) s_Callbacks.PumpCoroutinesFixedUpdate();
 	}
 

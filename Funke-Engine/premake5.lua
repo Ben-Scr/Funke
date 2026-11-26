@@ -26,6 +26,22 @@ project "Funke-Engine"
         "src/**.cpp"
     }
 
+    if FunkeModules.Scripting then
+        local boltRoot = path.join(ROOT_DIR, "Funke-BoltScriptCore")
+        local manifest = path.join(boltRoot, "modules.json")
+        local embed = path.join(boltRoot, "embed.py")
+        local generatedSource = path.join(ROOT_DIR, "bin-int", outputdir, "generated/BoltScriptLibrary.cpp")
+        local sources = os.matchfiles(path.join(boltRoot, "Source/**.bolt"))
+        files { manifest, sources }
+        filter "files:**/modules.json"
+            buildmessage "Embedding Bolt ScriptCore"
+            buildcommands { FunkePython() .. ' "' .. embed .. '" "' .. generatedSource .. '"' }
+            buildinputs { embed, sources }
+            buildoutputs { generatedSource }
+            compilebuildoutputs "On"
+        filter {}
+    end
+
     filter "system:windows"
         files { "version.rc" }
     filter {}

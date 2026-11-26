@@ -23,6 +23,10 @@ namespace Funke {
 		std::string Undo(Scene& scene);
 		std::string Redo(Scene& scene);
 		void Clear();
+		void RequireRecovery(std::unique_ptr<EditCommand> command, std::string reason);
+		bool Recover(Scene& scene);
+		bool NeedsRecovery() const { return m_State && !m_State->RecoveryReason.empty(); }
+		const std::string& RecoveryReason() const { return m_State->RecoveryReason; }
 
 		bool CanUndo(std::string* reason = nullptr) const;
 		bool CanRedo(std::string* reason = nullptr) const;
@@ -44,6 +48,8 @@ namespace Funke {
 		struct State {
 			std::weak_ptr<Scene> Owner;
 			std::string OwnerName;
+			std::unique_ptr<EditCommand> RecoveryCommand;
+			std::string RecoveryReason;
 			std::vector<Entry> Undo;
 			std::vector<Entry> Redo;
 		};

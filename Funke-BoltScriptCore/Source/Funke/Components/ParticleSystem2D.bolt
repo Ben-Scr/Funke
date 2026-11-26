@@ -1,0 +1,22 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public class ParticleSystem2D : Component {
+public:
+    protected override ulong FkType() { return 25ul; }
+    bool PlayOnAwake { get { return (FkParticleSystem2D_GetPlayOnAwake(ID, 0ul) != 0ul); } set { FkParticleSystem2D_SetPlayOnAwake(ID, (value ? 1ul : 0ul)); } }
+    float LifeTime { get { return Reinterpret<float>((uint)FkParticleSystem2D_GetLifeTime(ID, 0ul)); } set { FkParticleSystem2D_SetLifeTime(ID, (ulong)Reinterpret<uint>(value)); } }
+    float Speed { get { return Reinterpret<float>((uint)FkParticleSystem2D_GetSpeed(ID, 0ul)); } set { FkParticleSystem2D_SetSpeed(ID, (ulong)Reinterpret<uint>(value)); } }
+    int EmitOverTime { get { return Reinterpret<int>((uint)(FkParticleSystem2D_GetEmitOverTime(ID, 0ul) & 4294967295ul)); } set { FkParticleSystem2D_SetEmitOverTime(ID, (ulong)Reinterpret<uint>(value)); } }
+    Vector4 Color { get { return FunkeApiTypes.DecodeVector4(FkParticleSystem2D_GetColor(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkParticleSystem2D_SetColor(ID, value.LowBits()); } }
+    Vector2 Scale { get { return Vector2.FromBits(FkParticleSystem2D_GetScale(ID, 0ul)); } set { FkParticleSystem2D_SetScale(ID, value.Bits()); } }
+    bool IsPlaying => (FkParticleSystem2D_IsPlaying(ID, 0ul) != 0ul);
+    void Play() { FkParticleSystem2D_Play(ID, 0ul); }
+    void Pause() { FkParticleSystem2D_Pause(ID, 0ul); }
+    void Stop() { FkParticleSystem2D_Stop(ID, 0ul); }
+    void Emit(int count) { FkParticleSystem2D_Emit(ID, (ulong)Reinterpret<uint>(count)); }
+    Funke.Texture? Texture { get { return Funke.Texture.FromAssetUUID(FkParticleSystem2D_GetTexture(ID, 0ul)); } set { ulong guid = 0ul; if (value != null) guid = value.Value.UUID; FkParticleSystem2D_SetTexture(ID, guid); } }
+}

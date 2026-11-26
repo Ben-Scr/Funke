@@ -51,6 +51,34 @@ TEST_CASE("Job API schedules work and completes handles") {
 	CHECK(value.load(std::memory_order_acquire) == 42);
 }
 
+TEST_CASE("Job workload switches gate built-in parallelism without blocking explicit jobs") {
+	const uint32_t previous = JobSystem::GetParallelWorkloads();
+	struct RestoreMask {
+		uint32_t Mask;
+		~RestoreMask() { JobSystem::SetParallelWorkloads(Mask); }
+	} restore{ previous };
+	for (int workerCount : { 0, 1, 4 }) {
+		ScopedJobSystem jobs(workerCount);
+		for (auto workload : { ParallelWorkload::Particles, ParallelWorkload::SkeletalPoses,
+			ParallelWorkload::Rendering2D, ParallelWorkload::Rendering3D, ParallelWorkload::Physics2D }) {
+			JobSystem::SetParallelWorkloads(uint32_t(workload));
+			CHECK(JobSystem::CanParallelize(workload) == (workerCount > 1));
+			JobSystem::SetParallelWorkloads(k_AllParallelWorkloads & ~uint32_t(workload));
+			CHECK_FALSE(JobSystem::CanParallelize(workload));
+		}
+		JobSystem::SetParallelWorkloads(0);
+		int result = 0;
+		auto handle = Job::Schedule([&] { result = 42; });
+		Job::Wait(handle);
+		CHECK(result == 42);
+		if (workerCount > 0) {
+			JobSystem::Reconfigure(2);
+			CHECK(JobSystem::GetParallelWorkloads() == 0);
+			CHECK_FALSE(JobSystem::CanParallelize(ParallelWorkload::Particles));
+		}
+	}
+}
+
 TEST_CASE("Job API completes handles when work throws") {
 	ScopedJobSystem jobs;
 

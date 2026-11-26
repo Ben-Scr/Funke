@@ -1,0 +1,13 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public class FkEcbOwner {
+public:
+    ulong Id;
+    FkEcbOwner(){FkEcbRequest req; Id=req.Call(0ul,null);}
+    void Close(){if(Id!=0ul){FkEcbRequest req;req.Op=1ul;req.Call(Id,null);Id=0ul;}}
+    ~FkEcbOwner(){Close();}
+}

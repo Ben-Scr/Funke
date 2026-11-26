@@ -1,6 +1,6 @@
 ---
 name: funke-serialize-field
-description: Use when adding, renaming or changing a persisted field on an existing Funke component, or any data written to disk — scene/prefab files, project.json, build profiles, editor preferences. Triggers on "serialize", "save/load", "round-trip", "Json::Value", "FindMember", "AddMember", "SceneSerializer", "SerializeEntity", "DeserializeFullEntity", "DeserializeComponent", "ResetComponent", ".scene", ".prefab", "prefab override", "EntityOverrides", "binary scene", "FNKSCNB", "SCENE_FORMAT_VERSION", "project.json", "FunkeProject", "BuildProjectJson", "IsKnownProjectMember", "entity reference field", "asset GUID field", "field lost after play/stop", or work in `Funke-Engine/src/Serialization/` or `Funke-Engine/src/Project/`. Covers the in-house `Funke::Json` DOM, registry-driven vs hand-written component ladders, defaults/forward-compat, asset and entity refs, prefab-diff and staged-load consequences, project.json fields and which tests to extend. For brand-new components start with `funke-add-component`.
+description: "Add, rename or migrate persisted Funke fields in existing components, scenes, prefabs, project.json, build profiles or editor preferences."
 ---
 
 # Serialize a Field
@@ -55,7 +55,7 @@ A scene prefab instance is stored as `Origin: "Prefab"`, `PrefabGUID`, `Override
 
 ## Play mode
 
-Edit-mode state survives Play→Stop through serialization: on Play the editor writes private snapshots of **all** loaded scenes, clean or dirty, under `<project>/.funke/PlayMode/`; on Stop it rebuilds scenes from those snapshots (`ImGuiEditorLayer::PreparePlayModeSnapshot` / `RestoreEditorSceneAfterPlaymode`). Authored scene files are not overwritten. A field missing from either direction resets on Stop. C# field values are additionally reapplied from `m_PlayModeScriptFields`, and retained edit-mode undo histories are rebound after successful restoration.
+On Stop, the Editor reconstructs scenes from its private Play snapshots. A field missing from either serialization direction resets. C# script overrides and edit-mode undo histories are restored separately. See [scene lifecycle](../funke-scene-workflow/SKILL.md) for the restore sequence.
 
 ## project.json field
 
@@ -73,12 +73,4 @@ If the field affects the build, check `RuntimeApplication` and the Build panel t
 - Component fields: `SceneSerializerRoundTripTests.cpp` — add the field to the full-entity case (`SerializeEntityFull` → `DeserializeEntityFromValue`) **and** the component-level case (`SerializeComponent` → `DeserializeComponent`); for ladder B both are needed to catch a missing ladder. Also cover "missing key → default". Built-in registry components round-trip in a plain detached scene; package and C# components need a headless `Application` (see `MakeSceneTestConfiguration` in `SceneManagerFailureTests.cpp`).
 - Entity-ref fields: `SceneSerializerClipboardTests.cpp` (duplicate remap), `SceneSerializerPrefabRefTests.cpp`.
 - Json behavior: `JsonTests.cpp`. project.json: `ProjectSettingsTests.cpp` (round-trip, unknown-member preservation).
-- New test files need `vendor\bin\premake5.exe vs2022` before building.
-
-## Pitfalls
-
-- Editing only `SerializeEntity` for a ladder-B component: saves fine, loads default.
-- Reading a uint64 id with `AsDoubleOr`/`AsIntOr` → silently wrong GUID.
-- Resolving an entity ref immediately during duplicate/paste → clone points at the original's child.
-- Storing a path instead of a GUID → breaks on asset rename/move.
-- Calling `SceneSerializer::LoadFromFile` on any loaded, non-suspended scene → refused ("requires an owner-level staged swap"); load inside an `OnLoad`/`OnLoadChecked` callback instead (`funke-scene-workflow`).
+- For file-load tests, use a detached scene or a definition with `OnLoad`/`OnLoadChecked` and an owner-level staged swap. In-place loading into a running scene is refused. When adding a test source, refresh the relevant Premake graph as described in [engine builds](../funke-build-engine/SKILL.md).

@@ -189,7 +189,7 @@ namespace Funke {
 			const std::string className = systems[i];
 
 			// AllowOverlap lets trailing buttons hit-test over the header widget.
-			bool open = ImGui::CollapsingHeader((className + "##system_header").c_str(),
+			bool open = ImGui::CollapsingHeader((EditorScriptDiscovery::ClassDisplayName(className) + "##system_header").c_str(),
 				ImGuiTreeNodeFlags_AllowOverlap);
 
 			const ImGuiStyle& style = ImGui::GetStyle();
@@ -280,7 +280,7 @@ namespace Funke {
 				}
 
 				if (!filter.empty()) {
-					std::string lowerClassName = EditorScriptDiscovery::ToLowerCopy(scriptEntry.ClassName);
+					std::string lowerClassName = EditorScriptDiscovery::ToLowerCopy(EditorScriptDiscovery::ClassDisplayName(scriptEntry.ClassName));
 					std::string lowerPath = EditorScriptDiscovery::ToLowerCopy(scriptEntry.Path.string());
 					if (lowerClassName.find(filter) == std::string::npos
 						&& lowerPath.find(filter) == std::string::npos) {

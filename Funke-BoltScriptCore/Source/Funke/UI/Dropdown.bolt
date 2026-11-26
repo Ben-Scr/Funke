@@ -1,0 +1,59 @@
+import Funke
+namespace Funke.UI;
+
+public class Dropdown : Component {
+public:
+    protected override ulong FkType() { return 14ul; }
+    int SelectedIndex { get { return Reinterpret<int>((uint)(FkDropdown_GetSelectedIndex(ID, 0ul) & 4294967295ul)); } set { FkDropdown_SetSelectedIndex(ID, (ulong)Reinterpret<uint>(value)); } }
+    bool IsOpen { get { return (FkDropdown_GetIsOpen(ID, 0ul) != 0ul); } set { FkDropdown_SetIsOpen(ID, (value ? 1ul : 0ul)); } }
+    bool IsReadOnly { get { return (FkDropdown_GetIsReadOnly(ID, 0ul) != 0ul); } set { FkDropdown_SetIsReadOnly(ID, (value ? 1ul : 0ul)); } }
+    UITransitionMode TransitionMode { get { return (UITransitionMode)FkDropdown_GetTransitionMode(ID, 0ul); } set { FkDropdown_SetTransitionMode(ID, (ulong)value); } }
+    Vector4 OptionNormalColor { get { return FunkeApiTypes.DecodeVector4(FkDropdown_GetOptionNormalColor(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkDropdown_SetOptionNormalColor(ID, value.LowBits()); } }
+    Vector4 OptionHoverColor { get { return FunkeApiTypes.DecodeVector4(FkDropdown_GetOptionHoverColor(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkDropdown_SetOptionHoverColor(ID, value.LowBits()); } }
+    Vector4 OptionPressedColor { get { return FunkeApiTypes.DecodeVector4(FkDropdown_GetOptionPressedColor(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkDropdown_SetOptionPressedColor(ID, value.LowBits()); } }
+    Vector4 OptionSelectedColor { get { return FunkeApiTypes.DecodeVector4(FkDropdown_GetOptionSelectedColor(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkDropdown_SetOptionSelectedColor(ID, value.LowBits()); } }
+    Vector4 PopupBackgroundColor { get { return FunkeApiTypes.DecodeVector4(FkDropdown_GetPopupBackgroundColor(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkDropdown_SetPopupBackgroundColor(ID, value.LowBits()); } }
+    Vector4 OptionTextColor { get { return FunkeApiTypes.DecodeVector4(FkDropdown_GetOptionTextColor(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkDropdown_SetOptionTextColor(ID, value.LowBits()); } }
+    Vector4 NormalColor { get { return FunkeApiTypes.DecodeVector4(FkDropdown_GetNormalColor(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkDropdown_SetNormalColor(ID, value.LowBits()); } }
+    Vector4 HoveredColor { get { return FunkeApiTypes.DecodeVector4(FkDropdown_GetHoveredColor(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkDropdown_SetHoveredColor(ID, value.LowBits()); } }
+    Vector4 PressedColor { get { return FunkeApiTypes.DecodeVector4(FkDropdown_GetPressedColor(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkDropdown_SetPressedColor(ID, value.LowBits()); } }
+    Vector4 DisabledColor { get { return FunkeApiTypes.DecodeVector4(FkDropdown_GetDisabledColor(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkDropdown_SetDisabledColor(ID, value.LowBits()); } }
+    Vector4 FocusedColor { get { return FunkeApiTypes.DecodeVector4(FkDropdown_GetFocusedColor(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkDropdown_SetFocusedColor(ID, value.LowBits()); } }
+    bool SelectionChangedThisFrame => (FkDropdown_GetSelectionChangedThisFrame(ID, 0ul) != 0ul);
+    int OptionCount => Reinterpret<int>((uint)(FkDropdown_GetOptionCount(ID, 0ul) & 4294967295ul));
+    Funke.Entity? LabelEntity { get { return Funke.Entity.FromId(FkDropdown_GetLabelEntity(ID, 0ul)); } set { ulong id = 0ul; if (value != null) id = value.Value.ID; FkDropdown_SetLabelEntity(ID, id); } }
+    Funke.Texture? NormalSprite { get { return Funke.Texture.FromAssetUUID(FkDropdown_GetNormalSprite(ID, 0ul)); } set { ulong guid = 0ul; if (value != null) guid = value.Value.UUID; FkDropdown_SetNormalSprite(ID, guid); } }
+    Funke.Texture? HoveredSprite { get { return Funke.Texture.FromAssetUUID(FkDropdown_GetHoveredSprite(ID, 0ul)); } set { ulong guid = 0ul; if (value != null) guid = value.Value.UUID; FkDropdown_SetHoveredSprite(ID, guid); } }
+    Funke.Texture? PressedSprite { get { return Funke.Texture.FromAssetUUID(FkDropdown_GetPressedSprite(ID, 0ul)); } set { ulong guid = 0ul; if (value != null) guid = value.Value.UUID; FkDropdown_SetPressedSprite(ID, guid); } }
+    Funke.Texture? DisabledSprite { get { return Funke.Texture.FromAssetUUID(FkDropdown_GetDisabledSprite(ID, 0ul)); } set { ulong guid = 0ul; if (value != null) guid = value.Value.UUID; FkDropdown_SetDisabledSprite(ID, guid); } }
+    Funke.Texture? FocusedSprite { get { return Funke.Texture.FromAssetUUID(FkDropdown_GetFocusedSprite(ID, 0ul)); } set { ulong guid = 0ul; if (value != null) guid = value.Value.UUID; FkDropdown_SetFocusedSprite(ID, guid); } }
+    string GetOption(int index) { return FunkeText.Read(FkDropdown_GetOptionBuffer(ID, (ulong)Reinterpret<uint>(index))); }
+    string SelectedOption {
+        get {
+            int count = OptionCount;
+            return count == 0 ? "" : GetOption(Mathf.Clamp(SelectedIndex, 0, count - 1));
+        }
+    }
+    void SetOption(int index, string text, bool ignoreEvent = true) {
+        FunkeText.Put(text);
+        FkDropdown_SetOption(ID, (ulong)Reinterpret<uint>(index));
+    }
+    void AddOption(string text) { FkDropdown_AddOption(ID, FunkeText.Put(text)); }
+    void RemoveOption(int index) { FkDropdown_RemoveOption(ID, (ulong)Reinterpret<uint>(index)); }
+    void ClearOptions() { FkDropdown_ClearOptions(ID, 0ul); }
+    void SetOptions(string... options) {
+        ClearOptions();
+        for (int i = 0; i < options.Length; i++) AddOption(options[i]);
+    }
+    DropdownEvents& Events { get { return FkUiStore<Dropdown, DropdownEvents>.For(ID).Get(); } }
+    WidgetEvent<int> SelectedIndexChange {
+        get {
+            Shared<DropdownEvents> state = FkUiStore<Dropdown, DropdownEvents>.For(ID);
+            WidgetEvent<int> signal;
+            signal.FkAdd = (Action<int> h) => { state.Get().SelectedIndexChange += h; };
+            signal.FkRemove = (Action<int> h) => { state.Get().SelectedIndexChange -= h; };
+            return signal;
+        }
+        set {}
+    }
+}

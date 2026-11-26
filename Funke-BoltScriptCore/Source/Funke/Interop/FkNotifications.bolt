@@ -1,0 +1,19 @@
+namespace Funke;
+
+public static class FkNotifications {
+public:
+    static void Dispatch(ulong eventId) {
+        if (eventId <= 33ul) {
+            if (eventId == 33ul) FkSceneLoads.CancelAll();
+            Application.FkRaiseEvent(eventId);
+        } else if (eventId <= 39ul) Window.FkRaiseEvent(eventId);
+        else if (eventId == 40ul) Funke.UI.FkUiDispatch.Tick();
+        else if (eventId <= 47ul) Input.FkRaiseEvent(eventId);
+        else if (eventId <= 51ul) SceneManager.FkRaiseEvent(eventId);
+        else if (eventId <= 55ul) FkSceneLoads.Dispatch(eventId);
+        else if (eventId == 56ul) Log.FkRaiseMessage();
+        else if (eventId == 57ul) Localization.FkRaiseLanguageChanged();
+        else if (eventId == 58ul) AndroidBridge.FkDispatch();
+        else if (eventId == 62ul) DevConsole.FkDispatch();
+    }
+}

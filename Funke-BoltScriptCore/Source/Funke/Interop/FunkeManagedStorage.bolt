@@ -1,0 +1,18 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public static class FunkeManagedStorage {
+public:
+    bool Has(ulong entity, string typeName) { return FkManagedHas(entity, FunkeText.Put("type:" + typeName)) != 0ul; }
+    bool Add(ulong entity, string typeName) { return FkManagedAdd(entity, FunkeText.Put("type:" + typeName)) != 0ul; }
+    bool Remove(ulong entity, string typeName) { return FkManagedRemove(entity, FunkeText.Put("type:" + typeName)) != 0ul; }
+    string? Read(ulong entity, string key) {
+        ulong size = FkManagedRead(entity, FunkeText.Put(key));
+        if (size == 0ul) return null;
+        return FunkeText.Read(size - 1ul);
+    }
+    void Write(ulong entity, string key, string value) { FkManagedWrite(entity, FunkeText.Put(key + "=" + value)); }
+}

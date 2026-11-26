@@ -1,6 +1,9 @@
 #include "pch.hpp"
 #include "Build/GameBuilder.hpp"
 #include "Build/DotNetRuntimeBundle.hpp"
+#ifdef FNK_PLATFORM_WINDOWS
+#include "Build/WindowsBoltAot.hpp"
+#endif
 #include "Assets/AssetBundle.hpp"
 #include "Core/EngineModules.hpp"
 #include "Serialization/SceneSerializerStorage.hpp"
@@ -20,12 +23,15 @@
 #include "Serialization/Json.hpp"
 #include "Serialization/Path.hpp"
 #include "Scripting/ScriptSystem.hpp"
+#include "Scripting/BoltScriptHost.hpp"
+#include "Scripting/ScriptType.hpp"
 #include "Utils/Process.hpp"
 
 #include <algorithm>
 #include <cctype>
 #include <chrono>
 #include <cstring>
+#include <cstdlib>
 #include <fstream>
 #include <iterator>
 #include <memory>
@@ -57,6 +63,50 @@ namespace Funke::GameBuilder {
 				return false;
 			}
 			return true;
+		}
+
+		std::filesystem::path FindBoltLlvm(const std::filesystem::path& compiler) {
+			std::vector<std::filesystem::path> directories;
+			auto addSdk = [&](const std::filesystem::path& root) {
+				for (const auto& dir : {root, root / "bin", root / "libexec", root / "libexec/Funke"}) {
+					directories.push_back(dir);
+					directories.push_back(dir / "llvm/lib");
+				}
+			};
+			const auto host = compiler.parent_path();
+			addSdk(host);
+			if (host.parent_path().filename() == "libexec") addSdk(host.parent_path().parent_path());
+			if (const char* sdk = std::getenv("BOLT_SDK_ROOT"); sdk && *sdk) addSdk(Path::FromUtf8(sdk));
+#if defined(FNK_PLATFORM_WINDOWS)
+			if (const char* local = std::getenv("LOCALAPPDATA")) addSdk(Path::FromUtf8(local) / "Programs/Bolt");
+			if (const char* programs = std::getenv("ProgramFiles")) directories.push_back(Path::FromUtf8(programs) / "LLVM/bin");
+			const std::vector<std::string> names{"LLVM-C.dll"};
+#else
+			if (const char* home = std::getenv("HOME")) addSdk(Path::FromUtf8(home) / ".local/share/bolt");
+#if defined(FNK_PLATFORM_MACOS)
+			const std::vector<std::string> names{"libLLVM.19.1.dylib", "libLLVM.dylib"};
+#else
+			std::vector<std::string> names{"libLLVM.so"};
+			for (int version = 23; version >= 19; --version) {
+				const auto number = std::to_string(version);
+				names.push_back("libLLVM.so." + number + ".1");
+				names.push_back("libLLVM-" + number + ".so");
+				directories.emplace_back("/usr/lib/llvm-" + number + "/lib");
+			}
+			directories.emplace_back("/usr/lib64");
+			directories.emplace_back("/usr/lib");
+#if defined(__x86_64__)
+			directories.emplace_back("/usr/lib/x86_64-linux-gnu");
+#elif defined(__aarch64__)
+			directories.emplace_back("/usr/lib/aarch64-linux-gnu");
+#endif
+#endif
+#endif
+			std::error_code ec;
+			for (const auto& dir : directories)
+				for (const auto& name : names)
+					if (std::filesystem::is_regular_file(dir / name, ec)) return std::filesystem::absolute(dir / name);
+			return {};
 		}
 
 		bool WritePng(const std::filesystem::path& path, const ImageData& image) {
@@ -502,7 +552,7 @@ namespace Funke::GameBuilder {
 			}
 			for (const std::filesystem::path& entry : entries) {
 				const std::string name = Path::ToUtf8(entry.filename());
-				const bool isBinary = name == executableName || entry.extension() == ".dylib";
+				const bool isBinary = name == executableName || entry.extension() == ".dylib" || name == "llvm";
 				std::filesystem::rename(entry, (isBinary ? macosDir : resourcesDir) / entry.filename(), ec);
 				if (ec) {
 					outError = "cannot move " + name + " into the app bundle: " + ec.message();
@@ -1146,12 +1196,6 @@ namespace Funke::GameBuilder {
 		}
 	}
 
-	bool IsSerializedAssetPath(const std::filesystem::path& path) {
-		std::string ext = path.extension().string();
-		std::transform(ext.begin(), ext.end(), ext.begin(),
-			[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-		return ext == ".scene" || ext == ".prefab" || ext == ".dataasset";
-	}
 
 	SceneSerializationFormat ToSceneSerializationFormat(FunkeProject::ProjectAssetSerializationFormat format) {
 		return format == FunkeProject::ProjectAssetSerializationFormat::Binary
@@ -1159,54 +1203,6 @@ namespace Funke::GameBuilder {
 			: SceneSerializationFormat::Json;
 	}
 
-	int ConvertSerializedAssets(const std::filesystem::path& rootDir, SceneSerializationFormat format,
-		const std::function<void(int, int, const std::string&)>& onProgress, std::string* failureMessage)
-	{
-		if (!std::filesystem::exists(rootDir)) {
-			if (failureMessage) *failureMessage = "asset directory does not exist";
-			return 0;
-		}
-
-		// Collected first so progress is determinate; the walk alone is slow on large projects.
-		std::vector<std::filesystem::path> targets;
-		std::error_code ec;
-		for (std::filesystem::recursive_directory_iterator it(rootDir,
-				std::filesystem::directory_options::skip_permission_denied, ec), end;
-			it != end;
-			it.increment(ec))
-		{
-			if (ec) {
-				if (failureMessage && failureMessage->empty()) {
-					*failureMessage = "failed to enumerate assets: " + ec.message();
-				}
-				ec.clear();
-				continue;
-			}
-			if (!it->is_regular_file(ec) || ec || !IsSerializedAssetPath(it->path())) {
-				ec.clear();
-				continue;
-			}
-			targets.push_back(it->path());
-		}
-
-		int converted = 0;
-		const int total = static_cast<int>(targets.size());
-		for (int i = 0; i < total; ++i) {
-			if (onProgress) {
-				onProgress(i, total, Path::ToUtf8(targets[i].filename()));
-			}
-			if (SceneSerializer::ConvertFileFormat(Path::ToUtf8(targets[i]), format)) {
-				++converted;
-			}
-			else if (failureMessage && failureMessage->empty()) {
-				*failureMessage = "failed to convert " + Path::ToUtf8(targets[i]);
-			}
-		}
-		if (onProgress) {
-			onProgress(total, total, {});
-		}
-		return converted;
-	}
 
 	Result Build(Request request, const ProgressCallback& onProgress) {
 		const auto buildStart = std::chrono::steady_clock::now();
@@ -1382,12 +1378,22 @@ namespace Funke::GameBuilder {
 		if (!assetPlan.Valid) {
 			FNK_WARN_TAG("Build", "Unused-asset stripping disabled, shipping all assets: {}", assetPlan.Error);
 		}
+		std::vector<std::string> boltSources;
 		const FilteredCopyResult initialAssetsCopy = CopyDirIncrementalFiltered(
 			project->AssetsDirectory, contentDir / "Assets",
-			[&](const std::filesystem::path& rel) { return !assetPlan.Valid || assetPlan.KeepsProjectFile(rel); });
+			[&](const std::filesystem::path& rel) {
+				if (assetPlan.Valid && !assetPlan.KeepsProjectFile(rel)) return false;
+				if (ScriptTypeEqualsIgnoreCase(rel.extension().string(), ".bolt"))
+					boltSources.push_back(Path::ToUtf8(contentDir / "Assets" / rel));
+				return true;
+			});
 		if (!initialAssetsCopy.Succeeded()) {
 			FNK_ERROR_TAG("Build", "Failed to snapshot project Assets: {}", initialAssetsCopy.Error);
 			failBuild("Project asset snapshot failed");
+			return result;
+		}
+		if (!boltSources.empty() && platformPackageBuild && !platformPackage->BoltAot) {
+			failBuild("Update the platform package to a version supporting Bolt AOT");
 			return result;
 		}
 		if (const std::vector<std::string> disabledModuleUse = FindDisabledModuleComponents(contentDir / "Assets", *project);
@@ -1829,6 +1835,58 @@ namespace Funke::GameBuilder {
 			return false;
 		};
 
+		const bool windowsAot = !platformPackageBuild && targetPlatform == BuildPlatform::Windows
+            && project->ActiveBuildProfile == FunkeProject::BuildProfile::Release;
+		std::filesystem::path releaseLlvm;
+		if (!boltSources.empty()) {
+			const auto library = BoltScriptHost::FindCompilerLibrary();
+			if (!platformPackageBuild && !windowsAot && !copyRequiredFile(library, contentDir / library.filename(), "Bolt compiler host")) return result;
+			if (!platformPackageBuild && project->ActiveBuildProfile == FunkeProject::BuildProfile::Release) {
+				releaseLlvm = FindBoltLlvm(library);
+				if (releaseLlvm.empty()) {
+					failBuild("Bolt LLVM Release requires the platform LLVM shared library in the desktop Bolt SDK or LLVM installation");
+					return result;
+				}
+			}
+            if (!releaseLlvm.empty() && !windowsAot) {
+				const auto stagedBoltLlvm = contentDir / BoltScriptHost::DesktopLlvmRelativePath();
+				if (!copyRequiredFile(releaseLlvm, stagedBoltLlvm, "Bolt LLVM Release library")) return result;
+				const auto libDir = releaseLlvm.parent_path();
+				if (libDir.filename() == "lib" && libDir.parent_path().filename() == "llvm") {
+					for (const auto& entry : std::filesystem::directory_iterator(libDir)) {
+						const auto name = Path::ToUtf8(entry.path().filename());
+						if (!entry.is_regular_file() || name.starts_with("libLLVM")) continue;
+						if (entry.path().extension() != ".dylib" && name.find(".so") == std::string::npos) continue;
+						if (!copyRequiredFile(entry.path(), stagedBoltLlvm.parent_path() / entry.path().filename(), name)) return result;
+					}
+					const auto share = libDir.parent_path() / "share";
+					for (const auto* folder : {"licenses", "sources"}) {
+						if (!std::filesystem::is_directory(share / folder)) continue;
+						const auto copied = CopyDirIncremental(share / folder, contentDir / "Licenses/Bolt/LLVM" / folder);
+						if (!copied.Succeeded()) { failBuild(copied.Error); return result; }
+					}
+				}
+				FNK_INFO_TAG("Build", "Staged Bolt LLVM Release library from {}", Path::ToUtf8(releaseLlvm));
+			}
+			const auto sdk = library.parent_path().parent_path();
+			const auto notices = BuildOutputSafety::FindFirstCompleteArtifactDirectory({
+				library.parent_path() / "Licenses/Bolt", sdk / "share/bolt", sdk / "share", sdk
+			}, { "LICENSE" });
+			if (notices.empty()) { failBuild("Bolt SDK license missing"); return result; }
+			if (!copyRequiredFile(notices / "LICENSE", contentDir / "Licenses/Bolt/LICENSE", "Bolt license")) return result;
+			for (const auto& thirdParty : {notices / "THIRD_PARTY_NOTICES.md", sdk / "THIRD_PARTY_NOTICES.md"}) {
+				if (!std::filesystem::is_regular_file(thirdParty)) continue;
+				if (!copyRequiredFile(thirdParty, contentDir / "Licenses/Bolt/THIRD_PARTY_NOTICES.md", "Bolt third-party notices")) return result;
+				break;
+			}
+			for (const auto& licenses : {sdk / "docs/licenses", notices / "docs/licenses", notices / "licenses"}) {
+				if (!std::filesystem::is_directory(licenses)) continue;
+				const auto copied = CopyDirIncremental(licenses, contentDir / "Licenses/Bolt/licenses");
+				if (!copied.Succeeded()) { failBuild(copied.Error); return result; }
+				break;
+			}
+		}
+
 		if (hasNativeScripts) {
 			const std::string nativeTarget = project->GetNativeScriptTargetName();
 			const auto destination = contentDir / "bin" / runtimeOutputFolder / nativeTarget / nativeScriptArtifact.filename();
@@ -1985,7 +2043,8 @@ namespace Funke::GameBuilder {
 				contentDir / "Assets", SceneSerializationFormat::Binary, {}, &conversionError);
 			if (!conversionError.empty()) {
 				FNK_ERROR_TAG("Build", "Failed to optimize serialized assets: {}", conversionError);
-				failBuild("Scene asset optimization failed");
+				if (!assetPlan.Valid) conversionError += "; asset pruning disabled: " + assetPlan.Error;
+				failBuild("Asset export failed: " + conversionError);
 				return result;
 			}
 			FNK_INFO_TAG("Build", "Serialized assets optimized to binary: {} file(s)", convertedFiles);
@@ -2077,6 +2136,32 @@ namespace Funke::GameBuilder {
 				return result;
 			}
 			FNK_INFO_TAG("Build", "User assemblies: {} file(s) copied", copied);
+		}
+
+		if (!boltSources.empty()) {
+			std::string error;
+			const auto aotDirectory = (platformPackageBuild || windowsAot) ? outDir / ".funke-bolt" : std::filesystem::path{};
+			const std::filesystem::path assembly = hasManagedProject
+				? Path::FromUtf8(project->GetUserAssemblyOutputPath(buildConfiguration)) : std::filesystem::path{};
+			const bool valid = BoltScriptHost::ValidateBuildFiles(boltSources, scriptCoreDir / "Funke-ScriptCore.dll",
+				assembly, aotDirectory, releaseLlvm, error);
+#ifdef FNK_PLATFORM_WINDOWS
+            if (valid && windowsAot) {
+                if (!WindowsBoltAot::Build(aotDirectory, contentDir, releaseLlvm, error)) {
+                    failBuild("Windows Bolt AOT export failed: " + error);
+                    return result;
+                }
+                if (!PatchStagedProjectMember(stagedProjectJson, "windowsBoltAot", true)) {
+                    failBuild("Cannot record Windows Bolt AOT in the exported project");
+                    return result;
+                }
+            }
+#endif
+			if (!valid) {
+				FNK_ERROR_TAG("Build", "Bolt compilation failed: {}", error);
+				failBuild("Bolt compilation failed: " + error);
+				return result;
+			}
 		}
 
 		// Native siblings must be staged explicitly for managed P/Invoke package bridges.
@@ -2238,11 +2323,20 @@ namespace Funke::GameBuilder {
 			if (!platformResult.Succeeded) {
 				FNK_ERROR_TAG("Build", "{} build failed: {}", FunkeBuildProfile::PlatformDisplayName(targetPlatform),
 					platformResult.Error);
-				failBuild(std::string(FunkeBuildProfile::PlatformDisplayName(targetPlatform)) + " build failed");
+				const auto summary = platformResult.Error.substr(0, platformResult.Error.find_first_of("\r\n"));
+                failBuild(std::string(FunkeBuildProfile::PlatformDisplayName(targetPlatform)) + " build failed"
+                    + (summary.empty() ? "" : ": " + summary));
 				return result;
 			}
 			std::error_code contentError;
 			std::filesystem::remove_all(contentDir, contentError);
+			if (!boltSources.empty()) {
+                std::filesystem::remove_all(outDir / ".funke-bolt", contentError);
+                if (contentError) {
+                    failBuild("Could not remove staged Bolt compiler inputs: " + contentError.message());
+                    return result;
+                }
+            }
 			std::filesystem::path artifactRelative = platformResult.Artifact.lexically_relative(outDir);
 			if (artifactRelative.empty() || *artifactRelative.begin() == "..") artifactRelative = platformResult.Artifact.filename();
 			if (targetPlatform == BuildPlatform::Web) {

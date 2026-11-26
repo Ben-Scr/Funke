@@ -1,20 +1,11 @@
 ---
 name: funke-inspector-ruleset
-description: Use when exposing fields to the Funke editor inspector — native C++ components (`PropertyDescriptor`, `Properties::Make*`, `Properties::Meta`) or C# script fields (`[ShowInEditor]`, `[ClampValue]`, `[EnabledIf]`, `[Header]`, `[EditorIgnore]`). Triggers on "PropertyType", "PropertyDrawer", "ReferencePicker", "inspector field", "multi-select inspector", "mixed value", "asset picker", "entity reference", "EntityRef", "ComponentRef", "AssetRef", "FlagEnum", "MakeTextureRef", "MakeEntityRef", "MakeVariant", "DeclareComponentConflict", "SetEditorGizmo", or work in `Funke-Engine/src/Inspector/`, `Funke-Editor/src/Inspector/`, `Funke-ScriptCore/Source/Funke/Attributes/`. Covers the field-type-to-PropertyType table, multi-select rules, reference pickers and the EntityRef entity/prefab split, lists, variants, metadata, C# attributes, conflicts and gizmos. Don't guess these from memory — mistakes cause silent mixed-state corruption or wrong picker filters.
+description: "Expose native component or C# script fields in the Funke Inspector. Covers PropertyDescriptor, attributes, pickers and mixed-value editing."
 ---
 
 # Funke Inspector Ruleset
 
-The Funke editor inspector is **declarative and unified**. Both native C++ components and C# scripts feed the same `PropertyDescriptor` shape through the same `PropertyDrawer`. There are no per-type drawer implementations — adding a new supported type is a single change to `PropertyType` plus a switch arm in `PropertyDrawer.cpp` / `PropertyValue.cpp`. So the API is small, but the rules around it (multi-select, mixed values, reference filtering, variants, lists) are exact and non-obvious. This skill is the ruleset.
-
-Source of truth lives in:
-- `Funke-Engine/src/Inspector/PropertyType.hpp` — the canonical type list and wire tags; multi-select behavior lives in `PropertyDrawer.cpp`.
-- `Funke-Engine/src/Inspector/PropertyRegistration.hpp` — the `Properties::Make*` and `Properties::Meta::*` helpers.
-- `Funke-Engine/src/Inspector/PropertyMetadata.hpp` — clamp / tooltip / header / enabled-if / etc.
-- `Funke-Editor/src/Inspector/PropertyDrawer.cpp` — the per-type widget dispatch.
-- `Funke-Editor/src/Inspector/ReferencePicker.cpp` — the unified modal picker.
-- `Funke-ScriptCore/Source/Funke/Attributes/` — the C# attribute set.
-- `Funke-Engine/src/Packages/PackageRegistration.hpp` — `RegisterSerializableComponent`, `DeclareComponentConflict`, `SetEditorGizmo`.
+Native components and C# scripts feed `PropertyDescriptor` into the same `PropertyDrawer`. To add a field type, extend `PropertyType` and its dispatch in `PropertyDrawer.cpp` and `PropertyValue.cpp`. The source map is at the end.
 
 ## PropertyType — the canonical table
 
@@ -338,31 +329,11 @@ Funke::Package::RegisterComponentEntityPreset<TilemapComponent>(
 
 The preset runs the registry's `AddWithDependencies` for the component so any required sibling components (declared via `ComponentInfo::dependsOn`, or `Codegen::DeclareDependency`) are added together. For non-trivial presets, use the raw `RegisterEntityPreset(menuPath, label, defaultName, createLambda)` form and assemble the entity yourself.
 
-## Common pitfalls
+## Field compatibility
 
-1. **References need the explicit `MakeTextureRef` / `MakeAudioRef` / `MakeFontRef` / `MakeEntityRef` helpers.** `Make(&Component::TextureHandle)` fails to compile (handle types deduce to `None`), but a raw `uint64_t` GUID member silently becomes a `UInt64` number widget — no compile-time check catches that one.
-
-2. **Editing a Vec3 in multi-select edits only the touched channel.** This is the contract — don't write a custom drawer that bulk-overwrites all channels of all entities, or you'll clobber per-entity per-channel state on the untouched axes.
-
-3. **`EntityRef` is polymorphic between persistent entity ids and prefab GUIDs.** Reading `UIntValue` directly without checking `StringValue == "prefab"` mis-resolves prefab refs as entity IDs. Always go through the drawer / picker, or check both fields if you must read the raw value.
-
-4. **Enums use magic_enum — names matter at runtime.** `Properties::Make` on an `enum class` builds the `EnumDescriptor` from `magic_enum::enum_values<T>()` and `magic_enum::enum_name(v)`. If you rename an enum value, every saved scene / prefab keeps the old integer but the new name appears in the combo — old saves still load (integer-based), but `serializedName` on the *component* doesn't help you here; rename carefully.
-
-5. **`StringList` and `List` are not interchangeable.** `StringList` predates the generic `List<T>` and several serializers still depend on its legacy wire shape. Pick `StringList` for new string-only lists, `List<TItem>` for everything else.
-
-6. **`EnabledIf` predicates run on every frame per entity.** Keep them cheap — no allocations, no scene-wide lookups. The `EnabledIf<TComponent>` overload reads the named component directly and skips entities that don't have it, which is the usual right answer.
-
-7. **C# `[EnabledIf]` matches against the editor wire representation, not the runtime value.** A `float` field compared with `[EnabledIf(nameof(Speed), 0)]` checks against the `Float` wire (a double). Integer / enum literals work; complex types (vectors, colors, references) do not — use the predicate form on the native side instead.
-
-8. **`name` is stable, `displayName` is cosmetic.** The `displayName` is only the inspector label and can be renamed freely. Renaming `name` breaks Animator clips that target the property path (scene JSON is unaffected — its keys live in `serialize`/`deserialize`), so don't rename it without migrating clips.
-
-9. **`drawInspector = nullptr` is almost always correct.** Writing a custom inspector bypasses multi-select, undo, prefab overrides, EnabledIf gates, and the metadata system. Unless the field genuinely doesn't fit a PropertyType, leave it null.
-
-10. **`ComponentRef` needs `Metadata.ComponentTypeName`** so the picker can filter the entity's components to the compatible type. Without it the picker shows every component on the target and accepts any drop — that's almost always a bug. Set it to the `displayName` registered for the target component type.
-
-11. **`SetEditorGizmo` asserts if called before registration.** Order matters — register the component first, install the gizmo second. The assert message is the actionable hint; don't try to suppress it.
-
-12. **Component conflicts are symmetric.** Declaring `DeclareComponentConflict<A, B>()` once is enough — the registry walks both directions. Declaring it twice (once per side) is harmless but redundant.
+- Keep property `name` stable for Animator paths. `displayName` is the Inspector label. Scene keys belong to the serializer. Renaming an enum label changes its displayed name while saved values retain the integer.
+- Use explicit reference helpers. A raw `uint64_t` member produces a number widget. For `ComponentRef` set `Metadata.ComponentTypeName` to the registered display name.
+- Keep native `EnabledIf` predicates cheap because they run per entity every frame. The typed overload skips entities missing the component. C# predicates compare wire values and support scalar types. Use a native predicate for complex conditions.
 
 ## Quick reference — where things live
 

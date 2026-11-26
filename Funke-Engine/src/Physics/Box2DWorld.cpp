@@ -87,7 +87,7 @@ namespace Funke {
 				}
 			}
 		}
-		const int availableWorkers = JobSystem::IsInitialized() ? JobSystem::GetWorkerCount() : 0;
+		const int availableWorkers = JobSystem::CanParallelize(ParallelWorkload::Physics2D) ? JobSystem::GetWorkerCount() : 0;
 		const int currentWorkers = b2World_GetWorkerCount(m_WorldId);
 		// Hysteresis avoids reallocating Box2D worker contexts as bodies wake and sleep near the threshold.
 		const int threshold = currentWorkers > 1 ? k_SerialBodyThreshold : k_ParallelBodyThreshold;

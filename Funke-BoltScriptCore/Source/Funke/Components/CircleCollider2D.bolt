@@ -1,0 +1,14 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public class CircleCollider2D : Collider2D {
+public:
+    [ReadOnly] public override ulong FkShapeKind() { return 1ul; }
+    protected override ulong FkType() { return 10ul; }
+    float Radius { get { return Reinterpret<float>((uint)FkCircleCollider2D_GetRadius(ID, 0ul)); } set { FkCircleCollider2D_SetRadius(ID, (ulong)Reinterpret<uint>(value)); } }
+    Vector2 Center { get { return Vector2.FromBits(FkCircleCollider2D_GetCenter(ID, 0ul)); } set { FkCircleCollider2D_SetCenter(ID, value.Bits()); } }
+    bool Enabled { set { FkCircleCollider2D_SetEnabled(ID, (value ? 1ul : 0ul)); } }
+}

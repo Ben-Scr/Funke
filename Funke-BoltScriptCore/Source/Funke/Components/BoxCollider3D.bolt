@@ -1,0 +1,12 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public class BoxCollider3D : Collider3D {
+public:
+    [ReadOnly] public override ulong FkShapeKind() { return 0ul; }
+    protected override ulong FkType() { return 4ul; }
+    Vector3 Size { get { return FunkeApiTypes.DecodeVector3(FkGetBoxCollider3D_Size(ID, 0ul), FkReadExtra(0ul, 0ul)); } set { FkWriteExtra(value.HighBits(), 0ul); FkSetBoxCollider3D_Size(ID, value.LowBits()); } }
+}

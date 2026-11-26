@@ -1,0 +1,8 @@
+namespace Funke.Editor;
+
+public class EditorWindow {
+public:
+    virtual void OnOpen() {}
+    virtual void OnGUI() {}
+    virtual void OnClose() {}
+}

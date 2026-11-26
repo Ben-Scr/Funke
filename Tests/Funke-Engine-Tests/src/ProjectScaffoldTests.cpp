@@ -328,16 +328,25 @@ TEST_CASE("Native script scaffold preserves user CMake and avoids unchanged watc
 	const auto exports = directory.Root / "NativeScripts" / "Source" / "NativeScriptExports.cpp";
 	const auto moduleTime = std::filesystem::last_write_time(module);
 	const auto exportsTime = std::filesystem::last_write_time(exports);
+	const auto snippets = directory.Root / ".vscode/funke-cpp.code-snippets";
+	const auto snippetsTime = std::filesystem::last_write_time(snippets);
+	const auto snippetJson = Json::Parse(directory.Read(".vscode/funke-cpp.code-snippets"));
+	CHECK(snippetJson.IsObject());
+	REQUIRE(snippetJson.FindMember("Funke C++ script") != nullptr);
+	CHECK(snippetJson.FindMember("Funke C++ script")->FindMember("prefix")->AsStringOr() == "fnkscript");
 	const std::string custom = directory.Read("NativeScripts/CMakeLists.txt") + "target_compile_definitions(${PROJECT_NAME} PRIVATE CUSTOM_FEATURE=1)\n";
 	directory.Write("NativeScripts/CMakeLists.txt", custom);
 	directory.Project.EnsureNativeScriptProjectFiles();
 	CHECK(directory.Read("NativeScripts/CMakeLists.txt") == custom);
 	CHECK(std::filesystem::last_write_time(module) == moduleTime);
 	CHECK(std::filesystem::last_write_time(exports) == exportsTime);
+	CHECK(std::filesystem::last_write_time(snippets) == snippetsTime);
+	directory.Write(".vscode/funke-cpp.code-snippets", "{\"Custom snippet\": {\"prefix\": \"custom\", \"body\": \"custom\"}}");
 
 	directory.Project.CustomDefines.push_back("GAME_FEATURE");
 	directory.Project.EnsureNativeScriptProjectFiles();
 	CHECK(directory.Read("NativeScripts/FunkeNativeScripts.cmake").find("GAME_FEATURE") != std::string::npos);
+	CHECK(directory.Read(".vscode/funke-cpp.code-snippets").find("Custom snippet") != std::string::npos);
 	CHECK(directory.Read("NativeScripts/CMakeLists.txt") == custom);
 	directory.Project.Name = "Renamed Game";
 	directory.Project.EnsureNativeScriptProjectFiles();
@@ -423,6 +432,36 @@ TEST_CASE("New project scaffold contains an empty scene and C# project without s
 	CHECK(std::filesystem::is_regular_file(Path::FromUtf8(project.GetSceneFilePath(project.StartupScene))));
 	CHECK(std::filesystem::is_regular_file(Path::FromUtf8(project.CsprojPath)));
 	CHECK(std::filesystem::is_empty(Path::FromUtf8(project.ScriptsDirectory)));
+
+#if FUNKE_WITH_SCRIPTING
+	const auto root = Path::FromUtf8(project.RootDirectory);
+	const auto core = root / ".funke/Bolt/ScriptCore.bolt";
+	const auto ui = root / ".funke/Bolt/UI.bolt";
+	const auto manifest = Path::ToUtf8(root / "bolt.proj");
+	CHECK(File::ReadAllText(manifest).find(R"(["Assets", ".funke/Bolt"])") != std::string::npos);
+	const auto reference = File::ReadAllText(Path::ToUtf8(core));
+	CHECK(reference.find("class EntityScript") != std::string::npos);
+	CHECK(reference.find("class Application") != std::string::npos);
+	CHECK(reference.find("class Engine") != std::string::npos);
+	CHECK(reference.find("WorldToScreen") != std::string::npos);
+	CHECK(reference.find("FkBind") == std::string::npos);
+	CHECK(reference.find("FkType") == std::string::npos);
+	CHECK(reference.find("extern \"C\"") == std::string::npos);
+	CHECK(File::ReadAllText(Path::ToUtf8(ui)).find("namespace Funke.UI;") != std::string::npos);
+	if (!keepDir || !*keepDir) {
+		const auto previousWrite = std::filesystem::last_write_time(core);
+		const std::string customManifest = File::ReadAllText(manifest) + "\n# Project-specific settings\n";
+		REQUIRE(File::WriteAllText(manifest, customManifest));
+		REQUIRE(std::filesystem::remove(ui));
+		FunkeProject loaded;
+		std::string error;
+		CAPTURE(error);
+		REQUIRE(FunkeProject::TryLoad(project.RootDirectory, loaded, &error));
+		CHECK(std::filesystem::last_write_time(core) == previousWrite);
+		CHECK(std::filesystem::is_regular_file(ui));
+		CHECK(File::ReadAllText(manifest) == customManifest);
+	}
+#endif
 
 	if (!keepDir || !*keepDir) {
 		std::error_code ec;

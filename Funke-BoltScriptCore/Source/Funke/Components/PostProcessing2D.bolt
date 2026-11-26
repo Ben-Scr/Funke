@@ -1,0 +1,206 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public class PostProcessing2D : Component {
+public:
+    protected override ulong FkType() { return 29ul; }
+    struct ColorGradingSettings {
+    public:
+        private int enabled;
+        bool Enabled { get { return enabled != 0; } set { enabled = value ? 1 : 0; } }
+        float Exposure;
+        float Contrast;
+        float Saturation;
+        float Temperature;
+        float Tint;
+        Color ColorFilter;
+        static ColorGradingSettings Default {
+            get {
+                ColorGradingSettings result;
+                result.Exposure = 0.0f;
+                result.Contrast = 1.0f;
+                result.Saturation = 1.0f;
+                result.Temperature = 0.0f;
+                result.Tint = 0.0f;
+                result.ColorFilter = Funke.Color(1.0f, 1.0f, 1.0f, 1.0f);
+                return result;
+            }
+        }
+    }
+    ColorGradingSettings ColorGrading {
+        get { return ReadEffect<ColorGradingSettings>(0ul); }
+        set { WriteEffect<ColorGradingSettings>(0ul, value); }
+    }
+    struct VignetteSettings {
+    public:
+        private int enabled;
+        bool Enabled { get { return enabled != 0; } set { enabled = value ? 1 : 0; } }
+        Color Color;
+        float Intensity;
+        float Smoothness;
+        float Roundness;
+        Vector2 Center;
+        static VignetteSettings Default {
+            get {
+                VignetteSettings result;
+                result.Color = Funke.Color(0.0f, 0.0f, 0.0f, 1.0f);
+                result.Intensity = 0.45f;
+                result.Smoothness = 0.3f;
+                result.Roundness = 1.0f;
+                result.Center = Funke.Vector2(0.5f, 0.5f);
+                return result;
+            }
+        }
+    }
+    VignetteSettings Vignette {
+        get { return ReadEffect<VignetteSettings>(1ul); }
+        set { WriteEffect<VignetteSettings>(1ul, value); }
+    }
+    struct ChromaticAberrationSettings {
+    public:
+        private int enabled;
+        bool Enabled { get { return enabled != 0; } set { enabled = value ? 1 : 0; } }
+        float Intensity;
+        static ChromaticAberrationSettings Default {
+            get {
+                ChromaticAberrationSettings result;
+                result.Intensity = 0.25f;
+                return result;
+            }
+        }
+    }
+    ChromaticAberrationSettings ChromaticAberration {
+        get { return ReadEffect<ChromaticAberrationSettings>(2ul); }
+        set { WriteEffect<ChromaticAberrationSettings>(2ul, value); }
+    }
+    struct GrainSettings {
+    public:
+        private int enabled;
+        bool Enabled { get { return enabled != 0; } set { enabled = value ? 1 : 0; } }
+        float Intensity;
+        float Size;
+        private int colored;
+        bool Colored { get { return colored != 0; } set { colored = value ? 1 : 0; } }
+        static GrainSettings Default {
+            get {
+                GrainSettings result;
+                result.Intensity = 0.2f;
+                result.Size = 1.0f;
+                return result;
+            }
+        }
+    }
+    GrainSettings Grain {
+        get { return ReadEffect<GrainSettings>(3ul); }
+        set { WriteEffect<GrainSettings>(3ul, value); }
+    }
+    struct BloomSettings {
+    public:
+        private int enabled;
+        bool Enabled { get { return enabled != 0; } set { enabled = value ? 1 : 0; } }
+        float Threshold;
+        float Intensity;
+        float Scatter;
+        int Taps;
+        Color Tint;
+        static BloomSettings Default {
+            get {
+                BloomSettings result;
+                result.Threshold = 0.9f;
+                result.Intensity = 5.0f;
+                result.Scatter = 0.0f;
+                result.Taps = 80;
+                result.Tint = Funke.Color(1.0f, 1.0f, 1.0f, 1.0f);
+                return result;
+            }
+        }
+    }
+    BloomSettings Bloom {
+        get { return ReadEffect<BloomSettings>(4ul); }
+        set { WriteEffect<BloomSettings>(4ul, value); }
+    }
+    struct LensDistortionSettings {
+    public:
+        private int enabled;
+        bool Enabled { get { return enabled != 0; } set { enabled = value ? 1 : 0; } }
+        float Intensity;
+        float Scale;
+        Vector2 Center;
+        static LensDistortionSettings Default {
+            get {
+                LensDistortionSettings result;
+                result.Intensity = 0.0f;
+                result.Scale = 1.0f;
+                result.Center = Funke.Vector2(0.5f, 0.5f);
+                return result;
+            }
+        }
+    }
+    LensDistortionSettings LensDistortion {
+        get { return ReadEffect<LensDistortionSettings>(5ul); }
+        set { WriteEffect<LensDistortionSettings>(5ul, value); }
+    }
+    struct PixelatedSettings {
+    public:
+        private int enabled;
+        bool Enabled { get { return enabled != 0; } set { enabled = value ? 1 : 0; } }
+        float BlockSize;
+        int PaletteSteps;
+        private int quantizeColor;
+        bool QuantizeColor { get { return quantizeColor != 0; } set { quantizeColor = value ? 1 : 0; } }
+        static PixelatedSettings Default {
+            get {
+                PixelatedSettings result;
+                result.BlockSize = 8.0f;
+                result.PaletteSteps = 256;
+                return result;
+            }
+        }
+    }
+    PixelatedSettings Pixelated {
+        get { return ReadEffect<PixelatedSettings>(6ul); }
+        set { WriteEffect<PixelatedSettings>(6ul, value); }
+    }
+    struct GaussianBlurSettings {
+    public:
+        private int enabled;
+        bool Enabled { get { return enabled != 0; } set { enabled = value ? 1 : 0; } }
+        float Radius;
+        int Taps;
+        static GaussianBlurSettings Default {
+            get {
+                GaussianBlurSettings result;
+                result.Radius = 0.0f;
+                result.Taps = 50;
+                return result;
+            }
+        }
+    }
+    GaussianBlurSettings GaussianBlur {
+        get { return ReadEffect<GaussianBlurSettings>(7ul); }
+        set { WriteEffect<GaussianBlurSettings>(7ul, value); }
+    }
+    private T ReadEffect<T>(ulong effect) {
+        T result;
+        if (FkPostProcessing2D_GetEffect(ID, effect | ((ulong)sizeof(T) << 32)) == 0ul) return default;
+        uint* words = (uint*)&result;
+        for (int i = 0; i < (int)sizeof(T) / 4; i++) {
+            ulong pair = FkReadExtra((ulong)(i / 2), 0ul);
+            words[i] = (uint)((pair >> ((i % 2) * 32)) & 4294967295ul);
+        }
+        return result;
+    }
+    private void WriteEffect<T>(ulong effect, T value) {
+        uint* words = (uint*)&value;
+        int count = (int)sizeof(T) / 4;
+        for (int i = 0; i < count; i += 2) {
+            ulong pair = (ulong)words[i];
+            if (i + 1 < count) pair = pair | ((ulong)words[i + 1] << 32);
+            FkWriteExtra(pair, (ulong)(i / 2));
+        }
+        FkPostProcessing2D_SetEffect(ID, effect | ((ulong)sizeof(T) << 32));
+    }
+}

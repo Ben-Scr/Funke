@@ -1,0 +1,18 @@
+import Funke
+namespace Funke.UI;
+
+public static class UIPointer {
+public:
+    static Funke.Entity? HoveredEntity {
+        get {
+            ulong id = 0ul;
+            ulong argument = FkNativeSlot.Pointer(&id);
+            if (FkNativeInvoke(FkNativeSlot.UI_GetHoveredEntity, &argument, null) == 0ul) return null;
+            return Funke.Entity.FromId(id);
+        }
+    }
+    static bool TryGetHoveredEntity(Funke.Entity?& entity) {
+        entity = HoveredEntity;
+        return entity != null;
+    }
+}

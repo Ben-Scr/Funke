@@ -1,0 +1,8 @@
+import Funke
+namespace Funke.UI;
+
+public enum ScrollbarVisibility {
+    Permanent                 = 0,
+    AutoHide                  = 1,
+    AutoHideAndExpandViewport = 2,
+}

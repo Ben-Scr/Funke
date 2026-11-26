@@ -1,0 +1,49 @@
+import Funke
+
+namespace Gameplay;
+
+public class Counter : EntityScript
+{
+    public Vector2 Direction = Vector2(1.0f, -2.0f);
+    [ShowInEditor("Ticks")] private int updates = 0;
+
+    public override void OnAwake()
+    {
+        Entity.Name = "Grüner Würfel";
+        if (HasComponent<Transform2D>() && Entity.Name == "Grüner Würfel")
+            Transform2D.Position = Vector2(10.0f, 0.0f);
+    }
+    public override void OnCollisionEnter2D(Collision2D contact)
+    {
+        if (contact.Self.ID == Entity.ID && contact.Other.ID != Entity.ID)
+            Transform2D.Position = Transform2D.Position + contact.ContactPoint;
+    }
+    public override void OnStart()
+    {
+        Entity named = Create("Grüner Würfel");
+        Entity unnamed = Create();
+        Entity empty = Funke.Entity.Create("");
+        if (named.Name != "Grüner Würfel" || !unnamed.IsValid || !empty.IsValid ||
+            unnamed.HasComponent<NameComponent>() || empty.HasComponent<NameComponent>())
+            throw System.InvalidOperationException("Incorrect entity name after Create");
+        named.Destroy();
+        unnamed.Destroy();
+        empty.Destroy();
+
+        Entity child = Create2D("Bolt Child", Vector2(2.0f, 0.0f), 0.0f, Entity);
+        Transform2D? childTransform;
+        if (child.Parent != null && child.Parent.Value.ID == Entity.ID && child.TryGetComponent<Transform2D>(childTransform))
+            Transform2D.Position = Transform2D.Position + childTransform.Value.LocalPosition;
+        child.Destroy();
+    }
+
+    public override void OnUpdate()
+    {
+        updates += 1;
+        Transform2D.Position = Transform2D.Position + Vector2((float)updates, 0.0f);
+    }
+
+    public override void OnFixedUpdate() { Transform2D.Position = Transform2D.Position + Vector2.Up; }
+    public override void OnDisable() { Transform2D.Position = Transform2D.Position + Vector2.Up; }
+    public override void OnDestroy() { Transform2D.Position = Transform2D.Position + Vector2.Up; }
+}

@@ -1,5 +1,8 @@
 #include "pch.hpp"
+#include "Scripting/BoltScriptHost.hpp"
+#include "Scene/ComponentAccess.hpp"
 #include "Profiling/Profiler.hpp"
+#include "Diagnostics/LoadingDiagnostics.hpp"
 #include "Scene/SceneManager.hpp"
 #include "Scene/SceneExtensions.hpp"
 #include "Scene/Scene.hpp"
@@ -53,6 +56,7 @@
 #include "Systems/Particle3DUpdateSystem.hpp"
 #include "Systems/SkinnedMeshAnimationSystem.hpp"
 #include "Systems/Transform3DHierarchySystem.hpp"
+#include "Systems/CameraFollowRigSystem.hpp"
 #endif
 
 
@@ -199,15 +203,16 @@ namespace Funke {
 #if FUNKE_WITH_PHYSICS3D
 				if (EngineModules::IsActive(EngineModule::Physics3D)) definition.AddSystem<PhysicsInterpolationSystem3D>();
 #endif
+				definition.AddSystem<CameraFollowRigSystem>();
 			}
 #endif
 
-			if (config.EnableRenderer2D) {
+			if (config.EnableSceneRendering) {
 				definition.AddSystem<UILayoutSystem>();
 			}
 
 #if FUNKE_WITH_2D
-			if (config.EnableRenderer2D && with2D) {
+			if (config.EnableSceneRendering && with2D) {
 				definition.AddSystem<ParticleUpdateSystem>();
 			}
 #endif
@@ -236,11 +241,11 @@ namespace Funke {
 			}
 
 			// UIFocusSystem MUST run before UIEventSystem: it promotes mouse-focus and sets the Activate flag that UIEventSystem's hit-test reads.
-			if (config.EnableRenderer2D) {
+			if (config.EnableSceneRendering) {
 				definition.AddSystem<UIFocusSystem>();
 			}
 
-			if (config.EnableRenderer2D) {
+			if (config.EnableSceneRendering) {
 				definition.AddSystem<UIEventSystem>();
 				definition.AddSystem<LocalizedTextSystem>();
 			}
@@ -483,6 +488,7 @@ namespace Funke {
 			return candidate->Cancelled || !candidate->Preload || !candidate->Ready;
 		});
 		if (next == m_AsyncSceneLoads.end()) return;
+		LoadingScope pumpTiming("Scene.Pump", m_AsyncSceneLoadBudgetMs);
 		const auto operation = *next;
 		auto complete = [&](SceneLoadResult result) {
 			std::erase(m_AsyncSceneLoads, operation);
@@ -521,7 +527,8 @@ namespace Funke {
 #if FNK_PLATFORM_HAS_THREADS
 			try {
 				operation->Worker = std::async(std::launch::async, [paths = std::move(paths)] {
-					AsyncSceneLoad::PreparedFiles prepared;
+					LoadingScope preparationTiming("Scene.PrepareWorker");
+						AsyncSceneLoad::PreparedFiles prepared;
 					prepared.Roots.resize(paths.size());
 					for (size_t i = 0; i < paths.size(); ++i) {
 						if (!paths[i].empty() && !SceneSerializer::PrepareFile(paths[i], prepared.Roots[i], &prepared.Error)) break;
@@ -583,6 +590,7 @@ namespace Funke {
 #if FNK_PLATFORM_HAS_THREADS
 				if (!operation->PendingPrefabs.empty()) {
 					operation->Worker = std::async(std::launch::async, [prefabs = std::move(operation->PendingPrefabs)] {
+						LoadingScope preparationTiming("Scene.PrepareWorker");
 						AsyncSceneLoad::PreparedFiles prepared;
 						for (const auto& [id, path] : prefabs) {
 							std::shared_ptr<const Json::Value> root;
@@ -645,16 +653,19 @@ namespace Funke {
 				Scene& scene = *operation->StagedScene;
 				SceneExecutionScope executionScope(scene);
 				if (step.Callback) {
+					LoadingScope callbackTiming("Scene.LoadCallback", m_AsyncSceneLoadBudgetMs);
 					SceneSerializer::NewSceneLoadScope contentScope(scene);
 					step.Callback(scene);
 					if (contentScope.HasRollbackFailure()) { complete({ SceneLoadStatus::LoadCallbackFailed, {}, "Load callback rollback failed" }); return; }
 				}
 				else {
-					if (!SceneSerializer::DeserializeSceneBatch(scene, operation->Prepared.Roots[operation->Step], step.FilePath,
+					const auto previousAdditional = operation->EntityState.additionalEntities;
+                    if (!SceneSerializer::DeserializeSceneBatch(scene, operation->Prepared.Roots[operation->Step], step.FilePath,
 						operation->EntityState, m_AsyncSceneLoadBudgetMs, m_AsyncSceneLoadMaxEntities)) {
 						complete({ SceneLoadStatus::LoadCallbackFailed, {}, "Failed to load scene file: " + step.FilePath }); return;
 					}
-					operation->Progress.CompletedEntities = operation->PreviousEntities + operation->EntityState.nextEntity;
+					operation->Progress.TotalEntities += operation->EntityState.additionalEntities - previousAdditional;
+                    operation->Progress.CompletedEntities = operation->PreviousEntities + operation->EntityState.materializedEntities;
 					operation->Progress.Progress = 0.5f + 0.4f * static_cast<float>(operation->Progress.CompletedEntities)
 						/ static_cast<float>(std::max(size_t{1}, operation->Progress.TotalEntities));
 					if (!operation->EntityState.complete) return;
@@ -670,6 +681,7 @@ namespace Funke {
 		operation->Progress.Phase = SceneLoadPhase::Activating;
 		operation->Progress.Progress = 0.95f;
 		if (!activationReady) return;
+		LoadingScope activationTiming("Scene.Activation", m_AsyncSceneLoadBudgetMs);
 		// Remove before activation: script teardown can cancel other requests while this scene is committing.
 		std::erase(m_AsyncSceneLoads, operation);
 		try {
@@ -775,6 +787,7 @@ namespace Funke {
 	}
 
 	bool SceneManager::BeginLoadedSceneRecovery(const std::shared_ptr<Scene>& scene) {
+		ComponentAccess::RequireNoBorrows();
 		SceneManager* manager = TryGet();
 		if (!manager || !scene || !scene->m_IsLoaded || scene->m_LifecycleSuspended) return false;
 		if (manager->m_LoadInProgress || manager->m_ReleaseDepth != 0) return false;
@@ -806,6 +819,7 @@ namespace Funke {
 	}
 
 	bool SceneManager::SuspendLoadedSceneForRelease(const std::shared_ptr<Scene>& scene) {
+		ComponentAccess::RequireNoBorrows();
 		SceneManager* manager = TryGet();
 		if (!manager || !scene || !scene->m_IsLoaded || scene->m_LifecycleSuspended) return false;
 		if (manager->m_LoadInProgress || manager->m_ReleaseDepth != 0) return false;
@@ -839,6 +853,7 @@ namespace Funke {
 	}
 
 	bool SceneManager::RollbackLoadedSceneRecovery(const std::shared_ptr<Scene>& scene) {
+		ComponentAccess::RequireNoBorrows();
 		SceneManager* manager = TryGet();
 		if (!manager || !scene || !scene->m_IsLoaded) return false;
 		if (manager->m_LoadInProgress || manager->m_ReleaseDepth != 0
@@ -1597,9 +1612,11 @@ namespace Funke {
 
 	void SceneManager::ReleaseScene(LoadedSceneList::iterator it, bool emitNotifications,
 		bool runDefinitionUnloadCallbacks) {
+		LoadingScope releaseTiming("Scene.Release", m_AsyncSceneLoadBudgetMs);
 		if (it == m_LoadedScenes.end() || !(*it)) {
 			return;
 		}
+		ComponentAccess::BeforeMutation((*it)->GetRegistry());
 		++m_ReleaseDepth;
 		ScopeExit releaseGuard([this]() { --m_ReleaseDepth; });
 
@@ -1716,6 +1733,7 @@ namespace Funke {
 	}
 
 	void SceneManager::UnloadAllScenesInternal(bool includePersistent, bool ensureActiveCamera, const Scene* sceneToKeep) {
+		ComponentAccess::RequireNoBorrows();
 		for (auto it = m_LoadedScenes.begin(); it != m_LoadedScenes.end();) {
 			if (it->get() == sceneToKeep || (!includePersistent && (*it)->IsPersistent())) {
 				++it;
@@ -1861,6 +1879,7 @@ namespace Funke {
 	}
 
 	void SceneManager::InitializeStartupScenesAsync(std::function<void()> completion) {
+		BoltScriptHost::RegisterNativeStructs();
 		m_StartupSceneQueue.clear();
 		m_StartupSceneNext = 0;
 		m_StartupFallbackAttempted = false;
@@ -1906,6 +1925,7 @@ namespace Funke {
 	}
 
 	void SceneManager::InitializeStartupScenes() {
+		BoltScriptHost::RegisterNativeStructs();
 		if (!m_IsInitialized) {
 			FNK_CORE_ERROR_TAG("SceneManager", "InitializeStartupScenes called before Initialize");
 			return;

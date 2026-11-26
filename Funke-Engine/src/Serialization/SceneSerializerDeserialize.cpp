@@ -1,9 +1,11 @@
 #include "pch.hpp"
+#include "Scripting/BoltScriptHost.hpp"
 #include <atomic>
 #include <mutex>
 #include "Assets/AssetRegistry.hpp"
 #include "Serialization/SceneSerializer.hpp"
 #include "Serialization/SceneSerializerShared.hpp"
+#include "Serialization/EntityReferenceSerialization.hpp"
 #include "Serialization/File.hpp"
 #include "Serialization/FileStamp.hpp"
 #include "Serialization/Json.hpp"
@@ -29,6 +31,7 @@
 #include "Components/General/UUIDComponent.hpp"
 #include "Components/General/EntityMetaDataComponent.hpp"
 #include "Profiling/Profiler.hpp"
+#include "Diagnostics/LoadingDiagnostics.hpp"
 #include "Scene/Entity.hpp"
 #include "Components/Tags.hpp"
 #include "Scripting/ScriptComponent.hpp"
@@ -63,6 +66,16 @@
 namespace Funke {
 
 	using Json::Value;
+	// Only used by an unpublished, lifecycle-suspended scene. Cancellation drops the entire scene.
+	struct ScenePrefabLoadState {
+		std::vector<Json::Value> Entities;
+		std::unordered_map<uint64_t, EntityHandle> BySource;
+		std::vector<std::pair<EntityHandle, uint64_t>> Parents;
+		std::vector<std::pair<uint64_t, EntityHandle>> Remaps;
+		uint64_t Guid = 0, InstanceId = 0;
+		size_t Next = 0, NextParent = 0, FixupStart = 0;
+		EntityHandle Root = entt::null;
+	};
 	using namespace SceneSerializerShared;
 
 	namespace {
@@ -430,6 +443,7 @@ namespace Funke {
 			auto& callbacks = ScriptEngine::GetCallbacks();
 
 			for (const ScriptInstance& instance : scriptComponent.Scripts) {
+				if (instance.GetType() == ScriptType::Bolt) continue;
 				if (instance.GetType() == ScriptType::Native) {
 					const std::string prefix = instance.GetClassName() + ".";
 					Value fields = Value::MakeArray();
@@ -694,6 +708,11 @@ namespace Funke {
 				return true;
 			}
 
+			// A null top-level component override removes that inherited component.
+			if (parts.size() == 1 && overrideValue.IsNull()) {
+				RemoveObjectMember(entityValue, parts.front());
+				return true;
+			}
 			Value* current = &entityValue;
 			for (size_t i = 0; i + 1 < parts.size(); ++i) {
 				if (!current->IsObject()) {
@@ -1206,7 +1225,7 @@ namespace Funke {
 		}
 
 		bool LoadPrefabDefinitionRecursive(uint64_t prefabGuid, PrefabDefinition& outDefinition,
-			std::unordered_set<uint64_t>& inProgress) {
+			std::unordered_set<uint64_t>& inProgress, uint64_t previousGuid = 0, const Value* previousSource = nullptr) {
 			if (!inProgress.insert(prefabGuid).second) {
 				FNK_CORE_WARN_TAG("SceneSerializer", "Circular prefab reference detected at GUID {}", prefabGuid);
 				return false;
@@ -1220,11 +1239,12 @@ namespace Funke {
 
 			const std::string prefabPath = AssetRegistry::ResolvePath(prefabGuid);
 			std::shared_ptr<const Value> cachedRoot;
-			if (prefabPath.empty() || !ReadPrefabRootCached(prefabGuid, prefabPath, cachedRoot)) {
+			const bool usePrevious = previousSource && prefabGuid == previousGuid;
+			if (!usePrevious && (prefabPath.empty() || !ReadPrefabRootCached(prefabGuid, prefabPath, cachedRoot))) {
 				inProgress.erase(prefabGuid);
 				return false;
 			}
-			const Value& root = *cachedRoot;
+			const Value& root = usePrevious ? *previousSource : *cachedRoot;
 
 			if (ReadPrefabDefinitionFromRoot(root, outDefinition)) {
 				const bool valid = ValidateEntityTreeSourceIds(outDefinition.Entities, EntityOrigin::Prefab, true);
@@ -1247,12 +1267,12 @@ namespace Funke {
 					basePrefabGuid = prefabRefValue->AsUInt64Or(0);
 				}
 
-				{
+				if (!previousSource) {
 					std::lock_guard<std::mutex> lock(g_PrefabRootCacheMutex);
 					const auto it = g_PrefabRootCache.find(PrefabRootCacheKey(prefabPath));
 					if (it != g_PrefabRootCache.end()) it->second.BasePrefabGuid = basePrefabGuid;
 				}
-				if (basePrefabGuid != 0 && LoadPrefabDefinitionRecursive(basePrefabGuid, outDefinition, inProgress)) {
+				if (basePrefabGuid != 0 && LoadPrefabDefinitionRecursive(basePrefabGuid, outDefinition, inProgress, previousGuid, previousSource)) {
 					if (!ApplyEntityOverrides(outDefinition, root)) {
 						inProgress.erase(prefabGuid);
 						return false;
@@ -1401,7 +1421,8 @@ namespace Funke {
 		}
 
 		// "<id>:<Component>" always, a bare "<id>" only when bareIds; "0" and "prefab:<guid>" (an asset) stay.
-		bool RemapScriptEntityRef(const Scene& scene, std::string& value, bool bareIds) {
+		template <typename Translate>
+		bool RemapScriptEntityRef(Translate translate, std::string& value, bool bareIds) {
 			if (value.empty() || value == "0" || value.rfind("prefab:", 0) == 0) return false;
 			const std::size_t colon = value.find(':');
 			if (colon == std::string::npos && !bareIds) return false;
@@ -1409,29 +1430,30 @@ namespace Funke {
 			uint64_t id = 0;
 			const auto [end, ec] = std::from_chars(idPart.data(), idPart.data() + idPart.size(), id);
 			if (ec != std::errc{} || end != idPart.data() + idPart.size() || id == 0) return false;
-			const uint64_t mapped = scene.TranslateEntityRef(id);
+			const uint64_t mapped = translate(id);
 			if (mapped == id) return false;
 			value = std::to_string(mapped) + (colon == std::string::npos ? std::string() : value.substr(colon));
 			return true;
 		}
 
-		void RemapScriptEntityRefField(const Scene& scene, const ScriptEntityRefField& field, std::string& value) {
+		template <typename Translate>
+		void RemapScriptEntityRefField(Translate translate, const ScriptEntityRefField& field, std::string& value) {
 			if (!field.List) {
-				RemapScriptEntityRef(scene, value, field.BareIds);
+				RemapScriptEntityRef(translate, value, field.BareIds);
 				return;
 			}
 			std::vector<std::string> items = DecodeScriptFieldList(value);
 			bool changed = false;
 			for (std::string& item : items) {
 				if (field.ObjectFieldRefs.empty()) {
-					changed |= RemapScriptEntityRef(scene, item, field.BareIds);
+					changed |= RemapScriptEntityRef(translate, item, field.BareIds);
 					continue;
 				}
 				std::vector<std::string> inner = DecodeScriptFieldList(item);
 				bool innerChanged = false;
 				for (std::size_t i = 0; i < inner.size() && i < field.ObjectFieldRefs.size(); ++i) {
 					if (field.ObjectFieldRefs[i] != 0) {
-						innerChanged |= RemapScriptEntityRef(scene, inner[i], field.ObjectFieldRefs[i] == 1);
+						innerChanged |= RemapScriptEntityRef(translate, inner[i], field.ObjectFieldRefs[i] == 1);
 					}
 				}
 				if (innerChanged) {
@@ -1481,6 +1503,21 @@ namespace Funke {
 			return field;
 		}
 	} // namespace
+
+	namespace Detail {
+		void RemapWrittenScriptEntityReferences(Value& fieldsByClass) {
+			for (auto& [className, rows] : fieldsByClass.GetObject()) {
+				if (!rows.IsArray()) continue;
+				for (auto& row : rows.GetArray()) {
+					std::string stored = GetStringMember(row, "value");
+					if (auto field = DescribeScriptEntityRefField(row, {}, stored)) {
+						RemapScriptEntityRefField(MapWrittenEntityReference, *field, stored);
+						row.AddMember("value", Value(std::move(stored)));
+					}
+				}
+			}
+		}
+	}
 
 	bool SceneSerializer::PreparePrefab(uint64_t guid, const std::string& path, std::shared_ptr<const Value>& outRoot) {
 		return ReadPrefabRootCached(guid, path, outRoot);
@@ -1642,6 +1679,86 @@ namespace Funke {
 		if (childIdx >= 0) {
 			state.childIndexByEntity[static_cast<uint32_t>(handle)] = childIdx;
 		}
+		return true;
+	}
+
+	bool SceneSerializer::ProcessLoadedEntityBatch(Scene& scene, const Value& value,
+		SceneLoadState& state, bool& complete, double budgetMs) {
+		complete = false;
+		if (!state.prefab) {
+			if (EntityOriginFromString(GetStringMember(value, "Origin", "Scene")) != EntityOrigin::Prefab) {
+				LoadingScope timing("Scene.Entity", budgetMs);
+				complete = true;
+				return ProcessLoadedEntity(scene, value, state);
+			}
+			LoadingScope timing("Scene.PrefabPrepare", budgetMs);
+			const uint64_t guid = ResolvePrefabGuid(value);
+			if (!guid) return false;
+			const uint64_t instance = GetUInt64Member(value, "uuid", 0);
+			EntityHandle existing = entt::null;
+			if (instance && scene.TryResolveEntityRef(instance, existing)) return false;
+			PrefabDefinition definition;
+			if (!LoadPrefabDefinition(scene, guid, definition)) {
+				complete = true; // Existing missing-prefab placeholder preserves authored data.
+				return ProcessLoadedEntity(scene, value, state);
+			}
+			if (!ApplyEntityOverrides(definition, value)
+				|| !ValidateEntityTreeSourceIds(definition.Entities, EntityOrigin::Prefab, true)) return false;
+			state.prefab = std::make_shared<ScenePrefabLoadState>();
+			auto& load = *state.prefab;
+			load.Entities = std::move(definition.Entities);
+            state.additionalEntities += load.Entities.empty() ? 0 : load.Entities.size() - 1;
+			load.Guid = guid;
+			load.InstanceId = instance;
+			load.FixupStart = scene.GetPendingEntityRefFixupCount();
+			return !load.Entities.empty();
+		}
+		auto& load = *state.prefab;
+		// A remap scope never survives a pump. The stored remaps are installed only for final fixups.
+		Scene::EntityRefRemapScope remap(scene);
+		if (load.Next < load.Entities.size()) {
+			LoadingScope timing("Scene.PrefabEntity", budgetMs);
+			const auto& source = load.Entities[load.Next++];
+			Value entity = source;
+			RemovePrefabRuntimeIdentityMembers(entity);
+			const auto handle = DeserializeFullEntity(scene, entity, EntityOrigin::Prefab, load.Guid);
+			if (handle == entt::null) return false;
+			if (load.Root == entt::null) load.Root = handle;
+			const uint64_t sourceId = GetPrefabSourceId(source);
+			if (sourceId && !load.BySource.emplace(sourceId, handle).second) return false;
+			uint64_t refId = GetUInt64Member(source, "sourceUuid", 0);
+			if (!refId) refId = GetUInt64Member(source, "uuid", 0);
+			if (refId) load.Remaps.emplace_back(refId, handle);
+			const uint64_t parent = GetUInt64Member(source, "parentUuid", 0);
+			if (parent) load.Parents.emplace_back(handle, parent);
+			const auto authoredId = GetUInt64Member(source, "SourceEntityId", 0);
+			if (authoredId && scene.HasComponent<PrefabInstanceComponent>(handle))
+				scene.GetComponent<PrefabInstanceComponent>(handle).SourceEntityId = authoredId;
+			return true;
+		}
+		if (load.NextParent < load.Parents.size()) {
+			LoadingScope timing("Scene.PrefabParent", budgetMs);
+			const auto [child, parentId] = load.Parents[load.NextParent++];
+			const auto parent = load.BySource.find(parentId);
+			if (parent == load.BySource.end()) return false;
+			scene.GetEntity(child).SetParent(scene.GetEntity(parent->second));
+			return true;
+		}
+		LoadingScope timing("Scene.PrefabFixups", budgetMs, load.Entities.size());
+		for (const auto& [sourceId, handle] : load.Remaps)
+			scene.RegisterEntityRefRemap(sourceId, scene.GetEntityPersistentID(handle));
+		if (load.InstanceId) {
+			if (!scene.SetEntityPersistentID(load.Root, load.InstanceId)) return false;
+			scene.RegisterEntityRefRemap(GetUInt64Member(load.Entities.front(), "uuid", 0), load.InstanceId);
+		}
+		PinPrefabInstanceChildIds(scene, load.Root);
+		scene.RunPendingEntityRefFixupsFrom(load.FixupStart);
+		const uint64_t parent = GetUInt64Member(value, "parentUuid", 0);
+		if (parent) state.pendingParents.emplace_back(load.Root, parent);
+		const int childIndex = GetIntMember(value, "childIndex", -1);
+		if (childIndex >= 0) state.childIndexByEntity[static_cast<uint32_t>(load.Root)] = childIndex;
+		state.prefab.reset();
+		complete = true;
 		return true;
 	}
 
@@ -1871,21 +1988,28 @@ namespace Funke {
 
 	bool SceneSerializer::DeserializeSceneBatch(Scene& scene, const Value& root, std::string_view source,
 		SceneLoadState& state, double budgetMs, size_t maxEntities) {
+		LoadingScope timing("Scene.Materialize", budgetMs);
 		if (scene.IsLoaded() || !scene.IsLifecycleSuspended()) return false;
 		const auto deadline = std::chrono::steady_clock::now() + std::chrono::duration<double, std::milli>(budgetMs);
 		if (!state.started) {
+			LoadingScope header("Scene.Header", budgetMs);
 			if (!ValidateSceneRoot(root, source, true)) return false;
 			bool restartLifecycle = false;
 			if (!ProcessSceneHeader(scene, root, source, restartLifecycle)) return false;
 			state.started = true;
+            if (std::chrono::steady_clock::now() >= deadline) return true;
 		}
 		const auto& entities = root.FindMember("entities")->GetArray();
 		size_t processed = 0;
 		while (state.nextEntity < entities.size()) {
-			if (!ProcessLoadedEntity(scene, entities[state.nextEntity], state)) return false;
-			++state.nextEntity;
+			const auto beforeCount = scene.GetEntityCount();
+            bool complete = false;
+			if (!ProcessLoadedEntityBatch(scene, entities[state.nextEntity], state, complete, budgetMs)) return false;
+			state.materializedEntities += scene.GetEntityCount() - beforeCount;
+            if (complete) ++state.nextEntity;
 			if (++processed >= maxEntities || std::chrono::steady_clock::now() >= deadline) return true;
 		}
+		LoadingScope finalize("Scene.Finalize", budgetMs);
 		FinalizeSceneLoad(scene, state, false);
 		state.complete = ValidateStagedEntityIdentities(scene, source);
 		return state.complete;
@@ -1896,6 +2020,7 @@ namespace Funke {
 		const Json::Value& root,
 		std::string_view source,
 		bool logSuccess) {
+		BoltScriptHost::RegisterNativeStructs();
 		FUNKE_PROFILE_SCOPE("SceneSerializer::DeserializeScene");
 		if (!ValidateSceneRoot(root, source, true)) return false;
 
@@ -1973,6 +2098,7 @@ namespace Funke {
 		Scene& scene,
 		const std::vector<std::uint8_t>& bytes,
 		std::string_view source) {
+		BoltScriptHost::RegisterNativeStructs();
 		FUNKE_PROFILE_SCOPE("SceneSerializer::DeserializeSceneStreamingBinary");
 
 		Value header;
@@ -2489,7 +2615,7 @@ namespace Funke {
 						for (const ScriptEntityRefField& field : fields) {
 							const auto it = scPtr->PendingFieldValues.find(field.Key);
 							if (it != scPtr->PendingFieldValues.end()) {
-								RemapScriptEntityRefField(*scenePtr, field, it->second);
+								RemapScriptEntityRefField([scenePtr](uint64_t id) { return scenePtr->TranslateEntityRef(id); }, field, it->second);
 							}
 						}
 					});
@@ -2703,6 +2829,30 @@ namespace Funke {
 
 	EntityHandle SceneSerializer::RestoreEntityTree(Scene& scene, const std::vector<Json::Value>& entityValues, bool exactIdentity) {
 		return DeserializeEntityTree(scene, entityValues, EntityOrigin::Scene, 0, /*preserveSerializedIdentity=*/true, nullptr, exactIdentity);
+	}
+
+	EntityHandle SceneSerializer::CloneRuntimeEntity(Scene& destination, Entity source) {
+		if (!source.IsValid()) return entt::null;
+		Scene& sourceScene = *source.GetScene();
+		const auto sourceId = sourceScene.GetEntityPersistentID(source.GetHandle());
+		if (!source.GetChildren().empty() || sourceId == 0) {
+			return DeserializeEntityFromValue(destination,
+				SerializeEntityForClipboard(sourceScene, source.GetHandle()), EntityOrigin::Runtime);
+		}
+
+		auto snapshot = SerializeEntityFull(sourceScene, source.GetHandle());
+		RemoveEntityIdentityMembers(snapshot);
+		RemoveObjectMember(snapshot, "parentUuid");
+		Scene::EntityRefRemapScope remap(destination);
+		EntityTreeRollbackGuard rollback(destination, true, destination.GetPendingEntityRefFixupCount());
+		rollback.Reserve(1);
+		const auto clone = DeserializeFullEntity(destination, snapshot, EntityOrigin::Runtime);
+		if (clone == entt::null) return clone;
+		rollback.Track(clone);
+		destination.RegisterEntityRefRemap(sourceId, destination.GetEntityPersistentID(clone));
+		rollback.Commit();
+		destination.RunPendingEntityRefFixups();
+		return clone;
 	}
 
 	EntityHandle SceneSerializer::DeserializeEntityFromValue(
@@ -3679,6 +3829,45 @@ namespace Funke {
 			FNK_CORE_ERROR_TAG("SceneSerializer", "LoadEntityFromFile failed: {}", exception.what());
 			return entt::null;
 		}
+	}
+
+	bool SceneSerializer::GetPrefabDependencies(uint64_t prefabGuid, std::vector<uint64_t>& dependencies) {
+		dependencies.clear();
+		std::unordered_set<uint64_t> seen;
+		for (size_t depth = 0; prefabGuid && depth <= 32; ++depth) {
+			if (!seen.insert(prefabGuid).second) return false;
+			std::shared_ptr<const Value> root;
+			const auto path = AssetRegistry::ResolvePath(prefabGuid);
+			if (path.empty() || !ReadPrefabRootCached(prefabGuid, path, root)) return false;
+			if (!root->FindMember("PrefabRef")) return true;
+			const auto* reference = root->FindMember("PrefabRef");
+			prefabGuid = 0;
+			if (reference->IsString()) {
+				const auto text = reference->AsStringOr();
+				try { size_t used = 0; prefabGuid = std::stoull(text, &used); if (used != text.size()) prefabGuid = 0; } catch (...) {}
+				if (!prefabGuid) prefabGuid = AssetRegistry::GetOrCreateAssetUUID(text);
+			}
+			else prefabGuid = reference->AsUInt64Or(0);
+			if (!prefabGuid) return false;
+			dependencies.push_back(prefabGuid);
+		}
+		return false;
+	}
+
+	bool SceneSerializer::ResolvePrefabSource(uint64_t prefabGuid, Json::Value& source) {
+		return ResolvePrefabSource(prefabGuid, source, 0, Json::Value());
+	}
+	bool SceneSerializer::ResolvePrefabSource(uint64_t prefabGuid, Json::Value& source,
+		uint64_t previousGuid, const Json::Value& previousSource) {
+		PrefabDefinition definition;
+		std::unordered_set<uint64_t> inProgress;
+		if (!LoadPrefabDefinitionRecursive(prefabGuid, definition, inProgress, previousGuid, previousGuid ? &previousSource : nullptr) || definition.Entities.empty()) return false;
+		source = Value::MakeObject();
+		source.AddMember("Entity", definition.Entities.front());
+		Value entities = Value::MakeArray();
+		for (auto& entity : definition.Entities) entities.Append(std::move(entity));
+		source.AddMember("Entities", std::move(entities));
+		return true;
 	}
 
 } // namespace Funke

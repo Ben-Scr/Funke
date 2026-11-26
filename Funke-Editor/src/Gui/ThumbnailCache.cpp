@@ -1,6 +1,7 @@
 #include <pch.hpp>
 #include "Gui/ThumbnailCache.hpp"
 #include "Assets/AssetRegistry.hpp"
+#include "Graphics/MeshAsset.hpp"
 #include <imgui.h>
 #include <algorithm>
 
@@ -132,12 +133,16 @@ namespace Funke {
 			return AssetType::Audio;
 		if (ext == ".ttf" || ext == ".otf")
 			return AssetType::Font;
-		if (ext == ".lua" || ext == ".cpp" || ext == ".hpp" || ext == ".h" || ext == ".c" || ext == ".cs")
+		if (ext == ".bolt" || ext == ".lua" || ext == ".cpp" || ext == ".hpp" || ext == ".h" || ext == ".c" || ext == ".cs")
 			return AssetType::Script;
 		if (ext == ".scene" || ext == ".json" || ext == ".funke")
 			return AssetType::Scene;
 		if (ext == ".prefab")
 			return AssetType::Prefab;
+		if (ext == ".material")
+			return AssetType::Material;
+		if (IsMeshFileExtension(ext))
+			return AssetType::Mesh;
 		if (ext == ".cfg" || ext == ".ini" || ext == ".yaml" || ext == ".toml" || ext == ".xml")
 			return AssetType::Config;
 
@@ -156,6 +161,8 @@ namespace Funke {
 			case AssetType::Scene:   return "Scene";
 			case AssetType::Config:  return "Config";
 			case AssetType::Prefab:  return "Prefab";
+			case AssetType::Material: return "Material";
+			case AssetType::Mesh:     return "3D Model";
 			default:                 return "File";
 		}
 	}

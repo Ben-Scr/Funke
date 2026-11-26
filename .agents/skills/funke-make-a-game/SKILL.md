@@ -1,65 +1,51 @@
 ---
 name: funke-make-a-game
-description: START HERE whenever a GAME is made or extended with Funke — "make me a game", "build a platformer / tower defense / shooter / roguelike", "make a 3D game", "new Funke project", "add a level / enemy / boss / shop / HUD / menu / save system", "create the scenes and prefabs", "balance the waves", or any game request inside a Funke project (project.json + Assets/), even without the word Funke. Runs pre-production first (game brief, palette and design language, asked from the user or fully decided by the agent on request), then the agent workflow (Data Assets, art, JSON prefabs and scenes, small C# scripts, validate, scripted tests, hand-off), the house rules, a "Funke already has it" table (Data Assets, prefabs, Animator, Localization, SaveData, coroutines, Tween, UI layout) and tested templates (settings, scene fades, level select, progress, pause, dev commands, generator kit). Covers 2D and 3D. Art goes to funke-game-art, C# API to funke-game-scripting, UI widgets to funke-game-ui. Not for engine C++.
+description: "Create or extend a 2D or 3D Funke game. Covers game briefs, project scaffolding, levels, prefabs, gameplay features and playtesting."
 ---
 
 # Making a game with Funke
 
-Funke makes 2D and 3D games: scenes of entities with components, game logic in C# (.NET 10) on `Funke-ScriptCore`, content referenced by GUID from `Assets/`. A human builds the world in the Editor. **You build the same world by writing the files the Editor would write** (JSON scenes and prefabs, `.dataasset` files, `.meta` sidecars) and keep C# for behaviour. Everything you author stays visible and editable in the Editor, so the user can keep working on the game after you.
-
-What separates a good agent-made Funke game from a working-but-messy one: content that is *authored* (scenes, prefabs, data) rather than hard-coded, Funke's built-in features used instead of re-implemented, one coherent look, and tests that prove the core loop. The sections below are about those four things.
+Author 2D and 3D Funke games through the same scenes, prefabs, Data Assets and C# scripts the Editor reads.
 
 ## 0. Pre-production (every new game)
 
-Before the first file, settle what the game is and how it looks. Read **`references/pre-production.md`** and follow it. In short:
-
-- Ask the user (question tool, in their language) **how much they want to decide**: define it together · give the idea and let you do the look · let you decide everything (100 %). Skip the question if they already said "decide yourself".
-- Then ask about the game (pitch, platform, scope, camera) and the look (art style, palette, UI language, juice), offering concrete options with your recommendation first.
-- Write `Design/GameBrief.md`, `Design/DesignLanguage.md` and `Design/palette.json`, render `Design/style-sample.png` with `funke-game-art`, and get it approved (unless in 100 % mode).
-
-For an existing game, read its design docs instead (`Design/`, `DesignLanguage.md`, `Planning/*.md`) and follow them.
+For a new game, follow [pre-production](references/pre-production.md) to agree on the brief, design language, palette and style sample. Respect decisions the user already made or delegated. For an existing game, use its current design documents.
 
 ## House rules
 
-1. **The world is authored, not spawned.** Every entity that exists when a level starts (camera, player, walls, UI, managers) is in a `.scene` or `.prefab` JSON file. A "bootstrap"/"LevelBuilder" script that builds the level with `Entity.Create`/`AddComponent` can't be seen or edited in the Editor. Runtime creation is only for genuinely dynamic things (bullets, spawned enemies, drops), and even those are `Instantiate`d from a prefab field.
-2. **Data lives in Data Assets.** Anything with more than one entry of the same kind (enemy types, towers, items, waves, levels, upgrades, shop offers, dialogue lines, difficulty presets) is a `DataAsset` class plus one `.dataasset` file per entry, referenced by script fields. No stat tables, `switch` ladders or `static readonly` arrays of content in C#. Designers tune data in the Inspector, scripts stay generic, and new content needs no code. → `references/data-driven.md`
-3. **Assets and tuning are wired before runtime.** Sprites, sounds, fonts, prefabs, entity/component references, data assets and tuning numbers are set in JSON (`textureAsset`, `clipAsset`, `ScriptFields`, `Overrides`). Scripts don't look things up by path, GUID literal or name (`AssetManager.Load("…")`, `Texture.FromAssetUUID(123…)`, `FindByName`) when a serialized field can hold the reference.
-4. **Use what Funke already has** (table below). Write your own physics, collision, sprite-frame animation, tweening system, UI hit-testing, layout math, save-file format or localization only when the user explicitly asks for it.
-5. **Small scripts, one job each.** No `GameManager` that does input, score, spawning, audio and UI at once. Rough budget: ~150 lines and one reason to change. Name scripts after what they do (`PaddleMovement`, `WaveSpawner`, `ScoreLabel`). Singletons and static events decouple them. → `references/architecture.md`
-6. **Follow the design language, including the HUD.** Colours come from palette tokens, sizes from its scale rules, fonts from its typography table, art from the generators in `Tools/`. No colour, font or pixel size invented in a single file. Design UI as part of the game: derive its icons, shapes and feedback from the artwork and communicate gameplay state visually instead of defaulting to lists of labels and numbers. Read `funke-game-ui` → **Make the UI belong to the game** before designing visible UI; use `funke-game-art` for production.
-7. **Folder layout** (below). Every file has an obvious home, and nothing sits loose in `Assets/`.
-8. **A game must be playable, not just loadable.** Deliver the full core loop: the player acts, there is a goal, a way to fail, win/lose feedback and a restart. If the user asked for a single-mechanic prototype, say explicitly what is missing.
-9. **Menus work like real games.** The title screen has the title and a few big buttons (Play, Settings, Quit), nothing else. With several levels, Play opens a level select of cards (name, lock state, best result) where levels unlock in order. Results go on the result screen and the cards. Teach controls only as needed with brief contextual hints or on-demand help; do not automatically fill the HUD or menus with permanent keybind lists, explanatory footers or debug information. Follow `funke-game-ui` → **Keep unnecessary information out of the UI**.
-10. **No overlapping geometry.** Level pieces don't intersect or share a surface (z-fighting, poking through). Props sit on surfaces. Check every joint in a screenshot.
-11. **Never claim it works without proof.** Validate, compile, run scripted tests of the core loop and grep the log (`references/testing.md`). Say plainly what was not verified (feel, fun, device performance).
+1. Author the starting camera, player, level and UI in scenes or prefabs so they are editable before Play. Spawn genuinely dynamic objects from prefabs.
+2. Put tunable content in Data Assets. Wire asset, entity and component references and tuning values in the Inspector or scene JSON.
+3. Use the engine features below unless the user asks for a custom implementation. Aim for roughly 150 lines per script. Keep scripts focused on one responsibility and connect them with events or Inspector fields.
+4. Apply the game's palette, typography and scale to gameplay and HUD. Give the title screen a few clear actions. For multi-level games, show sequential unlocks and best results on level cards, results after play, and controls where the player first needs them.
+5. Build and test the requested core loop, including feedback and restart. Check level joints for gaps, intersections and z-fighting. Report any unverified behavior or intentional prototype limits.
 
 ## Funke already has it — use these
 
-Before writing a system, check this table. The right-hand column is what agent-made games did instead, and what you should not do.
+Choose the built-in API or package for the feature being implemented.
 
-| Need | Use | Instead of |
-|---|---|---|
-| Enemy/item/tower/wave/level tables, balancing values, shop offers, dialogue | **Data Assets** (`DataAsset` + `.dataasset`, `List<PlainClass>` for spawn groups, catalogs) → `references/data-driven.md` | arrays, `switch` ladders, `const` tables in C# |
-| Curves (difficulty, falloff, jump arc) | `Graph` field, `Curve.Evaluate(t)` (curve editor in the Inspector) | formulas full of magic numbers |
-| Repeated or spawned entities | prefab + `Instantiate(prefab, pos)`; variants: a `.prefab` with `"PrefabRef"` + `Overrides` | `Entity.Create` + `AddComponent` + setting sprites in code |
-| Settings, unlocks, best times | `PlayerPrefs` (small values), `SaveData.Save<T>(slot, obj)` / `TryLoad<T>` (whole objects) | own JSON files via `File.WriteAllText` |
-| Several languages | `Assets/Localization/<lang>.json` + `LocalizedText` component + `Localization.Get/Format/SetLanguage` | own string tables, `Loc.T()` helpers |
-| Flip-book animation | `Animator` with a looping `.anim` clip (`SpriteRenderer.Texture` discrete keys) | swapping `spriteName` in `OnUpdate` |
-| States, keyframes, animation events | `Animator` + `.anim`/`.animctrl` (also animates script fields); 3D models: `SkinnedMeshRenderer.Play(clip, fade)` | hand-written state flags + lerps |
-| UI motion, pop-ins, fades, shakes, delayed calls | package **`Funke.Tween`** (`MoveTo/ScaleTo/FadeTo/Punch*/Shake*`, `Tween.Sequence()`, `Tween.Delay`, `Camera2D.Shake`; `.SetLink(Entity)` on custom tweens) | per-script lerp timers in `OnUpdate` |
-| Timed sequences | coroutines (`using Funke.Coroutines;`): `RunCoroutine(async () => { await new WaitForSeconds(1f); … })` (scaled time; `WaitForNextFrame`, `WaitUntil`, `WaitForFrames`), `Entity.Destroy(delay)` | float countdowns for one-off sequences |
-| Movement + collision | `Rigidbody2D` + colliders, `Physics2D.Raycast/Overlap*`, triggers, `PhysicsLayers.Mask`; 3D: `Rigidbody3D` + Jolt colliders, `Physics3D.Raycast` | manual AABB tests, own gravity integration |
-| Effects | `ParticleSystem2D/3D` (+ `Emit(n)`), `PostProcessing2D` (bloom, vignette, colour grading, pixelated) | sprite entities used as particles |
-| Sound | `AudioSource` (music, loops), `public Audio? Sfx` + `PlayOneShot`; volume groups + saved volumes: package **`Funke.AudioMixer`** | own volume managers per sound |
-| Menus, HUD | `Button/Slider/Toggle/Dropdown/InputField/ScrollRect`, layout groups, `Image` 9-slice (`imageType`), JSON `onClick` bindings, built-in keyboard/gamepad focus (`focusable`) | manual hit-testing, hand-computed positions |
-| App-lifetime services (music, settings, save) | `GlobalSystem` listed in `project.json` `globalSystems` | static classes holding state |
-| Logic over many entities | `SceneSystem` + `Scene.Query<…>()` / `QueryRef<T>()`, `IJobParallelFor` for heavy work | every entity scanning all others; `FindByName` per frame |
-| Tile levels | package **`Funke.Tilemap2D`** (`SetTile`, `WorldToCell`), or generated prefab instances | thousands of entities created in code |
-| Random, noise | `new Random(seed)` (`NextInt/NextFloat`), `PerlinNoise2D` (beware `System.Random` with `using System;`) | own RNG/noise code |
-| Test hooks, cheats | `[DevCommand]` static methods (console, `--exec`, input scripts, `funke editor exec`) | env-var probes that have to be deleted later |
-| Debug drawing | `Gizmo.Draw*` (`Funke.Graphics`), F8 physics overlay | debug sprites |
+| Need | Use |
+|---|---|
+| Enemy/item/tower/wave/level tables, balancing values, shop offers, dialogue | **Data Assets** (`DataAsset` + `.dataasset`, `List<PlainClass>` for spawn groups, catalogs) → `references/data-driven.md` |
+| Curves (difficulty, falloff, jump arc) | `Graph` field, `Curve.Evaluate(t)` (curve editor in the Inspector) |
+| Repeated or spawned entities | prefab + `Instantiate(prefab, pos)`; variants: a `.prefab` with `"PrefabRef"` + `Overrides` |
+| Settings, unlocks, best times | `PlayerPrefs` (small values), `SaveData.Save<T>(slot, obj)` / `TryLoad<T>` (whole objects) |
+| Several languages | `Assets/Localization/<lang>.json` + `LocalizedText` component + `Localization.Get/Format/SetLanguage` |
+| Flip-book animation | `Animator` with a looping `.anim` clip (`SpriteRenderer.Texture` discrete keys) |
+| States, keyframes, animation events | `Animator` + `.anim`/`.animctrl` (also animates script fields); 3D models: `SkinnedMeshRenderer.Play(clip, fade)` |
+| UI motion, pop-ins, fades, shakes, delayed calls | package **`Funke.Tween`** (`MoveTo/ScaleTo/FadeTo/Punch*/Shake*`, `Tween.Sequence()`, `Tween.Delay`, `Camera2D.Shake`; `.SetLink(Entity)` on custom tweens) |
+| Timed sequences | coroutines (`using Funke.Coroutines;`): `RunCoroutine(async () => { await new WaitForSeconds(1f); … })` (scaled time; `WaitForNextFrame`, `WaitUntil`, `WaitForFrames`), `Entity.Destroy(delay)` |
+| Movement + collision | `Rigidbody2D` + colliders, `Physics2D.Raycast/Overlap*`, triggers, `PhysicsLayers.Mask`; 3D: `Rigidbody3D` + Jolt colliders, `Physics3D.Raycast` |
+| Effects | `ParticleSystem2D/3D` (+ `Emit(n)`), `PostProcessing2D` (bloom, vignette, colour grading, pixelated) |
+| Sound | `AudioSource` (music, loops), `public Audio? Sfx` + `PlayOneShot`; volume groups + saved volumes: package **`Funke.AudioMixer`** |
+| Menus, HUD | `Button/Slider/Toggle/Dropdown/InputField/ScrollRect`, layout groups, `Image` 9-slice (`imageType`), JSON `onClick` bindings, built-in keyboard/gamepad focus (`focusable`) |
+| App-lifetime services (music, settings, save) | `GlobalSystem` listed in `project.json` `globalSystems` |
+| Logic over many entities | `SceneSystem` + `Scene.Query<…>()` / `QueryRef<T>()`, `IJobParallelFor` for heavy work |
+| Tile levels | package **`Funke.Tilemap2D`** (`SetTile`, `WorldToCell`), or generated prefab instances |
+| Random, noise | `new Random(seed)` (`NextInt/NextFloat`), `PerlinNoise2D` (beware `System.Random` with `using System;`) |
+| Test hooks, cheats | `[DevCommand]` static methods (console, `--exec`, input scripts, `funke editor exec`) |
+| Debug drawing | `Gizmo.Draw*` (`Funke.Graphics`), F8 physics overlay |
 
-Packages: `funke package add Funke.Tween` (also `Funke.AudioMixer`, `Funke.Tilemap2D`, `Funke.Physics`, `Funke.Networking`, `Funke.Serialization`). **Not in Funke**, so write small, single-purpose scripts: camera follow, object pooling, pathfinding, inventory, dialogue flow, scene-fade transitions (a full-screen `Image` + `FadeTo` + `LoadScene`). Don't build a global event bus; use static events on the class that owns the fact.
+Install packages with `funke package add <Id>`. For camera smoothing, see the [2D camera recipe](references/2d-games.md) and `CameraFollow3D`. Use small scripts for game-specific pooling, inventory, dialogue flow and scene transitions. Put static events on the class that owns them.
 
 ## Project folder layout
 
@@ -91,7 +77,7 @@ Every asset file gets a `.meta` next to it. Folders get none. Use PascalCase, an
 ### 1. Plan
 Write down the scenes, the prefabs, the **Data Asset types and their entries** (from the brief's content table), the entities per scene with their built-in components, and the small scripts with one-line responsibilities and the events they raise or hear. Then check the core loop: input → goal → fail → win → feedback → restart. Every link needs an entity or a script. A responsibility with "and" in it twice gets split.
 
-For visible UI, plan the player's information needs and their visual representation with `funke-game-ui` before choosing widgets. Judge the HUD together with gameplay art, not as an isolated overlay; follow the same visual family for any requested menus or shop.
+- For visible UI, plan what the player needs to see before choosing widgets. Use [game UI](../funke-game-ui/SKILL.md) for HUDs, shops and menus.
 
 3D game? Read `references/3d-games.md` first. 2D genre recipes (platformer, top-down, tile levels, pixel-perfect camera): `references/2d-games.md`.
 
@@ -106,7 +92,7 @@ Use the `funke` CLI (`bin/Release-windows-x86_64/Funke-CLI/funke.exe` in the eng
 Write the `DataAsset` classes (`Assets/Scripts/Data/`) and one `.dataasset` per entry (`Assets/Data/<Type>/`), with `.meta` files. Format, field encodings, catalogs and the waves/levels patterns: `references/data-driven.md`.
 
 ### 4. Art and audio
-Produce assets the way `funke-game-art` describes: generators in `Tools/` reading `Design/palette.json`, the `.meta` written before the PNG, filtering chosen for the target pixel grid and display scale, and a sample shown before a whole family. Inspect the native and final-size assets. Placeholder shapes (`Square`, `Circle` tinted) are fine for the first playable build, but replace them before you hand off. `.meta` details and built-in assets: `references/assets-and-meta.md`. Audio must be `.wav`/`.mp3`/`.ogg` (Vorbis)/`.flac`.
+Follow [game art](../funke-game-art/SKILL.md) for palette-driven generators, stable GUIDs, filtering and final-size inspection. Replace greybox placeholders before delivery. Use WAV, MP3, Ogg Vorbis or FLAC for audio. See [asset metadata](references/assets-and-meta.md) for GUIDs and built-ins.
 
 ### 5. Prefabs, then scenes (JSON)
 Write anything that appears more than once, or is spawned, as a prefab first, then the scenes that place prefab instances. Schema, every component's keys and pitfalls: **`references/scene-json.md`**. Read it before the first file. Key rules: unique decimal-string `uuid`s; `parentUuid` is a string; world entities get `Transform2D` or `Transform3D`, UI entities `RectTransform2D` (never both); 2D rotation in radians, 3D in degrees; collider `layer` non-zero; `OnCollisionEnter2D` needs `registerContacts: true`.
@@ -147,7 +133,7 @@ Generated content (levels, tile maps, UI screens, art, data sets) is fast and re
 
 ## Templates
 
-`templates/` holds the infrastructure that every earlier game rewrote from scratch. It compiles against the current engine, and a generated level select → level → pause → progress round trip was tested with an input script. Copy what the game needs, rename freely, and extend it rather than writing parallel versions:
+Copy only the templates the project needs. Adapt their names and behavior to the game.
 
 | File | What it does |
 |---|---|
@@ -168,12 +154,6 @@ Generated content (levels, tile maps, UI screens, art, data sets) is fast and re
 - **Control by target velocity:** ease the velocity toward `input · MaxSpeed` with a clamped acceleration and brake gently with no input. It caps speed on slopes and feels responsive.
 - **Juice is part of done:** hit flash, small screen shake, particles on impact and pickup, pop-in panels, sounds on every action. Put the values in the design language's motion section.
 - **Measure on the target phone.** Managed execution and allocation costs vary by device and runtime; do not assume a fixed slowdown factor. Keep measured hot loops allocation-free and use `IJobParallelFor` where profiling shows heavy per-entity work (`funke-game-scripting`).
-- **What the user sees first is the menu.** It gets the same care as the gameplay (house rule 9, `funke-game-art` UI rules).
-
-## When a human builds it in the Editor
-
-Launcher → New Project, Hierarchy → create entities, Inspector → components, Asset Browser → drag sprites onto renderers, Add Component → Script, Play, Build panel. The same files come out. This skill writes them directly so that an agent can work without clicking.
-
 ## Router
 
 | Need | Open |

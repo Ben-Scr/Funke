@@ -42,6 +42,14 @@ namespace Funke {
 
         static FontHandle GetDefaultFont();
 
+        // Flat, ordered project family. Zero/duplicates are removed; no recursive chains or cycles.
+        static void SetFallbackFonts(const std::vector<uint64_t>& assetIds);
+        static const std::vector<uint64_t>& GetFallbackFonts();
+        static uint64_t GetFallbackRevision();
+        static const Font* SelectGlyphFont(const Font& primary, uint32_t codepoint);
+        // Loads/touches the family so cached text keeps its fallback atlases resident.
+        static void GetFamilyMetrics(const Font& primary, float& ascent, float& descent, float& lineHeight);
+
         // ── Bake-step config ────────────────────────────────────────────────
         // Single source of truth for size→bucket quantization, shared by the
         // FontManager slot cache and TextRenderer. step == 0 → adaptive ladder

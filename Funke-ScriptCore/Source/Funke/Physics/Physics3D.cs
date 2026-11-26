@@ -53,6 +53,33 @@ public static unsafe class Physics3D
         return true;
     }
 
+    /// <summary>Closest collider whose body owner intersects the mask; trigger inclusion is explicit.</summary>
+    public static bool Raycast(Vector3 origin, Vector3 direction, out RaycastHit3D hit, PhysicsLayer layers,
+        float maxDistance = 1000.0f, bool includeTriggers = false)
+    {
+        hit = default;
+        if (layers.IsEmpty || !float.IsFinite(maxDistance) || maxDistance <= 0
+            || !float.IsFinite(origin.X) || !float.IsFinite(origin.Y) || !float.IsFinite(origin.Z)
+            || !float.IsFinite(direction.LengthSquared()) || direction.LengthSquared() <= Mathf.Epsilon * Mathf.Epsilon) return false;
+        ulong id = 0;
+        float* values = stackalloc float[k_HitValueCount];
+        if (NativeCallbacks.Bindings.Physics3D_RaycastMasked(origin.X, origin.Y, origin.Z, direction.X, direction.Y, direction.Z,
+            maxDistance, layers.Mask, includeTriggers ? 1 : 0, &id, values, k_HitValueCount) == 0) return false;
+        hit = new RaycastHit3D(new Entity(id), new Vector3(values[0], values[1], values[2]), new Vector3(values[3], values[4], values[5]), values[6]);
+        return true;
+    }
+
+    public static bool Raycast(Ray ray, out RaycastHit3D hit, PhysicsLayer layers, float maxDistance = 1000.0f, bool includeTriggers = false)
+        => Raycast(ray.Origin, ray.Direction, out hit, layers, maxDistance, includeTriggers);
+
+    /// <summary>Tests overlap with at least one collider matching the body-owner mask.</summary>
+    public static bool CheckSphere(Vector3 center, float radius, PhysicsLayer layers, bool includeTriggers = false)
+        => !layers.IsEmpty && radius > 0 && float.IsFinite(radius)
+        && float.IsFinite(center.X) && float.IsFinite(center.Y) && float.IsFinite(center.Z)
+        && NativeCallbacks.Bindings.Physics3D_CheckSphere(center.X, center.Y, center.Z, radius, layers.Mask, includeTriggers ? 1 : 0) != 0;
+
+    public static bool CheckSphere(Vector3 center, float radius) => CheckSphere(center, radius, PhysicsLayer.All);
+
     public static bool Raycast(Vector3 origin, Vector3 direction, float maxDistance = 1000.0f)
         => Raycast(origin, direction, out _, maxDistance);
 

@@ -1,0 +1,30 @@
+import System
+import System.Reflection
+namespace Funke.Jobs;
+
+public class ReadOnlyAttribute : Attribute {}
+public class WriteOnlyAttribute : Attribute {}
+
+public class WithAllAttribute : Attribute {
+private:
+    TypeInfo[] types;
+public:
+    WithAllAttribute(TypeInfo[] types) : types(types) {}
+    TypeInfo[] Types => types;
+}
+
+public class WithoutAllAttribute : Attribute {
+private:
+    TypeInfo[] types;
+public:
+    WithoutAllAttribute(TypeInfo[] types) : types(types) {}
+    TypeInfo[] Types => types;
+}
+
+public class EnabledFilterAttribute : Attribute {
+private:
+    EnableMode mode;
+public:
+    EnabledFilterAttribute(EnableMode mode) : mode(mode) {}
+    EnableMode Mode => mode;
+}

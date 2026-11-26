@@ -1,0 +1,164 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public static class Mathf {
+public:
+    static float PI => 3.141592654f;
+    static float TwoPI => PI * 2.0f;
+    static float HalfPI => PI * 0.5f;
+    static float Deg2Rad => PI / 180.0f;
+    static float Rad2Deg => 180.0f / PI;
+    static float Epsilon => 0.000001f;
+    static float Infinity => Reinterpret<float>(2139095040u);
+
+    static float Sin(float x) { return Math.Sin<float>(x); }
+    static float Cos(float x) { return Math.Cos<float>(x); }
+    static float Tan(float x) { return Math.Tan<float>(x); }
+    static float Asin(float x) { return Math.Asin<float>(x); }
+    static float Acos(float x) { return Math.Acos<float>(x); }
+    static float Atan(float x) { return Math.Atan<float>(x); }
+    static float Atan2(float y, float x) { return Math.Atan2<float>(y, x); }
+
+    static float Sqrt(float x) { return Math.Sqrt<float>(x); }
+    static float Abs(float x) { return Math.Abs<float>(x); }
+    static float Pow(float x, float y) { return Math.Pow<float>(x, y); }
+    static float Log(float x) { return Math.Log<float>(x); }
+    static float Log10(float x) { return Math.Log10<float>(x); }
+    static float Exp(float x) { return Math.Exp<float>(x); }
+
+    static float Floor(float x) { return Math.Floor<float>(x); }
+    static float Ceil(float x) { return Math.Ceiling<float>(x); }
+    static float Round(float x) {
+        float floor = Floor(x);
+        if (x - floor == 0.5f) return Floor(floor * 0.5f) * 2.0f == floor ? floor : floor + 1.0f;
+        return Math.Round<float>(x);
+    }
+
+    static float Sign(float x) { return x < 0.0f ? -1.0f : (x > 0.0f ? 1.0f : 0.0f); }
+
+    static float Min(float a, float b) { return a < b ? a : b; }
+    static float Max(float a, float b) { return a > b ? a : b; }
+    static int Min(int a, int b) { return a < b ? a : b; }
+    static int Max(int a, int b) { return a > b ? a : b; }
+    static int Min(int value, int[] others) {
+        for (int i = 0; i < others.Length; i++) value = Min(value, others[i]);
+        return value;
+    }
+    static int Min(int value) { return value; }
+    static int Min(int first, int second, int third, int... others) {
+        int value = Min(Min(first,second),third);
+        for (int item : others) value = Min(value,item);
+        return value;
+    }
+    static int Max(int value, int[] others) {
+        for (int i = 0; i < others.Length; i++) value = Max(value, others[i]);
+        return value;
+    }
+    static int Max(int value) { return value; }
+    static int Max(int first, int second, int third, int... others) {
+        int value = Max(Max(first,second),third);
+        for (int item : others) value = Max(value,item);
+        return value;
+    }
+
+    static float Clamp(float value, float min, float max)
+    {
+        if (value < min) return min;
+        if (value > max) return max;
+        return value;
+    }
+
+    static int Clamp(int value, int min, int max)
+    {
+        if (value < min) return min;
+        if (value > max) return max;
+        return value;
+    }
+
+    static float Clamp01(float value) { return Clamp(value, 0.0f, 1.0f); }
+
+    static float Lerp(float a, float b, float t) { return a + (b - a) * Clamp01(t); }
+
+    static float LerpUnclamped(float a, float b, float t) { return a + (b - a) * t; }
+
+    static float InverseLerp(float a, float b, float value)
+    {
+        if (Abs(b - a) < Epsilon) return 0.0f;
+        return Clamp01((value - a) / (b - a));
+    }
+
+    static float MoveTowards(float current, float target, float maxDelta)
+    {
+        if (Abs(target - current) <= maxDelta) return target;
+        return current + Sign(target - current) * maxDelta;
+    }
+
+    static float SmoothStep(float a, float b, float t)
+    {
+        t = Clamp01(t);
+        t = t * t * (3.0f - 2.0f * t);
+        return a + (b - a) * t;
+    }
+
+    static bool Approximately(float a, float b) { return Abs(a - b) < Epsilon; }
+    static bool FkFinite(double value) { return value == value && value <= double.MaxValue && value >= -double.MaxValue; }
+    static double FkClampDouble(double value, double min, double max) { return value < min ? min : (value > max ? max : value); }
+    static float FkDeltaAngle(float a, float b) { float angle = Repeat(b - a, 360.0f); return angle > 180.0f ? angle - 360.0f : angle; }
+    private static double Remainder(double value, double period) {
+        double rest = Math.Abs<double>(value);
+        double scale = period;
+        while (scale <= rest * 0.5) scale *= 2.0;
+        while (scale >= period) {
+            if (rest >= scale) rest -= scale;
+            scale *= 0.5;
+        }
+        return value < 0.0 ? -rest : rest;
+    }
+    static float Repeat(float value, float length) {
+        if (!Mathf.FkFinite(value)) throw System.ArgumentOutOfRangeException("value");
+        if (!Mathf.FkFinite(length) || length <= 0) throw System.ArgumentOutOfRangeException("length");
+        float remainder = (float)Remainder((double)value, (double)length);
+        if (remainder < 0) remainder += length;
+        return remainder == length ? 0 : remainder;
+    }
+    static float PingPong(float value, float length) {
+        if (!Mathf.FkFinite(length) || length <= 0) throw System.ArgumentOutOfRangeException("length");
+        if (!Mathf.FkFinite(value)) throw System.ArgumentOutOfRangeException("value");
+        double phase = Remainder(Math.Abs<double>((double)value), 2.0 * length);
+        return (float)(phase <= length ? phase : 2.0 * length - phase);
+    }
+    static float MoveTowardsAngle(float current, float target, float maxDegreesDelta) {
+        if (!Mathf.FkFinite(maxDegreesDelta) || maxDegreesDelta < 0) throw System.ArgumentOutOfRangeException("maxDegreesDelta");
+        float start = Repeat(current, 360);
+        float delta = Mathf.FkDeltaAngle(start, Repeat(target, 360));
+        return Repeat(start + Mathf.FkClampDouble(delta, -maxDegreesDelta, maxDegreesDelta), 360);
+    }
+    static float SmoothDamp(float current, float target, float& velocity, float smoothTime, float deltaTime) {
+        return SmoothDamp(current, target, velocity, smoothTime, deltaTime, Mathf.Infinity);
+    }
+    static float SmoothDamp(float current, float target, float& velocity, float smoothTime, float deltaTime, float maxSpeed) {
+        Vector3 v = Vector3(velocity, 0, 0);
+        float result = Vector3.SmoothDamp(Vector3(current, 0, 0), Vector3(target, 0, 0), v, smoothTime, deltaTime, maxSpeed).X;
+        velocity = v.X;
+        return result;
+    }
+    static float SmoothDampAngle(float current, float target, float& velocity, float smoothTime, float deltaTime) {
+        return SmoothDampAngle(current, target, velocity, smoothTime, deltaTime, Mathf.Infinity);
+    }
+    static float SmoothDampAngle(float current, float target, float& velocity, float smoothTime, float deltaTime, float maxSpeed) {
+        float start = Repeat(current, 360);
+        float delta = Mathf.FkDeltaAngle(start, Repeat(target, 360));
+        return Repeat(SmoothDamp(start, start + delta, velocity, smoothTime, deltaTime, maxSpeed), 360);
+    }
+    static float DampingFactor(float rate, float deltaTime) {
+        if (!Mathf.FkFinite(rate) || rate < 0) throw System.ArgumentOutOfRangeException("rate");
+        if (!Mathf.FkFinite(deltaTime) || deltaTime < 0) throw System.ArgumentOutOfRangeException("deltaTime");
+        return (float)(1 - Math.Exp<double>(-(double)rate * deltaTime));
+    }
+    static float Damp(float current, float target, float rate, float deltaTime) { return Mathf.LerpUnclamped(current, target, DampingFactor(rate, deltaTime)); }
+
+}
+

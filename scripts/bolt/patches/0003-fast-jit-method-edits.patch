@@ -1,0 +1,854 @@
+diff --git a/include/bolt/CompilerHost.h b/include/bolt/CompilerHost.h
+--- a/include/bolt/CompilerHost.h
++++ b/include/bolt/CompilerHost.h
+@@ -91,6 +91,9 @@
+ BOLT_HOST_API int bolt_compiler_check_project(BoltCompiler *compiler, const char *path,
+     BoltCompileStats *stats, char *error, size_t capacity);
+ BOLT_HOST_API int bolt_module_stats(const BoltCompiledModule *module, BoltCompileStats *out);
++/* Number of methods emitted in a partial native method rebuild. Zero denotes
++   a full build or a generation linked without recompiling any method. */
++BOLT_HOST_API size_t bolt_module_incremental_methods(const BoltCompiledModule *module);
+ typedef struct BoltLayoutField {
+     const char *name, *type;
+     uint32_t offset, size;
+diff --git a/include/bolt/native/IR.hpp b/include/bolt/native/IR.hpp
+--- a/include/bolt/native/IR.hpp
++++ b/include/bolt/native/IR.hpp
+@@ -72,7 +72,9 @@
+     bool runtime_free_entry = false;
+     std::string runtime_requirement;
+ };
++struct MethodEnvironment;
+ struct EditData {
++    std::shared_ptr<const MethodEnvironment> methods;
+     struct Slot {std::string symbol; std::uint64_t bits; bool emitted=false;};
+     std::unordered_map<const Expr*,Slot> slots;
+     struct Site {std::string symbol; int column,length; std::size_t capacity;};
+@@ -92,6 +94,7 @@
+     EditData* edit_data = nullptr;
+ };
+ Module lower(const Program&, LowerOptions = {});
++Module lower_methods(const Program&,const Class&,const std::vector<Method*>&,const MethodEnvironment&);
+ void verify(const Module&);
+ std::string dump(const Module&);
+ std::string llvm_text(const Module&, const std::string& triple, bool debug, bool release = false);
+@@ -121,6 +124,7 @@
+ struct FastRecipe {
+     virtual ~FastRecipe() = default;
+     virtual std::unique_ptr<JitImage> link() const = 0;
++    virtual std::unique_ptr<JitImage> link(const ir::Module& methods) const = 0;
+ };
+ std::shared_ptr<const FastRecipe> fast_recipe(const ir::Module&,const std::vector<Symbol>&,const Options&);
+ bool fast_supported();
+diff --git a/include/bolt/native/Jit.hpp b/include/bolt/native/Jit.hpp
+--- a/include/bolt/native/Jit.hpp
++++ b/include/bolt/native/Jit.hpp
+@@ -29,7 +29,7 @@
+     NativeProgram(const Program&,JitOptions,const HostFunctions&);
+     // Internal constructors for independent generations of a source-set compilation.
+     NativeProgram(const Program&,JitOptions,const HostFunctions&,ir::EditData&,std::shared_ptr<const native_backend::FastRecipe>&);
+-    NativeProgram(JitOptions,std::unordered_map<std::string,std::string>,const native_backend::FastRecipe&);
++    NativeProgram(JitOptions,std::unordered_map<std::string,std::string>,const native_backend::FastRecipe&,const ir::Module* methods=nullptr);
+ private:
+     friend class host::FastEditTemplate;
+     void* data_symbol(const std::string&) const;
+diff --git a/src/CompilerHost.cpp b/src/CompilerHost.cpp
+--- a/src/CompilerHost.cpp
++++ b/src/CompilerHost.cpp
+@@ -67,6 +67,7 @@
+     Image image;
+     BoltCompileStats stats;
+     LayoutTable layouts;
++    std::size_t incremental_methods=0;
+ };
+ 
+ using Clock = std::chrono::steady_clock;
+@@ -127,6 +128,10 @@
+     });
+ }
+ 
++extern "C" size_t bolt_module_incremental_methods(const BoltCompiledModule* module) {
++    return module?module->incremental_methods:0;
++}
++
+ extern "C" int bolt_module_stats(const BoltCompiledModule *module, BoltCompileStats *out) {
+     if (!module || !out) return BOLT_HOST_ERROR;
+     *out = module->stats;
+@@ -209,8 +214,9 @@
+     std::lock_guard lock(compiler->compile_mutex);
+     BoltCompileStats info{};
+     if(compiler->edit_template) {
+-        if(auto image=compiler->edit_template->instantiate(compiler->options,sources,count,entry,info)) {
+-            *out=new BoltCompiledModule{compiler->owner,std::move(image),info,compiler->edit_layouts};
++        std::size_t methods=0;
++        if(auto image=compiler->edit_template->instantiate(compiler->options,sources,count,entry,info,methods)) {
++            *out=new BoltCompiledModule{compiler->owner,std::move(image),info,compiler->edit_layouts,methods};
+             return;
+         }
+     }
+@@ -227,6 +233,7 @@
+         auto layouts=std::make_shared<const std::unordered_map<std::string,bolt::host::Layout>>(bolt::host::layouts(program));
+         stats.native_codegen_ns=nanoseconds(Clock::now()-start);
+         *out=new BoltCompiledModule{compiler->owner,std::move(image),stats,layouts};
++        if(candidate && candidate->accepts_methods()) candidate->retain(compiler->frontend.take_checked());
+         compiler->edit_template=std::move(candidate);
+         compiler->edit_layouts=std::move(layouts);
+     });
+diff --git a/src/FastEditTemplate.hpp b/src/FastEditTemplate.hpp
+--- a/src/FastEditTemplate.hpp
++++ b/src/FastEditTemplate.hpp
+@@ -1,5 +1,5 @@
+ #pragma once
+-#include "ParseCache.hpp"
++#include "HostMethodEdits.hpp"
+ #include <bolt/CompilerHost.h>
+ #include <bolt/Value.hpp>
+ #include <bolt/Types.hpp>
+@@ -11,9 +11,8 @@
+ #include <unordered_set>
+ 
+ namespace bolt::host {
+-// A source-set compilation can retain a relocatable Fast image. Only checked,
+-// same-type runtime operands become data slots. All other bytes are part of
+-// the cache key, including declarations, inactive text and source order.
++// A source-set compilation retains the base image for literal substitutions
++// and independent method objects. Every replacement links a fresh generation.
+ class FastEditTemplate {
+     struct Slot {
+         std::size_t offset, length;
+@@ -27,6 +26,9 @@
+     std::size_t files_checked;
+     using Sites=decltype(ir::EditData::sites);
+     Sites sites;
++    std::unordered_map<std::string,HostMethodFile> method_files;
++    std::optional<Program> method_world;
++    std::shared_ptr<const ir::MethodEnvironment> method_environment;
+     std::shared_ptr<const native_backend::FastRecipe> recipe;
+ 
+     static bool digit(char c) { return c>='0' && c<='9'; }
+@@ -134,6 +136,13 @@
+             if(source.find('#')!=source.npos || source!=p.active_sources.at(unit.name)) continue;
+             const auto* syntax=cache.syntax(unit.name);
+             if(!syntax) continue;
++            if(auto plan=HostMethodFile::describe(*syntax,unit.name)) {
++                if(const auto* owner=p.find_class(plan->owner);owner && owner->methods.size()==plan->bodies.size()) {
++                    ir::ReadOnlyAnalysis effects(p);
++                    for(const auto& m:owner->methods) if(effects.reads_only(m))plan->readonly_methods.insert(m.id);
++                    method_files.emplace(unit.name,std::move(*plan));
++                }
++            }
+             operands.syntax_literals.clear();
+             for(const auto& c:syntax->classes) for(const auto& m:c.methods)
+                 if(m.body && !m.is_constant_template && !m.is_async && !c.is_interface &&
+@@ -153,11 +162,14 @@
+         std::unordered_set<std::string> used;
+         for(const auto& [operand,slot]:operands.data.slots) if(slot.emitted) used.insert(slot.symbol);
+         for(auto& unit:units) std::erase_if(unit.slots,[&](const Slot& s){return !used.contains(s.symbol);});
++        method_environment=std::move(operands.data.methods);
+         sites=std::move(operands.data.sites);
+         return image;
+     }
++    bool accepts_methods() const {return !method_files.empty();}
++    void retain(std::optional<Program> checked) {method_world=std::move(checked);}
+     std::shared_ptr<NativeProgram> instantiate(const JitOptions& options,const BoltSource* inputs,std::size_t count,
+-                                                const char* selected,BoltCompileStats& stats) const {
++                                                const char* selected,BoltCompileStats& stats,std::size_t& compiled_methods) {
+         if(count!=units.size() || entry!=(selected?selected:"")) return {};
+         const auto start=std::chrono::steady_clock::now();
+         struct Replacement { const Slot* slot; std::uint64_t value; std::size_t length; };
+@@ -165,67 +177,92 @@
+         std::vector<Replacement> values;
+         std::vector<DiagnosticText> diagnostics;
+         auto sources=original;
++        const Unit* changed_methods=nullptr;
+         for(std::size_t i=0;i<count;++i) {
+             const auto& unit=units[i];
+             if(unit.name!=inputs[i].name) return {};
+             const std::string_view after(inputs[i].source,inputs[i].length);
+             auto& before=sources.at(unit.name);
+             if(before==after) continue;
+-            std::size_t a=0,b=0;
+-            std::unordered_map<int,std::vector<Replacement>> changes;
+-            for(const auto& s:unit.slots) {
+-                if(s.offset<a || after.substr(b,s.offset-a)!=std::string_view(before).substr(a,s.offset-a)) return {};
+-                b+=s.offset-a;
+-                const auto old=std::string_view(before).substr(s.offset,s.length);
+-                const auto length=decimal_extent(old,after.substr(b));
+-                if(!length) return {};
+-                const auto text=after.substr(b,length);
+-                a=s.offset+s.length;
+-                b+=length;
+-                if(text==old) continue;
+-                Expr literal(Expr::Kind::Literal,Token{Token::Kind::Number,std::string(text),{}},std::string(text));
+-                try {
+-                    auto value=literal_value(literal);
+-                    if(value.type!=s.type) return {};
+-                    Replacement change{&s,bits(value),length};
+-                    values.push_back(change);
+-                    changes[s.line].push_back(change);
+-                } catch(const Error&) { return {}; }
+-            }
+-            if(after.substr(b)!=std::string_view(before).substr(a)) return {};
+-            for(const auto& [line,edits]:changes) {
+-                auto map_column=[&](std::int64_t column) {
+-                    auto result=column;
+-                    for(const auto& e:edits) {
+-                        const auto start=static_cast<std::int64_t>(e.slot->column);
+-                        const auto end=start+static_cast<std::int64_t>(e.slot->length);
+-                        if(column>=end) result+=static_cast<std::int64_t>(e.length)-(end-start);
+-                        else if(column>start) return std::int64_t{-1};
++            auto value_count=values.size(), site_count=diagnostics.size();
++            auto match_operands=[&]() -> bool {
++                std::size_t a=0,b=0;
++                std::unordered_map<int,std::vector<Replacement>> changes;
++                for(const auto& s:unit.slots) {
++                    if(s.offset<a || after.substr(b,s.offset-a)!=std::string_view(before).substr(a,s.offset-a)) return false;
++                    b+=s.offset-a;
++                    const auto old=std::string_view(before).substr(s.offset,s.length);
++                    const auto length=decimal_extent(old,after.substr(b));
++                    if(!length) return false;
++                    const auto text=after.substr(b,length);
++                    a=s.offset+s.length;
++                    b+=length;
++                    if(text==old) continue;
++                    Expr literal(Expr::Kind::Literal,Token{Token::Kind::Number,std::string(text),{}},std::string(text));
++                    try {
++                        auto value=literal_value(literal);
++                        if(value.type!=s.type) return false;
++                        Replacement change{&s,bits(value),length};
++                        values.push_back(change);
++                        changes[s.line].push_back(change);
++                    } catch(const Error&) { return false; }
++                }
++                if(after.substr(b)!=std::string_view(before).substr(a)) return false;
++                for(const auto& [line,edits]:changes) {
++                    auto map_column=[&](std::int64_t column) {
++                        auto result=column;
++                        for(const auto& e:edits) {
++                            const auto start=static_cast<std::int64_t>(e.slot->column);
++                            const auto end=start+static_cast<std::int64_t>(e.slot->length);
++                            if(column>=end) result+=static_cast<std::int64_t>(e.length)-(end-start);
++                            else if(column>start) return std::int64_t{-1};
++                        }
++                        return result;
++                    };
++                    const auto line_text=source_line_at(after,line);
++                    for(const auto& site:sites.at(unit.name).at(line)) {
++                        const auto col=map_column(site.column);
++                        const auto stop=map_column(static_cast<std::int64_t>(site.column)+site.length);
++                        if(col<1 || stop<col || stop>INT32_MAX) return false;
++                        auto text=std::to_string(line)+":"+std::to_string(col)+":"+std::to_string(stop-col)+":"+
++                            std::to_string(unit.name.size())+":"+unit.name+line_text;
++                        if(text.size()+1>site.capacity) return false;
++                        diagnostics.push_back({&site.symbol,std::move(text)});
+                     }
+-                    return result;
+-                };
+-                const auto line_text=source_line_at(after,line);
+-                for(const auto& site:sites.at(unit.name).at(line)) {
+-                    const auto col=map_column(site.column);
+-                    const auto stop=map_column(static_cast<std::int64_t>(site.column)+site.length);
+-                    if(col<1 || stop<col || stop>INT32_MAX) return {};
+-                    auto text=std::to_string(line)+":"+std::to_string(col)+":"+std::to_string(stop-col)+":"+
+-                        std::to_string(unit.name.size())+":"+unit.name+line_text;
+-                    if(text.size()+1>site.capacity) return {};
+-                    diagnostics.push_back({&site.symbol,std::move(text)});
+                 }
++                return true;
++            };
++            if(!match_operands()) {
++                if(changed_methods || !method_world || !method_files.contains(unit.name) ||
++                   after.find('#')!=after.npos)return {};
++                changed_methods=&unit;
++                values.resize(value_count);diagnostics.resize(site_count);
+             }
+             before.assign(after);
+         }
+         const auto checked=std::chrono::steady_clock::now();
+-        auto result=std::make_shared<NativeProgram>(options,std::move(sources),*recipe);
++        std::chrono::steady_clock::duration method_frontend{};
++        std::shared_ptr<NativeProgram> result;
++        if(changed_methods) {
++            try {
++                const auto& file=changed_methods->name;
++                auto delta=method_files.at(file).compile(*method_world,file,sources.at(file),*method_environment,method_frontend);
++                result=std::make_shared<NativeProgram>(options,std::move(sources),*recipe,&delta);
++                compiled_methods=delta.functions.size();
++            } catch(const std::exception&) {
++                // A speculative bind can discover new dependencies. Discard its
++                // semantic state and let the normal compiler produce diagnostics.
++                method_world.reset();
++                return {};
++            }
++        } else result=std::make_shared<NativeProgram>(options,std::move(sources),*recipe);
+         for(const auto& change:values)
+             std::memcpy(result->data_symbol(change.slot->symbol),&change.value,sizeof(change.value));
+         for(const auto& change:diagnostics)
+             std::memcpy(result->data_symbol(*change.symbol),change.text.c_str(),change.text.size()+1);
+         using Ns=std::chrono::nanoseconds;
+-        stats={0,files_checked,static_cast<uint64_t>(std::chrono::duration_cast<Ns>(checked-start).count()),
+-            static_cast<uint64_t>(std::chrono::duration_cast<Ns>(std::chrono::steady_clock::now()-checked).count())};
++        stats={changed_methods?1u:0u,files_checked-(changed_methods?1u:0u),static_cast<uint64_t>(std::chrono::duration_cast<Ns>(checked-start+method_frontend).count()),
++            static_cast<uint64_t>(std::chrono::duration_cast<Ns>(std::chrono::steady_clock::now()-checked-method_frontend).count())};
+         return result;
+     }
+ };
+diff --git a/src/HostMethodEdits.hpp b/src/HostMethodEdits.hpp
+new file mode 100644
+--- /dev/null
++++ b/src/HostMethodEdits.hpp
+@@ -0,0 +1,217 @@
++#pragma once
++#include "ParseCache.hpp"
++#include "native/ReadOnlyAnalysis.hpp"
++#include <bolt/Frontend.hpp>
++#include <bolt/Types.hpp>
++#include <bolt/native/IR.hpp>
++#include <chrono>
++#include <map>
++#include <optional>
++#include <set>
++#include <tuple>
++
++namespace bolt {
++void recheck_host_classes(Program&,const std::vector<Class*>&);
++}
++
++namespace bolt::host {
++// Keep fields, class contracts and the externally visible method signatures in
++// the key. Private scalar helpers and ordinary method bodies form the edit unit.
++struct HostMethodFile {
++    std::string owner;
++    std::vector<Token> contract;
++    std::set<std::string> helpers;
++    struct Body {std::string code,header; int line,column;};
++    std::unordered_map<std::size_t,Body> bodies;
++    std::map<std::string,std::vector<std::string>> private_signatures;
++    std::set<std::string> readonly_methods;
++
++    static bool ordinary(const Method& m) {
++        return m.body && m.body->token.text=="{" && !m.is_async && !m.is_extern && !m.is_abstract &&
++            !m.is_getter && !m.is_setter && !m.is_conversion && !m.is_constructor && !m.is_destructor &&
++            !m.is_extension && !m.is_constant_template && !m.is_default_implementation && m.attributes.empty() &&
++            m.generic_parameters.empty() && m.pack_parameter.empty() && m.operator_symbol.empty() && m.constraints.empty();
++    }
++    static bool scalar(std::string_view type) {return is_numeric(type)||type=="bool";}
++    static bool helper(const Method& m) {
++        return ordinary(m) && m.name!="Main" && !m.is_virtual && !m.is_override && !m.is_public && !m.is_protected &&
++            !m.is_sealed && (scalar(m.type)||m.type=="void") &&
++            std::all_of(m.parameters.begin(),m.parameters.end(),[](const Parameter& p){
++                return scalar(p.type) && !p.default_value && !p.variadic && !p.pack;
++            });
++    }
++    static bool syntax(const Expr& e) {
++        using K=Expr::Kind;
++        if(e.lambda || e.arena || !e.type_args.empty() || e.arrow) return false;
++        switch(e.kind) {
++        case K::Literal:case K::Name:case K::Member:case K::Call:case K::Binary:
++        case K::Unary:case K::Assign:case K::Postfix:case K::Conditional:break;
++        default:return false;
++        }
++        return std::all_of(e.args.begin(),e.args.end(),[](const auto& a){return syntax(*a);});
++    }
++    static bool syntax(const Stmt& s) {
++        using K=Stmt::Kind;
++        switch(s.kind) {
++        case K::Block:case K::Declarations:case K::Variable:case K::Expression:case K::Return:case K::If:
++        case K::While:case K::For:case K::Break:case K::Continue:case K::Empty:break;
++        default:return false;
++        }
++        for(auto* e:{s.expression.get(),s.condition.get(),s.increment.get()}) if(e && !syntax(*e))return false;
++        for(auto* child:{s.init.get(),s.body.get(),s.alternative.get()}) if(child && !syntax(*child))return false;
++        return std::all_of(s.statements.begin(),s.statements.end(),[](const auto& n){return syntax(*n);});
++    }
++    static std::optional<HostMethodFile> describe(const Program& p,const std::string& file) {
++        if(p.classes.size()!=1 || !p.enums.empty() || !p.concepts.empty())return {};
++        const auto& c=p.classes.front();
++        if(c.is_global || c.is_interface || c.is_native || c.is_struct || c.is_template_member ||
++           !c.declaring_type.empty() || !c.attributes.empty() || !c.generic_parameters.empty() ||
++           !c.pack_parameter.empty() || c.methods.empty() || !c.properties.empty())return {};
++        for(const auto& f:c.fields) if(f.initializer || f.is_static || f.constant || !f.attributes.empty())return {};
++        auto tokens=navigation_tokens(file,p.active_sources.at(file));
++        struct Span {std::size_t first,last;};
++        std::vector<Span> spans;
++        HostMethodFile result;result.owner=c.name;
++        for(const auto& m:c.methods) {
++            if(!ordinary(m)||!syntax(*m.body))return {};
++            auto index=[&](const Token& t){return static_cast<std::size_t>(
++                std::lower_bound(tokens->begin(),tokens->end(),t.at.offset,[](const Token& x,auto n){return x.at.offset<n;})-tokens->begin());};
++            auto first=index(m.body->token),end=first;
++            if(first>=tokens->size() || (*tokens)[first].text!="{")return {};
++            int depth=0;
++            do {
++                if(end==tokens->size())return {};
++                const auto& t=(*tokens)[end++];
++                if(t.kind==Token::Kind::Symbol)depth+=int(t.text=="{")-int(t.text=="}");
++            } while(depth);
++            const auto open=first;
++            if(helper(m)) {
++                auto j=index(m.token);
++                while(j && (*tokens)[j-1].text!="{" && (*tokens)[j-1].text!="}" && (*tokens)[j-1].text!=";")--j;
++                // An access section changes the interpretation of subsequent members.
++                if(j<first && (*tokens)[j].text=="private" && (*tokens)[j+1].text!=":") {
++                    first=j; result.helpers.insert(m.name);
++                }
++            }
++            const auto& text=p.sources.at(file);
++            const auto start=(*tokens)[open].at.offset;
++            const auto last=(*tokens)[end-1].at.offset+1;
++            auto header=text.substr((*tokens)[first].at.offset,start-(*tokens)[first].at.offset);
++            if(first!=open)result.private_signatures[m.name].push_back(header);
++            result.bodies.emplace(m.token.at.offset,Body{text.substr(start,last-start),std::move(header),
++                m.body->token.at.line,m.body->token.at.column});
++            spans.push_back({first,end});
++        }
++        std::sort(spans.begin(),spans.end(),[](auto a,auto b){return a.first<b.first;});
++        std::size_t i=0;
++        for(auto span:spans) {
++            if(span.first<i)return {};
++            result.contract.insert(result.contract.end(),tokens->begin()+i,tokens->begin()+span.first);
++            i=span.last;
++        }
++        result.contract.insert(result.contract.end(),tokens->begin()+i,tokens->end());
++        return result;
++    }
++    bool matches(const HostMethodFile& next) const {
++        if(owner!=next.owner || contract.size()!=next.contract.size())return false;
++        for(std::size_t i=0;i<contract.size();++i) {
++            const auto& a=contract[i]; const auto& b=next.contract[i];
++            if(a.kind!=b.kind || a.text!=b.text)return false;
++            // Metadata and generated initializers can refer to declaration sites.
++            if(a.kind!=Token::Kind::End && a.text!="}" && (a.at.line!=b.at.line || a.at.column!=b.at.column))return false;
++        }
++        return true;
++    }
++    using References=std::set<std::tuple<int,std::string,std::string,std::string>>;
++    static void references(const Expr& e,References& out,const std::string& owner,const std::set<std::string>& helpers) {
++        using B=Expr::Binding;
++        if(e.binding==B::Cast && e.args.size()==2 && scalar(e.type) && scalar(e.args[1]->type)) {
++            references(*e.args[1],out,owner,helpers);
++            return;
++        }
++        if(e.binding==B::Method && e.owner==owner && !e.args.empty() &&
++           e.args.front()->kind==Expr::Kind::Name && helpers.contains(e.args.front()->text)) {
++            for(std::size_t i=1;i<e.args.size();++i)references(*e.args[i],out,owner,helpers);
++            return;
++        }
++        if(e.binding!=B::None && e.binding!=B::Local && e.binding!=B::This)
++            out.emplace(static_cast<int>(e.binding),e.owner,e.resolved,e.text);
++        if(!e.type.empty() && e.type!="void" && !scalar(e.type)) out.emplace(-1,e.type,"","");
++        for(const auto& a:e.args)references(*a,out,owner,helpers);
++    }
++    static void references(const Stmt& s,References& out,const std::string& owner,const std::set<std::string>& helpers) {
++        if(s.kind==Stmt::Kind::Variable && !scalar(s.type))out.emplace(-1,s.type,"","");
++        for(auto* e:{s.expression.get(),s.condition.get(),s.increment.get()})if(e)references(*e,out,owner,helpers);
++        for(auto* child:{s.init.get(),s.body.get(),s.alternative.get()})if(child)references(*child,out,owner,helpers);
++        for(const auto& child:s.statements)references(*child,out,owner,helpers);
++    }
++
++    ir::Module compile(Program& program,const std::string& file,std::string_view text,
++                       const ir::MethodEnvironment& environment,std::chrono::steady_clock::duration& frontend_time) const {
++        const auto start=std::chrono::steady_clock::now();
++        auto parsed=parse_memory_source(text,file,program.source_preprocessors.at(file));
++        auto next=describe(parsed,file);
++        if(!next || !matches(*next))throw std::runtime_error("Changed class contract");
++        auto* target=program.find_class(owner);
++        if(!target || target->is_reflected)throw std::runtime_error("Reflected method edit");
++        std::set<std::string> names=helpers;
++        names.insert(next->helpers.begin(),next->helpers.end());
++        for(const auto& name:names) {
++            for(const auto& [path,source]:program.active_sources)
++                if(path!=file && source.find(name)!=source.npos) throw std::runtime_error("Helper visible outside edit unit");
++            for(const auto& t:contract)if(t.text==name)throw std::runtime_error("Helper referenced by class contract");
++        }
++        for(const auto& c:program.classes) if(c.declaring_type==owner || c.is_reflected && derives_from(program,c.name,owner))
++            throw std::runtime_error("Edit requires dependent type metadata");
++
++        std::string fresh(text),active(parsed.active_sources.at(file));
++        Class saved=std::move(*target);
++        *target=std::move(parsed.classes.front());
++        struct Restore {
++            Class& target;Class& saved;std::string& source;std::string& fresh;
++            std::string& previous_active;std::string& active;
++            ~Restore(){target=std::move(saved);source.swap(fresh);previous_active.swap(active);}
++        };
++        program.sources.at(file).swap(fresh);
++        program.active_sources.at(file).swap(active);
++        Restore restore{*target,saved,program.sources.at(file),fresh,program.active_sources.at(file),active};
++        const auto classes=program.classes.size(), enums=program.enums.size();
++        recheck_host_classes(program,{target});
++        if(program.classes.size()!=classes || program.enums.size()!=enums)
++            throw std::runtime_error("Edit introduced a specialization");
++        std::vector<Method*> methods;
++        for(auto& m:target->methods) {
++            if(!ordinary(m) || !m.analyzed)throw std::runtime_error("Synthesized method");
++            References now,prior;
++            references(*m.body,now,owner,next->helpers);
++            auto* old=method_by_id(saved,m.id);
++            if(next->helpers.contains(m.name)) {
++                if(!helper(m) || !now.empty()) throw std::runtime_error("Helper has external dependencies");
++            } else {
++                if(!old || !old->body)throw std::runtime_error("Changed externally visible signature");
++                references(*old->body,prior,owner,helpers);
++                if(!std::includes(prior.begin(),prior.end(),now.begin(),now.end()))
++                    throw std::runtime_error("New method dependency");
++            }
++            if(old && readonly_methods.contains(old->id) &&
++               !ir::ReadOnlyAnalysis(program).reads_only(m))
++                throw std::runtime_error("Callers depend on receiver effects");
++            if(old) {
++                const auto& before=bodies.at(old->token.at.offset);
++                const auto& after=next->bodies.at(m.token.at.offset);
++                const bool stable=before.code==after.code && before.header==after.header &&
++                    before.line==after.line && before.column==after.column && old->type==m.type;
++                // A declaration edit may rebind an overload even when the
++                // caller's source did not change. Re-emit possible callers.
++                if(stable && (private_signatures==next->private_signatures ||
++                    std::none_of(names.begin(),names.end(),[&](const auto& name){return after.code.find(name)!=after.code.npos;})))
++                    continue;
++            }
++            methods.push_back(&m);
++        }
++        if(methods.empty())throw std::runtime_error("Edit has no replaceable method bodies");
++        frontend_time=std::chrono::steady_clock::now()-start;
++        return ir::lower_methods(program,*target,methods,environment);
++    }
++};
++}
+diff --git a/src/IncrementalFrontend.hpp b/src/IncrementalFrontend.hpp
+--- a/src/IncrementalFrontend.hpp
++++ b/src/IncrementalFrontend.hpp
+@@ -316,6 +316,7 @@
+         return true;
+     }
+ public:
++    std::optional<Program> take_checked() {auto owned=std::move(previous);previous.reset();return owned;}
+     Program& check(Program syntax, ParseCache& cache) {
+         auto next=locate(syntax);
+         try {
+diff --git a/src/native/Fast.cpp b/src/native/Fast.cpp
+--- a/src/native/Fast.cpp
++++ b/src/native/Fast.cpp
+@@ -374,15 +374,18 @@
+     struct Address { unsigned section; std::uintptr_t value; };
+     std::unordered_map<std::string,Address> names;
+     std::vector<Address> relocations;
++    std::unordered_map<std::string,std::vector<std::size_t>> callers;
+ 
+     LinkTargets(const Image& image,const std::vector<Symbol>& externals) {
+         names.reserve(externals.size()+image.symbols.size());
+         for(const auto& s:externals) names[s.name]={0,reinterpret_cast<std::uintptr_t>(s.address)};
+         for(const auto& s:image.symbols) if(s.section) names[s.name]={s.section,static_cast<std::uintptr_t>(s.offset)};
++        for(const auto& s:image.symbols) if(s.function && s.section==1) callers.try_emplace(s.name);
+         relocations.reserve(image.fixups.size());
+         for(const auto& fixup:image.fixups) {
+             auto found=names.find(fixup.symbol);
+             if(found==names.end()) throw std::runtime_error("unresolved JIT symbol: "+fixup.symbol);
++            if(auto it=callers.find(fixup.symbol);it!=callers.end()) it->second.push_back(relocations.size());
+             relocations.push_back(found->second);
+         }
+     }
+@@ -398,6 +401,7 @@
+     bool unwind_registered=false;
+ #endif
+     std::shared_ptr<const LinkTargets> targets;
++    std::unique_ptr<JitImage> methods;
+     std::uintptr_t text_address=0,data_address=0;
+     std::uintptr_t resolve(LinkTargets::Address a) const {
+         return a.value+(a.section==1?text_address:a.section==2?data_address:0);
+@@ -405,7 +409,7 @@
+ public:
+     FastImage(const Image& image,const std::vector<Symbol>& external)
+         :FastImage(image,std::make_shared<LinkTargets>(image,external)) {}
+-    FastImage(const Image& image,std::shared_ptr<const LinkTargets> links):targets(std::move(links)){
++    FastImage(const Image& image,std::shared_ptr<const LinkTargets> links,const ir::Module* delta=nullptr):targets(std::move(links)){
+ #ifdef _WIN32
+         SYSTEM_INFO info;GetSystemInfo(&info);const auto page=std::size_t(info.dwPageSize);
+ #else
+@@ -444,11 +448,25 @@
+             if(!image.data.empty())std::memcpy(data,image.data.data(),image.data.size());
+             text_address=reinterpret_cast<std::uintptr_t>(text);
+             data_address=reinterpret_cast<std::uintptr_t>(data);
++            std::vector<LinkTargets::Address> redirected;
++            if(delta) {
++                std::vector<Symbol> imports;
++                for(const auto& e:delta->externals) imports.push_back({e.name.c_str(),symbol(e.name)});
++                methods=fast_jit(*delta,imports,{});
++                redirected=targets->relocations;
++                for(const auto& f:delta->functions) {
++                    auto callers=targets->callers.find(f.name);
++                    if(callers==targets->callers.end()) continue;
++                    auto address=reinterpret_cast<std::uintptr_t>(methods->symbol(f.name));
++                    for(auto index:callers->second) redirected[index]={0,address};
++                }
++            }
++            const auto& relocations=delta?redirected:targets->relocations;
+             for(std::size_t index=0;index<image.fixups.size();++index) {
+                 const auto& r=image.fixups[index];
+                 auto* at=(r.section==1?write_text:data)+r.offset;
+                 auto location=reinterpret_cast<std::uintptr_t>((r.section==1?text:data)+r.offset);
+-                auto target=resolve(targets->relocations[index]);
++                auto target=resolve(relocations[index]);
+                 if(r.kind==RelocKind::Absolute64){auto value=target+static_cast<std::uint64_t>(r.addend);std::memcpy(at,&value,8);}
+                 else if(r.kind==RelocKind::ArmPage21 || r.kind==RelocKind::ArmLo12)
+                     apply_arm_address_fixup(at,r.kind,target+static_cast<std::uintptr_t>(r.addend),location);
+@@ -572,6 +590,7 @@
+     RelocatableProgram(Image value,const std::vector<Symbol>& symbols)
+         :object(std::move(value)),targets(std::make_shared<LinkTargets>(object,symbols)) {}
+     std::unique_ptr<JitImage> link() const override { return std::make_unique<FastImage>(object,targets); }
++    std::unique_ptr<JitImage> link(const ir::Module& delta) const override { return std::make_unique<FastImage>(object,targets,&delta); }
+ };
+ }
+ std::shared_ptr<const FastRecipe> fast_recipe(const ir::Module& module,const std::vector<Symbol>& symbols,const Options& options) {
+diff --git a/src/native/Jit.cpp b/src/native/Jit.cpp
+--- a/src/native/Jit.cpp
++++ b/src/native/Jit.cpp
+@@ -102,8 +102,8 @@
+         else throw std::runtime_error("JIT backend must be auto, fast, or llvm");
+         resolve_entries();
+     }
+-    Impl(JitOptions o,std::unordered_map<std::string,std::string> text,const native_backend::FastRecipe& recipe)
+-        :options(std::move(o)),image(recipe.link()),sources(std::move(text)){resolve_entries();}
++    Impl(JitOptions o,std::unordered_map<std::string,std::string> text,const native_backend::FastRecipe& recipe,const ir::Module* methods)
++        :options(std::move(o)),image(methods?recipe.link(*methods):recipe.link()),sources(std::move(text)){resolve_entries();}
+     void resolve_entries() {
+         initialize=reinterpret_cast<Initialize>(image->symbol("bolt_module_initialize"));
+         finalize=reinterpret_cast<Initialize>(image->symbol("bolt_module_finalize"));
+@@ -155,8 +155,8 @@
+     :impl_(std::make_unique<Impl>(p,std::move(options),bindings)){}
+ NativeProgram::NativeProgram(const Program& p,JitOptions o,const HostFunctions& b,ir::EditData& edits,std::shared_ptr<const native_backend::FastRecipe>& recipe)
+     :impl_(std::make_unique<Impl>(p,std::move(o),b,&edits,&recipe)){}
+-NativeProgram::NativeProgram(JitOptions o,std::unordered_map<std::string,std::string> sources,const native_backend::FastRecipe& recipe)
+-    :impl_(std::make_unique<Impl>(std::move(o),std::move(sources),recipe)){}
++NativeProgram::NativeProgram(JitOptions o,std::unordered_map<std::string,std::string> sources,const native_backend::FastRecipe& recipe,const ir::Module* methods)
++    :impl_(std::make_unique<Impl>(std::move(o),std::move(sources),recipe,methods)){}
+ void* NativeProgram::data_symbol(const std::string& name) const {return impl_->image->symbol(name);}
+ NativeProgram::~NativeProgram()=default;
+ NativeProgram::NativeProgram(NativeProgram&&)noexcept=default;
+diff --git a/src/native/Lower.cpp b/src/native/Lower.cpp
+--- a/src/native/Lower.cpp
++++ b/src/native/Lower.cpp
+@@ -1,5 +1,15 @@
+ #include "lowering/Lowering.hpp"
+ #include <algorithm>
++
++namespace bolt::ir {
++struct MethodEnvironment {
++    std::map<std::string,lowering::Layout> layouts;
++    std::map<std::string,int> virtual_slots;
++    std::unordered_map<std::string,External> signatures;
++    std::unordered_set<std::string> globals;
++    LowerOptions options;
++};
++}
+ 
+ namespace bolt::ir::lowering {
+ 
+@@ -170,6 +180,17 @@
+         for(const auto& c:program.classes)if(c.is_native&&c.token.at.file.find("Exceptions.bolt")!=std::string::npos)(void)layout(c.name);
+     native_initializers();native_virtual_adapters();stringable_adapters();entry();
+     if(!options.source_core || module.runtime_free_entry)verify(module);
++    if(options.edit_data) {
++        auto env=std::make_shared<MethodEnvironment>();
++        env->layouts=layouts;
++        env->virtual_slots=virtual_slots;
++        env->options=options;
++        env->options.edit_data=nullptr;
++        for(const auto& f:module.functions) env->signatures.emplace(f.name,External{f.name,f.result,f.parameters});
++        for(const auto& e:module.externals) env->signatures.emplace(e.name,e);
++        for(const auto& g:module.globals) env->globals.insert(g.name);
++        options.edit_data->methods=std::move(env);
++    }
+     return std::move(module);
+ }
+ 
+@@ -235,16 +256,19 @@
+ 
+ void Lower::methods(){
+     for(const auto& c:program.classes)if(emitted_class(c)&&(c.generic_parameters.empty()&&c.pack_parameter.empty())&&!c.is_native)for(const auto& m:c.methods)if(concrete(m)&&!m.is_abstract&&!m.is_extern){
+-        if(m.is_async){async_method(c,m);continue;}
+-        Builder b(*this,method_symbol(c,m),result_type(m),parameters(m),m.token.at);b.fn.display_name=c.name+"."+m.name;b.return_type=m.type;b.owner=c.name;if(m.is_constructor)b.completes_type=c.name;
+-        if (&c==core()) { b.kernel_body=true; b.frames=false; }
+-        Reg next=2;if(!m.is_constructor&&m.type!="void"&&!is_reference(m.type)&&layout(m.type).aggregate)b.structure_return=next++;
+-        if(!m.is_static)b.self=next++;
+-        if(b.fn.result!=Type::Void)b.return_slot=b.alloc(width(b.fn.result));
+-        for(const auto& p:m.parameters){auto reg=next++;if(is_reference(p.type))b.locals[p.local_id]=reg;else if(layout(p.type).aggregate)b.locals[p.local_id]=reg;else{auto slot=b.temp(p.type,false);b.store(slot,reg);b.locals[p.local_id]=slot;}}
+-        if(module.instrument_budget){b.entered_slot=b.alloc(4);auto entered=b.call("br_enter",Type::I32,{b.context,b.site()},false);b.store(b.entered_slot,entered);b.check();}
+-        b.tick();if(m.is_constructor)b.initialize_class(c,&m);b.statement(*m.body);b.finish();
+-    }
++        method(c,m);
++    }
++}
++void Lower::method(const Class& c,const Method& m) {
++    if(m.is_async){async_method(c,m);return;}
++    Builder b(*this,method_symbol(c,m),result_type(m),parameters(m),m.token.at);b.fn.display_name=c.name+"."+m.name;b.return_type=m.type;b.owner=c.name;if(m.is_constructor)b.completes_type=c.name;
++    if (&c==core()) { b.kernel_body=true; b.frames=false; }
++    Reg next=2;if(!m.is_constructor&&m.type!="void"&&!is_reference(m.type)&&layout(m.type).aggregate)b.structure_return=next++;
++    if(!m.is_static)b.self=next++;
++    if(b.fn.result!=Type::Void)b.return_slot=b.alloc(width(b.fn.result));
++    for(const auto& p:m.parameters){auto reg=next++;if(is_reference(p.type))b.locals[p.local_id]=reg;else if(layout(p.type).aggregate)b.locals[p.local_id]=reg;else{auto slot=b.temp(p.type,false);b.store(slot,reg);b.locals[p.local_id]=slot;}}
++    if(module.instrument_budget){b.entered_slot=b.alloc(4);auto entered=b.call("br_enter",Type::I32,{b.context,b.site()},false);b.store(b.entered_slot,entered);b.check();}
++    b.tick();if(m.is_constructor)b.initialize_class(c,&m);b.statement(*m.body);b.finish();
+ }
+ 
+ void Lower::initializers(){
+@@ -564,6 +588,42 @@
+ 
+ namespace bolt::ir {
+ 
++// An edit borrows the original type descriptors and dispatch slots. Its
++// literal strings and diagnostic sites live in the new object's data section.
++Module lower_methods(const Program& p,const Class& owner,const std::vector<Method*>& methods,const MethodEnvironment& env) {
++    lowering::Lower lower(p,env.options);
++    lower.layouts=env.layouts;
++    lower.virtual_slots=env.virtual_slots;
++    for(auto* m:methods) lower.method(owner,*m);
++    if(lower.layouts.size()!=env.layouts.size()) {
++        // A new scalar can live entirely in registers. Drop its uninitialized
++        // descriptor so any actual metadata reference fails import validation.
++        std::unordered_set<std::string> descriptors;
++        for(const auto& [name,layout]:lower.layouts) if(!env.layouts.contains(name)) {
++            if(!is_numeric(name) && name!="bool")throw std::runtime_error("Method edit needs a new type layout");
++            descriptors.insert(layout.symbol);
++        }
++        std::erase_if(lower.module.globals,[&](const Global& g){return descriptors.contains(g.name);});
++    }
++    if(lower.virtual_slots!=env.virtual_slots ||
++       !lower.adapters.empty() || !lower.worker_callbacks.empty())
++        throw std::runtime_error("Method edit needs additional runtime metadata");
++    auto& module=lower.module;
++    std::unordered_set<std::string> local;
++    for(const auto& f:module.functions) local.insert(f.name);
++    for(const auto& g:module.globals) local.insert(g.name);
++    for(const auto& e:module.externals) local.insert(e.name);
++    auto import=[&](const std::string& name) {
++        if(!local.insert(name).second) return;
++        if(auto i=env.signatures.find(name);i!=env.signatures.end()) module.externals.push_back(i->second);
++        else if(env.globals.contains(name)) module.externals.push_back({name,Type::Ptr,{}});
++        else throw std::runtime_error("Method edit requires an uncompiled symbol: "+name);
++    };
++    for(const auto& f:module.functions) for(const auto& b:f.blocks) for(const auto& i:b.code)
++        if(i.op==Op::Call || i.op==Op::Address) import(i.text);
++    for(const auto& g:module.globals) for(const auto& reloc:g.relocations) import(reloc.symbol);
++    return std::move(module);
++}
+ Module lower(const Program& p,LowerOptions o){
+     if(auto reason=native_abi::direct_requirement(p);!reason.empty())throw std::runtime_error("The direct native/JIT backend does not yet lower '"+reason+"'; use the C++ native backend.");
+     return lowering::Lower(p,o).run();
+diff --git a/src/native/lowering/Lowering.hpp b/src/native/lowering/Lowering.hpp
+--- a/src/native/lowering/Lowering.hpp
++++ b/src/native/lowering/Lowering.hpp
+@@ -275,6 +275,7 @@
+     Type result_type(const Method& m);
+     std::vector<Type> parameters(const Method& m);
+     void methods();
++    void method(const Class&,const Method&);
+     std::set<std::string> metadata_types;
+     std::set<std::string> adapters;
+     std::string adapter(const Class&,const Method&,bool preserve_reference=false);
+diff --git a/tests/compiler_host.py b/tests/compiler_host.py
+--- a/tests/compiler_host.py
++++ b/tests/compiler_host.py
+@@ -119,6 +119,94 @@
+             release(module)
+         assert run_code(compiler) == 0
+     finally:
++        destroy(compiler)
++
++
++def method_edit_contract():
++    delta_count = bind("bolt_module_incremental_methods", C.c_size_t, Handle)
++    imports = b'extern "C" ulong FunkeValue(ulong key,ulong amount);'
++    base = """public static class Entry {
++    public static int Unchanged() {return 17;}
++    public static int Main() {
++        int x=(int)FunkeValue(0ul,3ul);
++        return EXPR;
++    }
++HELPERS}
++"""
++    def script(expr, helpers=""):
++        return base.replace("EXPR", expr).replace("HELPERS", helpers)
++
++    def compile_unit(host, text, expected=0):
++        raw = text.encode()
++        units = (Source * 2)(Source(b"bindings.bolt", imports, len(imports)), Source(b"class.bolt", raw, len(raw)))
++        image = Handle()
++        message = call(compile_sources, host, units, 2, b"Entry", C.byref(image), expected=expected)
++        return image, message
++
++    compiler = host(first, 0)
++    images = []
++    def installed(text, count, result):
++        image, _ = compile_unit(compiler, text)
++        images.append(image)
++        assert delta_count(image) == count, (delta_count(image), count, text)
++        call(load, compiler, image)
++        assert run_code(compiler) == result
++        return image
++    try:
++        original = installed(script("x + 1"), 0, 5)
++        updated = installed(script("(x * x) - 3"), 1, 13)
++        helper = "    private static int LocalProduct(int x) { if(x>2)return x*x; return x; }\n"
++        with_helper = installed(script("LocalProduct(x)", helper), 2, 16)
++        revised = "    private static int LocalOffset(int x,int y) { return x-y; }\n"
++        installed(script("LocalOffset(x,3)", revised), 2, 1)
++        call(load, compiler, original)
++        assert run_code(compiler) == 5
++        call(load, compiler, with_helper)
++        assert run_code(compiler) == 16
++        broken = script("LocalOffset(x)", revised)
++        image, error = compile_unit(compiler, broken, expected=1)
++        assert not image.value and error and run_code(compiler) == 16
++
++        clean = host(first, 0)
++        try:
++            assert compile_unit(clean, broken, expected=1)[1] == error
++        finally:
++            destroy(clean)
++        # Start a new baseline with a private declaration already present.
++        prior, _ = compile_unit(compiler, script("LocalProduct(x)", helper))
++        images.append(prior)
++        installed(script("LocalProduct(x)", helper.replace("return x*x", "return x+5")), 1, 9)
++        widened = helper.replace("LocalProduct(int x)", "LocalProduct(long x)").replace("return x*x", "return (int)x+3").replace("return x;", "return (int)x;")
++        installed(script("LocalProduct(x)", widened), 2, 7)
++        installed(script("LocalOffset(x,9)", revised), 2, -5)
++        # A layout edit must be treated as a complete new class contract.
++        changed_layout = script("x+2").replace("public static int Unchanged", "public static int Extra;\n    public static int Unchanged")
++        installed(changed_layout, 0, 6)
++        call(load, compiler, updated)
++        assert run_code(compiler) == 13
++
++        old_source = script("x + 1").replace("FunkeValue(0ul", "FunkeValue(77ul")
++        old, _ = compile_unit(compiler, old_source)
++        images.append(old)
++        call(load, compiler, old)
++        entered.clear()
++        proceed.clear()
++        results = []
++        worker = threading.Thread(target=lambda: results.append(run_code(compiler)), daemon=True)
++        worker.start()
++        try:
++            assert entered.wait(20)
++            new, _ = compile_unit(compiler, old_source.replace("x + 1", "x * x"))
++            images.append(new)
++            assert delta_count(new) == 1
++            call(load, compiler, new)
++        finally:
++            proceed.set()
++            worker.join(30)
++        assert results == [5] and run_code(compiler) == 16
++    finally:
++        for image in images:
++            release(image)
+         destroy(compiler)
+ 
+ 
+@@ -547,6 +635,7 @@
+     native_fixture_contract(0, "OwnedSlotLifetime.bolt")
+     persistent_sources_contract()
+     fast_edit_contract()
++    method_edit_contract()
+     incremental_frontend_contract(0)
+     compare_incremental_with_fresh()
+     results = [exercise(0, int(os.environ.get("BOLT_RELOAD_CYCLES", 3)))]

@@ -1,0 +1,10 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public enum ParticleBlendMode3D {
+    Alpha = 0,
+    Additive = 1,
+}

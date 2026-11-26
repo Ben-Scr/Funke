@@ -1,0 +1,9 @@
+import System
+import System.Threading
+import System.Threading.Tasks
+namespace Funke.Jobs;
+
+public struct JobSystemSpec {
+    public int WorkerCount;
+    public JobSystemSpec(int workerCount=-1) { WorkerCount=workerCount; }
+}

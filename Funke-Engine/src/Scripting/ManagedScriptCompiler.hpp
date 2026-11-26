@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Core/Export.hpp"
+
 #include <algorithm>
 #include <sstream>
 #include <string>
@@ -9,7 +11,7 @@ namespace Funke {
 
 	// Editor hot reload through Funke-ScriptCompiler: Roslyn inside the running CoreCLR, fed the exact csc
 	// arguments MSBuild would use. Anything it can't reproduce comes back as Fallback so the caller runs dotnet build.
-	class ManagedScriptCompiler {
+	class FUNKE_API ManagedScriptCompiler {
 	public:
 		enum class Status { Compiled, Failed, Fallback };
 

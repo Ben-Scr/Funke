@@ -53,6 +53,17 @@ TEST_CASE("Touch tracker keeps a tap that begins and ends in one frame") {
 	CHECK(tracker.GetCount() == 0);
 }
 
+TEST_CASE("Touch tracker cancels one finger without synthesizing a release") {
+	TouchTracker tracker;
+	tracker.OnDown(1, { 0.f, 0.f });
+	tracker.OnDown(2, { 8.f, 8.f });
+	tracker.OnCancel(1);
+	REQUIRE(tracker.GetCount() == 1);
+	CHECK(tracker.Get(0)->Id == 2);
+	tracker.BeginFrame();
+	CHECK(tracker.Get(0)->Phase == TouchPhase::Stationary);
+}
+
 TEST_CASE("Touch bindings report no fingers without a running application") {
 	NativeBindings bindings{};
 	ScriptBindings::PopulateNativeBindings(bindings);

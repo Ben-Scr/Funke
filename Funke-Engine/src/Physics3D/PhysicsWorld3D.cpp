@@ -9,6 +9,10 @@
 #include "Components/Physics3D/Rigidbody3DComponent.hpp"
 #include "Components/Tags.hpp"
 #include "Core/Time.hpp"
+#include "Core/ThreadingSettings.hpp"
+#if FUNKE_WITH_APPLICATION
+#include "Core/Application.hpp"
+#endif
 #include "Graphics/MeshAsset.hpp"
 #include "Graphics/PrimitiveMesh.hpp"
 #include "Scene/Scene.hpp"
@@ -23,6 +27,8 @@
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
 #include <Jolt/Physics/Body/BodyLock.h>
 #include <Jolt/Physics/Collision/CastResult.h>
+#include <Jolt/Physics/Collision/CollisionCollectorImpl.h>
+#include <Jolt/Physics/Collision/CollideShape.h>
 #include <Jolt/Physics/Collision/ContactListener.h>
 #include <Jolt/Physics/Collision/RayCast.h>
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
@@ -127,9 +133,13 @@ namespace Funke {
 #if defined(__EMSCRIPTEN__)
 				s_Runtime->JobSystem = std::make_unique<JPH::JobSystemSingleThreaded>(JPH::cMaxPhysicsJobs);
 #else
-				const unsigned hardwareThreads = std::max(2u, std::thread::hardware_concurrency());
-				const int workerThreads = static_cast<int>(std::clamp(hardwareThreads - 1u, 1u, 8u));
-				s_Runtime->JobSystem = std::make_unique<JPH::JobSystemThreadPool>(JPH::cMaxPhysicsJobs, JPH::cMaxPhysicsBarriers, workerThreads);
+				ThreadingSettings threading;
+#if FUNKE_WITH_APPLICATION
+				if (const auto* app = Application::GetInstance()) threading = app->GetEffectiveThreadingSettings();
+#endif
+				const int workerThreads = threading.ResolvePhysics3DWorkers(std::thread::hardware_concurrency());
+				if (workerThreads == 0) s_Runtime->JobSystem = std::make_unique<JPH::JobSystemSingleThreaded>(JPH::cMaxPhysicsJobs);
+				else s_Runtime->JobSystem = std::make_unique<JPH::JobSystemThreadPool>(JPH::cMaxPhysicsJobs, JPH::cMaxPhysicsBarriers, workerThreads);
 #endif
 			}
 			return *s_Runtime;
@@ -1266,19 +1276,32 @@ namespace Funke {
 	}
 
 	bool PhysicsWorld3D::Raycast(const Vec3& origin, const Vec3& direction, float maxDistance, RaycastHit3D& outHit) const {
+		return Raycast(origin, direction, maxDistance, outHit, ~uint64_t(0));
+	}
+
+	bool PhysicsWorld3D::Raycast(const Vec3& origin, const Vec3& direction, float maxDistance,
+		RaycastHit3D& outHit, uint64_t layerMask, bool includeTriggers) const {
 		const float length = glm::length(direction);
-		if (length < 1e-8f || !(maxDistance > 0.0f)) return false;
+		if (!std::isfinite(length) || length < 1e-8f || !(maxDistance > 0.0f) || layerMask == 0) return false;
 		const Vec3 dir = direction / length;
 		maxDistance = std::min(maxDistance, 1e6f);
 
-		class IgnoreTriggers final : public JPH::BodyFilter {
+		class QueryFilter final : public JPH::BodyFilter {
 		public:
-			bool ShouldCollideLocked(const JPH::Body& body) const override { return !body.IsSensor(); }
+			const Impl& World;
+			uint64_t Mask;
+			bool IncludeTriggers;
+			QueryFilter(const Impl& world, uint64_t mask, bool triggers)
+				: World(world), Mask(mask), IncludeTriggers(triggers) {}
+			bool ShouldCollideLocked(const JPH::Body& body) const override {
+				return (IncludeTriggers || !body.IsSensor())
+					&& (World.BodyLayers[body.GetID().GetIndex()] & Mask) != 0;
+			}
 		};
 
 		const JPH::RRayCast ray{ JPH::RVec3(ToJolt(origin)), ToJolt(dir * maxDistance) };
 		JPH::RayCastResult hit;
-		IgnoreTriggers filter;
+		QueryFilter filter(*m_Impl, layerMask, includeTriggers);
 		if (!m_Impl->System.GetNarrowPhaseQuery().CastRay(ray, hit, {}, {}, filter)) return false;
 
 		JPH::BodyLockRead lock(m_Impl->System.GetBodyLockInterface(), hit.mBodyID);
@@ -1291,6 +1314,25 @@ namespace Funke {
 		const EntityHandle collider = UserDataToEntity(body.GetShape()->GetSubShapeUserData(hit.mSubShapeID2));
 		outHit.Entity = collider != entt::null ? collider : UserDataToEntity(body.GetUserData());
 		return true;
+	}
+
+	bool PhysicsWorld3D::CheckSphere(const Vec3& center, float radius, uint64_t layerMask, bool includeTriggers) const {
+		if (!(radius > 0) || !std::isfinite(radius) || layerMask == 0
+			|| !std::isfinite(center.x) || !std::isfinite(center.y) || !std::isfinite(center.z)) return false;
+		class Filter final : public JPH::BodyFilter {
+		public:
+			const Impl& World; uint64_t Mask; bool Triggers;
+			Filter(const Impl& world, uint64_t mask, bool triggers) : World(world), Mask(mask), Triggers(triggers) {}
+			bool ShouldCollideLocked(const JPH::Body& body) const override {
+				return (Triggers || !body.IsSensor()) && (World.BodyLayers[body.GetID().GetIndex()] & Mask) != 0;
+			}
+		} filter(*m_Impl, layerMask, includeTriggers);
+		JPH::SphereShape sphere(radius);
+		JPH::AnyHitCollisionCollector<JPH::CollideShapeCollector> hits;
+		const JPH::RVec3 position(ToJolt(center));
+		m_Impl->System.GetNarrowPhaseQuery().CollideShape(&sphere, JPH::Vec3::sReplicate(1),
+			JPH::RMat44::sTranslation(position), JPH::CollideShapeSettings{}, position, hits, {}, {}, filter);
+		return hits.HadHit();
 	}
 
 	Vec3 PhysicsWorld3D::GetGravity() const { return FromJolt(m_Impl->System.GetGravity()); }

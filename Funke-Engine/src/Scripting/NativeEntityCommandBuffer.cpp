@@ -1,4 +1,5 @@
 #include "pch.hpp"
+#include "Scene/ComponentAccess.hpp"
 #include "Scripting/NativeEntityCommandBuffer.hpp"
 
 #include "Core/Application.hpp"
@@ -140,6 +141,7 @@ namespace Funke {
 			throw std::logic_error("Native ECB playback must run on the scene/main thread after recording completes");
 		if (mode < EntityCommandBufferPlaybackMode::Auto || mode > EntityCommandBufferPlaybackMode::Parallel)
 			return kEcbErrorInvalidMode;
+		ComponentAccess::BeforeMutation(scene.GetRegistry());
 		uint64_t total = 0;
 		uint64_t commandCount = 0;
 		for (const auto* buffer : buffers) {

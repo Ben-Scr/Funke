@@ -2,6 +2,8 @@
 
 #include "Components/General/Transform3DComponent.hpp"
 #include "Components/Graphics/ParticleSystem3DComponent.hpp"
+#include "Components/Graphics/ParticleSystem2DComponent.hpp"
+#include "Jobs/JobSystem.hpp"
 #include "Math/Random.hpp"
 #include "Scene/BuiltInComponentRegistration.hpp"
 #include "Scene/ComponentRegistry.hpp"
@@ -18,6 +20,61 @@
 #include <cmath>
 
 using namespace Funke;
+
+TEST_CASE("Parallel particles preserve serial integration, emission and expiry") {
+	const int previousWorkers = JobSystem::GetWorkerCount();
+	struct RestoreWorkers {
+		int Count;
+		~RestoreWorkers() { if (Count > 0) JobSystem::Reconfigure(Count); else JobSystem::Shutdown(); }
+	} restore{ previousWorkers };
+	for (bool modules : { false, true }) {
+		ParticleSystem3DComponent initial3;
+		initial3.MaxParticles = 40000;
+		initial3.LifeTime = 0.15f;
+		initial3.LifeTimeVariation = 0.5f;
+		initial3.UseGravity = true;
+		initial3.SimulationSpace = ParticleSpace3D::Local;
+		initial3.Drag = 0.3f;
+		initial3.AngularVelocity = 15.0f;
+		initial3.ScaleOverLifetimeEnabled = modules;
+		initial3.ColorOverLifetimeEnabled = modules;
+		initial3.Play(); initial3.Emit(32769);
+		ParticleSystem2DComponent initial2;
+		initial2.RenderingSettings.MaxParticles = 40000;
+		initial2.ParticleSettings.LifeTime = 0.15f;
+		initial2.ParticleSettings.UseGravity = true;
+		initial2.ParticleSettings.ScaleOverLifetime.Enabled = modules;
+		initial2.ParticleSettings.ColorOverLifetime.Enabled = modules;
+		initial2.Play(); initial2.Emit(32769);
+		auto serial3 = initial3, parallel3 = initial3;
+		auto serial2 = initial2, parallel2 = initial2;
+		const auto world = glm::scale(glm::mat4(1.0f), glm::vec3(2.0f, 3.0f, 1.0f));
+		for (float dt : { 0.01f, 0.1f, 0.2f }) {
+			JobSystem::Shutdown();
+			Random::SetSeed(42);
+			serial3.Simulate(dt, world, ParticleQualityLevel::High);
+			serial2.PreviewUpdate(dt);
+			JobSystem::Reconfigure(4);
+			Random::SetSeed(42);
+			parallel3.Simulate(dt, world, ParticleQualityLevel::High);
+			parallel2.PreviewUpdate(dt);
+			REQUIRE(serial3.GetParticleCount() == parallel3.GetParticleCount());
+			REQUIRE(serial2.GetParticles().size() == parallel2.GetParticles().size());
+			for (size_t i = 0; i < serial3.GetParticleCount(); ++i) {
+				const auto& a = serial3.GetParticles()[i]; const auto& b = parallel3.GetParticles()[i];
+				CHECK((a.Position == b.Position)); CHECK((a.Velocity == b.Velocity));
+				CHECK((a.LifeTime == b.LifeTime)); CHECK((a.Rotation == b.Rotation));
+				CHECK((a.Size == b.Size)); CHECK((a.Color == b.Color));
+			}
+			for (size_t i = 0; i < serial2.GetParticles().size(); ++i) {
+				const auto& a = serial2.GetParticles()[i]; const auto& b = parallel2.GetParticles()[i];
+				CHECK((a.Transform.Position == b.Transform.Position)); CHECK((a.Velocity == b.Velocity));
+				CHECK((a.Transform.Scale == b.Transform.Scale)); CHECK((a.Color == b.Color));
+				CHECK((a.LifeTime == b.LifeTime));
+			}
+		}
+	}
+}
 
 namespace {
 	const glm::mat4 k_Identity(1.0f);

@@ -6,11 +6,26 @@
 #include "Graphics/Material.hpp"
 
 #include <string>
+#include <cmath>
 
 // Shader properties of .material assets for C# (Material.SetFloat & co.). Core rather than Funke.3D: sprites and post
 // effects use materials too. Changes go to the shared live instance; files are not written.
 namespace Funke {
 	namespace {
+		// Reserved built-in properties use the existing typed property ABI; old callback layouts stay valid.
+		uint64_t Material::* StandardTexture(std::string_view name) {
+			if (name == "__funke.normalTexture") return &Material::NormalTexture;
+			if (name == "__funke.metallicRoughnessTexture") return &Material::MetallicRoughnessTexture;
+			if (name == "__funke.emissiveTexture") return &Material::EmissiveTexture;
+			if (name == "__funke.occlusionTexture") return &Material::OcclusionTexture;
+			return nullptr;
+		}
+		float Material::* StandardScalar(std::string_view name) {
+			if (name == "__funke.normalScale") return &Material::NormalScale;
+			if (name == "__funke.occlusionStrength") return &Material::OcclusionStrength;
+			if (name == "__funke.alphaCutoff") return &Material::AlphaCutoff;
+			return nullptr;
+		}
 		const ShaderProperty* FindDeclared(const Material& material, const char* name) {
 			const ShaderDescription* description = material.Shader != 0 ? CustomShaderLibrary::GetDescription(material.Shader) : nullptr;
 			return description ? description->FindProperty(name) : nullptr;
@@ -38,7 +53,13 @@ namespace Funke {
 			const Material* material = MaterialLibrary::Get(guid);
 			if (!material || !name) return 0;
 			MaterialPropertyValue value;
-			if (const ShaderProperty* declared = FindDeclared(*material, name)) {
+			if (auto field = StandardTexture(name)) {
+				value.Type = ShaderPropertyType::Texture;
+				value.Texture = material->*field;
+			}
+			else if (auto field = StandardScalar(name)) value.Value.x = material->*field;
+			else if (std::string_view(name) == "__funke.doubleSided") value.Value.x = material->DoubleSided ? 1.0f : 0.0f;
+			else if (const ShaderProperty* declared = FindDeclared(*material, name)) {
 				value = ResolveMaterialProperty(*material, *declared);
 			}
 			else if (auto it = material->Properties.find(name); it != material->Properties.end()) {
@@ -58,6 +79,27 @@ namespace Funke {
 		int Funke_Material_SetProperty(uint64_t guid, const char* name, int type, const float* values, uint64_t texture) {
 			const Material* current = MaterialLibrary::Get(guid);
 			if (!current || !name || type < 0 || type > static_cast<int>(ShaderPropertyType::Texture)) return 0;
+			if (auto field = StandardTexture(name)) {
+				if (type != static_cast<int>(ShaderPropertyType::Texture)) return 0;
+				Material updated = *current;
+				updated.*field = texture;
+				MaterialLibrary::Set(guid, updated);
+				return 1;
+			}
+			if (auto field = StandardScalar(name)) {
+				if (type != static_cast<int>(ShaderPropertyType::Float) || !values || !std::isfinite(values[0])) return 0;
+				Material updated = *current;
+				updated.*field = field == &Material::NormalScale ? std::max(0.0f, values[0]) : std::clamp(values[0], 0.0f, 1.0f);
+				MaterialLibrary::Set(guid, updated);
+				return 1;
+			}
+			if (std::string_view(name) == "__funke.doubleSided") {
+				if (type != static_cast<int>(ShaderPropertyType::Float) || !values) return 0;
+				Material updated = *current;
+				updated.DoubleSided = values[0] != 0.0f;
+				MaterialLibrary::Set(guid, updated);
+				return 1;
+			}
 			MaterialPropertyValue value;
 			value.Type = static_cast<ShaderPropertyType>(type);
 			if (values) value.Value = glm::vec4(values[0], values[1], values[2], values[3]);

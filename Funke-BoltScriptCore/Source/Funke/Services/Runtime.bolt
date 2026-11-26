@@ -1,0 +1,773 @@
+import System.Text.Json
+import System.Memory
+import System
+import System.Collections.Generic
+namespace Funke;
+
+public struct PhysicsLayer {
+private:
+    ulong bits;
+public:
+    static const uint Count = 64u;
+    PhysicsLayer() {}
+    PhysicsLayer(uint index) {
+        if (index >= Count) throw InvalidOperationException("Layer index must be 0-63.");
+        bits = 1ul << (int)index;
+    }
+    PhysicsLayer(string name) { bits = 1ul << (int)GetIndex(name); }
+    PhysicsLayer(ulong mask) : bits(mask) {}
+    implicit ulong() { return bits; }
+    ulong Mask => bits;
+    static PhysicsLayer None => FromMask(0ul);
+    static PhysicsLayer All => FromMask(ulong.MaxValue);
+    static PhysicsLayer Default => FromIndex(0u);
+    static PhysicsLayer FromIndex(uint index) { return PhysicsLayer(index); }
+    static PhysicsLayer FromName(string name) { return PhysicsLayer(name); }
+    static PhysicsLayer FromMask(ulong mask) { PhysicsLayer result; result.bits = mask; return result; }
+    bool IsEmpty => bits == 0ul;
+    bool IsSingleLayer => bits != 0ul && (bits & (bits - 1ul)) == 0ul;
+    uint Index {
+        get {
+            if (!IsSingleLayer) throw InvalidOperationException("A single layer is required.");
+            uint result = 0u;
+            ulong scan = bits;
+            while (scan > 1ul) { result++; scan = scan >> 1; }
+            return result;
+        }
+    }
+    string Name => GetName(Index);
+    static string GetName(uint index) {
+        if (index >= Count) throw InvalidOperationException("Layer index must be 0-63.");
+        int size = FkService.PhysicsLayer_GetName((ulong)index, null, 0);
+        if (size <= 0) return "";
+        byte[] buffer = new byte[size + 1];
+        FkService.PhysicsLayer_GetName((ulong)index, &buffer[0], buffer.Length);
+        return FkService.ReadText(buffer, size);
+    }
+    static bool TryGetIndex(string name, uint& index) {
+        index = 0u;
+        if (name.Length == 0) return false;
+        byte[] bytes = name.ToUtf8();
+        for (int i = 0; i < bytes.Length; i++) if (bytes[i] == 0) return false;
+        int found = FkService.PhysicsLayer_GetIndex(name);
+        if (found < 0 || found >= 64) return false;
+        index = (uint)found;
+        return true;
+    }
+    static uint GetIndex(string name) {
+        uint index = 0u;
+        if (!TryGetIndex(name, index)) throw InvalidOperationException("Unknown physics layer: " + name);
+        return index;
+    }
+    static bool TryFromName(string name, PhysicsLayer& layer) {
+        uint index = 0u;
+        bool found = TryGetIndex(name, index);
+        layer = found ? FromIndex(index) : None;
+        return found;
+    }
+    static PhysicsLayer FromNames(string[] names) {
+        ulong mask = 0ul;
+        for (int i = 0; i < names.Length; i++) mask = mask | FromName(names[i]).Mask;
+        return FromMask(mask);
+    }
+    static PhysicsLayer FromIndices(uint[] indices) {
+        ulong mask = 0ul;
+        for (int i = 0; i < indices.Length; i++) mask = mask | FromIndex(indices[i]).Mask;
+        return FromMask(mask);
+    }
+    string[] GetNames() {
+        List<string> names;
+        for (uint i = 0u; i < Count; i++) if ((bits & (1ul << (int)i)) != 0ul) names.Add(GetName(i));
+        return names.ToArray();
+    }
+    bool Contains(PhysicsLayer layers) { return (bits & layers.Mask) == layers.Mask; }
+    bool Contains(uint index) { return Contains(FromIndex(index)); }
+    bool Intersects(PhysicsLayer layers) { return (bits & layers.Mask) != 0ul; }
+    PhysicsLayer With(PhysicsLayer layers) { return FromMask(bits | layers.Mask); }
+    PhysicsLayer Without(PhysicsLayer layers) { return FromMask(bits & ~layers.Mask); }
+    bool Equals(PhysicsLayer other) { return bits == other.Mask; }
+    int GetHashCode() { return Reinterpret<int>((uint)((bits ^ (bits >> 32)) & 4294967295ul)); }
+    string ToString() {
+        if (IsEmpty) return "None";
+        if (bits == ulong.MaxValue) return "All";
+        string[] names = GetNames();
+        string value = "";
+        for (int i = 0; i < names.Length; i++) { if (i > 0) value += ", "; value += names[i]; }
+        return value;
+    }
+    static PhysicsLayer operator |(PhysicsLayer a, PhysicsLayer b) { return FromMask(a.Mask | b.Mask); }
+    static PhysicsLayer operator &(PhysicsLayer a, PhysicsLayer b) { return FromMask(a.Mask & b.Mask); }
+    static PhysicsLayer operator ^(PhysicsLayer a, PhysicsLayer b) { return FromMask(a.Mask ^ b.Mask); }
+    static PhysicsLayer operator ~(PhysicsLayer a) { return FromMask(~a.Mask); }
+    static bool operator ==(PhysicsLayer a, PhysicsLayer b) { return a.Mask == b.Mask; }
+    static bool operator !=(PhysicsLayer a, PhysicsLayer b) { return a.Mask != b.Mask; }
+}
+
+public static class PhysicsLayers {
+public:
+    static const ulong All = 18446744073709551615ul;
+    static const ulong None = 0ul;
+    static const ulong Default = 1ul;
+    static string GetName(uint index) { return PhysicsLayer.GetName(index); }
+    static uint GetIndex(string name) { return PhysicsLayer.GetIndex(name); }
+    static bool TryGetIndex(string name, uint& index) { return PhysicsLayer.TryGetIndex(name, index); }
+    static PhysicsLayer FromName(string name) { return PhysicsLayer.FromName(name); }
+    static bool Contains(ulong mask, int layer) { return layer >= 0 && layer <= 63 && (mask & (1ul << layer)) != 0ul; }
+    static ulong Mask(int[] layers) {
+        ulong mask = 0ul;
+        for (int i = 0; i < layers.Length; i++) {
+            if (layers[i] < 0 || layers[i] > 63) throw InvalidOperationException("Layer index must be 0-63.");
+            mask = mask | (1ul << layers[i]);
+        }
+        return mask;
+    }
+}
+
+public static class Cursor {
+public:
+    static CursorMode Mode {
+        get { return (CursorMode)FkService.Cursor_GetMode(); }
+        set { FkService.Cursor_SetMode((int)value); }
+    }
+    static bool Visible {
+        get { return FkService.Cursor_GetMode() == 0; }
+        set { FkService.Cursor_SetMode(value ? 0 : 3); }
+    }
+    static Funke.Texture? Texture {
+        get { return Funke.Texture.FromAssetUUID(FkService.Cursor_GetTexture()); }
+        set { SetTexture(value, Vector2.Zero); }
+    }
+    static void SetTexture(Funke.Texture? texture, Vector2 hotspot) {
+        ulong id = 0ul;
+        if (texture != null) id = texture.Value.UUID;
+        FkService.Cursor_SetTexture(id, (int)Mathf.Round(hotspot.X), (int)Mathf.Round(hotspot.Y));
+    }
+}
+
+
+public struct GraphicsSettings {
+public:
+    static const float MinRenderScale = 0.25f;
+    static const float MaxRenderScale = 1.0f;
+    static const float MinShadowDistance = 1.0f;
+    static const float MaxShadowDistance = 1000.0f;
+    static const int MinMaxLights = 1;
+    static const int MaxMaxLights = 64;
+    static const float MinExposure = 0.01f;
+    static const float MaxExposure = 16.0f;
+
+    GraphicsSettings()
+    {
+        RenderScale = 1.0f;
+        UpscaleFilter = UpscaleFilterMode.Linear;
+        PostProcessingEnabled = true;
+        PostProcessingQuality = PostProcessingQualityLevel.High;
+        ParticleQuality = ParticleQualityLevel.High;
+        ShadowQuality = ShadowQualityLevel.Medium;
+        ShadowDistance = 40.0f;
+        MaxLights = 16;
+        Exposure = 1.0f;
+        ToneMapping = ToneMappingMode.ACES;
+        TextureQuality = TextureQualityLevel.Full;
+        AnisotropicFiltering = AnisotropicFilteringLevel.X16;
+        AntiAliasing = AntiAliasingMode.Off;
+        AntiAliasingQuality = AntiAliasingQualityLevel.High;
+        AnimationDistanceRateEnabled = false;
+        AnimationHalfRateDistance = 20.0f;
+        AnimationQuarterRateDistance = 40.0f;
+    }
+
+    GraphicsSettings(float renderScale, UpscaleFilterMode upscaleFilter,
+        bool postProcessingEnabled, PostProcessingQualityLevel postProcessingQuality,
+        ParticleQualityLevel particleQuality)
+    {
+        RenderScale = renderScale;
+        UpscaleFilter = upscaleFilter;
+        PostProcessingEnabled = postProcessingEnabled;
+        PostProcessingQuality = postProcessingQuality;
+        ParticleQuality = particleQuality;
+        ShadowQuality = ShadowQualityLevel.Medium;
+        ShadowDistance = 40.0f;
+        MaxLights = 16;
+        Exposure = 1.0f;
+        ToneMapping = ToneMappingMode.ACES;
+        TextureQuality = TextureQualityLevel.Full;
+        AnisotropicFiltering = AnisotropicFilteringLevel.X16;
+        AntiAliasing = AntiAliasingMode.Off;
+        AntiAliasingQuality = AntiAliasingQualityLevel.High;
+        AnimationDistanceRateEnabled = false;
+        AnimationHalfRateDistance = 20.0f;
+        AnimationQuarterRateDistance = 40.0f;
+    }
+
+    float RenderScale;
+    UpscaleFilterMode UpscaleFilter;
+    bool PostProcessingEnabled;
+    PostProcessingQualityLevel PostProcessingQuality;
+    ParticleQualityLevel ParticleQuality;
+
+    ShadowQualityLevel ShadowQuality;
+
+    float ShadowDistance;
+
+    int MaxLights;
+
+    float Exposure;
+    ToneMappingMode ToneMapping;
+
+    TextureQualityLevel TextureQuality;
+    AnisotropicFilteringLevel AnisotropicFiltering;
+    AntiAliasingMode AntiAliasing;
+    AntiAliasingQualityLevel AntiAliasingQuality;
+
+
+
+    bool AnimationDistanceRateEnabled;
+
+    float AnimationHalfRateDistance;
+
+    float AnimationQuarterRateDistance;
+}
+
+public static class RenderSettings {
+public:
+    static GraphicsSettings Get()
+    {
+        float renderScale;
+        int upscaleFilter, postProcessingEnabled, postProcessingQuality, particleQuality;
+        FkService.RenderSettings_Get(
+            &renderScale, &upscaleFilter, &postProcessingEnabled,
+            &postProcessingQuality, &particleQuality);
+        var settings = GraphicsSettings(
+            renderScale,
+            (UpscaleFilterMode)upscaleFilter,
+            postProcessingEnabled != 0,
+            (PostProcessingQualityLevel)postProcessingQuality,
+            (ParticleQualityLevel)particleQuality);
+
+        int shadowQuality, maxLights, toneMapping;
+        float shadowDistance, exposure;
+        FkService.RenderSettings_Get3D(&shadowQuality, &shadowDistance, &maxLights, &exposure, &toneMapping);
+        settings.ShadowQuality = (ShadowQualityLevel)shadowQuality;
+        settings.ShadowDistance = shadowDistance;
+        settings.MaxLights = maxLights;
+        settings.Exposure = exposure;
+        settings.ToneMapping = (ToneMappingMode)toneMapping;
+
+        int textureQuality, anisotropicFiltering, antiAliasing, antiAliasingQuality;
+        FkService.RenderSettings_GetQuality(&textureQuality, &anisotropicFiltering, &antiAliasing, &antiAliasingQuality);
+        settings.TextureQuality = (TextureQualityLevel)textureQuality;
+        settings.AnisotropicFiltering = (AnisotropicFilteringLevel)anisotropicFiltering;
+        settings.AntiAliasing = (AntiAliasingMode)antiAliasing;
+        settings.AntiAliasingQuality = (AntiAliasingQualityLevel)antiAliasingQuality;
+
+        float[] animation = new float[3];
+        FkService.RenderSettings_GetAnimation(&animation[0], 3);
+        settings.AnimationDistanceRateEnabled = animation[0] != 0.0f;
+        settings.AnimationHalfRateDistance = animation[1];
+        settings.AnimationQuarterRateDistance = animation[2];
+        return settings;
+    }
+
+    static GraphicsApplyStatus Apply(GraphicsSettings settings)
+    {
+        var status2D = (GraphicsApplyStatus)FkService.RenderSettings_Apply(
+            settings.RenderScale,
+            (int)settings.UpscaleFilter,
+            settings.PostProcessingEnabled ? 1 : 0,
+            (int)settings.PostProcessingQuality,
+            (int)settings.ParticleQuality);
+        if (status2D != GraphicsApplyStatus.Applied && status2D != GraphicsApplyStatus.Unchanged)
+            return status2D;
+        var status3D = (GraphicsApplyStatus)FkService.RenderSettings_Apply3D(
+            (int)settings.ShadowQuality,
+            settings.ShadowDistance,
+            settings.MaxLights,
+            settings.Exposure,
+            (int)settings.ToneMapping);
+        if (status3D != GraphicsApplyStatus.Applied && status3D != GraphicsApplyStatus.Unchanged)
+            return status3D;
+        var statusQuality = (GraphicsApplyStatus)FkService.RenderSettings_ApplyQuality(
+            (int)settings.TextureQuality,
+            (int)settings.AnisotropicFiltering,
+            (int)settings.AntiAliasing,
+            (int)settings.AntiAliasingQuality);
+        if (statusQuality != GraphicsApplyStatus.Applied && statusQuality != GraphicsApplyStatus.Unchanged)
+            return statusQuality;
+        float[] animation = new float[3];
+        animation[0] = settings.AnimationDistanceRateEnabled ? 1.0f : 0.0f;
+        animation[1] = settings.AnimationHalfRateDistance;
+        animation[2] = settings.AnimationQuarterRateDistance;
+        var statusAnimation = (GraphicsApplyStatus)FkService.RenderSettings_ApplyAnimation(&animation[0], 3);
+        if (statusAnimation != GraphicsApplyStatus.Applied && statusAnimation != GraphicsApplyStatus.Unchanged)
+            return statusAnimation;
+        return status2D == GraphicsApplyStatus.Applied || status3D == GraphicsApplyStatus.Applied
+            || statusQuality == GraphicsApplyStatus.Applied || statusAnimation == GraphicsApplyStatus.Applied
+            ? GraphicsApplyStatus.Applied
+            : GraphicsApplyStatus.Unchanged;
+    }
+
+        static GraphicsApplyStatus ResetToDefaults() { return (GraphicsApplyStatus)FkService.RenderSettings_ResetToDefaults(); }
+
+    static float GetRenderScale() { return Get().RenderScale; }
+    static GraphicsApplyStatus SetRenderScale(float value)
+    {
+        var settings = Get();
+        settings.RenderScale = value;
+        return Apply(settings);
+    }
+
+    static UpscaleFilterMode GetUpscaleFilter() { return Get().UpscaleFilter; }
+    static GraphicsApplyStatus SetUpscaleFilter(UpscaleFilterMode value)
+    {
+        var settings = Get();
+        settings.UpscaleFilter = value;
+        return Apply(settings);
+    }
+
+    static bool IsPostProcessingEnabled() { return Get().PostProcessingEnabled; }
+    static GraphicsApplyStatus SetPostProcessingEnabled(bool value)
+    {
+        var settings = Get();
+        settings.PostProcessingEnabled = value;
+        return Apply(settings);
+    }
+
+    static PostProcessingQualityLevel GetPostProcessingQuality() { return Get().PostProcessingQuality; }
+    static GraphicsApplyStatus SetPostProcessingQuality(PostProcessingQualityLevel value)
+    {
+        var settings = Get();
+        settings.PostProcessingQuality = value;
+        return Apply(settings);
+    }
+
+    static ParticleQualityLevel GetParticleQuality() { return Get().ParticleQuality; }
+    static GraphicsApplyStatus SetParticleQuality(ParticleQualityLevel value)
+    {
+        var settings = Get();
+        settings.ParticleQuality = value;
+        return Apply(settings);
+    }
+
+    static ShadowQualityLevel ShadowQuality
+    {
+        get { return Get().ShadowQuality; }
+        set { var settings = Get(); settings.ShadowQuality = value; Apply(settings); }
+    }
+
+    static float ShadowDistance
+    {
+        get { return Get().ShadowDistance; }
+        set { var settings = Get(); settings.ShadowDistance = value; Apply(settings); }
+    }
+
+    static int MaxLights
+    {
+        get { return Get().MaxLights; }
+        set { var settings = Get(); settings.MaxLights = value; Apply(settings); }
+    }
+
+    static float Exposure
+    {
+        get { return Get().Exposure; }
+        set { var settings = Get(); settings.Exposure = value; Apply(settings); }
+    }
+
+    static ToneMappingMode ToneMapping
+    {
+        get { return Get().ToneMapping; }
+        set { var settings = Get(); settings.ToneMapping = value; Apply(settings); }
+    }
+
+    static float RenderScale
+    {
+        get { return GetRenderScale(); }
+        set { SetRenderScale(value); }
+    }
+
+    static UpscaleFilterMode UpscaleFilter
+    {
+        get { return GetUpscaleFilter(); }
+        set { SetUpscaleFilter(value); }
+    }
+
+    static bool PostProcessingEnabled
+    {
+        get { return IsPostProcessingEnabled(); }
+        set { SetPostProcessingEnabled(value); }
+    }
+
+    static PostProcessingQualityLevel PostProcessingQuality
+    {
+        get { return GetPostProcessingQuality(); }
+        set { SetPostProcessingQuality(value); }
+    }
+
+    static ParticleQualityLevel ParticleQuality
+    {
+        get { return GetParticleQuality(); }
+        set { SetParticleQuality(value); }
+    }
+
+    static TextureQualityLevel GetTextureQuality() { return Get().TextureQuality; }
+    static GraphicsApplyStatus SetTextureQuality(TextureQualityLevel value)
+    {
+        var settings = Get();
+        settings.TextureQuality = value;
+        return Apply(settings);
+    }
+
+    static AnisotropicFilteringLevel GetAnisotropicFiltering() { return Get().AnisotropicFiltering; }
+    static GraphicsApplyStatus SetAnisotropicFiltering(AnisotropicFilteringLevel value)
+    {
+        var settings = Get();
+        settings.AnisotropicFiltering = value;
+        return Apply(settings);
+    }
+
+    static AntiAliasingMode GetAntiAliasing() { return Get().AntiAliasing; }
+    static GraphicsApplyStatus SetAntiAliasing(AntiAliasingMode value)
+    {
+        var settings = Get();
+        settings.AntiAliasing = value;
+        return Apply(settings);
+    }
+
+    static AntiAliasingQualityLevel GetAntiAliasingQuality() { return Get().AntiAliasingQuality; }
+    static GraphicsApplyStatus SetAntiAliasingQuality(AntiAliasingQualityLevel value)
+    {
+        var settings = Get();
+        settings.AntiAliasingQuality = value;
+        return Apply(settings);
+    }
+
+    static TextureQualityLevel TextureQuality
+    {
+        get { return GetTextureQuality(); }
+        set { SetTextureQuality(value); }
+    }
+
+    static AnisotropicFilteringLevel AnisotropicFiltering
+    {
+        get { return GetAnisotropicFiltering(); }
+        set { SetAnisotropicFiltering(value); }
+    }
+
+    static AntiAliasingMode AntiAliasing
+    {
+        get { return GetAntiAliasing(); }
+        set { SetAntiAliasing(value); }
+    }
+
+    static AntiAliasingQualityLevel AntiAliasingQuality
+    {
+        get { return GetAntiAliasingQuality(); }
+        set { SetAntiAliasingQuality(value); }
+    }
+
+
+
+    static bool AnimationDistanceRateEnabled
+    {
+        get { return Get().AnimationDistanceRateEnabled; }
+        set { var settings = Get(); settings.AnimationDistanceRateEnabled = value; Apply(settings); }
+    }
+
+    static float AnimationHalfRateDistance
+    {
+        get { return Get().AnimationHalfRateDistance; }
+        set { var settings = Get(); settings.AnimationHalfRateDistance = value; Apply(settings); }
+    }
+
+    static float AnimationQuarterRateDistance
+    {
+        get { return Get().AnimationQuarterRateDistance; }
+        set { var settings = Get(); settings.AnimationQuarterRateDistance = value; Apply(settings); }
+    }
+}
+
+
+public struct DebugSnapshot {
+public:
+    private ulong metrics;
+    DebugMetric AvailableMetrics => (DebugMetric)metrics;
+    ulong FrameNumber;
+    double FrameMs;
+    double CpuMainMs;
+    double RenderCpuMs;
+    double RenderThreadMs;
+    double PresentMs;
+    double MemorySampleAgeMs;
+    ulong Triangles;
+    ulong Vertices;
+    ulong ShadowTriangles;
+    ulong ProcessWorkingSetBytes;
+    ulong ProcessPrivateCommitBytes;
+    ulong ReservedVirtualBytes;
+    ulong CommittedVirtualBytes;
+    ulong CurrentThreadStackReservedBytes;
+    ulong CurrentThreadStackCommittedBytes;
+    ulong CurrentThreadStackUsedBytes;
+    ulong TrackedAllocatedBytes;
+    ulong TrackedFreedBytes;
+    ulong TrackedUsedBytes;
+    ulong ScratchReservedBytes;
+    ulong ScratchUsedBytes;
+    ulong TextureMemoryBytes;
+    ulong AudioPlaying;
+    ulong EntityCount;
+    ulong LoadedScenes;
+    ulong ActiveSystems;
+    ulong AnimationsPlaying;
+    ulong ActiveLights2D;
+    ulong ActiveLights3D;
+    ulong ActiveParticleSystems2D;
+    ulong ActiveParticleSystems3D;
+    ulong LiveParticles;
+    ulong LoadedTextures;
+    ulong LoadedAudioClips;
+    ulong LoadedFonts;
+    ulong LoadedMeshes;
+    ulong LoadedMaterials;
+    ulong LoadedShaderAssets;
+    ulong CompiledShaderPrograms;
+    ulong ActiveShaderAssets;
+    ulong LoadedAnimationClips;
+    ulong LoadedAnimatorControllers;
+    ulong LoadedDataAssets;
+    bool Has(DebugMetric metric) { ulong bits = (ulong)metric; return (metrics & bits) == bits; }
+    double Fps => (metrics & 1ul) != 0ul && FrameMs > 0.0 ? 1000.0 / FrameMs : 0.0;
+    ulong ActiveParticleSystems => ActiveParticleSystems2D + ActiveParticleSystems3D;
+}
+
+public static class DebugStats {
+public:
+    static bool IsAvailable => FkService.DebugStats_GetSnapshot(null, 0) != 0;
+    static bool TryGetSnapshot(DebugSnapshot& snapshot) {
+        snapshot = default;
+        return FkService.DebugStats_GetSnapshot(&snapshot, (int)sizeof(DebugSnapshot)) != 0;
+    }
+}
+public static class MediaSession {
+public:
+    static void SetNowPlaying(string title, string artist, string album = "", float durationSeconds = 0.0f) {
+        FkService.Media_SetNowPlaying(title, artist, album, durationSeconds, null, 0, 0);
+    }
+    static void SetNowPlaying(string title, string artist, string album, float durationSeconds, byte[] coverRgba, int coverWidth = 0, int coverHeight = 0) {
+        void* data = null;
+        if (coverWidth > 0 && coverHeight > 0 && coverWidth <= coverRgba.Length / 4 / coverHeight) data = &coverRgba[0];
+        FkService.Media_SetNowPlaying(title, artist, album, durationSeconds, data, coverWidth, coverHeight);
+    }
+    static void SetPlaybackState(bool playing, float positionSeconds) { FkService.Media_SetPlaybackState(playing ? 1 : 0, positionSeconds); }
+    static bool TryGetCommand(MediaCommand& command, float& seekSeconds) {
+        command = (MediaCommand)FkService.Media_PollCommand(&seekSeconds);
+        return command != MediaCommand.None;
+    }
+}
+
+public class FkStreamOwner {
+public:
+    uint Id;
+    ~FkStreamOwner() { if (Id != 0u) FkService.AudioStream_Close(Id); }
+}
+public class AudioStream {
+private:
+    System.Memory.Shared<FkStreamOwner> owner;
+    string path;
+    uint Handle { get { return owner.HasValue ? owner.Get().Id : 0u; } }
+public:
+    static AudioStream? Open(string path) {
+        if (path.Length == 0) return null;
+        uint id = FkService.AudioStream_Open(path);
+        if (id == 0u) return null;
+        AudioStream stream;
+        stream.owner = System.Memory.Shared<FkStreamOwner>.Create();
+        stream.owner.Get().Id = id;
+        stream.path = path;
+        return stream;
+    }
+    string FilePath => path;
+    string ToString() { return path; }
+    bool IsValid => Handle != 0u;
+    bool IsPlaying => Handle != 0u && FkService.AudioStream_IsPlaying(Handle) != 0;
+    bool IsAtEnd => Handle != 0u && FkService.AudioStream_IsAtEnd(Handle) != 0;
+    float Length => Handle != 0u ? FkService.AudioStream_GetLength(Handle) : 0.0f;
+    float Time { get { return Handle != 0u ? FkService.AudioStream_GetCursor(Handle) : 0.0f; } set { if (Handle != 0u) FkService.AudioStream_Seek(Handle, value); } }
+    float Volume { get { return Handle != 0u ? FkService.AudioStream_GetVolume(Handle) : 0.0f; } set { if (Handle != 0u) FkService.AudioStream_SetVolume(Handle, value); } }
+    bool Loop { get { return Handle != 0u && FkService.AudioStream_GetLoop(Handle) != 0; } set { if (Handle != 0u) FkService.AudioStream_SetLoop(Handle, value ? 1 : 0); } }
+    bool Play() { return Handle != 0u && FkService.AudioStream_Play(Handle) != 0; }
+    void Pause() { if (Handle != 0u) FkService.AudioStream_Pause(Handle); }
+    void Stop() { if (Handle != 0u) FkService.AudioStream_Stop(Handle); }
+    void Dispose() { if (Handle != 0u) { FkService.AudioStream_Close(Handle); owner.Get().Id = 0u; } }
+}
+
+public struct LanguageInfo {
+private:
+    string codeValue, displayNameValue;
+public:
+    string Code => codeValue;
+    string DisplayName => displayNameValue;
+    LanguageInfo() {}
+    LanguageInfo(string code, string displayName) : codeValue(code), displayNameValue(displayName) {}
+    void Deconstruct(string& code, string& displayName) { code = Code; displayName = DisplayName; }
+    string ToString() { return "LanguageInfo { Code = " + Code + ", DisplayName = " + DisplayName + " }"; }
+    int GetHashCode() {
+        ulong hash = 2166136261ul;
+        string[] fields = { Code, DisplayName };
+        for (int i = 0; i < fields.Length; i++) {
+            byte[] bytes = fields[i].ToUtf8();
+            for (int j = 0; j < bytes.Length; j++) hash = ((hash ^ (ulong)bytes[j]) * 16777619ul) & 4294967295ul;
+            hash = ((hash ^ 255ul) * 16777619ul) & 4294967295ul;
+        }
+        return Reinterpret<int>((uint)hash);
+    }
+    bool Equals(LanguageInfo other) { return Code == other.Code && DisplayName == other.DisplayName; }
+    static bool operator ==(LanguageInfo a, LanguageInfo b) { return a.Equals(b); }
+    static bool operator !=(LanguageInfo a, LanguageInfo b) { return !a.Equals(b); }
+}
+
+[Reflect]
+public struct FkLanguageRow {
+public:
+    string code, name;
+}
+public struct FkFormatArgument {
+private:
+    string text;
+    ulong bits;
+    static FkFormatArgument Number(ulong category, ulong value) {
+        FkFormatArgument arg; arg.Category = category; arg.bits = value; return arg;
+    }
+public:
+    ulong Category;
+    static FkFormatArgument From(string value) { FkFormatArgument arg; arg.text = value; return arg; }
+    static FkFormatArgument From(bool value) { return From(value ? "True" : "False"); }
+    static FkFormatArgument From(int value) { return From((long)value); }
+    static FkFormatArgument From(uint value) { return From((ulong)value); }
+    static FkFormatArgument From(long value) { return Number(4ul, Reinterpret<ulong>(value)); }
+    static FkFormatArgument From(ulong value) { return Number(5ul, value); }
+    static FkFormatArgument From(float value) { return From((double)value); }
+    static FkFormatArgument From(double value) { return Number(3ul, Reinterpret<ulong>(value)); }
+    string Render(System.Globalization.CultureInfo culture, string format) { return Category == 0ul ? text : culture.FkNumber(Category, bits, format); }
+}
+public static class Localization {
+private:
+    static string Language(int which) {
+        int size = FkService.Localization_GetLanguageBuffer(which, null, 0);
+        if (size <= 0) return "";
+        byte[] buffer = new byte[size + 1];
+        FkService.Localization_GetLanguageBuffer(which, &buffer[0], buffer.Length);
+        return FkService.ReadText(buffer, size);
+    }
+public:
+    static const string PreferenceKey = "Funke.Language";
+    static event Action LanguageChanged;
+    static void FkRaiseLanguageChanged() { LanguageChanged.Invoke(); }
+    static System.Globalization.CultureInfo Culture => System.Globalization.CultureInfo.GetCultureInfo(CurrentLanguage);
+    static string CurrentLanguage => Language(0);
+    static string FallbackLanguage => Language(1);
+    static string SystemLanguage => Language(2);
+    static string Get(string key) {
+        if (key.Length == 0) return "";
+        int size = FkService.Localization_GetBuffer(key, null, 0);
+        if (size <= 0) return "";
+        byte[] buffer = new byte[size + 1];
+        FkService.Localization_GetBuffer(key, &buffer[0], buffer.Length);
+        return FkService.ReadText(buffer, size);
+    }
+    static bool Has(string key) { return key.Length > 0 && FkService.Localization_HasKey(key) != 0; }
+    static bool SetLanguage(string code) {
+        if (code.Length == 0) throw InvalidOperationException("Language code must not be empty.");
+        if (FkService.Localization_SetLanguage(code) == 0) return false;
+        PlayerPrefs.SetString(PreferenceKey, code);
+        try { PlayerPrefs.Save(); } catch (System.Exception& error) { Log.Warn("Could not save language preference."); }
+        return true;
+    }
+    static LanguageInfo[] AvailableLanguages {
+        get {
+            int size = FkService.Localization_GetLanguagesBuffer(null, 0);
+            if (size <= 0) return new LanguageInfo[0];
+            byte[] buffer = new byte[size + 1];
+            FkService.Localization_GetLanguagesBuffer(&buffer[0], buffer.Length);
+            try {
+                FkLanguageRow[] rows = System.Text.Json.Json.Deserialize<FkLanguageRow[]>(FkService.ReadText(buffer, size));
+                List<LanguageInfo> result;
+                for (int i = 0; i < rows.Length; i++) {
+                    if (rows[i].code.Length == 0) continue;
+                    result.Add(LanguageInfo(rows[i].code, rows[i].name.Length == 0 ? rows[i].code : rows[i].name));
+                }
+                return result.ToArray();
+            } catch (System.Exception& error) { return new LanguageInfo[0]; }
+        }
+    }
+    static string Format(string key) { return Get(key); }
+    static string Format(string key, string[] args) {
+        FkFormatArgument[] values = new FkFormatArgument[args.Length];
+        for (int i = 0; i < args.Length; i++) values[i] = FkFormatArgument.From(args[i]);
+        return FormatValues(Get(key), values);
+    }
+    static string Format<T>(string key, T... args) {
+        FkFormatArgument[] values = new FkFormatArgument[args.Length];
+        for (int i = 0; i < args.Length; i++) values[i] = FkFormatArgument.From(args[i]);
+        return FormatValues(Get(key), values);
+    }
+    static string Format<T, U>(string key, T a, U b) {
+        FkFormatArgument[] values = { FkFormatArgument.From(a), FkFormatArgument.From(b) };
+        return FormatValues(Get(key), values);
+    }
+    static string Format<T, U, V>(string key, T a, U b, V c) {
+        FkFormatArgument[] values = { FkFormatArgument.From(a), FkFormatArgument.From(b), FkFormatArgument.From(c) };
+        return FormatValues(Get(key), values);
+    }
+private:
+    static string FormatValues(string pattern, FkFormatArgument[] values) {
+        if (values.Length == 0) return pattern;
+        var culture = Culture;
+        byte[] text = pattern.ToUtf8();
+        List<byte> output;
+        for (int i = 0; i < text.Length; i++) {
+            byte c = text[i];
+            if (c != 123 && c != 125) { output.Add(c); continue; }
+            if (i + 1 < text.Length && text[i + 1] == c) { output.Add(c); i++; continue; }
+            if (c == 125 || ++i >= text.Length || text[i] < 48 || text[i] > 57) return pattern;
+            int index = 0;
+            while (i < text.Length && text[i] >= 48 && text[i] <= 57) {
+                if (index > 214748363) return pattern;
+                index = index * 10 + (int)text[i++] - 48;
+            }
+            if (index >= values.Length) return pattern;
+            while (i < text.Length && text[i] == 32) i++;
+            int width = 0;
+            bool left = false;
+            if (i < text.Length && text[i] == 44) {
+                i++;
+                while (i < text.Length && text[i] == 32) i++;
+                if (i < text.Length && text[i] == 45) { left = true; i++; }
+                if (i >= text.Length || text[i] < 48 || text[i] > 57) return pattern;
+                while (i < text.Length && text[i] >= 48 && text[i] <= 57) {
+                    if (width >= 1000000) return pattern;
+                    width = width * 10 + (int)text[i++] - 48;
+                }
+                while (i < text.Length && text[i] == 32) i++;
+            }
+            string format = "";
+            if (i < text.Length && text[i] == 58) {
+                List<byte> spec;
+                while (++i < text.Length && text[i] != 125) {
+                    if (text[i] == 123) return pattern;
+                    spec.Add(text[i]);
+                }
+                format = string.FromUtf8(spec.ToArray());
+            }
+            if (i >= text.Length || text[i] != 125) return pattern;
+            string value = values[index].Render(culture, format);
+            if (value.Length == 0 && values[index].Category != 0ul) return pattern;
+            byte[] substitution = value.ToUtf8();
+            int padding = width - value.Length;
+            if (!left) for (int j = 0; j < padding; j++) output.Add(32);
+            for (int j = 0; j < substitution.Length; j++) output.Add(substitution[j]);
+            if (left) for (int j = 0; j < padding; j++) output.Add(32);
+        }
+        return string.FromUtf8(output.ToArray());
+    }
+}

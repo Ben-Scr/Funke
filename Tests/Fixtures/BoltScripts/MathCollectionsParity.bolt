@@ -1,0 +1,156 @@
+import Funke
+import Funke.AI
+import Funke.Collections
+import Funke.Collections.Native
+import Funke.Coroutines
+import System.Threading
+
+public class MathCollectionsProbe : EntityScript {
+private:
+    static int signals;
+public:
+    public int Result = -1;
+    public override void OnStart() {
+        Result = MathCollectionsParity.Verify();
+        signals = 0;
+        var next = Funke.Coroutines.WaitForFrames(2).GetAwaiter();
+        next.OnCompleted(() => { next.GetResult(); signals += 1; });
+        var fixedStep = Funke.Coroutines.WaitForFixedUpdate().GetAwaiter();
+        fixedStep.OnCompleted(() => { fixedStep.GetResult(); signals += 2; });
+        CancellationTokenSource stop;
+        var canceled = Funke.Coroutines.WaitForSeconds(10,stop.Token).GetAwaiter();
+        canceled.OnCompleted(() => {
+            try { canceled.GetResult(); }
+            catch (System.OperationCanceledException& error) { signals += 4; }
+        });
+        stop.Cancel();
+    }
+    public override void OnUpdate() { Transform2D.Position = Vector2((float)signals,0); }
+}
+
+public static class MathCollectionsParity {
+public:
+    static int Verify() {
+        Quaternion rotation = Quaternion.AngleAxis(90,Vector3.Up);
+        if (Vector3.Distance(rotation * Vector3.Forward,Vector3.Left) > 0.001f) return 1;
+        Quaternion target = Quaternion.LookRotation(Vector3.Right,Vector3.Up);
+        if (Vector3.Distance(target * Vector3.Forward,Vector3.Right) > 0.001f) return 2;
+        Bounds3D box = Bounds3D(Vector3(-1),Vector3(1));
+        float distance;
+        Ray ray = Ray(Vector3(0,0,3),Vector3.Forward);
+        if (!box.TryRaycast(ray,distance) || distance != 2) return 3;
+        if (!Plane(Vector3.Back,Vector3.Zero).TryRaycast(ray,distance) || distance != 3) return 4;
+        if (!ray.TryIntersectSphere(Vector3.Zero,1,distance) || distance != 2) return 5;
+        if (Mathf.Repeat(-3,2) != 1 || Mathf.PingPong(9,4) != 1) return 6;
+        Vector3 velocity = Vector3.Zero;
+        Vector3 smooth = Vector3.SmoothDamp(Vector3.Zero,Vector3.One,velocity,1,0.25f);
+        if (smooth.X <= 0 || smooth.X >= 1 || velocity.X <= 0) return 7;
+        if (Color.FromHex("#A3F").ToHex() != "#AA33FF") return 8;
+        if (Mathf.Abs(Graph().Evaluate(0.4f)-1.0f) > 0.00001f) return 9;
+        if (PerlinNoise2D(44).Sample(0.25f,-3.125f) != PerlinNoise2D(44).Sample(0.25f,-3.125f)) return 10;
+        Funke.Random rng = Funke.Random(1ul);
+        if (rng.NextInt() != 158129437) return 11;
+        rng.SetSeed(1ul);
+        if (rng.Next<int>() != 158129437) return 12;
+
+        var action = BehaviorNode<int>.Action("increment",(int& state) => {
+            state++;
+            return state == 1 ? BehaviorResult.Running : BehaviorResult.Success;
+        });
+        var tree = BehaviorTree<int>(action,0);
+        if (tree.Tick(1) != BehaviorResult.Running || tree.Blackboard != 1) return 13;
+        if (tree.Tick(1) != BehaviorResult.Success || tree.Blackboard != 2) return 14;
+
+        NativeArray<int> array = NativeArray<int>(2);
+        NativeArray<int>.WriteOnly write = array.AsWriteOnly();
+        write[1] = 7;
+        if (array.AsReadOnly()[1] != 7 || array.GetUnsafePtr()[1] != 7) return 15;
+        NativeQueue<int> queue = NativeQueue<int>(2);
+        queue.Enqueue(10); queue.Enqueue(20);
+        if (queue.Dequeue() != 10) return 16;
+        queue.Enqueue(30); queue.Enqueue(40);
+        if (queue.Dequeue() != 20 || queue.Dequeue() != 30 || queue.Dequeue() != 40) return 17;
+        NativeList<int> list = NativeList<int>(1);
+        list.Add(3); list.Add(4);
+        NativeList<int>.Enumerator en = list.GetEnumerator();
+        if (!en.MoveNext() || en.Current != 3) return 18;
+        NativeDictionary<int,int> map = NativeDictionary<int,int>(0);
+        map.Add(4,22); map[4] = 23;
+        int number;
+        if (!map.TryGetValue(4,number) || number != 23) return 19;
+        NativeHashset<int> set = NativeHashset<int>(1);
+        if (!set.Add(4) || set.Add(4) || !set.Contains(4)) return 20;
+        NativeBitArray bits = NativeBitArray(9);
+        bits.SetAll(true); bits.ClearBit(8);
+        if (!bits.Get(0) || bits[8]) return 21;
+        NativePriorityQueue<int> heap = NativePriorityQueue<int>(0);
+        heap.Enqueue(5); heap.Enqueue(4); heap.Enqueue(0);
+        if (heap.Dequeue() != 0 || heap.Dequeue() != 4) return 22;
+        NativeString? str = NativeString.FromString("Héllo");
+        if (str.Value.ToString() != "Héllo") return 23;
+
+        int* memory = NativeMemoryPool.Rent<int>(3,true);
+        if (memory[1] != 0) return 24;
+        memory[1] = 91;
+        NativeMemoryPool.Return<int>(memory,3);
+        int* reused = NativeMemoryPool.Rent<int>(3);
+        if (reused != memory || reused[1] != 91) return 25;
+        NativeMemoryPool.Release<int>(reused,3,false,true);
+        NativeDeque<int> deque = NativeDeque<int>(1,true);
+        deque.AddFirst(11); deque.AddLast(12);
+        if (deque.RemoveLast() != 12 || deque.RemoveFirst() != 11) return 26;
+        deque.Dispose();
+        NativeMemoryPool.Clear();
+
+        NativeHashset<int>.Enumerator si = set.GetEnumerator();
+        if (!si.MoveNext() || si.Current != 4) return 27;
+        set.Add(3);
+        bool invalidated = false;
+        try { si.MoveNext(); } catch (System.InvalidOperationException ex) { invalidated = true; }
+        if (!invalidated) return 28;
+        NativeDictionary<int,int>.Enumerator mi = map.GetEnumerator();
+        if (!mi.MoveNext() || mi.Current.Key != 4 || mi.Current.Value != 23) return 29;
+        map.Dispose();
+        invalidated = false;
+        try { mi.MoveNext(); } catch (System.InvalidOperationException ex) { invalidated = true; }
+        if (!invalidated) return 30;
+
+        if (TextUtils.KeepOnly("ab1é2",TextUtils.GetFilterCharset(FilterOption.Digits)) != "12" ||
+            TextUtils.RemoveChars("aa1",'a') != "1") return 31;
+        if (TextUtils.ToHex(-1) != "#FFFFFFFF" || TextUtils.ToHex([0l,10l]) != "#00#0A") return 32;
+        if (TextUtils.ToCase(" Hello  WORLD",CaseConvention.CamelCase) != "helloWorld" ||
+            TextUtils.ToString<int>([4,5]) != "[4, 5]") return 33;
+        if (Vector2(2.25f,0.125f).ToString("F1") != "Vector2(2.2, 0.1)") return 34;
+        if (Vector2(9.99f,0.0012f).ToString("E1") != "Vector2(1.0E+001, 1.2E-003)") return 35;
+        char[] dest = new char[32];
+        int written;
+        if (!Vector2(1,2).TryFormat(System.Span<char>(dest),written,"F0") || written != 13) return 36;
+        if (Vector3(0,2,3).GetHashCode() != Vector3(-0.0f,2,3).GetHashCode()) return 37;
+        if (Mathf.Min(4,7,1,-2) != -2 || Mathf.Max(3,[2,10]) != 10) return 38;
+        byte* utf8 = Funke.Interop.NativeInterop.StringToNativeUtf8("hé🙂");
+        if (Funke.Interop.NativeInterop.NativeUtf8ToString(utf8).Value != "hé🙂") return 39;
+        Funke.Interop.NativeInterop.FreeNativeUtf8(utf8);
+        Funke.Interop.NativeInterop.FreeNativeUtf8(null);
+        int pinned = 1;
+        Funke.Interop.NativeInterop.WithPinned<int>(pinned,(void* ptr) => { *((int*)ptr) = 11; });
+        if (pinned != 11 || Funke.Interop.NativeInterop.FromNativeArray<int>(&pinned,1)[0] != 11) return 40;
+        ReloadState captured;
+        captured.Set<ulong>("id",ulong.MaxValue); captured.Set<string>("label","hé🙂");
+        ReloadState restored = captured;
+        ulong saved; string label; int wrong;
+        if (restored.TryGet<int>("id",wrong) || !restored.TryGet<ulong>("id",saved) || saved != ulong.MaxValue) return 41;
+        if (!restored.TryGet<string>("label",label) || label != "hé🙂") return 42;
+        Vector4 v = Vector4Int(1,2,3,4);
+        if (((Vector4Int)v).W != 4 || ((Vector4Int)Vector2(1,2)).Z != 0) return 43;
+        Color rgba = (Color)v;
+        Vector4 channels = rgba;
+        if (channels != v) return 44;
+        NativeString native = NativeString("hé");
+        string managed = native;
+        if (managed != "hé" || !(bool)NativeBool(true)) return 45;
+        ulong mask = PhysicsLayer.FromMask(1ul << 58);
+        if (mask != (1ul << 58) || ((PhysicsLayer)mask).Mask != mask) return 46;
+        return 0;
+    }
+}
+

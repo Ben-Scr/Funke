@@ -1,0 +1,12 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public class SphereCollider3D : Collider3D {
+public:
+    [ReadOnly] public override ulong FkShapeKind() { return 1ul; }
+    protected override ulong FkType() { return 39ul; }
+    float Radius { get { return Reinterpret<float>((uint)FkGetSphereCollider3D_Radius(ID, 0ul)); } set { FkSetSphereCollider3D_Radius(ID, (ulong)Reinterpret<uint>(value)); } }
+}

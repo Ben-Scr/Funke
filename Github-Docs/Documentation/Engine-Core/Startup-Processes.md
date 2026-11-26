@@ -121,7 +121,7 @@ See [Scenes](Scenes.md) for the full scene lifecycle.
 
 ### Start scripting
 
-When the game needs C# code, the **Scripting host** boots: it starts the .NET runtime (via hostfxr), loads `Funke-ScriptCore.dll` and your game's script assembly, and connects the native ↔ managed bridge. Then `OnApplicationStart` and the per-scene/per-entity script lifecycle begin running. See [Scripting](../Scripting/Scripting.md).
+For C# on desktop, the managed host starts CoreCLR via hostfxr, loads `Funke-ScriptCore.dll` and the game assembly, and connects the native and managed APIs. The [scripting guide](../Scripting/Scripting.md) describes application, scene and entity callbacks. Android, iOS and Web use the [Mono platform package](../Editor/Platform-Packages.md) for C#. Desktop projects with `.bolt` assets also use the [Bolt compiler host](../Scripting/Bolt.md).
 
 ---
 
@@ -195,5 +195,34 @@ Main()
 ## Editor and Launcher source ownership
 
 `LauncherSettings` owns persisted launcher values, their existing JSON format and legacy-file migration, plus project-directory naming conventions. `LauncherLayer` owns the UI and async project workflows and delegates settings load/save to this object.
+
+The launcher's implementation is split by responsibility under `Funke-Launcher/src/`:
+
+| Source | Responsibility |
+|---|---|
+| `Systems/LauncherLayer.cpp` | Layer lifecycle, main panel, navigation and error popup |
+| `Systems/LauncherLayerProjects.cpp` | Project list/grid, thumbnails, sorting and project information |
+| `Systems/LauncherLayerProjectDialogs.cpp` | Create, rename, duplicate and delete dialogs |
+| `Systems/LauncherLayerProjectTasks.cpp` | Creation/duplication workers, Git initialization and deletion from disk |
+| `Systems/LauncherLayerLaunch.cpp` | Prepare/build/start workflow, progress and automation reports |
+| `Systems/LauncherLayerTemplates.cpp` | Template browsing, editing, saving and refresh workers |
+| `Systems/LauncherLayerAssetLibrary.cpp` | Library manifest, download/import workers and library UI |
+| `Systems/LauncherLayerSettings.cpp` | Settings page, theme application and language restart |
+| `Gui/LauncherUI.hpp/.cpp` | Shared palette, form controls, buttons and thumbnail drawing |
+
+Layer state remains in `LauncherLayer.hpp`; shared UI helpers have one implementation in `LauncherUI.cpp`, including the form-row state.
+
+Project operations retain the public `Project/FunkeProject.hpp` API. Their implementation under `Funke-Engine/src/Project/` is separated into:
+
+| Source | Responsibility |
+|---|---|
+| `FunkeProject.cpp` | Settings accessors, build/platform definitions and path resolution |
+| `FunkeProjectSerialization.cpp` | Project JSON validation, preservation, migration, loading and saving |
+| `FunkeProjectScaffold.cpp` | Project creation/duplication, template copying and generated starter files |
+| `FunkeProjectManaged.cpp` | Managed SDK/solution migration, IntelliSense definitions and ScriptCore package refresh |
+| `FunkeProjectNative.cpp` | Native script discovery, source migration and CMake/bootstrap generation |
+| `FunkeProjectBuild.cpp` | Tool discovery, build invocation, package workspace preparation and build automation |
+
+`FunkeProjectInternal.hpp` declares helpers shared between these translation units in `Funke::ProjectInternal`; it does not add exported engine API. Project JSON and generated project formats are unchanged by this source split.
 
 The editor Inspector implementation is in `Systems/ImGuiEditorLayerInspector.cpp`. `InspectorSelectionCache` computes mixed field values and common/partial components independently of ImGui; the layer retains selection-version invalidation. Hierarchy and Inspector script drops share `Scripting/ScriptAttachment`, so attachment behavior is maintained once.

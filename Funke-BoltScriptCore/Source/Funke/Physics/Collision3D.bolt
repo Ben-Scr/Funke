@@ -1,0 +1,19 @@
+import System
+import Math
+import Type
+import System.Text
+namespace Funke;
+
+public class Collision3D {
+public:
+    Entity Self, Other;
+    Vector3 ContactPoint, Normal;
+    bool IsTrigger;
+    Collision3D(bool trigger) {
+        Self = FunkeApiTypes.MakeEntity(FkEntityId(0ul,0ul));
+        Other = FunkeApiTypes.MakeEntity(FkContact(0ul,0ul));
+        ContactPoint = Vector3.FromParts(FkContact(3ul,0ul), FkContact(4ul,0ul));
+        Normal = Vector3.FromParts(FkContact(5ul,0ul), FkContact(6ul,0ul));
+        IsTrigger = trigger;
+    }
+}

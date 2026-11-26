@@ -4,11 +4,11 @@
 
 # Funke
 
-**An open source game engine for 2D and 3D, with C++ and C# scripting.**
+**An open source game engine for 2D and 3D, with C#, native C++ and Bolt scripting.**
 
 Create a native C++ script in the Asset Browser, attach it to an entity, and expose its settings in the Inspector. C# scripts can sit alongside it in the same project. Adjust a movement speed, press Play, and see how the game feels.
 
-**[Get started](#getting-started)** · [Documentation](Github-Docs/Documentation/README.md) · [C++ scripting](Github-Docs/Documentation/Scripting/Scripting.md#native-c-scripts) · [C# scripting](Github-Docs/Documentation/Scripting/Scripting.md)
+**[Get started](#getting-started)** · [Documentation](Github-Docs/Documentation/README.md) · [C++ scripting](Github-Docs/Documentation/Scripting/Scripting.md#native-c-scripts) · [C# scripting](Github-Docs/Documentation/Scripting/Scripting.md) · [Bolt scripting](Github-Docs/Documentation/Scripting/Bolt.md)
 
 > **Beta.** The editor runs on Windows, Linux and macOS. See [Current status](#current-status) for platform support and the [known limitations](Github-Docs/Documentation/Known-Limitations.md) before choosing Funke for a project.
 
@@ -41,7 +41,7 @@ These projects are distributed through the separate [Funke Asset Library](https:
 
 ## Getting started
 
-Start by [building Funke from source](#build-from-source) for your platform. There is currently no published engine release on the [Releases page](https://github.com/Ben-Scr/Funke/releases). Successful [CI runs](https://github.com/Ben-Scr/Funke/actions/workflows/ci.yml) may provide temporary test bundles and installers; these require GitHub access and are not a published release. See [Desktop installers](installer/README.md) for artifact names and prerequisites.
+Choose a matching desktop package from [Releases](https://github.com/Ben-Scr/Funke/releases) when available, or [build Funke from source](#build-from-source). Successful [CI runs](https://github.com/Ben-Scr/Funke/actions/workflows/ci.yml) can also provide temporary test bundles and installers. The [desktop installer guide](installer/README.md) lists the artifact names and prerequisites.
 
 Once the Launcher is running:
 
@@ -49,13 +49,17 @@ Once the Launcher is running:
 2. Open the project in the editor.
 3. Follow **[Your First Game](Github-Docs/Documentation/Getting-Started.md)** to add a moving player, collect a coin and export a desktop game. The walkthrough uses C#.
 
-For a 3D project, choose **Empty 3D** and follow the [3D guide](Github-Docs/Documentation/Engine-Core/3D.md). To explore an existing project, open the Launcher's **Asset Library**.
+Choose **2D** or **3D** for a playable physics scene with a camera, ground, a falling box and instructions in `Assets/Help.md`. **Empty 2D** and **Empty 3D** start with a blank scene. For meshes, materials and lighting, follow the [3D guide](Github-Docs/Documentation/Engine-Core/3D.md).
 
-## Write the behavior in C++ or C#
+<a id="write-the-behavior-in-c-or-c"></a>
+
+## Write gameplay scripts
 
 **C# scripts** attach behavior to entities through `EntityScript`. Expose fields in the Inspector and recompile game scripts without restarting the editor.
 
 **Native C++ scripts** are created in the Asset Browser, inherit from `NativeScript` and attach to entities in the editor. Register the fields you want to edit in the Inspector; saving source changes can trigger an incremental native build and reload.
+
+**Bolt scripts** use `.bolt` assets. Choose **Create > Bolt Script** in the Asset Browser, attach the asset to an entity, and run it in Play with a compatible desktop compiler host. The [Bolt guide](Github-Docs/Documentation/Scripting/Bolt.md) covers setup, systems, components and export support.
 
 The languages have distinct APIs, lifecycle callbacks and toolchains. The [scripting guide](Github-Docs/Documentation/Scripting/Scripting.md) covers each workflow and explains what happens to script state during reload.
 
@@ -83,7 +87,7 @@ public class PlayerController : EntityScript
 }
 ```
 
-Attach it to a **Dynamic Body** in an **Empty 2D** project. Set the Rigidbody 2D's **Gravity Scale** to `0` and enable **Freeze Rotation**, then press Play. Move with WASD, the arrow keys or a gamepad's left stick.
+In **Empty 2D**, enable **Funke.Physics2D** in **Package Manager > Engine Modules** and add a **Camera 2D**. Create a **Dynamic Body**, attach the script, set **Gravity Scale** to `0` and enable **Freeze Rotation**. Press Play and move with WASD, the arrow keys or a gamepad’s left stick.
 
 Stop, change **Speed** in the Inspector and play again. The [full walkthrough](Github-Docs/Documentation/Getting-Started.md) adds a collectible, shows how to turn it into a prefab and takes the project through a desktop build.
 

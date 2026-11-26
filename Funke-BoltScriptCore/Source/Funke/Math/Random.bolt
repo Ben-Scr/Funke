@@ -1,0 +1,261 @@
+import System
+import Math
+import Type
+namespace Funke;
+
+public class Random {
+public:
+    private ulong state;
+
+    Random(ulong seed)
+    {
+        SetSeed(seed);
+    }
+
+    Random()
+    {
+        RemoveSeed();
+    }
+
+    private ulong NextState()
+    {
+        state ^= state >> 12;
+        state ^= state << 25;
+        state ^= state >> 27;
+        // Keep the low 64 bits of the xorshift* product in checked arithmetic.
+        ulong a = state & 4294967295ul, b = state >> 32;
+        ulong k = 2685821657736338717ul;
+        ulong product = a * (k & 4294967295ul);
+        ulong high = (product >> 32) + ((b * (k & 4294967295ul)) & 4294967295ul)
+                   + ((a * (k >> 32)) & 4294967295ul);
+        return (product & 4294967295ul) | (high << 32);
+    }
+
+    void SetSeed(ulong seed)
+    {
+        
+        state = seed != 0ul ? seed : 11400714819323198485ul;
+    }
+    void RemoveSeed()
+    {
+        SetSeed(System.Random().State);
+    }
+
+    ulong GetSeed() { return state; }
+
+    Vector2 InsideUnitCircle()
+    {
+        double radius = Math.Sqrt<double>(NextDouble());
+        double angle = 6.283185307179586 * NextDouble();
+        return Vector2((float)(radius * Math.Cos<double>(angle)), (float)(radius * Math.Sin<double>(angle)));
+    }
+
+    Vector3 OnUnitSphere()
+    {
+        double z = 2 * NextDouble() - 1;
+        double radius = Math.Sqrt<double>((1 - z) * (1 + z));
+        double angle = 6.283185307179586 * NextDouble();
+        return Vector3((float)(radius * Math.Cos<double>(angle)), (float)(radius * Math.Sin<double>(angle)), (float)z);
+    }
+
+    Vector3 InsideUnitSphere() { return OnUnitSphere() * (float)Math.Pow<double>(NextDouble(), 1.0 / 3.0); }
+
+    Quaternion UniformRotation()
+    {
+        double u = NextDouble();
+        double a = 6.283185307179586 * NextDouble(), b = 6.283185307179586 * NextDouble();
+        double r = Math.Sqrt<double>(1 - u), s = Math.Sqrt<double>(u);
+        return Quaternion((float)(r * Math.Sin<double>(a)), (float)(r * Math.Cos<double>(a)), (float)(s * Math.Sin<double>(b)), (float)(s * Math.Cos<double>(b)));
+    }
+
+    int WeightedIndex(ReadOnlySpan<float> weights)
+    {
+        double total = 0;
+        for (int i = 0; i < weights.Length; i++) {
+            float weight = weights[i];
+            if (!Mathf.FkFinite(weight) || weight < 0) throw System.ArgumentOutOfRangeException("weights");
+            total += weight;
+        }
+        if (total == 0) throw System.ArgumentException("A positive weight is required.");
+        double draw = NextDouble() * total;
+        double end = 0;
+        int lastPositive = 0;
+        for (int i = 0; i < weights.Length; ++i)
+        {
+            if (weights[i] > 0) lastPositive = i;
+            end += weights[i];
+            if (draw < end) return i;
+        }
+        return lastPositive;
+    }
+
+    void Shuffle<T>(Span<T> values)
+    {
+        for (int i = values.Length - 1; i > 0; --i)
+        {
+            uint count = (uint)i + 1;
+            
+            uint lowerBound = (uint)(4294967296ul - (ulong)count) % count;
+            uint sample;
+            sample = (uint)(NextState() >> 32); while (sample < lowerBound) sample = (uint)(NextState() >> 32);
+            int j = (int)(sample % count);
+            T temp = values[i]; values[i] = values[j]; values[j] = temp;
+        }
+    }
+
+    bool NextBool() { return NextInt(0, 2) == 0; }
+
+    byte NextByte()
+    {
+        return (byte)(NextState() & 255ul);
+    }
+    byte NextByte(byte max)
+    {
+        if (max <= 0) throw System.ArgumentOutOfRangeException("max");
+        return (byte)(NextByte() % max);
+    }
+    byte NextByte(byte min, byte max)
+    {
+        if (min >= max) throw System.ArgumentOutOfRangeException("min");
+        return (byte)(min + (NextByte() % (max - min)));
+    }
+
+    int NextInt()
+    {
+        return (int)(NextState() & 2147483647ul);
+    }
+    int NextInt(int max)
+    {
+        if (max <= 0) throw System.ArgumentOutOfRangeException("max");
+        return NextInt() % max;
+    }
+    int NextInt(int min, int max)
+    {
+        if (min >= max) throw System.ArgumentOutOfRangeException("min");
+        ulong range = (ulong)((long)max - min);
+        return (int)(min + (long)(NextState() % range));
+    }
+
+    double NextDouble()
+    {
+        
+        return (double)(NextState() >> 11) * (1.0 / 9007199254740992.0);
+    }
+    double NextDouble(double max)
+    {
+        if (max <= 0) throw System.ArgumentOutOfRangeException("max");
+        return NextDouble() * max;
+    }
+    double NextDouble(double min, double max)
+    {
+        return min + (NextDouble() * (max - min));
+    }
+
+    float NextFloat()
+    {
+
+        return (float)(NextState() >> 40) * (1.0f / 16777216.0f);
+    }
+    float NextFloat(float max)
+    {
+        if (max <= 0) throw System.ArgumentOutOfRangeException("max");
+        return NextFloat() * max;
+    }
+    float NextFloat(float min, float max)
+    {
+        return min + (NextFloat() * (max - min));
+    }
+
+    Color NextColor() { return Color(NextFloat(), NextFloat(), NextFloat()); }
+
+    string NextString(int length = 10, string charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
+    {
+        int charsetLength = charset.Length;
+
+        string code = "";
+
+        for (int i = 0; i < length; i++)
+            code += charset.Substring(NextInt(charsetLength), 1);
+
+        return code;
+    }
+
+    T Next<T>() {
+        if (Type.Name<T>() == Type.Name<int>()) { int value = NextInt(); return *((T*)&value); }
+        if (Type.Name<T>() == Type.Name<byte>()) { byte value = NextByte(); return *((T*)&value); }
+        if (Type.Name<T>() == Type.Name<float>()) { float value = NextFloat(); return *((T*)&value); }
+        if (Type.Name<T>() == Type.Name<double>()) { double value = NextDouble(); return *((T*)&value); }
+        if (Type.Name<T>() == Type.Name<bool>()) { bool value = NextBool(); return *((T*)&value); }
+        if (Type.Name<T>() == Type.Name<string>()) { string value = NextString(); return *((T*)&value); }
+        if (Type.Name<T>() == Type.Name<Color>()) { Color value = NextColor(); return *((T*)&value); }
+        throw System.InvalidOperationException("Unsupported random type.");
+    }
+    T Next<T>(T max) {
+        if (Type.Name<T>() == Type.Name<int>()) { int value = NextInt(*((int*)&max)); return *((T*)&value); }
+        if (Type.Name<T>() == Type.Name<byte>()) { byte value = NextByte(*((byte*)&max)); return *((T*)&value); }
+        if (Type.Name<T>() == Type.Name<float>()) { float value = NextFloat(*((float*)&max)); return *((T*)&value); }
+        if (Type.Name<T>() == Type.Name<double>()) { double value = NextDouble(*((double*)&max)); return *((T*)&value); }
+        throw System.InvalidOperationException("Unsupported random type.");
+    }
+    T Next<T>(T min, T max) {
+        if (Type.Name<T>() == Type.Name<int>()) { int value = NextInt(*((int*)&min), *((int*)&max)); return *((T*)&value); }
+        if (Type.Name<T>() == Type.Name<byte>()) { byte value = NextByte(*((byte*)&min), *((byte*)&max)); return *((T*)&value); }
+        if (Type.Name<T>() == Type.Name<float>()) { float value = NextFloat(*((float*)&min), *((float*)&max)); return *((T*)&value); }
+        if (Type.Name<T>() == Type.Name<double>()) { double value = NextDouble(*((double*)&min), *((double*)&max)); return *((T*)&value); }
+        throw System.InvalidOperationException("Unsupported random type.");
+    }
+}
+
+public static class RandomHandler {
+private:
+    static Funke.Random instance;
+public:
+    static void SetSeed(ulong seed) { instance.SetSeed(seed); }
+    static void RemoveSeed() { instance.RemoveSeed(); }
+    static bool NextBool() { return instance.NextBool(); }
+    static byte NextByte() { return instance.NextByte(); }
+    static byte NextByte(byte max) { return instance.NextByte(max); }
+    static byte NextByte(byte min, byte max) { return instance.NextByte(min, max); }
+    static int NextInt(int min, int max) { return instance.NextInt(min, max); }
+    static int NextInt(int max) { return instance.NextInt(max); }
+    static float NextFloat(float min, float max) { return instance.NextFloat(min, max); }
+    static float NextFloat(float max) { return instance.NextFloat(max); }
+    static double NextDouble(double min, double max) { return instance.NextDouble(min, max); }
+    static double NextDouble(double max) { return instance.NextDouble(max); }
+    static string NextString(int length = 10, string charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ") { return instance.NextString(length, charset); }
+    static T Next<T>(T min, T max) { return instance.Next<T>(min, max); }
+    static T Next<T>(T max) { return instance.Next<T>(max); }
+    static T Next<T>() { return instance.Next<T>(); }
+}
+
+public static class ParallelRandom {
+private:
+    static System.Threading.ThreadLocal<System.Memory.Shared<Funke.Random>> instances;
+    static Funke.Random& Current() {
+        var owner = instances.Value;
+        if (!owner.HasValue) { owner = System.Memory.Shared<Funke.Random>.Create(); instances.Value = owner; }
+        return owner.Get();
+    }
+public:
+    static void SetSeed(ulong seed) { Current().SetSeed(seed); }
+    static void RemoveSeed() { Current().RemoveSeed(); }
+    static bool NextBool() { return Current().NextBool(); }
+    static byte NextByte() { return Current().NextByte(); }
+    static byte NextByte(byte max) { return Current().NextByte(max); }
+    static byte NextByte(byte min, byte max) { return Current().NextByte(min, max); }
+    static int NextInt() { return Current().NextInt(); }
+    static int NextInt(int max) { return Current().NextInt(max); }
+    static int NextInt(int min, int max) { return Current().NextInt(min, max); }
+    static float NextFloat() { return Current().NextFloat(); }
+    static float NextFloat(float max) { return Current().NextFloat(max); }
+    static float NextFloat(float min, float max) { return Current().NextFloat(min, max); }
+    static double NextDouble() { return Current().NextDouble(); }
+    static double NextDouble(double max) { return Current().NextDouble(max); }
+    static double NextDouble(double min, double max) { return Current().NextDouble(min, max); }
+    static string NextString(int length = 10, string charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ") { return Current().NextString(length, charset); }
+    static T Next<T>() { return Current().Next<T>(); }
+    static T Next<T>(T max) { return Current().Next<T>(max); }
+    static T Next<T>(T min, T max) { return Current().Next<T>(min, max); }
+}
+
+

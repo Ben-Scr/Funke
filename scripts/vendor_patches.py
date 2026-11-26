@@ -31,6 +31,19 @@ class VendorPatch:
 
 PATCHES = (
     VendorPatch(
+        name="Tracy Windows retired thread heap cleanup",
+        submodule="External/tracy",
+        pinned_commit="9965aff723ce871e64819ecfb56ea8647997a3e0",
+        patch_file="tracy-windows-thread-heaps.patch",
+        files=(
+            PatchedFile(
+                "public/client/tracy_rpmalloc.cpp",
+                "c43b8cab9b7b6a5c9b9f556747a9ddd82d81c70c",
+                "7212dacadc9023d5acee9bee4dbdc4ec3cf1928e",
+            ),
+        ),
+    ),
+    VendorPatch(
         name="Box2D deterministic split-island candidate",
         submodule="External/box2d",
         pinned_commit="8c65dcb91a5e8fbce53492c169cb4460b53b0b54",
@@ -57,7 +70,7 @@ PATCHES = (
             PatchedFile(
                 "src/entt/entity/storage.hpp",
                 "f6e52dccd40ddeb879e22c7550dba6a04a379f6a",
-                "44792fe4f8c9588c469c05280415a5fd6c1b1fde",
+                "d4c4f848a68f8329a8aa016c770d0944201b931b",
             ),
             PatchedFile(
                 "src/entt/signal/sigh.hpp",

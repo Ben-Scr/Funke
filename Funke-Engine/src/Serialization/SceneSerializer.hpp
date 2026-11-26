@@ -19,6 +19,7 @@ namespace Funke {
 	};
 
 	class Scene;
+	struct ScenePrefabLoadState;
 
 	class Entity;
 
@@ -43,6 +44,15 @@ namespace Funke {
 		// Prefab support: save/load single entities
 		static Json::Value SerializeEntityFull(Scene& scene, EntityHandle entity);
 		static Json::Value SerializeEntityForClipboard(Scene& scene, EntityHandle entity);
+		static EntityHandle CloneRuntimeEntity(Scene& destination, Entity source);
+		// Expands the existing PrefabRef/Overrides format through its GUID chain.
+		static bool ResolvePrefabSource(uint64_t prefabGuid, Json::Value& source);
+		// Resolve against one prior source without replacing disk/cache data, for external-edit propagation.
+		static bool ResolvePrefabSource(uint64_t prefabGuid, Json::Value& source,
+			uint64_t previousGuid, const Json::Value& previousSource);
+		static bool GetPrefabDependencies(uint64_t prefabGuid, std::vector<uint64_t>& dependencies);
+		static Json::Value SerializePrefabVariant(Scene& scene, EntityHandle entity, uint64_t baseGuid,
+			uint64_t variantGuid, const Json::Value& baseSource);
 		static Json::Value SerializePrefabSource(Scene& scene, EntityHandle entity, uint64_t prefabGuid = 0);
 		static EntityHandle DeserializeEntityFromValue(
 			Scene& scene,
@@ -63,6 +73,7 @@ namespace Funke {
 		static uint64_t SaveEntityAsPrefabInstance(Scene& scene, EntityHandle entity, const std::string& path);
 		static EntityHandle LoadEntityFromFile(Scene& scene, const std::string& path);
 		static bool ConvertFileFormat(const std::string& path, SceneSerializationFormat format);
+		static bool ConvertFileFormat(const std::string& path, SceneSerializationFormat format, std::string& error);
 		static bool IsBinarySerializedFile(const std::string& path);
 		static EntityHandle InstantiatePrefab(Scene& scene, uint64_t prefabGuid);
 		static bool ApplyPrefabInstanceOverrides(Scene& scene, EntityHandle entity);
@@ -101,6 +112,7 @@ namespace Funke {
 	private:
 		friend class PrefabTemplateCache;
 		friend class SceneManager;
+        friend struct SceneMaterializationTestAccess;
 		class NewSceneLoadScope {
 		public:
 			explicit NewSceneLoadScope(Scene& scene);
@@ -123,6 +135,8 @@ namespace Funke {
 			std::vector<std::pair<EntityHandle, uint64_t>> pendingParents;
 			std::unordered_map<uint32_t, int> childIndexByEntity;
 			size_t nextEntity = 0;
+            size_t materializedEntities = 0, additionalEntities = 0;
+			std::shared_ptr<ScenePrefabLoadState> prefab;
 			bool started = false;
 			bool complete = false;
 		};
@@ -136,6 +150,8 @@ namespace Funke {
 			bool& restartLifecycle);
 		// Pass-1 body: create one entity and record its deferred parent/child-order links.
 		static bool ProcessLoadedEntity(Scene& scene, const Json::Value& entityValue, SceneLoadState& state);
+		static bool ProcessLoadedEntityBatch(Scene& scene, const Json::Value& value,
+			SceneLoadState& state, bool& complete, double budgetMs);
 		// Passes 2-3 + entity-ref fixups + finish content replacement.
 		static void FinalizeSceneLoad(Scene& scene, const SceneLoadState& state, bool restartLifecycle);
 		static bool DeserializeSceneInPlace(

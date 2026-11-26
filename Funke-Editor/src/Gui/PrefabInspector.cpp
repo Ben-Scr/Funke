@@ -1,5 +1,7 @@
 #include <pch.hpp>
 #include "Gui/PrefabInspector.hpp"
+#include "Scripting/ScriptAttachment.hpp"
+#include "Gui/PrefabVariantState.hpp"
 
 #include "Assets/AssetRegistry.hpp"
 #include "Components/General/EntityMetaDataComponent.hpp"
@@ -36,387 +38,7 @@
 #include <vector>
 
 namespace Funke {
-	namespace {
-		struct PrefabSceneTransaction {
-			std::shared_ptr<Scene> LiveScene;
-			std::unique_ptr<Scene> ValidationScene;
-			Json::Value SerializedState;
-			size_t ExpectedInstanceCount = 0;
-			bool RecoveryBegun = false;
-		};
-
-		bool CollectPrefabInstanceRoots(Scene& scene, uint64_t prefabGuid,
-			std::vector<EntityHandle>& roots) {
-			auto view = scene.GetRegistry().view<EntityMetaDataComponent>();
-			for (entt::entity entity : view) {
-				const EntityMetaData& metadata = view.get<EntityMetaDataComponent>(entity).MetaData;
-				if (metadata.Origin != EntityOrigin::Prefab
-					|| static_cast<uint64_t>(metadata.PrefabGUID) != prefabGuid) {
-					continue;
-				}
-
-				const EntityHandle root = SceneSerializer::GetPrefabInstanceRoot(scene, entity);
-				if (root == entt::null) {
-					return false;
-				}
-				if (std::find(roots.begin(), roots.end(), root) == roots.end()) {
-					roots.push_back(root);
-				}
-			}
-			return true;
-		}
-
-		bool ValidateLoadedPersistentIdentities(std::string_view logTag) {
-			std::unordered_map<uint64_t, std::string> owners;
-			for (const std::weak_ptr<Scene>& weakScene : SceneManager::GetLoadedScenes()) {
-				const std::shared_ptr<Scene> scene = weakScene.lock();
-				if (!scene || !scene->IsLoaded()) continue;
-				for (const EntityHandle entity : scene->GetRegistry().view<UUIDComponent>()) {
-					const uint64_t id = scene->GetEntityPersistentID(entity);
-					const auto [owner, inserted] = owners.emplace(id, scene->GetName());
-					if (id == 0 || !inserted) {
-						FNK_CORE_ERROR_TAG(logTag,
-							"Prefab save aborted: persistent entity ID {} is invalid or shared by scenes '{}' and '{}'.",
-							id, inserted ? scene->GetName() : owner->second, scene->GetName());
-						return false;
-					}
-				}
-			}
-			return true;
-		}
-
-		bool RestorePrefabSource(const std::string& prefabPath, const Json::Value& previousSource,
-			SceneSerializationFormat previousFormat, uint64_t prefabGuid, std::string_view logTag) {
-			const bool restored = SceneSerializerStorage::WriteRootToFile(
-				prefabPath, previousSource, previousFormat);
-			if (restored) {
-				KnownFileStamps::Record(prefabPath);
-			}
-			SceneSerializer::ForgetCachedPrefabRoot(prefabPath);
-			PrefabTemplateCache::Get().Invalidate(prefabGuid);
-			if (!restored) {
-				FNK_CORE_ERROR_TAG(logTag, "Failed to restore prefab source {} after propagation failure.", prefabPath);
-			}
-			return restored;
-		}
-
-		bool RestorePrefabScenes(const std::vector<PrefabSceneTransaction>& transactions,
-			std::string_view logTag) {
-			bool allRestored = true;
-			std::vector<std::shared_ptr<Scene>> suspendedScenes;
-			suspendedScenes.reserve(transactions.size());
-			for (const PrefabSceneTransaction& transaction : transactions) {
-				if (!transaction.RecoveryBegun) continue;
-				if (!SceneManager::RollbackLoadedSceneRecovery(transaction.LiveScene)) {
-					FNK_CORE_ERROR_TAG(logTag, "Failed to restore scene '{}' after prefab propagation failure.",
-						transaction.LiveScene->GetName());
-					allRestored = false;
-					continue;
-				}
-				suspendedScenes.push_back(transaction.LiveScene);
-			}
-			if (!allRestored) return false;
-
-			std::vector<std::shared_ptr<Scene>> activatedScenes;
-			activatedScenes.reserve(suspendedScenes.size());
-			for (const std::shared_ptr<Scene>& scene : suspendedScenes) {
-				if (!SceneManager::ActivateSuspendedScene(scene)) {
-					FNK_CORE_ERROR_TAG(logTag, "Failed to reactivate restored scene '{}'.", scene->GetName());
-					allRestored = false;
-					break;
-				}
-				activatedScenes.push_back(scene);
-			}
-			if (!allRestored) {
-				for (auto it = activatedScenes.rbegin(); it != activatedScenes.rend(); ++it) {
-					if (!SceneManager::ResuspendSceneForRecovery(*it)) {
-						FNK_CORE_ERROR_TAG(logTag, "Failed to resuspend restored scene '{}'.", (*it)->GetName());
-					}
-				}
-				return false;
-			}
-
-			for (const std::shared_ptr<Scene>& scene : activatedScenes) {
-				if (!SceneManager::CommitSuspendedSceneActivation(scene)) {
-					FNK_CORE_ERROR_TAG(logTag, "Failed to finalize restored scene '{}'.", scene->GetName());
-					allRestored = false;
-				}
-			}
-			return allRestored;
-		}
-
-		bool ValidatePrefabRefreshes(const std::vector<PrefabSceneTransaction>& transactions,
-			uint64_t prefabGuid, const Json::Value& previousSource, std::string_view logTag) {
-			try {
-				for (const PrefabSceneTransaction& transaction : transactions) {
-					std::vector<EntityHandle> roots;
-					if (!transaction.ValidationScene
-						|| !CollectPrefabInstanceRoots(*transaction.ValidationScene, prefabGuid, roots)
-						|| roots.size() != transaction.ExpectedInstanceCount) {
-						return false;
-					}
-					for (const EntityHandle root : roots) {
-						const EntityHandle replacement = SceneSerializer::RefreshPrefabInstance(
-							*transaction.ValidationScene, root, previousSource);
-						if (replacement == entt::null || replacement == root) return false;
-					}
-					roots.clear();
-					if (!CollectPrefabInstanceRoots(*transaction.ValidationScene, prefabGuid, roots)
-						|| roots.size() != transaction.ExpectedInstanceCount) {
-						return false;
-					}
-				}
-				return true;
-			}
-			catch (const std::exception& exception) {
-				FNK_CORE_ERROR_TAG(logTag, "Prefab propagation preflight failed: {}", exception.what());
-			}
-			catch (...) {
-				FNK_CORE_ERROR_TAG(logTag, "Prefab propagation preflight failed.");
-			}
-			return false;
-		}
-	}
-
-	// Suspends every loaded scene holding instances of the prefab, publishes the new source, then
-	// refreshes the instances against previousSource; any failure rolls scenes (and source) back.
-	// An empty publishSource means the file already changed on disk, so it is never rolled back.
-	static bool PropagatePrefabSource(uint64_t prefabGuid, const std::string& prefabPath,
-		const Json::Value& previousSource, SceneSerializationFormat previousFormat,
-		const std::function<bool()>& publishSource, std::string_view logTag, size_t* outRefreshedCount) {
-		if (!ValidateLoadedPersistentIdentities(logTag)) return false;
-		const bool ownsSource = static_cast<bool>(publishSource);
-
-		std::vector<PrefabSceneTransaction> sceneTransactions;
-		for (const std::weak_ptr<Scene>& weakScene : SceneManager::GetLoadedScenes()) {
-			std::shared_ptr<Scene> scene = weakScene.lock();
-			if (!scene || !scene->IsLoaded()) continue;
-			std::vector<EntityHandle> roots;
-			if (!CollectPrefabInstanceRoots(*scene, prefabGuid, roots)) {
-				FNK_CORE_ERROR_TAG(logTag, "Scene '{}' contains a malformed instance of {}.",
-					scene->GetName(), prefabPath);
-				return false;
-			}
-			if (roots.empty()) continue;
-			if (scene->IsLifecycleSuspended()) {
-				FNK_CORE_ERROR_TAG(logTag, "Scene '{}' is already lifecycle-suspended; prefab propagation was aborted.",
-					scene->GetName());
-				return false;
-			}
-			try {
-				PrefabSceneTransaction transaction;
-				transaction.LiveScene = scene;
-				transaction.SerializedState = SceneSerializer::SerializeScene(*transaction.LiveScene);
-				transaction.ExpectedInstanceCount = roots.size();
-				transaction.ValidationScene = Scene::CreateDetachedScene(scene->GetName());
-				if (!SceneSerializer::DeserializeScene(*transaction.ValidationScene,
-					transaction.SerializedState, "prefab propagation preflight")) {
-					FNK_CORE_ERROR_TAG(logTag, "Failed to stage scene '{}' for prefab propagation.", scene->GetName());
-					return false;
-				}
-				sceneTransactions.push_back(std::move(transaction));
-			}
-			catch (const std::exception& exception) {
-				FNK_CORE_ERROR_TAG(logTag, "Failed to snapshot scene '{}': {}", scene->GetName(), exception.what());
-				return false;
-			}
-			catch (...) {
-				FNK_CORE_ERROR_TAG(logTag, "Failed to snapshot scene '{}'.", scene->GetName());
-				return false;
-			}
-		}
-
-		bool sourcePublished = false;
-		auto restoreSource = [&]() {
-			return !ownsSource || !sourcePublished
-				|| RestorePrefabSource(prefabPath, previousSource, previousFormat, prefabGuid, logTag);
-		};
-		try {
-		for (PrefabSceneTransaction& transaction : sceneTransactions) {
-			if (SceneManager::BeginLoadedSceneRecovery(transaction.LiveScene)) {
-				transaction.RecoveryBegun = true;
-				continue;
-			}
-			transaction.RecoveryBegun = transaction.LiveScene->IsLifecycleSuspended();
-			const bool scenesRestored = RestorePrefabScenes(sceneTransactions, logTag);
-			FNK_CORE_ERROR_TAG(logTag, "Failed to suspend scene '{}' for prefab propagation; scene recovery: {}.",
-				transaction.LiveScene->GetName(), scenesRestored);
-			return false;
-		}
-
-		if (ownsSource && !publishSource()) {
-			const bool scenesRestored = RestorePrefabScenes(sceneTransactions, logTag);
-			FNK_CORE_ERROR_TAG(logTag, "Prefab source save failed; scene recovery: {}.", scenesRestored);
-			return false;
-		}
-		sourcePublished = true;
-		PrefabTemplateCache::Get().Invalidate(prefabGuid);
-
-		if (!ValidatePrefabRefreshes(sceneTransactions, prefabGuid, previousSource, logTag)) {
-			const bool sourceRestored = restoreSource();
-			const bool scenesRestored = RestorePrefabScenes(sceneTransactions, logTag);
-			FNK_CORE_ERROR_TAG(logTag, "Prefab propagation preflight failed for {}; source rollback: {}; scene rollback: {}.",
-				prefabPath, sourceRestored, scenesRestored);
-			return false;
-		}
-
-		size_t failedInstanceCount = 0;
-		size_t refreshedInstanceCount = 0;
-		for (const PrefabSceneTransaction& transaction : sceneTransactions) {
-			std::vector<EntityHandle> roots;
-			if (!CollectPrefabInstanceRoots(*transaction.LiveScene, prefabGuid, roots)
-				|| roots.size() != transaction.ExpectedInstanceCount) {
-				failedInstanceCount += std::max<size_t>(transaction.ExpectedInstanceCount, 1);
-				continue;
-			}
-			bool sceneRefreshFailed = false;
-			for (EntityHandle root : roots) {
-				const EntityHandle replacement = SceneSerializer::RefreshPrefabInstance(
-					*transaction.LiveScene, root, previousSource);
-				if (replacement == entt::null || replacement == root) {
-					++failedInstanceCount;
-					sceneRefreshFailed = true;
-				}
-				else {
-					++refreshedInstanceCount;
-				}
-			}
-			if (!sceneRefreshFailed) {
-				transaction.LiveScene->MarkDirty();
-			}
-		}
-
-		if (failedInstanceCount != 0) {
-			const bool sourceRestored = restoreSource();
-			const bool scenesRestored = RestorePrefabScenes(sceneTransactions, logTag);
-			FNK_CORE_ERROR_TAG(logTag, "Failed to refresh {} live prefab instance(s) from {}; source rollback: {}; scene rollback: {}.",
-				failedInstanceCount, prefabPath, sourceRestored, scenesRestored);
-			return false;
-		}
-
-		std::vector<std::shared_ptr<Scene>> activatedScenes;
-		activatedScenes.reserve(sceneTransactions.size());
-		for (const PrefabSceneTransaction& transaction : sceneTransactions) {
-			if (!SceneManager::ActivateSuspendedScene(transaction.LiveScene)) {
-				const bool sourceRestored = restoreSource();
-				const bool scenesRestored = RestorePrefabScenes(sceneTransactions, logTag);
-				FNK_CORE_ERROR_TAG(logTag, "Failed to activate refreshed scene '{}'; source rollback: {}; scene rollback: {}.",
-					transaction.LiveScene->GetName(), sourceRestored, scenesRestored);
-				return false;
-			}
-			activatedScenes.push_back(transaction.LiveScene);
-		}
-
-		bool committed = true;
-		for (const std::shared_ptr<Scene>& scene : activatedScenes) {
-			if (!SceneManager::CommitSuspendedSceneActivation(scene)) {
-				FNK_CORE_ERROR_TAG(logTag, "Failed to finalize prefab propagation for scene '{}'.", scene->GetName());
-				committed = false;
-			}
-		}
-		if (outRefreshedCount) *outRefreshedCount = refreshedInstanceCount;
-		return committed;
-		}
-		catch (const std::exception& exception) {
-			const bool sourceRestored = restoreSource();
-			const bool scenesRestored = RestorePrefabScenes(sceneTransactions, logTag);
-			FNK_CORE_ERROR_TAG(logTag, "Prefab propagation failed: {}; source rollback: {}; scene rollback: {}.",
-				exception.what(), sourceRestored, scenesRestored);
-		}
-		catch (...) {
-			const bool sourceRestored = restoreSource();
-			const bool scenesRestored = RestorePrefabScenes(sceneTransactions, logTag);
-			FNK_CORE_ERROR_TAG(logTag, "Prefab propagation failed; source rollback: {}; scene rollback: {}.",
-				sourceRestored, scenesRestored);
-		}
-		return false;
-	}
-
-	bool SavePrefabSourceTransactionally(Scene& sourceScene, EntityHandle sourceRoot,
-		const std::string& prefabPath, std::string_view logTag) {
-		if (sourceRoot == entt::null || !sourceScene.IsValid(sourceRoot) || prefabPath.empty()) {
-			return false;
-		}
-
-		Json::Value previousSource;
-		std::string readError;
-		if (!SceneSerializerStorage::ReadRootFromFile(prefabPath, previousSource, &readError)
-			|| !previousSource.IsObject()) {
-			FNK_CORE_WARN_TAG(logTag, "Pre-save read of '{}' failed ({}); leaving prefab dirty for retry.",
-				prefabPath, readError);
-			return false;
-		}
-
-		const SceneSerializationFormat previousFormat = SceneSerializer::IsBinarySerializedFile(prefabPath)
-			? SceneSerializationFormat::Binary
-			: SceneSerializationFormat::Json;
-		const uint64_t prefabGuid = AssetRegistry::GetOrCreateAssetUUID(prefabPath);
-		if (prefabGuid == 0) {
-			FNK_CORE_ERROR_TAG(logTag, "Failed to resolve the prefab GUID for {}.", prefabPath);
-			return false;
-		}
-		PrefabTemplateCache::Get().Invalidate(prefabGuid);
-
-		if (Application::GetIsPlaying()) {
-			if (!SceneSerializer::SaveEntityToFile(sourceScene, sourceRoot, prefabPath)) return false;
-			PrefabTemplateCache::Get().Invalidate(prefabGuid);
-			return true;
-		}
-		return PropagatePrefabSource(prefabGuid, prefabPath, previousSource, previousFormat,
-			[&]() { return SceneSerializer::SaveEntityToFile(sourceScene, sourceRoot, prefabPath); },
-			logTag, nullptr);
-	}
-
-	bool RefreshPrefabInstancesFromDisk(const std::string& prefabPath, const Json::Value& previousSource,
-		std::string_view logTag, size_t* outRefreshedCount) {
-		if (outRefreshedCount) *outRefreshedCount = 0;
-		if (prefabPath.empty() || !previousSource.IsObject() || Application::GetIsPlaying()) return false;
-		// Often a write still in progress; the caller retries on the next change.
-		Json::Value currentSource;
-		std::string readError;
-		if (!SceneSerializerStorage::ReadRootFromFile(prefabPath, currentSource, &readError) || !currentSource.IsObject()) {
-			FNK_CORE_WARN_TAG(logTag, "Prefab {} changed on disk but cannot be read ({}); its instances keep the previous version for now.",
-				prefabPath, readError);
-			return false;
-		}
-		const uint64_t prefabGuid = AssetRegistry::GetOrCreateAssetUUID(prefabPath);
-		if (prefabGuid == 0) {
-			FNK_CORE_ERROR_TAG(logTag, "Failed to resolve the prefab GUID for {}.", prefabPath);
-			return false;
-		}
-		PrefabTemplateCache::Get().Invalidate(prefabGuid);
-		return PropagatePrefabSource(prefabGuid, prefabPath, previousSource, SceneSerializationFormat::Json,
-			{}, logTag, outRefreshedCount);
-	}
-
-	EntityHandle LoadPrefabSourceIntoDetachedScene(const std::string& prefabPath, const std::string& sceneName,
-		std::string_view logTag, std::unique_ptr<Scene>& outScene) {
-		if (!File::Exists(prefabPath)) {
-			FNK_CORE_WARN_TAG(logTag, "Prefab file not found: {}", prefabPath);
-			return entt::null;
-		}
-
-		Json::Value root;
-		std::string readError;
-		if (!SceneSerializerStorage::ReadRootFromFile(prefabPath, root, &readError) || !root.IsObject()) {
-			FNK_CORE_ERROR_TAG(logTag, "Failed to parse {}: {}", prefabPath, readError);
-			return entt::null;
-		}
-		if (!SceneSerializer::HasPrefabEntityPayload(root)) {
-			FNK_CORE_WARN_TAG(logTag, "No Entities/Entity/prefab block in {}", prefabPath);
-			return entt::null;
-		}
-
-		auto stagedScene = Scene::CreateDetachedScene(sceneName);
-		const EntityHandle stagedRoot = SceneSerializer::DeserializeEntityFromValue(*stagedScene, root);
-		if (stagedRoot == entt::null || !stagedScene->IsValid(stagedRoot)) {
-			FNK_CORE_ERROR_TAG(logTag, "Failed to deserialize prefab root from {}", prefabPath);
-			return entt::null;
-		}
-		stagedScene->ClearDirty();
-		outScene = std::move(stagedScene);
-		return stagedRoot;
-	}
+	using PrefabAuthoringDetail::VariantEditState;
 
 	PrefabInspector::PrefabInspector() = default;
 	PrefabInspector::~PrefabInspector() = default;
@@ -475,6 +97,15 @@ namespace Funke {
 
 		// Component dispatch — same pattern as the entity inspector but without
 		// clipboard / copy / paste / reset (those can come in v2).
+		const auto* variant = m_PrefabScene->GetRegistry().ctx().find<VariantEditState>();
+		const Json::Value* baseEntity = variant ? variant->EditableBase.FindMember("Entity") : nullptr;
+		const Json::Value currentSource = variant ? SceneSerializer::SerializePrefabSource(*m_PrefabScene, m_RootEntity) : Json::Value();
+		const auto* currentEntity = currentSource.FindMember("Entity");
+		if (variant) {
+			const std::string baseName = std::filesystem::path(AssetRegistry::ResolvePath(variant->BaseGuid)).filename().string();
+			ImGui::Text("Base: %s", baseName.c_str());
+		}
+
 		std::type_index pendingRemoval = typeid(void);
 
 		registry.ForEachComponentInfo([&](const std::type_index& typeId, const ComponentInfo& info) {
@@ -483,6 +114,22 @@ namespace Funke {
 			if (!info.has || !info.has(rootEntity)) return;
 
 			if (info.displayName == "Scripts") {
+				if (baseEntity && currentEntity) {
+					bool overridden = false;
+					for (const char* key : {"Scripts", "ManagedComponents", "ScriptFields"}) {
+						const auto* inherited = baseEntity->FindMember(key);
+						const auto* current = currentEntity->FindMember(key);
+						overridden |= (!inherited != !current) || (inherited && current && !(*inherited == *current));
+					}
+					registry.ForEachComponentInfo([&](const std::type_index&, const ComponentInfo& dynamic) {
+						if (!dynamic.isDynamic || dynamic.serializedName.empty()) return;
+						const auto* inherited = baseEntity->FindMember(dynamic.serializedName);
+						const auto* current = currentEntity->FindMember(dynamic.serializedName);
+						overridden |= (!inherited != !current) || (inherited && current && !(*inherited == *current));
+					});
+					EditorUI::Badge(overridden ? "Scripts: Local overrides" : "Scripts: Inherited",
+						overridden ? EditorUI::Tone::Info : EditorUI::Tone::Neutral);
+				}
 				DispatchComponentInspector(info, entitySpan);
 				return;
 			}
@@ -501,6 +148,23 @@ namespace Funke {
 				pendingRemoval = typeId;
 			}
 
+			if (open && baseEntity) {
+				const std::string key = info.serializedName.empty() ? info.displayName : info.serializedName;
+				const auto* inherited = baseEntity->FindMember(key);
+				const auto* current = currentEntity ? currentEntity->FindMember(key) : nullptr;
+				const bool overridden = !inherited || !current || !(*current == *inherited);
+				EditorUI::Badge(overridden ? "Local override" : "Inherited", overridden ? EditorUI::Tone::Info : EditorUI::Tone::Neutral);
+				if (overridden) {
+					ImGui::SameLine(); ImGui::PushID(key.c_str());
+					if (Icons::ButtonWithIcon(Icons::Type::Reset, "", ImVec2(0, 0), true)) {
+						if (inherited) ResetPrefabVariantComponent(*m_PrefabScene, m_RootEntity, key);
+						else pendingRemoval = typeId;
+						m_PrefabScene->MarkDirty();
+					}
+					if (ImGui::IsItemHovered()) ImGui::SetTooltip("Reset this component to the base prefab");
+					ImGui::PopID();
+				}
+			}
 			if (open) {
 				DispatchComponentInspector(info, entitySpan);
 				ImGuiUtils::EndComponentSection();
@@ -515,6 +179,19 @@ namespace Funke {
 			});
 			m_PrefabScene->MarkDirty();
 		}
+
+		if (baseEntity) registry.ForEachComponentInfo([&](const std::type_index&, const ComponentInfo& info) {
+			if (info.category != ComponentCategory::Component || info.displayName == "Scripts" || info.isDynamic || !info.has || info.has(rootEntity)) return;
+			const std::string key = info.serializedName.empty() ? info.displayName : info.serializedName;
+			const auto* inherited = baseEntity->FindMember(key);
+			if (!inherited) return;
+			ImGui::PushID(key.c_str());
+			ImGui::Text("%s: removed locally", info.displayName.c_str()); ImGui::SameLine();
+			if (Icons::ButtonWithIcon(Icons::Type::Reset, "", ImVec2(0, 0), true)
+				&& ResetPrefabVariantComponent(*m_PrefabScene, m_RootEntity, key)) m_PrefabScene->MarkDirty();
+			if (ImGui::IsItemHovered()) ImGui::SetTooltip("Restore inherited component");
+			ImGui::PopID();
+		});
 
 		// Render the unified reference-picker popup once per inspector frame.
 		ReferencePicker::RenderPopup();
@@ -536,22 +213,10 @@ namespace Funke {
 					if (scriptEntry.IsSceneSystem || scriptEntry.IsGlobalSystem) {
 						continue;
 					}
-					if (scriptEntry.ClassName.empty() || scriptEntry.Type == ScriptType::Unknown) {
-						continue;
-					}
-					if (!rootEntity.HasComponent<ScriptComponent>()) {
-						rootEntity.AddComponent<ScriptComponent>();
-					}
-					auto& scriptComponent = rootEntity.GetComponent<ScriptComponent>();
 					if (scriptEntry.IsManagedComponent) {
-						if (!scriptComponent.HasManagedComponent(scriptEntry.ClassName)) {
-							scriptComponent.AddManagedComponent(scriptEntry.ClassName);
-							m_PrefabScene->MarkDirty();
-						}
-					}
-					else if (!scriptComponent.HasScript(scriptEntry.ClassName, scriptEntry.Type)) {
-						scriptComponent.AddScript(scriptEntry.ClassName, scriptEntry.Type);
-						m_PrefabScene->MarkDirty();
+						EditorScriptAttachment::AttachManagedComponentToEntity(rootEntity, *m_PrefabScene, scriptEntry);
+					} else {
+						EditorScriptAttachment::AttachScriptToEntity(rootEntity, *m_PrefabScene, scriptEntry);
 					}
 				}
 			}

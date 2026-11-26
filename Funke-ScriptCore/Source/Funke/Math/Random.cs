@@ -39,6 +39,66 @@ public sealed class Random
 
     public ulong GetSeed() => state;
 
+    public Vector2 InsideUnitCircle()
+    {
+        double radius = Math.Sqrt(NextDouble());
+        double angle = Math.Tau * NextDouble();
+        return new((float)(radius * Math.Cos(angle)), (float)(radius * Math.Sin(angle)));
+    }
+
+    public Vector3 OnUnitSphere()
+    {
+        double z = 2 * NextDouble() - 1;
+        double radius = Math.Sqrt((1 - z) * (1 + z));
+        double angle = Math.Tau * NextDouble();
+        return new((float)(radius * Math.Cos(angle)), (float)(radius * Math.Sin(angle)), (float)z);
+    }
+
+    public Vector3 InsideUnitSphere() => OnUnitSphere() * (float)Math.Cbrt(NextDouble());
+
+    public Quaternion UniformRotation()
+    {
+        double u = NextDouble();
+        double a = Math.Tau * NextDouble(), b = Math.Tau * NextDouble();
+        double r = Math.Sqrt(1 - u), s = Math.Sqrt(u);
+        return new((float)(r * Math.Sin(a)), (float)(r * Math.Cos(a)), (float)(s * Math.Sin(b)), (float)(s * Math.Cos(b)));
+    }
+
+    public int WeightedIndex(ReadOnlySpan<float> weights)
+    {
+        double total = 0;
+        foreach (float weight in weights)
+        {
+            if (!float.IsFinite(weight) || weight < 0) throw new ArgumentOutOfRangeException(nameof(weights));
+            total += weight;
+        }
+        if (total == 0) throw new ArgumentException("A positive weight is required.", nameof(weights));
+        double draw = NextDouble() * total;
+        double end = 0;
+        int lastPositive = 0;
+        for (int i = 0; i < weights.Length; ++i)
+        {
+            if (weights[i] > 0) lastPositive = i;
+            end += weights[i];
+            if (draw < end) return i;
+        }
+        return lastPositive;
+    }
+
+    public void Shuffle<T>(Span<T> values)
+    {
+        for (int i = values.Length - 1; i > 0; --i)
+        {
+            uint count = (uint)i + 1;
+            // Reject the incomplete interval before reducing to [0, count).
+            uint lowerBound = unchecked(0u - count) % count;
+            uint sample;
+            do { sample = (uint)(NextState() >> 32); } while (sample < lowerBound);
+            int j = (int)(sample % count);
+            (values[i], values[j]) = (values[j], values[i]);
+        }
+    }
+
     public bool NextBool() => NextInt(0, 2) == 0;
 
     public byte NextByte()
