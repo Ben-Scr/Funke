@@ -90,7 +90,7 @@ internal static class ManagedLifecycle
             long destroy = ElapsedTicks(start);
 
             foreach (Entity entity in entities)
-                if (entity) throw new InvalidOperationException("Entity wurde nicht gelÃƒÂ¶scht.");
+                if (entity) throw new InvalidOperationException("Entity wurde nicht gelöscht.");
             destroyed = true;
             if (checksum != 3 * count) throw new InvalidOperationException("Positionssumme fehlerhaft.");
             return new LifecycleTimes(create, move, read, destroy);

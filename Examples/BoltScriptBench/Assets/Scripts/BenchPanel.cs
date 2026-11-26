@@ -57,7 +57,7 @@ public class BenchPanel : EntityScript
     public void Run()
     {
         if (running) return;
-        if (!state.Ready) { status.Text = "Bolt ist noch nicht bereit. Bitte das Runtime-Log prÃ¼fen."; return; }
+        if (!state.Ready) { status.Text = "Bolt ist noch nicht bereit. Bitte das Runtime-Log prüfen."; return; }
         if (!int.TryParse(countInput.Text, out int count) || count < 1 || count > 100000)
         {
             status.Text = "Bitte eine ganze Zahl zwischen 1 und 100.000 eingeben.";
@@ -77,8 +77,8 @@ public class BenchPanel : EntityScript
         foreach (string op in Operations)
             foreach (string unit in new[] { "Batch", "Cost", "Rate" })
             {
-                Control<TextRenderer>(op + unit).Text = "â€“";
-                Control<TextRenderer>("Cs" + op + unit).Text = "â€“";
+                Control<TextRenderer>(op + unit).Text = "–";
+                Control<TextRenderer>("Cs" + op + unit).Text = "–";
             }
     }
 
@@ -89,8 +89,8 @@ public class BenchPanel : EntityScript
         bool bolt = (round % 2 == 0) != secondLanguage;
         if (!waitingForBolt)
         {
-            string phase = round == 0 ? "AufwÃ¤rmrunde" : $"Messung {round} von {Samples}";
-            status.Text = $"{phase}  Â·  {(bolt ? "Bolt" : "C#")}";
+            string phase = round == 0 ? "Aufwärmrunde" : $"Messung {round} von {Samples}";
+            status.Text = $"{phase}  ·  {(bolt ? "Bolt" : "C#")}";
         }
 
         LifecycleTimes times;
@@ -107,13 +107,13 @@ public class BenchPanel : EntityScript
             if (state.Requested)
             {
                 if (Time.RealtimeSinceStartup - requestedAt > 15f)
-                    Finish("Bolt hat keine Messung geliefert. Bitte das Runtime-Log prÃ¼fen.");
+                    Finish("Bolt hat keine Messung geliefert. Bitte das Runtime-Log prüfen.");
                 return;
             }
             waitingForBolt = false;
             if (!state.Valid)
             {
-                Finish("Bolt-Messung ungÃ¼ltig. Entity-Lebenszyklus oder Positionssumme fehlerhaft.");
+                Finish("Bolt-Messung ungültig. Entity-Lebenszyklus oder Positionssumme fehlerhaft.");
                 return;
             }
             times = new(state.CreateTicks, state.MoveTicks, state.ReadTicks, state.DestroyTicks);
@@ -137,7 +137,7 @@ public class BenchPanel : EntityScript
         int boltGoals = ShowResults(boltSamples, "", "Bolt");
         int managedGoals = ShowResults(managedSamples, "Cs", "C#");
         Control<TextRenderer>("Warmup note").Text = $"≤ {TargetNsPerEntity} ns: Bolt {boltGoals}/4 · C# {managedGoals}/4";
-        Finish($"Abgeschlossen  Â·  {state.Count.ToString("N0", German)} Entities  Â·  je {Samples} Messungen");
+        Finish($"Abgeschlossen  ·  {state.Count.ToString("N0", German)} Entities  ·  je {Samples} Messungen");
     }
 
     private int ShowResults(LifecycleTimes[] samples, string prefix, string language)
@@ -158,7 +158,7 @@ public class BenchPanel : EntityScript
             Control<TextRenderer>(cell + "Batch").Text = (median / 10000.0).ToString("N4", German);
             Control<TextRenderer>(cell + "Cost").Text = (median * 100.0 / state.Count).ToString("N1", German);
             Control<TextRenderer>(cell + "Rate").Text = median > 0
-                ? (state.Count * 10000000.0 / median).ToString("N0", German) : "â€“";
+                ? (state.Count * 10000000.0 / median).ToString("N0", German) : "–";
             Log.Info($"[BoltScriptBench] {language} {Operations[op]} count={state.Count} medianTicks={median} samples={Samples} mode={(state.PointIds ? "point-ids" : "scene-objects")}");
         }
         return goals;

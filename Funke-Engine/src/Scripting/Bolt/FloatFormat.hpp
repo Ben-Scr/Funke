@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Scripting/Bolt/FloatCulture.hpp"
 #include <algorithm>
 #include <array>
 #include <charconv>
@@ -13,31 +14,6 @@
 #include <vector>
 
 namespace Funke::BoltScriptHost::Locales {
-    // The wide facet preserves non-ASCII currency symbols and grouping separators.
-    inline std::string Utf8(std::wstring_view value) {
-        std::string result;
-        for (size_t i = 0; i < value.size(); ++i) {
-            uint32_t c = static_cast<uint32_t>(value[i]);
-            if constexpr (sizeof(wchar_t) == 2) {
-                if (c >= 0xd800 && c <= 0xdbff && i + 1 < value.size()) {
-                    uint32_t low = value[i + 1];
-                    if (low >= 0xdc00 && low <= 0xdfff) { c = 0x10000 + ((c - 0xd800) << 10) + low - 0xdc00; ++i; }
-                }
-            }
-            if (c <= 0x7f) result += static_cast<char>(c);
-            else {
-                if (c > 0xffff) { result += static_cast<char>(0xf0 | c >> 18); result += static_cast<char>(0x80 | ((c >> 12) & 63)); }
-                else if (c > 0x7ff) result += static_cast<char>(0xe0 | c >> 12);
-                else { result += static_cast<char>(0xc0 | c >> 6); result += static_cast<char>(0x80 | (c & 63)); continue; }
-                result += static_cast<char>(0x80 | ((c >> 6) & 63));
-                result += static_cast<char>(0x80 | (c & 63));
-            }
-        }
-        return result;
-    }
-
-    inline std::string Utf8(wchar_t c) { return Utf8(std::wstring_view(&c, 1)); }
-
     inline std::vector<bool> GroupStarts(int length, const std::string& widths) {
         std::vector<bool> starts(length, false);
         int position = length;
@@ -51,9 +27,8 @@ namespace Funke::BoltScriptHost::Locales {
         return starts;
     }
 
-    inline std::string Currency(float value, std::string_view format, const std::locale& locale, bool invariant) {
-        const auto& money = std::use_facet<std::moneypunct<wchar_t>>(locale);
-        int decimals = invariant ? 2 : money.frac_digits();
+    inline std::string Currency(float value, std::string_view format, const FloatCulture& culture) {
+        int decimals = culture.CurrencyPlaces;
         if (format.size() > 1) {
             auto digit = std::from_chars(format.data() + 1, format.data() + format.size(), decimals);
             if (digit.ec != std::errc() || decimals < 0) return {};
@@ -63,28 +38,16 @@ namespace Funke::BoltScriptHost::Locales {
         stream << std::fixed << std::setprecision(decimals) << std::fabs(value);
         std::string number = stream.str();
         const int count = static_cast<int>(number.find('.') == std::string::npos ? number.size() : number.find('.'));
-        const auto starts = GroupStarts(count, invariant ? "\3" : money.grouping());
-        const auto separator = invariant ? "," : Utf8(money.thousands_sep());
+        const auto starts = GroupStarts(count, culture.CurrencySizes);
+        const auto separator = culture.CurrencyGroup;
         std::string amount;
         for (int i = 0; i < count; ++i) {
             if (starts[i]) amount += separator;
             amount += number[i];
         }
-        if (decimals > 0) amount += (invariant ? "." : Utf8(money.decimal_point())) + number.substr(count + 1);
-        if (invariant) return std::signbit(value) ? "(¤" + amount + ")" : "¤" + amount;
-        auto pattern = std::signbit(value) ? money.neg_format() : money.pos_format();
-        auto sign = std::signbit(value) ? money.negative_sign() : money.positive_sign();
-        std::string result;
-        for (char field : pattern.field) {
-            switch (field) {
-            case std::money_base::sign: if (!sign.empty()) result += Utf8(sign.front()); break;
-            case std::money_base::symbol: result += Utf8(money.curr_symbol()); break;
-            case std::money_base::space: result += ' '; break;
-            case std::money_base::value: result += amount; break;
-            }
-        }
-        if (sign.size() > 1) result += Utf8(std::wstring_view(sign).substr(1));
-        return result;
+        if (decimals > 0) amount += culture.CurrencyDecimal + number.substr(count + 1);
+        return std::signbit(value) ? culture.NegativePrefix + amount + culture.NegativeSuffix :
+            culture.PositivePrefix + amount + culture.PositiveSuffix;
     }
 
     struct FloatDigits {
@@ -174,7 +137,7 @@ namespace Funke::BoltScriptHost::Locales {
                 } else if (c == '%' || format.substr(start, 3) == "‰") {
                     if (c == '%') Scale += 2;
                     else { Scale += 3; i = start + 3; }
-                    Tokens.push_back({'l', format.substr(start, i - start)});
+                    Tokens.push_back({c == '%' ? '%' : 'p', {}});
                 } else if ((c == 'e' || c == 'E') && !Scientific) {
                     size_t j = i;
                     if (j < format.size() && (format[j] == '+' || format[j] == '-')) ++j;
@@ -189,20 +152,19 @@ namespace Funke::BoltScriptHost::Locales {
             if (MinimumWhole) MinimumWhole = Whole - MinimumWhole + 1;
         }
 
-        std::string Render(FloatDigits digits, const std::locale& locale, bool invariant) const {
+        std::string Render(FloatDigits digits, const FloatCulture& culture) const {
             int exponent = 0;
             if (Scientific && !digits.IsZero()) { exponent = digits.Point - Whole; digits.Point = Whole; }
-            const int whole = std::max(MinimumWhole, digits.IsZero() ? 0 : digits.Point);
+            const int whole = (std::max)(MinimumWhole, digits.IsZero() ? 0 : digits.Point);
             int fraction = Fraction;
             while (fraction > MinimumFraction && digits.At(digits.Point + fraction - 1) == '0') --fraction;
-            const auto& punctuation = std::use_facet<std::numpunct<wchar_t>>(locale);
-            const auto groups = GroupStarts(whole, Group ? (invariant ? "\3" : punctuation.grouping()) : "");
+            const auto groups = GroupStarts(whole, Group ? culture.GroupSizes : "");
             std::string result;
             int left = 0, right = 0;
             auto emit = [&](int i) {
                 const int index = whole - Whole + i;
                 if (index < 0) return;
-                if (groups[index]) result += invariant ? "," : Utf8(punctuation.thousands_sep());
+                if (groups[index]) result += culture.Group;
                 result += digits.At(digits.Point - Whole + i);
             };
             bool extra = false;
@@ -214,12 +176,14 @@ namespace Funke::BoltScriptHost::Locales {
                 switch (token.Kind) {
                 case 'w': emit(left++); break;
                 case 'f': if (right < fraction) result += digits.At(digits.Point + right); ++right; break;
-                case '.': if (fraction > 0) result += invariant ? "." : Utf8(punctuation.decimal_point()); break;
+                case '.': if (fraction > 0) result += culture.Decimal; break;
+                case '%': result += culture.Percent; break;
+                case 'p': result += culture.PerMille; break;
                 case 'l': result += token.Text; break;
                 case 'e': {
                     result += token.Text.front();
-                    if (exponent < 0) result += '-';
-                    else if (token.Text[1] == '+') result += '+';
+                    if (exponent < 0) result += culture.Negative;
+                    else if (token.Text[1] == '+') result += culture.Positive;
                     std::string power = std::to_string(std::abs(exponent));
                     size_t width = std::min<size_t>(10, token.Text.size() - token.Text.find('0'));
                     if (power.size() < width) result.append(width - power.size(), '0');
@@ -232,10 +196,10 @@ namespace Funke::BoltScriptHost::Locales {
         }
     };
 
-    inline std::string FormatFloat(float value, std::string_view format, const std::locale& locale, bool invariant) {
-        if (!std::isfinite(value)) return std::isnan(value) ? "NaN" : std::signbit(value) ? "-Infinity" : "Infinity";
+    inline std::string FormatFloat(float value, std::string_view format, const FloatCulture& culture) {
+        if (!std::isfinite(value)) return std::isnan(value) ? culture.NaN : std::signbit(value) ? culture.Negative + culture.Infinity : culture.Infinity;
         if (!format.empty() && (format[0] == 'C' || format[0] == 'c') && format.find_first_not_of("0123456789", 1) == format.npos)
-            return Currency(value, format, locale, invariant);
+            return Currency(value, format, culture);
         const auto sections = Sections(format);
         FloatDigits digits(value);
         size_t index = digits.IsZero() ? 2 : std::signbit(value) ? 1 : 0;
@@ -249,8 +213,8 @@ namespace Funke::BoltScriptHost::Locales {
                 if (index != zeroSection) { index = zeroSection; pattern = CustomPattern(sections[index]); }
             }
         }
-        std::string result = pattern.Render(digits, locale, invariant);
-        if (index == 0 && std::signbit(value) && !result.empty()) result.insert(0, "-");
+        std::string result = pattern.Render(digits, culture);
+        if (index == 0 && std::signbit(value) && (!digits.IsZero() || !result.empty())) result.insert(0, culture.Negative);
         return result;
     }
 }

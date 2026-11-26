@@ -1,0 +1,2 @@
+[Flags]
+public enum ProbeFeatures : uint { None = 0, Audio = 1, Physics = 4, Both = Audio | Physics }

@@ -1,0 +1,48 @@
+diff --git a/src/native/lowering/Values.cpp b/src/native/lowering/Values.cpp
+--- a/src/native/lowering/Values.cpp
++++ b/src/native/lowering/Values.cpp
+@@ -495,9 +495,18 @@
+             guard(cmp("eq",container.value,null()),"null pointer dereference");
+             // Raw pointers have no array bounds. Scale their signed/unsigned
+             // index in the caller, using the normal checked integer arithmetic.
++            const auto stride = lower.layout(element_type(e.owner)).size;
++            const auto& index = *e.args[1];
++            if (index.kind == K::Literal && is_integer(index.type) && stride != 0) {
++                const auto value = literal_value(index);
++                const auto elements = is_unsigned(index.type) ? std::stoull(value.to_string())
++                    : static_cast<std::uint64_t>(value.as_int());
++                if (elements <= static_cast<std::uint64_t>(INT32_MAX) / stride)
++                    return offset(container.value, elements * stride);
++            }
+             auto index_type=is_unsigned(key.type)?"ulong":"long";
+             key=converted(std::move(key),index_type);
+-            auto bytes=arithmetic("*",key,{index_type,integer(Type::I64,lower.layout(element_type(e.owner)).size)});
++            auto bytes=arithmetic("*",key,{index_type,integer(Type::I64,stride)});
+             return instruction(Op::Offset,Type::Ptr,{container.value,bytes.value});
+         }
+         if(array_rank(e.owner)>1){std::vector<Value> keys;for(std::size_t d=1;d<e.args.size();++d)keys.push_back(expression(*e.args[d]));auto indices=alloc(keys.size()*8,false);for(std::size_t d=0;d<keys.size();++d){auto i=converted(std::move(keys[d]),"long");store(offset(indices,d*8),i.value);}at=e.token.at;return call("br_array_index",Type::Ptr,{context,site(),type(e.owner),container.value,indices,integer(Type::I64,e.args.size()-1)});}
+diff --git a/tests/NativeTests.cpp b/tests/NativeTests.cpp
+--- a/tests/NativeTests.cpp
++++ b/tests/NativeTests.cpp
+@@ -626,6 +626,21 @@
+                 } }
+             )") == "321\n","sequence cleanup skipped or reordered inherited destructors");
+         });
++        test(prefix+"literal-pointer-element-offsets",[&]{
++            check(execute(R"(
++                static class Program { public:
++                    void Main() {
++                        int[] data={7, 11, 19, 29};
++                        int* p=&data[0];
++                        p[2u]=31;
++                        int* q=&p[3];
++                        int n=-2;
++                        Print(p[0]+p[2ul]+q[n]);
++                    }
++                })") == "49\n","constant and dynamic pointer offsets disagree");
++        });
++        rejects("literal-pointer-null",R"(static class Program {public: void Main() { int* p=null; Print(p[1]); }})","null pointer dereference");
++        rejects("literal-pointer-overflow",R"(static class Program {public: void Main() { int[] a={9}; int* p=&a[0]; Print(p[4611686018427387904ul]); }})","integer overflow in *");
+         test(prefix+"small-optional-value-copy",[&]{
+             check(execute(R"(
+                 class Handle { public: ulong Id; }

@@ -354,6 +354,9 @@ project "Funke-Engine"
     filter { "files:**/ScriptBindings.cpp", "system:windows" }
         buildoptions { "/bigobj" }
 
+    filter { "files:**/BoltScriptHost.cpp", "system:windows" }
+        buildoptions { "/bigobj" }
+
     filter "system:windows"
         systemversion "latest"
 

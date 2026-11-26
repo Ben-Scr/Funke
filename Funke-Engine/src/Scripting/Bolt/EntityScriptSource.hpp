@@ -65,7 +65,7 @@ namespace Funke::BoltScriptHost {
         }
     };
 
-	enum class ScriptBase { Procedural, Entity, Scene, Global, Component, NativeStruct, Job, EditorWindow, DataAsset };
+	enum class ScriptBase { Procedural, Entity, Scene, Global, Component, NativeStruct, Job, EditorWindow, DataAsset, EnumLibrary };
 
     struct ScriptDeclaration { std::string Name; ScriptBase Kind; size_t Body; bool HotReloadState = false; };
 
@@ -112,6 +112,27 @@ namespace Funke::BoltScriptHost {
         return result;
     }
 
+    // A standalone enum declaration is a shared gameplay dependency; it has no entry point of its own.
+    inline std::string EnumLibraryName(std::string_view source) {
+        std::string name, ns;
+        int depth = 0, attribute = 0;
+        while (!source.empty()) {
+            const auto part = NextBoltToken(source);
+            if (part == "[") { ++attribute; continue; }
+            if (part == "]" && attribute) { --attribute; continue; }
+            if (attribute) continue;
+            if (part == "{") { ++depth; continue; }
+            if (part == "}") { --depth; continue; }
+            if (depth) continue;
+            if (part == "class" || part == "struct" || part == "interface" || part == "(") return {};
+            if (part == "namespace") {
+                for (auto word = NextBoltToken(source); !word.empty() && word != ";"; word = NextBoltToken(source)) ns += word;
+            }
+            if (part == "enum" && name.empty()) name = NextBoltToken(source);
+        }
+        return name.empty() || ns.empty() ? name : ns + "." + name;
+    }
+
     inline std::string ScriptClass(std::string_view source,ScriptBase& kind,size_t* bodyOffset=nullptr,bool* hotReloadState=nullptr) {
         auto declarations=ScriptDeclarations(source);
         kind=ScriptBase::Procedural;
@@ -120,7 +141,11 @@ namespace Funke::BoltScriptHost {
             if(!selected || (selected->Kind==ScriptBase::Job && type.Kind==ScriptBase::NativeStruct))selected=&type;
             if(type.Kind!=ScriptBase::NativeStruct && type.Kind!=ScriptBase::Job){selected=&type;break;}
         }
-        if(!selected)return {};
+        if (!selected) {
+            auto library = source.find("enum") == source.npos ? std::string{} : EnumLibraryName(source);
+            if (!library.empty()) kind = ScriptBase::EnumLibrary;
+            return library;
+        }
         kind=selected->Kind;
         if(bodyOffset)*bodyOffset=selected->Body;
         if(hotReloadState)*hotReloadState=selected->HotReloadState;

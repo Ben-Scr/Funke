@@ -884,6 +884,7 @@ TEST_CASE("Bolt data assets expose editable fields and validate shared values" *
     const auto script = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path() / "Fixtures/BoltScripts/DataAssetProbe.bolt";
     constexpr uint64_t scriptId = 0xAB04722026011174ull, guid = 0xAB04722026011175ull;
     AssetRegistry::RegisterBuiltInAsset(Path::ToUtf8(script), scriptId, AssetKind::Script);
+    AssetRegistry::RegisterBuiltInAsset(Path::ToUtf8(script.parent_path() / "ProbeFeatures.bolt"), scriptId + 3, AssetKind::Script);
     auto type = "bolt:" + std::to_string(scriptId);
     REQUIRE(ScriptEngine::DataAssetClassExists(type));
     REQUIRE(ScriptEngine::CreateDataAssetInstance(type, guid) == 1);
@@ -893,22 +894,27 @@ TEST_CASE("Bolt data assets expose editable fields and validate shared values" *
     CHECK(fields.find("Count") != fields.npos);
     Json::Value schema;
     REQUIRE(Json::TryParse(fields, schema, nullptr));
+    auto member = [](const Json::Value& row, const char* key) -> const Json::Value& {
+        const auto* value = row.FindMember(key);
+        REQUIRE(value != nullptr);
+        return *value;
+    };
     bool difficulty = false, flags = false;
     for (const auto& field : schema.GetArray()) {
-        const auto name = field["name"].AsStringOr();
+        const auto name = member(field, "name").AsStringOr();
         if (name == "Difficulty") {
             difficulty = true;
-            CHECK(field["type"].AsStringOr() == "enum");
-            CHECK(field["value"].AsStringOr() == "-2");
-            REQUIRE(field["enumOptions"].GetArray().size() == 3);
-            CHECK(field["enumOptions"].GetArray().back()["name"].AsStringOr() == "Challenge");
-            CHECK(field["enumOptions"].GetArray().back()["value"].AsInt64Or() == 9);
+            CHECK(member(field, "type").AsStringOr() == "enum");
+            CHECK(member(field, "value").AsStringOr() == "-2");
+            REQUIRE(member(field, "enumOptions").GetArray().size() == 3);
+            CHECK(member(member(field, "enumOptions").GetArray().back(), "name").AsStringOr() == "Challenge");
+            CHECK(member(member(field, "enumOptions").GetArray().back(), "value").AsInt64Or(-99) == 9);
         } else if (name == "Features") {
             flags = true;
-            CHECK(field["type"].AsStringOr() == "flagenum");
-            CHECK(field["enumIsFlags"].AsBoolOr());
-            REQUIRE(field["enumOptions"].GetArray().size() == 4);
-            CHECK(field["enumOptions"].GetArray().back()["value"].AsInt64Or() == 5);
+            CHECK(member(field, "type").AsStringOr() == "flagenum");
+            CHECK(member(field, "enumIsFlags").AsBoolOr(false));
+            REQUIRE(member(field, "enumOptions").GetArray().size() == 4);
+            CHECK(member(member(field, "enumOptions").GetArray().back(), "value").AsInt64Or(-99) == 5);
         }
     }
     CHECK(difficulty);
@@ -929,7 +935,7 @@ TEST_CASE("Bolt data assets expose editable fields and validate shared values" *
     CHECK(live.find("read in gameplay") != std::string::npos);
     REQUIRE(Json::TryParse(live, schema, nullptr));
     for (const auto& field : schema.GetArray())
-        if (field["name"].AsStringOr() == "Difficulty") CHECK(field["value"].AsStringOr() == "3");
+        if (member(field, "name").AsStringOr() == "Difficulty") CHECK(member(field, "value").AsStringOr() == "3");
     scripts.OnDestroy(*scene);
     DataAssetManager::Unload(guid);
 }

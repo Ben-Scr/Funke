@@ -5,6 +5,7 @@
 #include "Serialization/Json.hpp"
 #include "Scripting/Bolt/EntityScriptSource.hpp"
 #include "Scripting/Bolt/InspectorSource.hpp"
+#include "Scripting/Bolt/EmbeddedSources.hpp"
 #include "Scripting/ScriptType.hpp"
 
 namespace Funke::BoltScriptHost {
@@ -139,7 +140,7 @@ namespace Funke::BoltScriptHost {
 				ScriptBase kind = ScriptBase::Procedural;
 				size_t body = 0;
 				auto name = ScriptClass(source, kind, &body);
-				if (kind == ScriptBase::Component || kind == ScriptBase::NativeStruct || kind==ScriptBase::Job || kind==ScriptBase::DataAsset)
+				if (kind == ScriptBase::Component || kind == ScriptBase::NativeStruct || kind==ScriptBase::Job || kind==ScriptBase::DataAsset || kind==ScriptBase::EnumLibrary)
                     cached.Unit.emplace(ComponentUnit{asset.Id, asset.Path, std::move(name), std::move(source), body, false, {}, kind});
 				else if (kind == ScriptBase::Scene || kind == ScriptBase::Global)
 					cached.Unit = SystemDeclaration(asset.Id, asset.Path, name, kind);
@@ -153,9 +154,29 @@ namespace Funke::BoltScriptHost {
 	}
 
     inline void AddDataEnums(FieldList& list, const std::vector<ComponentUnit>& units, const std::string& source) {
+        static const auto sdkEnums = [] {
+            DataEnums result;
+            CollectDataEnums(EmbeddedSources::Core, result, "Funke");
+            CollectDataEnums(EmbeddedSources::UI, result, "Funke.UI");
+            CollectDataEnums(EmbeddedSources::Jobs, result, "Funke.Jobs");
+            for (auto* module = EmbeddedSources::ExtraModules; module->Filename; ++module)
+                CollectDataEnums(std::string(module->Preamble) + module->Body, result);
+            return result;
+        }();
+        list.Enums = sdkEnums;
         for (const auto& unit : units)
             if (unit.Source.find("enum") != unit.Source.npos) CollectDataEnums(unit.Source, list.Enums);
         CollectDataEnums(source, list.Enums);
+        std::string_view imports(source);
+        while (!imports.empty()) {
+            if (NextBoltToken(imports) != "import") continue;
+            const auto end = imports.find_first_of("\r\n");
+            auto line = imports.substr(0, end);
+            std::string name;
+            for (auto part = NextBoltToken(line); !part.empty(); part = NextBoltToken(line)) name += part;
+            list.Enums.Imports.push_back(std::move(name));
+            imports.remove_prefix(end == imports.npos ? imports.size() : end);
+        }
     }
 
 	inline void AddReferences(FieldList& list, const std::vector<ComponentUnit>& units) {
@@ -212,13 +233,14 @@ namespace Funke::BoltScriptHost {
 		rest.remove_prefix(unit.Body);
 		std::string output = unit.Source.substr(0, unit.Body) + methods;
 		const char* last = rest.data();
+        const char* classEnd = nullptr;
 		size_t depth = 0;
 		bool local = false;
 		while (!rest.empty()) {
 			const auto t = NextBoltToken(rest);
 			if (t.empty()) break;
 			if (t == "{") { ++depth; continue; }
-			if (t == "}") { if (!depth) break; --depth; local = false; continue; }
+			if (t == "}") { if (!depth) { classEnd = t.data(); break; } --depth; local = false; continue; }
 			if (depth) continue;
 			if (t == ";") { local = false; continue; }
 			if (t == "static" || t == "const") { local = true; continue; }
@@ -262,13 +284,9 @@ namespace Funke::BoltScriptHost {
                 write = "(string)(" + integer + ")value";
                 const auto member = std::string(field);
                 describe += "Funke.FkDataStorage.Write(FkGuid," + key + ",(string)(" + integer + ")this." + member + ");";
-                std::string options = "\"[\"";
-                for (size_t i = 0; i < enumType->Members.size(); ++i) {
-                    const auto& item = enumType->Members[i];
-                    options += " + \"" + std::string(i ? "," : "") + "{\\\"name\\\":\\\"" + item +
-                        "\\\",\\\"value\\\":\" + (string)(" + integer + ")" + type + "." + item + " + \"}\"";
-                }
-                describe += "Funke.FkDataStorage.Write(FkGuid,\"$enum." + member + "\"," + options + " + \"]\");";
+                for (const auto& item : enumType->Members)
+                    describe += "Funke.FkDataStorage.EnumOption(FkGuid," + key + ",\"" + item + "\",(string)(" +
+                        integer + ")" + type + "." + item + ");";
             } else if (number) read = type + " result; if (" + type + ".TryParse(raw.Value,result)) return result;";
 			else if (name == "bool") read = "return raw.Value == \"true\" || raw.Value == \"True\";";
 			else if (name == "string") read = "return raw.Value;";
@@ -322,10 +340,10 @@ namespace Funke::BoltScriptHost {
 			last = rest.data();
 		}
 		if (dataAsset) {
-            const char* end = rest.data() - 1;
-            output.append(last, end);
+            if (!classEnd) { error = unit.Path + ": unterminated DataAsset class"; return false; }
+            output.append(last, classEnd);
             output += describe + "} ";
-            last = end;
+            last = classEnd;
         }
         output.append(last, static_cast<const char*>(unit.Source.data()) + unit.Source.size());
 		unit.Source = std::move(output);

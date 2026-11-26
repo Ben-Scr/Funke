@@ -14,6 +14,18 @@ namespace {
             text = value->second;
             return text.size() + 1;
         }
+        if (operation == 3) {
+            const auto colon = text.find(':');
+            const auto equals = text.find('=', colon);
+            if (colon == text.npos || equals == text.npos) return 0;
+            Json::Value number;
+            if (!Json::TryParse(text.substr(equals + 1), number, nullptr) || !number.IsNumber()) return 0;
+            auto option = Json::Value::MakeObject();
+            option.AddMember("name", text.substr(colon + 1, equals - colon - 1));
+            option.AddMember("value", std::move(number));
+            instance.EnumOptions[text.substr(0, colon)].EnsureArray().push_back(std::move(option));
+            return 1;
+        }
         if (operation != 1) return 0;
         const auto split = text.find('=');
         if (split == text.npos) return 0;
@@ -65,7 +77,7 @@ std::string GetDataAssetFields(uint64_t guid) {
         auto stored = found->second.Values.find(field.Name);
         if (stored != found->second.Values.end()) field.Value = stored->second;
     }
-    return FieldJson(fields, &found->second.Values);
+    return FieldJson(fields, &found->second.EnumOptions);
 }
 
 void SetDataAssetField(uint64_t guid, const char* key, const char* value) {

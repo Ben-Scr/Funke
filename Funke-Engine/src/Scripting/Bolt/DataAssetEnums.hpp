@@ -9,12 +9,15 @@ namespace Funke::BoltScriptHost {
         std::vector<std::string> Members;
         bool Flags = false;
     };
-    using DataEnums = std::unordered_map<std::string, DataEnum>;
+    struct DataEnums {
+        std::unordered_map<std::string, DataEnum> Types;
+        std::vector<std::string> Imports;
+    };
 
     // Read member names and their declared integer type. Bolt evaluates all values,
     // including aliases, flags and constant expressions, when describing the asset.
-    inline void CollectDataEnums(std::string_view source, DataEnums& result) {
-        std::string scope, nextType;
+    inline void CollectDataEnums(std::string_view source, DataEnums& result, std::string scope = {}) {
+        std::string nextType;
         std::vector<size_t> scopes;
         bool flags = false;
         while (!source.empty()) {
@@ -59,7 +62,7 @@ namespace Funke::BoltScriptHost {
                     if (part == ")") --nesting;
                     member = part == "," && nesting == 0;
                 }
-                if (!payload && !found.Members.empty()) result.insert_or_assign(found.Name, std::move(found));
+                if (!payload && !found.Members.empty()) result.Types.insert_or_assign(found.Name, std::move(found));
             } else if (token == ";" || token == "=") {
                 flags = false;
             }
@@ -69,18 +72,18 @@ namespace Funke::BoltScriptHost {
     inline const DataEnum* DataEnumFor(const DataEnums& enums, std::string_view owner, std::string_view name) {
         std::string scope(owner);
         for (;;) {
-            auto it = enums.find(scope.empty() ? std::string(name) : scope + "." + std::string(name));
-            if (it != enums.end()) return &it->second;
+            auto it = enums.Types.find(scope.empty() ? std::string(name) : scope + "." + std::string(name));
+            if (it != enums.Types.end()) return &it->second;
             if (scope.empty()) break;
             const auto dot = scope.rfind('.');
             scope.resize(dot == scope.npos ? 0 : dot);
         }
         const DataEnum* match = nullptr;
-        const auto suffix = "." + std::string(name);
-        for (const auto& [type, definition] : enums) {
-            if (!type.ends_with(suffix)) continue;
-            if (match) return nullptr;
-            match = &definition;
+        for (const auto& imported : enums.Imports) {
+            const auto it = enums.Types.find(imported + "." + std::string(name));
+            if (it == enums.Types.end()) continue;
+            if (match && match != &it->second) return nullptr;
+            match = &it->second;
         }
         return match;
     }

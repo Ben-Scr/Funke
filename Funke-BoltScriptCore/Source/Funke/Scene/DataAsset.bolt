@@ -20,6 +20,10 @@ public:
         if (size == 0ul) return null;
         return FunkeText.Read(size - 1ul);
     }
+    static void EnumOption(ulong guid, string field, string name, string number) {
+        FunkeText.Put(field + ":" + name + "=" + number);
+        FkDataAsset(3ul, guid);
+    }
     static void Write(ulong guid, string key, string value) {
         FunkeText.Put(key + "=" + value);
         FkDataAsset(1ul, guid);

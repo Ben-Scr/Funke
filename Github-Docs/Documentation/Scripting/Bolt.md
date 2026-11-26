@@ -38,7 +38,7 @@ Each attachment has its own Bolt object and instance fields. Attachments of the 
 
 Import `Funke` for `Application`, `Engine`, `Window`, scenes, entities and components. Use `Funke.UI` for widget types, `Funke.Jobs` for jobs, `Funke.Collections.Native` for native containers and `Funke.Editor` for editor windows. The generated declarations in the project's `.funke/Bolt` directory supply completion and signature help. Host bindings whose names begin with `Fk` are internal implementation details.
 
-Window and input events use static event syntax, for example `Window.Resized += OnResize`. Widget subscriptions belong to the individual component and scene. Both of these Bolt forms accept a method group.
+Use the same event name for subscription and removal, including the legacy Application event names. Window and input events use static event syntax, for example `Window.Resized += OnResize`. Widget subscriptions belong to the individual component and scene. Both of these Bolt forms accept a method group.
 
 ```bolt
 slider.Events.ValueChanged += OnSlider;
@@ -48,7 +48,7 @@ button.Clicked.Subscribe(OnClick);
 button.Clicked.Unsubscribe(OnClick);
 ```
 
-`PolygonCollider2D.SetPoints` takes a vertex array or a read-only span in collider-local space. Use `SetPaths` for multiple outlines and `GetPath(index)` to read one back. `GetWorldPoints(destination)` fills the caller’s buffer from the live physics shape and returns the number written. It returns zero when the shape has not been created.
+`PolygonCollider2D.SetPoints` takes a vertex array or a read-only span in collider-local space. Use `SetPaths` for multiple outlines and `GetPath(index)` to read one back. `GetWorldPoints(destination)` follows the existing C# binding. It fills the caller’s buffer from the live Box2D shape in the body’s coordinate frame, including collider scale and offset. The body’s world position and rotation are applied separately. The method returns the number written, or zero before the physics shape exists.
 
 A Bolt tool window derives from `Funke.Editor.EditorWindow`. The optional positional arguments in `[EditorWindow("Inspector", "Tools/Inspector", 480, 320)]` specify the title, menu path and initial dimensions. The editor keeps the window instance between `OnOpen` and `OnClose` and invokes `OnGUI` for each draw. A shared data asset derives from `DataAsset` and can override `OnValidate`. Use `[CreateDataAsset("Items/Definition")]` to choose its creation menu path.
 
@@ -229,6 +229,16 @@ On Windows x64, BoltScriptBench took 2.21 ms to create 10,000 entities and 40.89
 Bolt also copies nullable scalar and small non-owning value results directly on 64-bit native targets. This applies to handles returned by calls such as `GetComponent<Transform2D>()`. When releasing an array of non-owning handles, the runtime can free its storage in one operation. Arrays whose elements own resources or run destructors retain reverse-order cleanup. [Compiler and runtime patch](../../../scripts/bolt/patches/0009-optional-values-and-handle-arrays.patch)
 
 With the same Funke engine binary in each comparison, 10,000 transform lookups followed by a position read went from 3.76 to 2.05 ms in the Windows editor Fast-JIT and from 2.76 to 1.14 ms in the Windows AOT player. The component lookup happens inside the timed loop. [Measurements and C# controls](../../../Tests/Fixtures/BoltScripts/results/windows-x64-0.1.0-optional-values.json) · [Standalone Bolt value benchmark](../../../Tests/Fixtures/BoltScripts/CompilerBenchmark/OptionalHandles.bolt)
+
+### Numeric point entities
+
+Use `Funke.RuntimePoints2D` on the scene thread for transient objects that need an ID and a 2D position. `Create` fills a caller-owned array of 64-bit IDs. Each ID refers to an entity in the scene registry with a 12-byte component containing X, Y and a lifetime stamp. New points start at the origin. They have no persistent identity or default `Transform2D`. Use the regular entity API for prefabs, hierarchy transforms and saved scenes.
+
+Pass the ID array to `Translate`, `ReadPositions` and `Destroy` to process one native batch per call. The Bolt array overloads use the supplied storage directly. `ReadPositions` writes interleaved X,Y pairs in input order and writes zeroes for stale or foreign IDs. Repeating a live ID translates it once per occurrence. Destruction counts it once. `CountAlive` can check a batch after destruction or scene changes. [Bolt API](../../../Funke-BoltScriptCore/Source/Funke/Scene/RuntimePoints2D.bolt) · [C# API](../../../Funke-ScriptCore/Source/Funke/Scene/RuntimePoints2D.cs)
+
+BoltScriptBench opens in `Modus: Punkt-IDs` with a target of **0.10 ms per operation for 10,000 points** (10 ns per point). One warm-up batch precedes seven measurements per language, with the starting language alternating each round. Both languages use the same native storage. The read timer includes copying 20,000 floats into the script and summing them there. Script buffer allocation happens before the timer and the native scene can reuse capacity from earlier rounds. The mode switch also measures the full `Entity + Transform` workload. [Windows measurements including cold creation](../../../Tests/Fixtures/BoltScripts/results/windows-x64-runtime-point-ids.json)
+
+Fast-JIT and AOT fold constant array-element offsets on raw pointers when the byte displacement fits in a signed 32-bit immediate. This removes a checked multiplication from fixed-offset reads such as the benchmark's XY checksum. Null checks remain active and larger or variable offsets retain checked scaling. [Compiler patch and regression tests](../../../scripts/bolt/patches/0010-constant-pointer-indices.patch)
 
 ## Jobs, coroutines and custom component benchmarks
 

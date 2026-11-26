@@ -20,9 +20,9 @@ public class PolygonWorldProbe : EntityScript {
         if (count != 3 || output[3] != Vector2(43f, 17f)) return;
         Written = -4;
         for (int i = 0; i < count; i++) {
-            Vector2 local = output[i] - Vector2(7f, -3f);
+            Vector2 local = output[i];
             if (local != a[0] && local != a[1] && local != a[2]) {
-                Log.Error("Unexpected polygon vertex " + output[i].ToString());
+                Log.Error("Unexpected body-local polygon vertex " + local.ToString());
                 return;
             }
         }

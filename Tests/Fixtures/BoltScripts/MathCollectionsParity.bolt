@@ -164,6 +164,18 @@ public:
         if (culture.Name.Length != 0 && Vector2(1234.5f,-0.25f).ToString("N2",culture) != "Vector2(1.234,50, -0,25)") return 49;
         char[] spec = "F1".ToCharArray();
         if (!Vector4(1,2,3,4).TryFormat(System.Span<char>(dest),written,System.ReadOnlySpan<char>(spec),invariant) || written != "Vector4(1.0, 2.0, 3.0, 4.0)".Length) return 50;
+        if (Vector2(12345.5f,-1.25f).ToString("C") != "Vector2(¤12,345.50, (¤1.25))") return 51;
+        if (Vector3(2.25f,-0.004f,-1.25f).ToString("0.0;[0.0];'zero'") != "Vector3(2.3, zero, [1.3])") return 52;
+        if (Vector4(12345678,0.125f,-0.00001f,0).ToString("#,##0.##") != "Vector4(12,345,680, 0.13, -0, 0)") return 53;
+        if (Vector2(0.125f,1).ToString("0.0‰") != "Vector2(125.0‰, 1000.0‰)") return 54;
+        if (Vector2(12345678,0.125f).ToString("00.00e+00") != "Vector2(12.35e+06, 12.50e-02)") return 55;
+        if (culture.Name.Length != 0 && (Vector2(12345.5f,-1.25f).ToString("c",culture) != "Vector2(12.345,50 €, -1,25 €)" ||
+            Vector2(2.25f,0).ToString("0.##\\,\\.",culture) != "Vector2(2,25,., 0,.)")) return 56;
+        char[] patterned = new char[32];
+        string expected = "Vector2(002.3 m, 000.0 m)";
+        if (!Vector2(2.25f,0).TryFormat(System.Span<char>(patterned),written,"000.0 'm'",invariant) ||
+            written != expected.Length) return 57;
+        for (int i = 0; i < written; i++) if (patterned[i] != expected[i]) return 57;
         return 0;
     }
 }
