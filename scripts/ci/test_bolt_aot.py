@@ -74,7 +74,7 @@ class BoltAotTests(unittest.TestCase):
         with (patch.object(bolt_aot, 'run', side_effect=lambda cmd, label: Path(cmd[-1]).write_text('')),
               patch.dict(bolt_aot.os.environ, BOLT_ANDROID_SDK=str(sdk))):
             args = bolt_aot.prepare_bolt(self.request, self.work, 'android-arm64')
-        self.assertIn(f'-DFUNKE_BOLT_DIAGNOSTICS={diagnostics.as_posix()}', args)
+        self.assertIn(f'-DFUNKE_BOLT_DIAGNOSTICS={diagnostics.resolve().as_posix()}', args)
         self.assertIn('-DFUNKE_BOLT_RUNTIME=', args)
 
     def test_target_verifies_nested_field_layout(self):

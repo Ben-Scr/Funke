@@ -39,10 +39,10 @@ def source_identity(root: Path, expected: str) -> None:
 def platform_command(platform: str, source: Path, request: Path, artifact: Path) -> list[str]:
     data = json.loads(request.read_text(encoding="utf-8-sig"))
     if (type(data.get("protocol")) is not int or data["protocol"] != 1
-            or not Path(data["engineRoot"]).is_absolute() or Path(data["engineRoot"]).resolve() != source):
+            or not Path(data["engineRoot"]).is_absolute() or Path(data["engineRoot"]).resolve() != source.resolve()):
         raise ValueError("The builder request must use protocol 1 and the verified engine checkout.")
     output = Path(data["outputDir"])
-    if not output.is_absolute() or not artifact.is_relative_to(output.resolve()):
+    if not output.is_absolute() or not artifact.resolve().is_relative_to(output.resolve()):
         raise ValueError("Expected artifact must be inside the build request's absolute outputDir.")
     package = {"android": "Android", "ios": "iOS", "web": "Web"}[platform]
     builder = source / "platforms" / f"Funke.Platform.{package}" / "Builder" / "build.py"
@@ -59,7 +59,7 @@ def verify_builder_result(protocol: Path, artifact: Path) -> None:
             if event["event"] == "result":
                 result = event
     if (result is None or result.get("ok") is not True or not result.get("artifact")
-            or Path(result["artifact"]).resolve() != artifact):
+            or Path(result["artifact"]).resolve() != artifact.resolve()):
         raise ValueError("Builder result did not report success for the expected artifact.")
 
 
