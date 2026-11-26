@@ -1,0 +1,584 @@
+{
+  "project": "Examples/BoltScriptBench",
+  "platform": "Windows x64",
+  "cpu": "AMD Ryzen 9 7900X, 12 cores, 24 logical processors",
+  "goal": {
+    "entitiesPerBatch": 10000,
+    "millisecondsPerOperation": 0.1,
+    "nanosecondsPerEntity": 10
+  },
+  "protocol": "Each backend runs in fresh processes. One warm-up round per language precedes seven timed samples per operation. The first language alternates each round. Every process reports its median in 100 ns ticks. The ms tables report the median of those process medians. Timer readings cover the scripting API calls, including entering native code.",
+  "pointIds": {
+    "storage": "Scene registry entities with a native generation and one 12-byte component (batch stamp, X and Y). No default Transform2D or persistent UUID.",
+    "buffers": "Each script allocates its ID and XY buffers before timing. Create includes any native pool growth it triggers. Warm-up leaves vacant slots and reusable native capacity.",
+    "Create": "Make 10,000 live scene entities at the origin and write every ID into the script buffer.",
+    "Move": "Pass the stored IDs, validate their lifetimes and add (1, 2) to each XY pair in native scene storage.",
+    "Read": "Copy all 20,000 coordinates back to the script in ID order and sum the returned numbers in Bolt or C# inside the timer.",
+    "Destroy": "Invalidate every ID and remove the corresponding component and live entity. The workload releases the batch in creation order.",
+    "validation": "Check creation and live counts, moved/read counts, position checksum of 30,000, destruction count and zero remaining live IDs."
+  },
+  "sceneObjects": "Original Entity + Transform workload, including Create, reading and writing Transform2D.Position, summing the position values and individual Destroy calls.",
+  "reproduction": {
+    "editor": [
+      "funke test Examples/BoltScriptBench/Tests/PointIds.test.json",
+      "funke test Examples/BoltScriptBench/Tests/Lifecycle.test.json"
+    ],
+    "player": "Export the Windows Release profile. Launch the executable, select 10,000 and Run in each mode. Repeat in a fresh process for each trial. The player measurements cleared BOLT_* and LLVM_* variables and limited PATH to Windows and System32. The runtime log confirmed loading the Windows AOT module."
+  },
+  "measurements": {
+    "point-ids": {
+      "editor": {
+        "ms": {
+          "Bolt": {
+            "Create": 0.07855,
+            "Move": 0.02455,
+            "Read": 0.0666,
+            "Destroy": 0.03455
+          },
+          "C#": {
+            "Create": 0.073,
+            "Move": 0.02275,
+            "Read": 0.0237,
+            "Destroy": 0.0366
+          }
+        },
+        "processMedianTicks": [
+          {
+            "Bolt": {
+              "Create": 667,
+              "Move": 199,
+              "Read": 558,
+              "Destroy": 299
+            },
+            "C#": {
+              "Create": 666,
+              "Move": 190,
+              "Read": 220,
+              "Destroy": 327
+            }
+          },
+          {
+            "Bolt": {
+              "Create": 922,
+              "Move": 313,
+              "Read": 950,
+              "Destroy": 486
+            },
+            "C#": {
+              "Create": 794,
+              "Move": 287,
+              "Read": 314,
+              "Destroy": 450
+            }
+          },
+          {
+            "Bolt": {
+              "Create": 904,
+              "Move": 290,
+              "Read": 774,
+              "Destroy": 392
+            },
+            "C#": {
+              "Create": 897,
+              "Move": 265,
+              "Read": 254,
+              "Destroy": 405
+            }
+          },
+          {
+            "Bolt": {
+              "Create": 634,
+              "Move": 201,
+              "Read": 555,
+              "Destroy": 284
+            },
+            "C#": {
+              "Create": 626,
+              "Move": 190,
+              "Read": 210,
+              "Destroy": 277
+            }
+          }
+        ]
+      },
+      "aot": {
+        "ms": {
+          "Bolt": {
+            "Create": 0.0772,
+            "Move": 0.0255,
+            "Read": 0.0317,
+            "Destroy": 0.0374
+          },
+          "C#": {
+            "Create": 0.07385,
+            "Move": 0.02545,
+            "Read": 0.0257,
+            "Destroy": 0.03585
+          }
+        },
+        "processMedianTicks": [
+          {
+            "Bolt": {
+              "Create": 898,
+              "Move": 319,
+              "Read": 373,
+              "Destroy": 452
+            },
+            "C#": {
+              "Create": 910,
+              "Move": 316,
+              "Read": 315,
+              "Destroy": 442
+            }
+          },
+          {
+            "Bolt": {
+              "Create": 612,
+              "Move": 196,
+              "Read": 257,
+              "Destroy": 277
+            },
+            "C#": {
+              "Create": 683,
+              "Move": 190,
+              "Read": 208,
+              "Destroy": 280
+            }
+          },
+          {
+            "Bolt": {
+              "Create": 843,
+              "Move": 310,
+              "Read": 370,
+              "Destroy": 446
+            },
+            "C#": {
+              "Create": 794,
+              "Move": 321,
+              "Read": 304,
+              "Destroy": 437
+            }
+          },
+          {
+            "Bolt": {
+              "Create": 701,
+              "Move": 200,
+              "Read": 264,
+              "Destroy": 302
+            },
+            "C#": {
+              "Create": 610,
+              "Move": 193,
+              "Read": 210,
+              "Destroy": 273
+            }
+          }
+        ]
+      }
+    },
+    "scene-objects": {
+      "editor": {
+        "ms": {
+          "Bolt": {
+            "Create": 11.89105,
+            "Move": 1.9362,
+            "Read": 0.8995,
+            "Destroy": 2.9053
+          },
+          "C#": {
+            "Create": 3.1139,
+            "Move": 4.8575,
+            "Read": 1.4943,
+            "Destroy": 3.3476
+          }
+        },
+        "processMedianTicks": [
+          {
+            "Bolt": {
+              "Create": 120361,
+              "Move": 18495,
+              "Read": 8942,
+              "Destroy": 27370
+            },
+            "C#": {
+              "Create": 30414,
+              "Move": 54840,
+              "Read": 16346,
+              "Destroy": 34365
+            }
+          },
+          {
+            "Bolt": {
+              "Create": 117460,
+              "Move": 20229,
+              "Read": 9048,
+              "Destroy": 30736
+            },
+            "C#": {
+              "Create": 31864,
+              "Move": 42310,
+              "Read": 13540,
+              "Destroy": 32587
+            }
+          }
+        ]
+      },
+      "aot": {
+        "ms": {
+          "Bolt": {
+            "Create": 14.53215,
+            "Move": 1.1928,
+            "Read": 0.53655,
+            "Destroy": 3.5179
+          },
+          "C#": {
+            "Create": 4.0946,
+            "Move": 7.02875,
+            "Read": 2.15335,
+            "Destroy": 4.5528
+          }
+        },
+        "processMedianTicks": [
+          {
+            "Bolt": {
+              "Create": 122740,
+              "Move": 9766,
+              "Read": 4261,
+              "Destroy": 29117
+            },
+            "C#": {
+              "Create": 38817,
+              "Move": 65437,
+              "Read": 21833,
+              "Destroy": 43926
+            }
+          },
+          {
+            "Bolt": {
+              "Create": 167903,
+              "Move": 14090,
+              "Read": 6470,
+              "Destroy": 41241
+            },
+            "C#": {
+              "Create": 43075,
+              "Move": 75138,
+              "Read": 21234,
+              "Destroy": 47130
+            }
+          }
+        ]
+      }
+    }
+  },
+  "beforeConstantPointerLowering": {
+    "editor": {
+      "ms": {
+        "Bolt": {
+          "Create": 0.09635,
+          "Move": 0.03095,
+          "Read": 0.1052,
+          "Destroy": 0.0495
+        },
+        "C#": {
+          "Create": 0.09345,
+          "Move": 0.0293,
+          "Read": 0.0342,
+          "Destroy": 0.04675
+        }
+      },
+      "processMedianTicks": [
+        {
+          "Bolt": {
+            "Create": 996,
+            "Move": 320,
+            "Read": 1069,
+            "Destroy": 510
+          },
+          "C#": {
+            "Create": 933,
+            "Move": 291,
+            "Read": 339,
+            "Destroy": 462
+          }
+        },
+        {
+          "Bolt": {
+            "Create": 931,
+            "Move": 304,
+            "Read": 1023,
+            "Destroy": 494
+          },
+          "C#": {
+            "Create": 941,
+            "Move": 295,
+            "Read": 347,
+            "Destroy": 484
+          }
+        },
+        {
+          "Bolt": {
+            "Create": 1004,
+            "Move": 315,
+            "Read": 1103,
+            "Destroy": 496
+          },
+          "C#": {
+            "Create": 936,
+            "Move": 298,
+            "Read": 344,
+            "Destroy": 470
+          }
+        },
+        {
+          "Bolt": {
+            "Create": 910,
+            "Move": 302,
+            "Read": 1035,
+            "Destroy": 478
+          },
+          "C#": {
+            "Create": 871,
+            "Move": 286,
+            "Read": 340,
+            "Destroy": 465
+          }
+        }
+      ]
+    },
+    "aot": {
+      "ms": {
+        "Bolt": {
+          "Create": 0.08505,
+          "Move": 0.0319,
+          "Read": 0.037,
+          "Destroy": 0.0464
+        },
+        "C#": {
+          "Create": 0.08435,
+          "Move": 0.03185,
+          "Read": 0.03215,
+          "Destroy": 0.0439
+        }
+      },
+      "processMedianTicks": [
+        {
+          "Bolt": {
+            "Create": 832,
+            "Move": 311,
+            "Read": 363,
+            "Destroy": 446
+          },
+          "C#": {
+            "Create": 778,
+            "Move": 296,
+            "Read": 304,
+            "Destroy": 416
+          }
+        },
+        {
+          "Bolt": {
+            "Create": 866,
+            "Move": 329,
+            "Read": 375,
+            "Destroy": 482
+          },
+          "C#": {
+            "Create": 838,
+            "Move": 321,
+            "Read": 330,
+            "Destroy": 436
+          }
+        },
+        {
+          "Bolt": {
+            "Create": 835,
+            "Move": 317,
+            "Read": 372,
+            "Destroy": 431
+          },
+          "C#": {
+            "Create": 869,
+            "Move": 324,
+            "Read": 341,
+            "Destroy": 483
+          }
+        },
+        {
+          "Bolt": {
+            "Create": 869,
+            "Move": 321,
+            "Read": 368,
+            "Destroy": 492
+          },
+          "C#": {
+            "Create": 849,
+            "Move": 316,
+            "Read": 313,
+            "Destroy": 442
+          }
+        }
+      ]
+    }
+  },
+  "nativeIsolated": {
+    "description": "Direct calls on a newly detached scene containing one other entity, same 10,000 IDs. The first batch includes cold native pool allocation. The eight later batches reuse the vacant registry slots. Read includes the native checksum in this direct C++ check. Separate processes and CPU frequency can affect absolute times.",
+    "initialImplementation": {
+      "firstBatchMs": {
+        "Create": 0.3749,
+        "Move": 0.0315,
+        "Read": 0.0413,
+        "Destroy": 0.4134
+      },
+      "medianOfEightWarmBatchesMs": {
+        "Create": 0.22225,
+        "Move": 0.0284,
+        "Read": 0.03645,
+        "Destroy": 0.3873
+      },
+      "batchesMs": [
+        {
+          "Create": 0.3749,
+          "Move": 0.0315,
+          "Read": 0.0413,
+          "Destroy": 0.4134
+        },
+        {
+          "Create": 0.4769,
+          "Move": 0.0288,
+          "Read": 0.0402,
+          "Destroy": 0.3767
+        },
+        {
+          "Create": 0.2063,
+          "Move": 0.0275,
+          "Read": 0.0331,
+          "Destroy": 0.3864
+        },
+        {
+          "Create": 0.2011,
+          "Move": 0.0278,
+          "Read": 0.0333,
+          "Destroy": 0.3789
+        },
+        {
+          "Create": 0.2006,
+          "Move": 0.028,
+          "Read": 0.0428,
+          "Destroy": 0.3985
+        },
+        {
+          "Create": 0.2282,
+          "Move": 0.0288,
+          "Read": 0.0361,
+          "Destroy": 0.3882
+        },
+        {
+          "Create": 0.249,
+          "Move": 0.0299,
+          "Read": 0.0368,
+          "Destroy": 0.3843
+        },
+        {
+          "Create": 0.2616,
+          "Move": 0.0327,
+          "Read": 0.0393,
+          "Destroy": 0.405
+        },
+        {
+          "Create": 0.2163,
+          "Move": 0.0271,
+          "Read": 0.0327,
+          "Destroy": 0.3999
+        }
+      ]
+    },
+    "optimized": {
+      "firstBatchMs": {
+        "Create": 0.3251,
+        "Move": 0.028,
+        "Read": 0.0341,
+        "Destroy": 0.0391
+      },
+      "medianOfEightWarmBatchesMs": {
+        "Create": 0.05615,
+        "Move": 0.019,
+        "Read": 0.02775,
+        "Destroy": 0.0233
+      },
+      "batchesMs": [
+        {
+          "Create": 0.3251,
+          "Move": 0.028,
+          "Read": 0.0341,
+          "Destroy": 0.0391
+        },
+        {
+          "Create": 0.084,
+          "Move": 0.0293,
+          "Read": 0.0344,
+          "Destroy": 0.0421
+        },
+        {
+          "Create": 0.0853,
+          "Move": 0.0281,
+          "Read": 0.0347,
+          "Destroy": 0.0291
+        },
+        {
+          "Create": 0.0554,
+          "Move": 0.0189,
+          "Read": 0.0299,
+          "Destroy": 0.0249
+        },
+        {
+          "Create": 0.0567,
+          "Move": 0.019,
+          "Read": 0.0245,
+          "Destroy": 0.0228
+        },
+        {
+          "Create": 0.0555,
+          "Move": 0.0237,
+          "Read": 0.0269,
+          "Destroy": 0.0238
+        },
+        {
+          "Create": 0.0566,
+          "Move": 0.0188,
+          "Read": 0.0244,
+          "Destroy": 0.0226
+        },
+        {
+          "Create": 0.0551,
+          "Move": 0.019,
+          "Read": 0.0244,
+          "Destroy": 0.0227
+        },
+        {
+          "Create": 0.0557,
+          "Move": 0.019,
+          "Read": 0.0286,
+          "Destroy": 0.0227
+        }
+      ]
+    }
+  },
+  "build": {
+    "runtimeVariant": "full",
+    "fullRuntimeFallback": true,
+    "shipsLLVM-C.dll": false,
+    "shipsBoltCompiler.dll": false,
+    "hashAlgorithm": "SHA-256",
+    "hashes": {
+      "editor": "dd5558a502f24564c2883e2a278a1d95e4e3c95454ad4077cc4638c82883fe7c",
+      "editorEngine": "b83b17bc4439816a03d1f50d962a7c9ea4b2d123185eb95a63aa4151873762c9",
+      "compilerBefore": "f3ad66c6a5d1af3cbdd24e447d92c8f3345d19f7482161455d6ed6d567b4b856",
+      "compiler": "a213f8f1525c42f71960e3a86e7942291bd8a9e1b253a22d5c81b7e48fb9bb00",
+      "player": "0d890f06182390f17fc659d1c481e8f705c53530430306850521a398b7613dc0",
+      "playerEngine": "6e43985fec838f1a091ddb5fc7a1cedb95ce99ab593c96362095c4265e1114cd",
+      "boltRuntime": "4eb894df6ed12dcf42ba4e264f7d967a7d6d0bf28e8c34e5bfc159b6d1bb59bb",
+      "aotModule": "a395a024b3cb1efaca508b6564a3e125d48a9f96e0b1c317396f0b269df2693a"
+    }
+  }
+}
