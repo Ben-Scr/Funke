@@ -1,4 +1,5 @@
 #include "pch.hpp"
+#include "Assets/AssetRegistry.hpp"
 #include "Serialization/PrefabTemplateCache.hpp"
 #include "Serialization/SceneSerializer.hpp"
 #include "Serialization/SceneSerializerShared.hpp"
@@ -137,7 +138,8 @@ namespace Funke {
 		}
 
 		auto tmpl = std::make_shared<PrefabTemplate>();
-		if (!SceneSerializer::GetPrefabDependencies(prefabGuid, tmpl->InheritanceDependencies)) return;
+		if (!AssetRegistry::ResolvePath(prefabGuid).empty()
+			&& !SceneSerializer::GetPrefabDependencies(prefabGuid, tmpl->InheritanceDependencies)) return;
 
 		// Internal entity refs (deferred fixups) can't be represented in v1 templates; mark unbakeable so spawns fall back to the slow path.
 		if (fixupsAddedDuringDeserialize > 0) {

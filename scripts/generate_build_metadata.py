@@ -52,6 +52,7 @@ PATCH_MANAGED_SUBMODULES = {
     "External/box2d",
     "External/entt",
     "External/imgui",
+    "External/tracy",
 }
 SEMVER_PATTERN = re.compile(
     r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"

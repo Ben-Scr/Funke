@@ -301,7 +301,7 @@ class BuildMetadataTests(unittest.TestCase):
         git = metadata_script.run_git
         for code in (" m", " M"):
             status = "\n".join(f"{code} {path}" for path in (
-                "External/ImGuizmo", "External/box2d", "External/entt", "External/imgui",
+                "External/ImGuizmo", "External/box2d", "External/entt", "External/imgui", "External/tracy",
             ))
             def patched_git(*arguments: str) -> str:
                 return status if arguments[0] == "status" else git(*arguments)
