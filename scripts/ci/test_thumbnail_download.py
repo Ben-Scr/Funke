@@ -1,29 +1,21 @@
-"""Bounded thumbnail transfer checks against a local HTTP server."""
+"""Thumbnail destination-policy checks for the PackageTool boundary."""
 import http.server
 import pathlib
 import subprocess
 import tempfile
 import threading
-import time
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 class Handler(http.server.BaseHTTPRequestHandler):
+    requests = 0
     def log_message(self, *args): pass
     def do_GET(self):
-        if self.path == "/missing":
-            self.send_error(404)
-            return
-        self.send_response(200)
-        if self.path == "/oversize": self.send_header("Content-Length", str(9 * 1024 * 1024))
+        type(self).requests += 1
+        self.send_response(302)
+        self.send_header("Location", "http://169.254.169.254/latest/meta-data/")
         self.end_headers()
-        try:
-            if self.path == "/slow": time.sleep(10)
-            if self.path == "/stream":
-                for _ in range(145): self.wfile.write(b"x" * 65536)
-            else: self.wfile.write(b"thumbnail fixture")
-        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError): pass
 
 class ThumbnailDownloadTests(unittest.TestCase):
     @classmethod
@@ -52,20 +44,42 @@ class ThumbnailDownloadTests(unittest.TestCase):
         cls.server.shutdown()
         cls.server.server_close()
         cls.thread.join()
-    def transfer(self, route, success, error=None):
+    def reject(self, url):
         with tempfile.TemporaryDirectory() as folder:
             output = pathlib.Path(folder) / "image"
             result = subprocess.run(["dotnet", str(self.tool), "thumbnail-download",
-                f"http://127.0.0.1:{self.server.server_port}/{route}", str(output)], capture_output=True, timeout=12)
-            self.assertEqual(result.returncode == 0, success, result.stderr.decode())
-            if error:
-                self.assertIn(error, result.stderr.decode())
-            if success: self.assertEqual(output.read_bytes(), b"thumbnail fixture")
-            else: self.assertFalse(output.exists())
-    def test_valid(self): self.transfer("valid", True)
-    def test_missing(self): self.transfer("missing", False, "404")
-    def test_declared_limit(self): self.transfer("oversize", False, "Thumbnail exceeds 8 MiB.")
-    def test_streamed_limit(self): self.transfer("stream", False, "Thumbnail exceeds 8 MiB.")
-    def test_timeout(self): self.transfer("slow", False, "Request timed out")
+                url, str(output)], capture_output=True, timeout=12)
+            self.assertNotEqual(result.returncode, 0, result.stderr.decode())
+            self.assertIn("Invalid thumbnail URL.", result.stderr.decode())
+            self.assertFalse(output.exists())
+
+    def test_local_redirect_server_is_not_contacted(self):
+        before = Handler.requests
+        self.reject(f"http://127.0.0.1:{self.server.server_port}/redirect")
+        self.assertEqual(Handler.requests, before)
+
+    def test_insecure_github_url_is_rejected(self):
+        self.reject("http://raw.githubusercontent.com/Ben-Scr/Funke/main/README.md")
+
+    def test_unapproved_host_is_rejected(self):
+        self.reject("https://example.com/thumbnail.png")
+
+    def test_embedded_credentials_are_rejected(self):
+        self.reject("https://user:password@raw.githubusercontent.com/thumbnail.png")
+
+    def test_nonstandard_port_is_rejected(self):
+        self.reject("https://raw.githubusercontent.com:444/thumbnail.png")
+
+    def test_local_and_private_addresses_are_rejected(self):
+        for url in ("https://127.0.0.1/thumbnail.png",
+                    "https://10.0.0.1/thumbnail.png",
+                    "https://169.254.169.254/thumbnail.png",
+                    "https://172.16.0.1/thumbnail.png",
+                    "https://192.168.0.1/thumbnail.png",
+                    "https://[::1]/thumbnail.png",
+                    "https://[fc00::1]/thumbnail.png",
+                    "https://[fe80::1]/thumbnail.png",
+                    "https://2130706433/thumbnail.png"):
+            with self.subTest(url=url): self.reject(url)
 
 if __name__ == "__main__": unittest.main()

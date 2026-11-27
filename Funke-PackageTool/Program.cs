@@ -1,5 +1,7 @@
 using System.IO.Compression;
+using System.Net;
 using System.Net.Http.Json;
+using System.Net.Sockets;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -148,10 +150,18 @@ async Task<int> GitHubIndex(string[] args)
 async Task<int> ThumbnailDownload(string[] args)
 {
     if (args.Length != 3 || !Uri.TryCreate(args[1], UriKind.Absolute, out var uri)
-        || (uri.Scheme != "https" && uri.Scheme != "http")) return Error("Invalid thumbnail URL.");
+        || !IsPermittedThumbnailUri(uri)) return Error("Invalid thumbnail URL.");
     const int limit = 8 * 1024 * 1024;
     using var cancel = new CancellationTokenSource(TimeSpan.FromSeconds(8));
-    using var response = await http.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, cancel.Token);
+    using var thumbnailHandler = new SocketsHttpHandler
+    {
+        AllowAutoRedirect = false,
+        UseProxy = false,
+        ConnectCallback = ConnectThumbnailHost
+    };
+    using var thumbnailHttp = new HttpClient(thumbnailHandler);
+    thumbnailHttp.DefaultRequestHeaders.UserAgent.ParseAdd("Funke-PackageTool/1.0");
+    using var response = await GetThumbnailResponse(thumbnailHttp, uri, cancel.Token);
     response.EnsureSuccessStatusCode();
     if (response.Content.Headers.ContentLength > limit) return Error("Thumbnail exceeds 8 MiB.");
     bool success = false;
@@ -171,6 +181,140 @@ async Task<int> ThumbnailDownload(string[] args)
         return 0;
     }
     finally { if (!success) File.Delete(args[2]); }
+}
+
+static bool IsPermittedThumbnailUri(Uri uri)
+{
+    if (!uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)
+        || uri.HostNameType != UriHostNameType.Dns
+        || uri.Port != 443
+        || !string.IsNullOrEmpty(uri.UserInfo)) return false;
+
+    // Asset Library media is curated on GitHub. Exact host matching prevents
+    // lookalike domains while retaining the hosts used by GitHub content URLs.
+    return IsAllowedThumbnailHost(uri.IdnHost);
+}
+
+static bool IsAllowedThumbnailHost(string host)
+{
+    return host.Equals("github.com", StringComparison.OrdinalIgnoreCase)
+        || host.Equals("raw.githubusercontent.com", StringComparison.OrdinalIgnoreCase)
+        || host.Equals("objects.githubusercontent.com", StringComparison.OrdinalIgnoreCase)
+        || host.Equals("codeload.github.com", StringComparison.OrdinalIgnoreCase)
+        || host.Equals("media.githubusercontent.com", StringComparison.OrdinalIgnoreCase)
+        || host.Equals("user-images.githubusercontent.com", StringComparison.OrdinalIgnoreCase)
+        || host.Equals("private-user-images.githubusercontent.com", StringComparison.OrdinalIgnoreCase)
+        || host.Equals("release-assets.githubusercontent.com", StringComparison.OrdinalIgnoreCase);
+}
+
+static bool IsRedirect(HttpStatusCode status)
+{
+    int code = (int)status;
+    return code is 300 or 301 or 302 or 303 or 307 or 308;
+}
+
+static async Task<HttpResponseMessage> GetThumbnailResponse(HttpClient client, Uri initialUri,
+    CancellationToken cancellationToken)
+{
+    const int maxRedirects = 5;
+    Uri current = initialUri;
+    for (int redirects = 0; ; redirects++)
+    {
+        if (!IsPermittedThumbnailUri(current))
+            throw new HttpRequestException("Thumbnail redirect target is not permitted.");
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, current);
+        var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead,
+            cancellationToken);
+        if (!IsRedirect(response.StatusCode)) return response;
+
+        Uri? location = response.Headers.Location;
+        response.Dispose();
+        if (location == null || redirects == maxRedirects
+            || !Uri.TryCreate(current, location, out var next)
+            || !IsPermittedThumbnailUri(next))
+            throw new HttpRequestException("Thumbnail redirect target is not permitted.");
+        current = next;
+    }
+}
+
+static async ValueTask<Stream> ConnectThumbnailHost(SocketsHttpConnectionContext context,
+    CancellationToken cancellationToken)
+{
+    string host = context.DnsEndPoint.Host;
+    int port = context.DnsEndPoint.Port;
+    if (port != 443 || !IsAllowedThumbnailHost(host))
+        throw new HttpRequestException("Thumbnail connection target is not permitted.");
+
+    IPAddress[] addresses;
+    try
+    {
+        addresses = await Dns.GetHostAddressesAsync(host, cancellationToken);
+    }
+    catch (Exception ex) when (ex is not OperationCanceledException)
+    {
+        throw new HttpRequestException("Thumbnail host could not be resolved.", ex);
+    }
+    if (addresses.Length == 0 || addresses.Any(address => !IsPublicAddress(address)))
+        throw new HttpRequestException("Thumbnail URL resolves to a blocked network address.");
+
+    Exception? lastError = null;
+    foreach (IPAddress address in addresses)
+    {
+        var socket = new Socket(address.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
+        try
+        {
+            await socket.ConnectAsync(new IPEndPoint(address, port), cancellationToken);
+            return new NetworkStream(socket, ownsSocket: true);
+        }
+        catch (OperationCanceledException)
+        {
+            socket.Dispose();
+            throw;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            lastError = ex;
+            socket.Dispose();
+        }
+    }
+    cancellationToken.ThrowIfCancellationRequested();
+    throw new HttpRequestException("Thumbnail host could not be reached.", lastError);
+}
+
+static bool IsPublicAddress(IPAddress address)
+{
+    if (address.IsIPv4MappedToIPv6) address = address.MapToIPv4();
+    byte[] bytes = address.GetAddressBytes();
+    if (address.AddressFamily == AddressFamily.InterNetwork)
+    {
+        byte a = bytes[0], b = bytes[1], c = bytes[2];
+        return a != 0
+            && a != 10
+            && !(a == 100 && b >= 64 && b <= 127)
+            && a != 127
+            && !(a == 169 && b == 254)
+            && !(a == 172 && b >= 16 && b <= 31)
+            && !(a == 192 && b == 0 && (c == 0 || c == 2))
+            && !(a == 192 && b == 88 && c == 99)
+            && !(a == 192 && b == 168)
+            && !(a == 198 && (b == 18 || b == 19))
+            && !(a == 198 && b == 51 && c == 100)
+            && !(a == 203 && b == 0 && c == 113)
+            && a < 224;
+    }
+
+    if (address.AddressFamily != AddressFamily.InterNetworkV6 || IPAddress.IsLoopback(address))
+        return false;
+
+    // Public IPv6 unicast is 2000::/3. Exclude special-use and documentation ranges.
+    bool globalUnicast = (bytes[0] & 0xe0) == 0x20;
+    bool special2001 = bytes[0] == 0x20 && bytes[1] == 0x01 && bytes[2] < 0x02;
+    bool documentation = (bytes[0] == 0x20 && bytes[1] == 0x01
+            && bytes[2] == 0x0d && bytes[3] == 0xb8)
+        || (bytes[0] == 0x3f && (bytes[1] & 0xf0) == 0xf0);
+    bool sixToFour = bytes[0] == 0x20 && bytes[1] == 0x02;
+    return globalUnicast && !special2001 && !documentation && !sixToFour;
 }
 
 async Task<int> GitHubDownload(string[] args)
