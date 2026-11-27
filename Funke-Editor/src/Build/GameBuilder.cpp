@@ -929,7 +929,13 @@ namespace Funke::GameBuilder {
 			else if (configuration == "Dist") append("FNK_DIST");
 			append(project.GetActiveBuildProfileDefine());
 			append(FunkeProject::GetManagedPlatformDefine(targetPlatform));
-			for (const std::string& customDefine : project.CustomDefines) append(customDefine);
+			std::string customDefinesError;
+			if (FunkeProject::ValidateCustomDefines(project.CustomDefines, &customDefinesError)) {
+				for (const std::string& customDefine : project.CustomDefines) append(customDefine);
+			}
+			else {
+				FNK_ERROR_TAG("Build", "Refusing to emit invalid custom defines: {}", customDefinesError);
+			}
 			return defines;
 		}
 	}
@@ -1103,6 +1109,11 @@ namespace Funke::GameBuilder {
 		// The profile's backend belongs to the exported game, not the live editor project.
 		outRequest.Project.ActiveRenderBackend = activeProfile.RenderBackend;
 		activeProfile.ApplyTo(outRequest.Project);
+		std::string customDefinesError;
+		if (!FunkeProject::ValidateCustomDefines(outRequest.Project.CustomDefines, &customDefinesError)) {
+			outError = "The project or active build profile has invalid custom defines: " + customDefinesError;
+			return false;
+		}
 		if (outRequest.ConfigurationOverride) outRequest.Project.ActiveBuildProfile = *outRequest.ConfigurationOverride;
 		outRequest.Platform = activeProfile.Platform;
 		outRequest.PlatformPackage = BuildPlatformSupport::GetPackage(activeProfile.Platform);

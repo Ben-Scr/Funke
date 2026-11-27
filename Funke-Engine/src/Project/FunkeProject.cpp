@@ -524,14 +524,19 @@ FUNKE_NATIVE_SCRIPT_EXPORT uint32_t FunkeNativeScriptAbiVersion() {
 
 			// Empty when no custom defines — the placeholder substitution drops the line entirely.
 			std::string customDefinesBlock;
-			if (!project.CustomDefines.empty()) {
+			std::string customDefinesError;
+			if (!project.CustomDefines.empty()
+				&& FunkeProject::ValidateCustomDefines(project.CustomDefines, &customDefinesError)) {
 				customDefinesBlock = "target_compile_definitions(${PROJECT_NAME} PRIVATE";
 				for (const std::string& d : project.CustomDefines) {
-					if (d.empty()) continue;
-					customDefinesBlock += " ";
+					customDefinesBlock += " \"";
 					customDefinesBlock += d;
+					customDefinesBlock += "\"";
 				}
 				customDefinesBlock += ")";
+			}
+			else if (!customDefinesError.empty()) {
+				FNK_CORE_ERROR_TAG("FunkeProject", "Refusing to emit invalid native custom defines: {}", customDefinesError);
 			}
 
 			std::string funkeRootBootstrap = R"(set(FUNKE_DIR "$ENV{FUNKE_DIR}" CACHE PATH "Path to the Funke repository root")
@@ -1237,9 +1242,21 @@ endif())");
 
 		for (std::string_view arrayName : { "packages", "customDefines", "modules" }) {
 			if (const Json::Value* values = root.FindMember(arrayName)) {
+				if (arrayName == "customDefines"
+					&& values->GetArray().size() > FunkeProject::k_MaxCustomDefines) {
+					outError = "'customDefines' exceeds the maximum of "
+						+ std::to_string(FunkeProject::k_MaxCustomDefines) + " entries";
+					return false;
+				}
 				for (const Json::Value& value : values->GetArray()) {
 					if (!value.IsString()) {
 						outError = "'" + std::string(arrayName) + "' entries must be strings";
+						return false;
+					}
+					if (arrayName == "customDefines"
+						&& !FunkeProject::IsValidCustomDefine(value.AsStringOr())) {
+						outError = "'customDefines' entries must match [A-Za-z_][A-Za-z0-9_]* and be at most "
+							+ std::to_string(FunkeProject::k_MaxCustomDefineLength) + " bytes";
 						return false;
 					}
 					if (arrayName == "modules" && !EngineModules::FromId(value.AsStringOr())) {
@@ -1547,7 +1564,7 @@ endif())");
 		if (!project.CustomDefines.empty()) {
 			Json::Value definesJson = Json::Value::MakeArray();
 			for (const std::string& d : project.CustomDefines) {
-				if (!d.empty()) definesJson.Append(Json::Value(d));
+				definesJson.Append(Json::Value(d));
 			}
 			root.AddMember("customDefines", std::move(definesJson));
 		}
@@ -1650,10 +1667,15 @@ endif())");
 					customDefines.push_back(define);
 				}
 			}
-			for (const std::string& custom : customDefines) {
-				if (custom.empty()) continue;
-				if (!defineConstants.empty()) defineConstants += "%3B";
-				defineConstants += custom;
+			std::string customDefinesError;
+			if (ValidateCustomDefines(customDefines, &customDefinesError)) {
+				for (const std::string& custom : customDefines) {
+					if (!defineConstants.empty()) defineConstants += "%3B";
+					defineConstants += custom;
+				}
+			}
+			else {
+				FNK_CORE_ERROR_TAG("FunkeProject", "Refusing to emit invalid managed custom defines: {}", customDefinesError);
 			}
 		}
 
@@ -2091,8 +2113,12 @@ endif())");
 				customDefines.push_back(profileDefine);
 			}
 		}
+		std::string customDefinesError;
+		if (!ValidateCustomDefines(customDefines, &customDefinesError)) {
+			FNK_CORE_ERROR_TAG("FunkeProject", "Refusing to write invalid managed custom defines: {}", customDefinesError);
+			return false;
+		}
 		for (const std::string& custom : customDefines) {
-			if (custom.empty()) continue;
 			defines += ';';
 			defines += custom;
 		}
@@ -2114,7 +2140,7 @@ endif())");
 			"<!-- Edit Project Settings → Build Settings → Custom Defines instead. -->\n"
 			"<Project>\n"
 			"  <PropertyGroup>\n"
-			"    <DefineConstants>" + defines + "</DefineConstants>\n"
+			"    <DefineConstants>" + EscapeXml(defines) + "</DefineConstants>\n"
 			"  </PropertyGroup>\n"
 			"</Project>\n";
 
@@ -2193,6 +2219,36 @@ endif())");
 		if (deviceName.size() == 4
 			&& (deviceName.starts_with("COM") || deviceName.starts_with("LPT"))
 			&& deviceName[3] >= '1' && deviceName[3] <= '9') return false;
+		return true;
+	}
+
+	bool FunkeProject::IsValidCustomDefine(std::string_view define) {
+		if (define.empty() || define.size() > k_MaxCustomDefineLength) return false;
+		const auto isAsciiLetter = [](char value) {
+			return (value >= 'A' && value <= 'Z') || (value >= 'a' && value <= 'z');
+		};
+		if (define.front() != '_' && !isAsciiLetter(define.front())) return false;
+		for (char value : define.substr(1)) {
+			if (value != '_' && !isAsciiLetter(value) && (value < '0' || value > '9')) return false;
+		}
+		return true;
+	}
+
+	bool FunkeProject::ValidateCustomDefines(const std::vector<std::string>& defines, std::string* outError) {
+		if (defines.size() > k_MaxCustomDefines) {
+			if (outError) *outError = "custom defines exceed the maximum of "
+				+ std::to_string(k_MaxCustomDefines) + " entries";
+			return false;
+		}
+		for (std::size_t index = 0; index < defines.size(); ++index) {
+			if (!IsValidCustomDefine(defines[index])) {
+				if (outError) *outError = "custom define at index " + std::to_string(index)
+					+ " must match [A-Za-z_][A-Za-z0-9_]* and be at most "
+					+ std::to_string(k_MaxCustomDefineLength) + " bytes";
+				return false;
+			}
+		}
+		if (outError) outError->clear();
 		return true;
 	}
 

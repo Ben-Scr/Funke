@@ -128,6 +128,20 @@ TEST_CASE("FunkeDefines.props shows IntelliSense the simulated platform") {
 	CHECK(props.find(";" + FunkeProject::GetManagedPlatformDefine(fixture.Host)) == std::string::npos);
 }
 
+TEST_CASE("FunkeDefines.props refuses invalid in-memory custom defines") {
+	PlatformTestProject fixture;
+	const std::unique_ptr<FunkeProject> project = fixture.MakeProject("");
+	project->CustomDefines = { "GAME_FEATURE" };
+	REQUIRE(project->WriteManagedDefinesProps());
+	const std::string propsPath = Path::ToUtf8(fixture.Root / "Packages" / "FunkeDefines.props");
+	const std::string validProps = File::ReadAllText(propsPath);
+	CHECK(validProps.find(";GAME_FEATURE</DefineConstants>") != std::string::npos);
+
+	project->CustomDefines = { R"(SAFE</DefineConstants><Target Name="Injected" />)" };
+	CHECK_FALSE(project->WriteManagedDefinesProps());
+	CHECK(File::ReadAllText(propsPath) == validProps);
+}
+
 TEST_CASE("Application.Platform reports the simulated platform in the editor and the real one elsewhere") {
 	CHECK(ScriptBindings::ToManagedPlatform(BuildPlatform::Windows) == 1);
 	CHECK(ScriptBindings::ToManagedPlatform(BuildPlatform::Linux) == 2);

@@ -6,6 +6,7 @@
 #include "Core/GraphicsSettings.hpp"
 #include "Project/PhysicsLayerSettings.hpp"
 #include "Graphics/Text/FontHandle.hpp"
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <functional>
@@ -277,6 +278,10 @@ namespace Funke {
 
 		// Baked into both C# <DefineConstants> and native CMakeLists at script compile time. Names only, no =value.
 		std::vector<std::string> CustomDefines;
+		static constexpr std::size_t k_MaxCustomDefines = 256;
+		static constexpr std::size_t k_MaxCustomDefineLength = 127;
+		static bool IsValidCustomDefine(std::string_view define);
+		static bool ValidateCustomDefines(const std::vector<std::string>& defines, std::string* outError = nullptr);
 
 		// Compile-time only (requires engine rebuild). Allowed: 16/20/22/24/28; live-entity cap = (2^N)-1.
 		int EntityBits = 20;

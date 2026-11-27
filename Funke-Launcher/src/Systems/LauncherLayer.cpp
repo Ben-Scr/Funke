@@ -137,8 +137,14 @@ namespace Funke {
 		appendDefine(FunkeProject::GetActiveBuildDefineConstant());
 		appendDefine(project.GetActiveBuildProfileDefine());
 		appendDefine(FunkeProject::GetManagedPlatformDefine());
-		for (const std::string& custom : project.CustomDefines) {
-			appendDefine(custom);
+		std::string customDefinesError;
+		if (FunkeProject::ValidateCustomDefines(project.CustomDefines, &customDefinesError)) {
+			for (const std::string& custom : project.CustomDefines) {
+				appendDefine(custom);
+			}
+		}
+		else {
+			FNK_CORE_ERROR_TAG("Launcher", "Refusing to emit invalid custom defines: {}", customDefinesError);
 		}
 		return defineConstants;
 	}

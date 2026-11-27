@@ -345,6 +345,21 @@ TEST_CASE("Native script scaffold preserves user CMake and avoids unchanged watc
 	CHECK(directory.Read("NativeScripts/CMakeLists.txt").find("CUSTOM_FEATURE=1") != std::string::npos);
 }
 
+TEST_CASE("Native script generation quotes valid defines and drops an invalid define set") {
+	NativeScaffoldDirectory directory;
+	directory.Project.CustomDefines = { "GAME_FEATURE", "_STORE_2" };
+	directory.Project.EnsureNativeScriptProjectFiles();
+	const std::string validModule = directory.Read("NativeScripts/FunkeNativeScripts.cmake");
+	CHECK(validModule.find(R"(target_compile_definitions(${PROJECT_NAME} PRIVATE "GAME_FEATURE" "_STORE_2"))")
+		!= std::string::npos);
+
+	directory.Project.CustomDefines = { "SAFE)\nexecute_process(COMMAND calc)\n#" };
+	directory.Project.EnsureNativeScriptProjectFiles();
+	const std::string rejectedModule = directory.Read("NativeScripts/FunkeNativeScripts.cmake");
+	CHECK(rejectedModule.find("execute_process(COMMAND calc)") == std::string::npos);
+	CHECK(rejectedModule.find("SAFE)") == std::string::npos);
+}
+
 TEST_CASE("Native script targets support project names containing spaces and punctuation") {
 	NativeScaffoldDirectory directory;
 	directory.Project.Name = "My Game (Test);$[1].+";

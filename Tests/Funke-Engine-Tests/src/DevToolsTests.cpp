@@ -412,6 +412,32 @@ TEST_CASE("Build profiles round-trip the configuration, defines and test switche
 	CHECK(project.PrefsProfile == "QA_Build");
 }
 
+TEST_CASE("Build profiles reject unsafe custom defines without partial application") {
+	TempDir temp;
+	const std::string path = Path::ToUtf8(temp.Root / "Unsafe.build");
+
+	FunkeBuildProfile unsafe;
+	unsafe.Name = "Unsafe";
+	unsafe.Configuration = FunkeProject::BuildProfile::Debug;
+	unsafe.Defines = { "SAFE)\nexecute_process(COMMAND calc)" };
+	unsafe.DevConsole = true;
+	CHECK_FALSE(unsafe.Save(path));
+	CHECK_FALSE(File::Exists(path));
+
+	REQUIRE(File::WriteAllText(path,
+		R"({"name":"Unsafe","configuration":"Debug","defines":["SAFE</DefineConstants><Target Name=\"Injected\" />"]})"));
+	const FunkeBuildProfile loaded = FunkeBuildProfile::Load(path);
+	CHECK(loaded.Defines.empty());
+	CHECK_FALSE(loaded.Configuration.has_value());
+
+	FunkeProject project;
+	project.CustomDefines = { "BASE_FEATURE" };
+	unsafe.ApplyTo(project);
+	CHECK(project.ActiveBuildProfile == FunkeProject::BuildProfile::Development);
+	CHECK(project.CustomDefines == std::vector<std::string>{ "BASE_FEATURE" });
+	CHECK_FALSE(project.DevConsole);
+}
+
 TEST_CASE("Debug configuration, dev console and prefs profile in project.json") {
 	CHECK(FunkeProject::BuildProfileFromString("Debug") == FunkeProject::BuildProfile::Debug);
 	CHECK(std::string(FunkeProject::BuildProfileToString(FunkeProject::BuildProfile::Debug)) == "Debug");
