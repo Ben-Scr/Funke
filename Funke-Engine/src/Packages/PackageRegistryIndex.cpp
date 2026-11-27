@@ -17,6 +17,14 @@ namespace Funke {
 			});
 		}
 
+		bool Sha256Equals(std::string_view a, std::string_view b) {
+			return IsSha256Hex(a) && IsSha256Hex(b)
+				&& std::equal(a.begin(), a.end(), b.begin(), [](char left, char right) {
+					return std::tolower(static_cast<unsigned char>(left))
+						== std::tolower(static_cast<unsigned char>(right));
+				});
+		}
+
 		void ReadDependencies(const Json::Value& node, std::vector<PackageDependency>& out) {
 			auto add = [&](std::string name, std::string range) {
 				if (!PackageManifest::IsValidName(name)) return;
@@ -273,6 +281,39 @@ namespace Funke {
 		};
 
 		ensure(std::string(name), range.empty() ? std::string("*") : std::string(range), {}, true);
+		if (!plan.IsValid()) plan.Steps.clear();
+		return plan;
+	}
+
+	PackageInstallPlan PlanLockedRegistryRestore(const std::vector<RegistryPackage>& registry,
+		const std::vector<PackageLockEntry>& lockedPackages) {
+		PackageInstallPlan plan;
+		for (const PackageLockEntry& locked : lockedPackages) {
+			if (locked.Source != "registry") continue;
+			if (!IsSha256Hex(locked.Sha256)) {
+				plan.Errors.push_back(locked.Name + " " + locked.Version + " has an invalid locked SHA-256.");
+				continue;
+			}
+
+			const RegistryPackage* package = FindRegistryPackage(registry, locked.Name);
+			const RegistryPackageVersion* release = package ? package->Find(locked.Version) : nullptr;
+			if (!release) {
+				plan.Errors.push_back(locked.Name + " " + locked.Version + " is not available from the Funke registry.");
+				continue;
+			}
+			if (!Sha256Equals(locked.Sha256, release->Sha256)) {
+				plan.Errors.push_back(locked.Name + " " + locked.Version
+					+ " no longer matches the SHA-256 recorded by the Funke registry.");
+				continue;
+			}
+
+			PackageInstallStep step;
+			step.Name = locked.Name;
+			step.Version = release->VersionText;
+			step.DownloadUrl = release->DownloadUrl;
+			step.Sha256 = release->Sha256;
+			plan.Steps.push_back(std::move(step));
+		}
 		if (!plan.IsValid()) plan.Steps.clear();
 		return plan;
 	}

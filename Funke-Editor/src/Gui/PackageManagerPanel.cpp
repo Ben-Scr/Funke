@@ -14,6 +14,7 @@
 #include "Scripting/ScriptSystem.hpp"
 #include "Serialization/Json.hpp"
 #include "Serialization/Path.hpp"
+#include "Serialization/SpecialFolder.hpp"
 #include "Utils/PackageToolPath.hpp"
 #include "Utils/Process.hpp"
 
@@ -1188,7 +1189,7 @@ namespace Funke {
 
 		size_t restorable = 0;
 		for (const PackageLockEntry& entry : m_MissingLockedPackages) {
-			const bool fromRegistry = entry.Source == "registry" && !entry.Url.empty() && !entry.Sha256.empty();
+			const bool fromRegistry = entry.Source == "registry" && IsSha256Hex(entry.Sha256);
 			restorable += fromRegistry ? 1 : 0;
 			if (fromRegistry) {
 				ImGui::BulletText("%s %s", entry.Name.c_str(), entry.Version.c_str());
@@ -1209,7 +1210,8 @@ namespace Funke {
 				HandleRestoreFromLock();
 			}
 			if (busy) ImGui::EndDisabled();
-			EditorUI::Tooltip("Downloads the exact versions recorded in packages-lock.json and checks their SHA-256");
+			EditorUI::Tooltip("Resolves each exact version through the Funke registry and requires its SHA-256 to match the lock");
+			ImGui::TextDisabled("Registry authority: %s", k_FunkeRegistryUrl);
 		}
 		EndPackageCard();
 		ImGui::PopID();
@@ -1709,8 +1711,10 @@ namespace Funke {
 			return true;
 		}
 
-		std::filesystem::path RegistryCachePath(const FunkeProject& project) {
-			return std::filesystem::path(project.RootDirectory) / ".funke" / "registry-cache.json";
+		std::filesystem::path RegistryCachePath() {
+			// The registry is a trust authority for lock restores, so its cache must not live in a project-controlled folder.
+			return Path::FromUtf8(Path::GetSpecialFolderPath(SpecialFolder::LocalAppData))
+				/ "Funke" / "PackageRegistry" / "index.json";
 		}
 
 		std::vector<std::string> BuildPackageToolBase(const std::filesystem::path& toolPath) {
@@ -1748,7 +1752,7 @@ namespace Funke {
 			return;
 		}
 
-		const std::filesystem::path cachePath = RegistryCachePath(*project);
+		const std::filesystem::path cachePath = RegistryCachePath();
 		std::error_code ec;
 		std::filesystem::create_directories(cachePath.parent_path(), ec);
 
@@ -1924,20 +1928,16 @@ namespace Funke {
 	}
 
 	void PackageManagerPanel::HandleRestoreFromLock() {
-		std::vector<PackageInstallStep> steps;
-		for (const PackageLockEntry& entry : m_MissingLockedPackages) {
-			if (entry.Source != "registry" || entry.Url.empty() || !IsSha256Hex(entry.Sha256)) continue;
-			PackageInstallStep step;
-			step.Name = entry.Name;
-			step.Version = entry.Version;
-			step.DownloadUrl = entry.Url;
-			step.Sha256 = entry.Sha256;
-			steps.push_back(std::move(step));
+		PackageInstallPlan plan = PlanLockedRegistryRestore(m_RegistryEntries, m_MissingLockedPackages);
+		if (!plan.IsValid()) {
+			m_InstallErrorMessage = "Cannot restore packages-lock.json:\n\n" + JoinLines(plan.Errors);
+			m_OpenInstallErrorPopup = true;
+			return;
 		}
-		if (steps.empty()) return;
-		m_StatusMessage = "Restoring " + std::to_string(steps.size()) + " package(s) from packages-lock.json...";
+		if (plan.Steps.empty()) return;
+		m_StatusMessage = "Restoring " + std::to_string(plan.Steps.size()) + " package(s) from packages-lock.json...";
 		m_StatusIsError = false;
-		StartRegistrySteps(std::move(steps), {}, "Restoring packages...");
+		StartRegistrySteps(std::move(plan.Steps), {}, "Restoring packages...");
 	}
 
 	void PackageManagerPanel::StartRegistrySteps(std::vector<PackageInstallStep> steps, std::string requestedName, std::string title) {
