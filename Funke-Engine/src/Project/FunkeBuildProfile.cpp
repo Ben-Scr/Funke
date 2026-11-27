@@ -112,13 +112,25 @@ namespace Funke {
 	}
 
 	void FunkeBuildProfile::ApplyTo(FunkeProject& project) const {
-		if (Configuration) project.ActiveBuildProfile = *Configuration;
+		std::string validationError;
+		if (!FunkeProject::ValidateCustomDefines(project.CustomDefines, &validationError)
+			|| !FunkeProject::ValidateCustomDefines(Defines, &validationError)) {
+			FNK_WARN_TAG("Build", "Refusing to apply build profile '{}': {}.", Name, validationError);
+			return;
+		}
+		std::vector<std::string> mergedDefines = project.CustomDefines;
 		for (const std::string& define : Defines) {
-			if (define.empty()) continue;
-			if (std::find(project.CustomDefines.begin(), project.CustomDefines.end(), define) == project.CustomDefines.end()) {
-				project.CustomDefines.push_back(define);
+			if (std::find(mergedDefines.begin(), mergedDefines.end(), define) == mergedDefines.end()) {
+				mergedDefines.push_back(define);
 			}
 		}
+		if (!FunkeProject::ValidateCustomDefines(mergedDefines, &validationError)) {
+			FNK_WARN_TAG("Build", "Refusing to apply build profile '{}': {}.", Name, validationError);
+			return;
+		}
+
+		if (Configuration) project.ActiveBuildProfile = *Configuration;
+		project.CustomDefines = std::move(mergedDefines);
 		if (ShowRuntimeStats) project.ShowRuntimeStats = ShowRuntimeStats;
 		if (ShowRuntimeLogs) project.ShowRuntimeLogs = ShowRuntimeLogs;
 		if (DevConsole) project.DevConsole = DevConsole;
@@ -131,6 +143,11 @@ namespace Funke {
 	}
 
 	bool FunkeBuildProfile::Save(const std::string& filePath) const {
+		std::string validationError;
+		if (!FunkeProject::ValidateCustomDefines(Defines, &validationError)) {
+			FNK_WARN_TAG("Build", "Refusing to save build profile '{}': {}.", Name, validationError);
+			return false;
+		}
 		Json::Value root = Json::Value::MakeObject();
 		root.AddMember("name", Name);
 		root.AddMember("platform", std::string(PlatformToString(Platform)));
@@ -184,6 +201,30 @@ namespace Funke {
 			return profile;
 		}
 
+		std::vector<std::string> validatedDefines;
+		if (const Json::Value* v = root.FindMember("defines")) {
+			if (!v->IsArray()) {
+				FNK_WARN_TAG("Build", "Build profile '{}' has a non-array defines field — using defaults.", filePath);
+				return profile;
+			}
+			if (v->GetArray().size() > FunkeProject::k_MaxCustomDefines) {
+				FNK_WARN_TAG("Build", "Build profile '{}' has too many defines — using defaults.", filePath);
+				return profile;
+			}
+			for (const Json::Value& define : v->GetArray()) {
+				if (!define.IsString()) {
+					FNK_WARN_TAG("Build", "Build profile '{}' has a non-string define — using defaults.", filePath);
+					return profile;
+				}
+				validatedDefines.push_back(define.AsStringOr());
+			}
+			std::string validationError;
+			if (!FunkeProject::ValidateCustomDefines(validatedDefines, &validationError)) {
+				FNK_WARN_TAG("Build", "Build profile '{}' has invalid defines: {} — using defaults.", filePath, validationError);
+				return profile;
+			}
+		}
+
 		if (const Json::Value* v = root.FindMember("name")) {
 			std::string name = v->AsStringOr();
 			if (!name.empty()) profile.Name = std::move(name);
@@ -208,12 +249,7 @@ namespace Funke {
 					profile.Name, configuration);
 			}
 		}
-		if (const Json::Value* v = root.FindMember("defines"); v && v->IsArray()) {
-			for (const Json::Value& define : v->GetArray()) {
-				std::string name = define.AsStringOr();
-				if (!name.empty()) profile.Defines.push_back(std::move(name));
-			}
-		}
+		profile.Defines = std::move(validatedDefines);
 		auto readOptionalBool = [&root](const char* key, std::optional<bool>& out) {
 			if (const Json::Value* v = root.FindMember(key); v && v->IsBool()) out = v->AsBoolOr(false);
 		};

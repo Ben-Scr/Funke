@@ -5,6 +5,7 @@
 #include "Components/General/HierarchyComponent.hpp"
 #include "Components/General/NameComponent.hpp"
 #include "Components/General/UUIDComponent.hpp"
+#include "Core/Log.hpp"
 #include "Scene/Scene.hpp"
 #include "Serialization/Path.hpp"
 #include "Utils/Process.hpp"
@@ -44,7 +45,13 @@ namespace Funke::Cli {
 		else if (configuration == "Dist") append("FNK_DIST");
 		append(project.GetActiveBuildProfileDefine());
 		append(FunkeProject::GetManagedPlatformDefine());
-		for (const std::string& custom : project.CustomDefines) append(custom);
+		std::string customDefinesError;
+		if (FunkeProject::ValidateCustomDefines(project.CustomDefines, &customDefinesError)) {
+			for (const std::string& custom : project.CustomDefines) append(custom);
+		}
+		else {
+			FNK_ERROR_TAG("CLI", "Refusing to emit invalid custom defines: {}", customDefinesError);
+		}
 		return defines;
 	}
 

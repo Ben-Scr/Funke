@@ -268,6 +268,75 @@ TEST_CASE("FunkeProject rejects unreadable and newer project formats") {
 	CHECK(File::ReadAllText(projectFile.string()) == newerJson);
 }
 
+TEST_CASE("Custom defines are bounded identifier names at project load and save") {
+	namespace fs = std::filesystem;
+	const auto suffix = std::chrono::steady_clock::now().time_since_epoch().count();
+	const fs::path root = fs::temp_directory_path() / ("FunkeCustomDefineValidation_" + std::to_string(suffix));
+	fs::create_directories(root / "Assets");
+	struct Cleanup {
+		fs::path Root;
+		~Cleanup() { std::error_code error; fs::remove_all(Root, error); }
+	} cleanup{ root };
+
+	CHECK(FunkeProject::IsValidCustomDefine("FEATURE"));
+	CHECK(FunkeProject::IsValidCustomDefine("_FEATURE_2"));
+	CHECK_FALSE(FunkeProject::IsValidCustomDefine("2FEATURE"));
+	CHECK_FALSE(FunkeProject::IsValidCustomDefine("FEATURE=1"));
+	CHECK_FALSE(FunkeProject::IsValidCustomDefine("FEATURE-NAME"));
+	CHECK_FALSE(FunkeProject::IsValidCustomDefine(std::string(FunkeProject::k_MaxCustomDefineLength + 1, 'A')));
+
+	const std::string projectFile = Path::ToUtf8(root / "project.json");
+	auto projectJson = [](const std::vector<std::string>& defines) {
+		Json::Value data = Json::Value::MakeObject();
+		data.AddMember("projectFormatVersion", FunkeProject::k_CurrentProjectFormatVersion);
+		data.AddMember("name", "CustomDefineValidation");
+		data.AddMember("engineVersion", FNK_VERSION);
+		Json::Value modules = Json::Value::MakeArray();
+		data.AddMember("modules", std::move(modules));
+		Json::Value values = Json::Value::MakeArray();
+		for (const std::string& define : defines) values.Append(Json::Value(define));
+		data.AddMember("customDefines", std::move(values));
+		return Json::Stringify(data);
+	};
+
+	const std::vector<std::string> attacks = {
+		R"(SAFE</DefineConstants><Target Name="Injected"><Exec Command="calc"/></Target><PropertyGroup><DefineConstants>SAFE)",
+		"SAFE)\nexecute_process(COMMAND calc)\n#",
+		"SAFE;SECOND",
+		"SAFE&SECOND",
+		"SAFE\rSECOND",
+		"SAFE\nSECOND",
+		""
+	};
+	for (const std::string& attack : attacks) {
+		CAPTURE(attack);
+		const std::string source = projectJson({ attack });
+		REQUIRE(File::WriteAllText(projectFile, source));
+		FunkeProject loaded;
+		loaded.Name = "unchanged";
+		std::string error;
+		CHECK_FALSE(FunkeProject::TryLoad(Path::ToUtf8(root), loaded, &error, false));
+		CHECK(error.find("customDefines") != std::string::npos);
+		CHECK(loaded.Name == "unchanged");
+		CHECK(File::ReadAllText(projectFile) == source);
+	}
+
+	std::vector<std::string> tooMany(FunkeProject::k_MaxCustomDefines + 1, "FEATURE");
+	REQUIRE(File::WriteAllText(projectFile, projectJson(tooMany)));
+	FunkeProject loaded;
+	std::string error;
+	CHECK_FALSE(FunkeProject::TryLoad(Path::ToUtf8(root), loaded, &error, false));
+	CHECK(error.find("maximum") != std::string::npos);
+
+	REQUIRE(File::WriteAllText(projectFile, projectJson({ "FEATURE", "_FEATURE_2" })));
+	REQUIRE_MESSAGE(FunkeProject::TryLoad(Path::ToUtf8(root), loaded, &error, false), error);
+	CHECK(loaded.CustomDefines == std::vector<std::string>{ "FEATURE", "_FEATURE_2" });
+	const std::string validSource = File::ReadAllText(projectFile);
+	loaded.CustomDefines = { "SAFE)\nexecute_process(COMMAND calc)" };
+	CHECK_FALSE(loaded.Save());
+	CHECK(File::ReadAllText(projectFile) == validSource);
+}
+
 TEST_CASE("FunkeProject validates module IDs without enabling optional modules or rewriting invalid files") {
 	namespace fs = std::filesystem;
 	const auto suffix = std::chrono::steady_clock::now().time_since_epoch().count();

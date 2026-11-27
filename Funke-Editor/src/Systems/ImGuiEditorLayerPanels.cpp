@@ -1679,12 +1679,14 @@ namespace Funke {
 				while (firstNonSpace < newDef.size()
 					&& std::isspace(static_cast<unsigned char>(newDef[firstNonSpace]))) ++firstNonSpace;
 				newDef.erase(0, firstNonSpace);
-				if (!newDef.empty()
-					&& std::find(project->CustomDefines.begin(), project->CustomDefines.end(), newDef) == project->CustomDefines.end()) {
-					project->CustomDefines.push_back(std::move(newDef));
-					project->Save();
+				if (FunkeProject::IsValidCustomDefine(newDef)
+					&& project->CustomDefines.size() < FunkeProject::k_MaxCustomDefines) {
+					if (std::find(project->CustomDefines.begin(), project->CustomDefines.end(), newDef) == project->CustomDefines.end()) {
+						project->CustomDefines.push_back(std::move(newDef));
+						project->Save();
+					}
+					m_CustomDefineEntryBuffer[0] = '\0';
 				}
-				m_CustomDefineEntryBuffer[0] = '\0';
 			}
 
 			if (project->CustomDefines.empty()) {
