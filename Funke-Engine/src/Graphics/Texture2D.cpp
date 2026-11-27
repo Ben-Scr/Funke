@@ -762,11 +762,13 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
 		int w = 0, h = 0, n = 0;
 		const auto bytes = File::ReadAllBytes(path);
 		if (bytes.empty() || bytes.size() > static_cast<size_t>(std::numeric_limits<int>::max())) return nullptr;
-		if (maxPixels && (!stbi_info_from_memory(bytes.data(), static_cast<int>(bytes.size()), &w, &h, &n)
-			|| w <= 0 || h <= 0 || static_cast<size_t>(w) > maxPixels / static_cast<size_t>(h))) return nullptr;
+		if (!stbi_info_from_memory(bytes.data(), static_cast<int>(bytes.size()), &w, &h, &n)
+			|| !IsDecodeSizeAllowed(w, h, maxPixels)) return nullptr;
+		const int expectedWidth = w;
+		const int expectedHeight = h;
 		std::unique_ptr<unsigned char, decltype(&stbi_image_free)> pixels(
 			stbi_load_from_memory(bytes.data(), static_cast<int>(bytes.size()), &w, &h, &n, 4), &stbi_image_free);
-		if (!pixels || w <= 0 || h <= 0) return nullptr;
+		if (!pixels || w != expectedWidth || h != expectedHeight || !IsDecodeSizeAllowed(w, h, maxPixels)) return nullptr;
 		if (static_cast<size_t>(w) > std::numeric_limits<size_t>::max() / 4u / static_cast<size_t>(h)) return nullptr;
 
 		const size_t byteCount = static_cast<size_t>(w) * static_cast<size_t>(h) * 4u;

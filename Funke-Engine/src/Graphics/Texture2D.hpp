@@ -6,6 +6,7 @@
 #include "Graphics/ImageData.hpp"
 #include "Graphics/Wrap.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -102,8 +103,25 @@ namespace Funke {
 		std::unique_ptr<ImageData> GetImageData() const;
 
 		// Worker-safe; does not access GPU state or change stb's global decode settings.
+		// The fixed policy keeps both stb's allocation and the owned RGBA copy bounded;
+		// maxPixels may impose a smaller caller-specific limit but cannot relax it.
+		static constexpr size_t k_MaxDecodedDimension = 8192u;
+		static constexpr size_t k_MaxDecodedPixels = 4096u * 4096u;
+		static constexpr size_t k_MaxDecodedBytes = 64u * 1024u * 1024u;
+		static constexpr bool IsDecodeSizeAllowed(int width, int height,
+			size_t maxPixels = k_MaxDecodedPixels) noexcept {
+			if (width <= 0 || height <= 0) return false;
+			const size_t w = static_cast<size_t>(width);
+			const size_t h = static_cast<size_t>(height);
+			if (w > k_MaxDecodedDimension || h > k_MaxDecodedDimension
+				|| w > k_MaxDecodedPixels / h) return false;
+			const size_t pixelCount = w * h;
+			if ((maxPixels != 0 && pixelCount > maxPixels)
+				|| pixelCount > k_MaxDecodedBytes / 4u) return false;
+			return true;
+		}
 		static std::unique_ptr<ImageData> DecodeFileToCpu(const char* path,
-			bool flipVertical = false, size_t maxPixels = 0);
+			bool flipVertical = false, size_t maxPixels = k_MaxDecodedPixels);
 		// Drops the cached mip-generation pipelines (and their device ref); called from RenderApi::Shutdown.
 		static void ReleaseMipGenResources();
 		// Returns the raw WGPUTextureView pointer cast to uint64_t — ImGui reinterpret-casts ImTextureID directly to WGPUTextureView, so this must not be a pool index.
