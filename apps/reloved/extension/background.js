@@ -1,5 +1,6 @@
 import {profileParts,collectInventory,allowedHosts,toItem} from "./api.js";
-const appOrigins=new Set(["http://localhost:5173","http://127.0.0.1:5173","https://reloved-wardrobe-studio.rrainix.chatgpt.site"]);
+import {PairingRegistry,requireAppDocument} from "./pairing.js";
+const pairings=new PairingRegistry();
 const syncing=new Set();
 chrome.runtime.onMessage.addListener((message,sender,respond)=>{
   route(message,sender).then(result=>respond({result})).catch(e=>respond({error:e.message||"Die Verbindung ist fehlgeschlagen."}));
@@ -13,8 +14,10 @@ async function route(message,sender){
     if(!data||Date.now()-data.createdAt>30*60*1000)return null;
     return data.item;
   }
-  if(!appOrigins.has(url.origin))throw new Error("Diese Seite ist nicht für Reloved Connect freigegeben.");
+  requireAppDocument(sender);
+  if(message.action==="pair")return pairings.approve(sender);
   if(message.action==="ping")return {version:chrome.runtime.getManifest().version};
+  await pairings.authorize(sender,message.token);
   if(message.action==="detail"){
     const itemUrl=new URL(message.payload?.url);
     const id=itemUrl.pathname.match(/^\/items\/(\d+)(?:-|\/|$)/)?.[1];
@@ -64,4 +67,4 @@ async function route(message,sender){
   }
   throw new Error("Unbekannte Aktion.");
 }
-chrome.tabs.onRemoved.addListener(id=>chrome.storage.session.remove(`prepare:${id}`));
+chrome.tabs.onRemoved.addListener(id=>{pairings.removeTab(id);chrome.storage.session.remove(`prepare:${id}`);});
