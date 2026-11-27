@@ -20,6 +20,14 @@ namespace {
 	constexpr AssetBundleCompression k_Compressions[] = {
 		AssetBundleCompression::None, AssetBundleCompression::LZ4, AssetBundleCompression::Zstd
 	};
+	template<typename T> T ReadLittleEndian(const std::vector<std::uint8_t>& bytes, size_t offset) {
+		T value = 0;
+		for (size_t i = 0; i < sizeof(T); ++i) value |= static_cast<T>(bytes[offset + i]) << (i * 8);
+		return value;
+	}
+	template<typename T> void WriteLittleEndian(std::vector<std::uint8_t>& bytes, size_t offset, T value) {
+		for (size_t i = 0; i < sizeof(T); ++i) bytes[offset + i] = static_cast<std::uint8_t>(value >> (i * 8));
+	}
 	struct BundleFixture {
 		std::filesystem::path Root = std::filesystem::temp_directory_path() / ("funke-bundles-"
 			+ std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
@@ -107,6 +115,60 @@ TEST_CASE("Asset bundles reject unsafe paths truncated indices and corrupt paylo
 		CHECK_FALSE(bundle.Open(archive, error));
 		CHECK_FALSE(bundle.Contains("one.bin"));
 	}
+}
+
+TEST_CASE("Asset bundles reject decoded size and compression ratio amplification") {
+	BundleFixture fixture;
+	fixture.Write("one.bin", std::string(4096, 'a'));
+	const auto archive = fixture.Root / "amplification.fbundle";
+	std::string error;
+	REQUIRE(AssetBundle::Write(fixture.Root / "Assets", archive, { "one.bin" }, AssetBundleCompression::Zstd, error));
+	const auto original = File::ReadAllBytes(Path::ToUtf8(archive));
+	REQUIRE(original.size() >= 20);
+	const auto indexOffset = static_cast<size_t>(ReadLittleEndian<std::uint64_t>(original, 12));
+	REQUIRE(indexOffset <= original.size() - sizeof(std::uint32_t));
+	const auto pathSize = static_cast<size_t>(ReadLittleEndian<std::uint32_t>(original, indexOffset));
+	const auto sizeOffset = indexOffset + sizeof(std::uint32_t) + pathSize + sizeof(std::uint64_t);
+	REQUIRE(sizeOffset <= original.size() - 2 * sizeof(std::uint64_t));
+	const auto storedSize = ReadLittleEndian<std::uint64_t>(original, sizeOffset + sizeof(std::uint64_t));
+	REQUIRE(storedSize > 0);
+	REQUIRE(storedSize * 1024ull < 2ull * 1024ull * 1024ull);
+	REQUIRE(ReadLittleEndian<std::uint32_t>(original, original.size() - sizeof(std::uint32_t))
+		== static_cast<std::uint32_t>(AssetBundleCompression::Zstd));
+
+	SUBCASE("decoded entry limit") {
+		auto bytes = original;
+		WriteLittleEndian(bytes, sizeOffset, 256ull * 1024ull * 1024ull + 1ull);
+		REQUIRE(File::WriteAllBytes(Path::ToUtf8(archive), bytes));
+		AssetBundle bundle;
+		CHECK_FALSE(bundle.Open(archive, error));
+		CHECK(bundle.Files().empty());
+	}
+	SUBCASE("compression ratio limit") {
+		auto bytes = original;
+		WriteLittleEndian(bytes, sizeOffset, 2ull * 1024ull * 1024ull);
+		REQUIRE(File::WriteAllBytes(Path::ToUtf8(archive), bytes));
+		AssetBundle bundle;
+		CHECK_FALSE(bundle.Open(archive, error));
+		CHECK(bundle.Files().empty());
+	}
+}
+
+TEST_CASE("Asset bundle writer preserves payloads above the safe compression ratio") {
+	BundleFixture fixture;
+	const std::string payload(2 * 1024 * 1024, 'x');
+	fixture.Write("repeated.bin", payload);
+	const auto archive = fixture.Root / "high-ratio.fbundle";
+	std::string error;
+	REQUIRE(AssetBundle::Write(fixture.Root / "Assets", archive, { "repeated.bin" }, AssetBundleCompression::Zstd, error));
+	const auto archiveBytes = File::ReadAllBytes(Path::ToUtf8(archive));
+	REQUIRE(archiveBytes.size() >= sizeof(std::uint32_t));
+	CHECK(ReadLittleEndian<std::uint32_t>(archiveBytes, archiveBytes.size() - sizeof(std::uint32_t)) == 0);
+	AssetBundle bundle;
+	REQUIRE(bundle.Open(archive, error));
+	std::vector<std::uint8_t> decoded;
+	REQUIRE(bundle.Read("repeated.bin", decoded, error));
+	CHECK(std::string(decoded.begin(), decoded.end()) == payload);
 }
 
 TEST_CASE("Native exceptions match standard base types within and across the engine library") {

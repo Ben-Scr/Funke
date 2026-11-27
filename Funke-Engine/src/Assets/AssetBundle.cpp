@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <array>
+#include <condition_variable>
 #include <fstream>
 #include <memory>
 #include <mutex>
@@ -16,7 +17,12 @@ namespace Funke {
 	namespace {
 		constexpr std::array<char, 8> k_Magic = { 'F', 'N', 'K', 'B', 'N', 'D', 'L', '1' };
 		constexpr std::uint64_t k_HeaderSize = 20;
-		constexpr std::uint64_t k_MaxEntrySize = LZ4_MAX_INPUT_SIZE;
+		constexpr std::uint64_t k_MiB = 1024ull * 1024ull;
+		constexpr std::uint64_t k_MaxEntrySize = 256ull * k_MiB;
+		constexpr std::uint64_t k_MaxBundleDecodedSize = 4ull * 1024ull * k_MiB;
+		constexpr std::uint64_t k_MaxUnrestrictedCompressionSize = 1ull * k_MiB;
+		constexpr std::uint64_t k_MaxCompressionRatio = 1024;
+		constexpr std::uint64_t k_MaxInFlightReadBytes = 512ull * k_MiB;
 		struct MountedBundle {
 			std::string Root;
 			std::filesystem::path NativeRoot;
@@ -24,6 +30,39 @@ namespace Funke {
 		};
 		std::mutex g_MountMutex;
 		std::vector<MountedBundle> g_Mounts;
+		std::mutex g_ReadBudgetMutex;
+		std::condition_variable g_ReadBudgetChanged;
+		std::uint64_t g_InFlightReadBytes = 0;
+
+		bool CompressionRatioAllowed(std::uint64_t decodedSize, std::uint64_t storedSize) {
+			if (storedSize == 0) return false;
+			if (decodedSize <= k_MaxUnrestrictedCompressionSize) return true;
+			const auto wholeRatio = decodedSize / storedSize;
+			return wholeRatio < k_MaxCompressionRatio
+				|| (wholeRatio == k_MaxCompressionRatio && decodedSize % storedSize == 0);
+		}
+
+		class ReadBudgetReservation {
+		public:
+			explicit ReadBudgetReservation(std::uint64_t bytes) : m_Bytes(bytes) {
+				std::unique_lock lock(g_ReadBudgetMutex);
+				g_ReadBudgetChanged.wait(lock, [bytes] {
+					return bytes <= k_MaxInFlightReadBytes - g_InFlightReadBytes;
+				});
+				g_InFlightReadBytes += bytes;
+			}
+			~ReadBudgetReservation() {
+				{
+					std::lock_guard lock(g_ReadBudgetMutex);
+					g_InFlightReadBytes -= m_Bytes;
+				}
+				g_ReadBudgetChanged.notify_all();
+			}
+			ReadBudgetReservation(const ReadBudgetReservation&) = delete;
+			ReadBudgetReservation& operator=(const ReadBudgetReservation&) = delete;
+		private:
+			std::uint64_t m_Bytes;
+		};
 
 		std::string Key(std::string path) {
 			std::replace(path.begin(), path.end(), '\\', '/');
@@ -125,6 +164,7 @@ namespace Funke {
 			WriteNumber(out, static_cast<std::uint32_t>(names.size()));
 			WriteNumber(out, std::uint64_t{0});
 			std::vector<Entry> entries;
+			std::uint64_t totalDecodedSize = 0;
 			for (const auto& name : names) {
 				if (!unique.emplace(Key(name), true).second) throw std::runtime_error("Duplicate bundle path: " + name);
 				const auto source = root / Path::FromUtf8(name);
@@ -133,7 +173,10 @@ namespace Funke {
 				if (!SafeName(Path::ToGenericUtf8(canonicalSource.lexically_relative(canonicalRoot))))
 					throw std::runtime_error("Bundle source leaves the content root: " + name);
 				const auto size = std::filesystem::file_size(source);
-				if (size > k_MaxEntrySize) throw std::runtime_error("Bundle entry exceeds 2 GB: " + name);
+				if (size > k_MaxEntrySize) throw std::runtime_error("Bundle entry exceeds 256 MiB: " + name);
+				if (size > k_MaxBundleDecodedSize - totalDecodedSize)
+					throw std::runtime_error("Bundle decoded size exceeds 4 GiB");
+				totalDecodedSize += size;
 				std::vector<std::uint8_t> bytes(static_cast<size_t>(size));
 				std::ifstream in(source, std::ios::binary);
 				if (!in.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(size)))
@@ -157,7 +200,8 @@ namespace Funke {
 					if (ZSTD_isError(packedSize))
 						throw std::runtime_error("Could not compress bundle source: " + name + ": " + ZSTD_getErrorName(packedSize));
 				}
-				if (packedSize > 0 && static_cast<std::uint64_t>(packedSize) < size) {
+				if (packedSize > 0 && static_cast<std::uint64_t>(packedSize) < size
+					&& CompressionRatioAllowed(size, packedSize)) {
 					entry.Codec = static_cast<std::uint32_t>(compression);
 					entry.StoredSize = packedSize;
 					out.write(packed.data(), static_cast<std::streamsize>(packedSize));
@@ -206,6 +250,7 @@ namespace Funke {
 				|| count > (fileSize - indexOffset) / 41) throw std::runtime_error("Invalid asset bundle header");
 			in.seekg(static_cast<std::streamoff>(indexOffset));
 			std::uint64_t nextOffset = k_HeaderSize;
+			std::uint64_t totalDecodedSize = 0;
 			for (std::uint32_t i = 0; i < count; ++i) {
 				Entry entry;
 				std::uint32_t length = 0;
@@ -215,10 +260,13 @@ namespace Funke {
 					|| !ReadNumber(in, entry.Offset) || !ReadNumber(in, entry.Size)
 					|| !ReadNumber(in, entry.StoredSize) || !ReadNumber(in, entry.Checksum) || !ReadNumber(in, entry.Codec)
 					|| entry.Offset != nextOffset || entry.Offset > indexOffset || entry.StoredSize > indexOffset - entry.Offset
-					|| entry.Size > k_MaxEntrySize || entry.Codec > static_cast<std::uint32_t>(AssetBundleCompression::Zstd)
+					|| entry.Size > k_MaxEntrySize || entry.Size > k_MaxBundleDecodedSize - totalDecodedSize
+					|| entry.Codec > static_cast<std::uint32_t>(AssetBundleCompression::Zstd)
 					|| (entry.Codec == 0 && entry.StoredSize != entry.Size)
-					|| (entry.Codec != 0 && (entry.StoredSize == 0 || entry.StoredSize >= entry.Size)))
+					|| (entry.Codec != 0 && (entry.StoredSize == 0 || entry.StoredSize >= entry.Size
+						|| !CompressionRatioAllowed(entry.Size, entry.StoredSize))))
 					throw std::runtime_error("Invalid bundle entry");
+				totalDecodedSize += entry.Size;
 				nextOffset += entry.StoredSize;
 				const auto key = Key(entry.Path);
 				if (!m_Entries.emplace(key, std::move(entry)).second) throw std::runtime_error("Duplicate bundle entry");
@@ -243,6 +291,8 @@ namespace Funke {
 			const auto found = m_Entries.find(Key(relativePath));
 			if (found == m_Entries.end()) throw std::runtime_error("Asset is not in the bundle");
 			const auto& entry = found->second;
+			const auto readBytes = entry.Codec == 0 ? entry.Size : entry.Size + entry.StoredSize;
+			ReadBudgetReservation reservation(readBytes);
 			std::ifstream in(m_Path, std::ios::binary);
 			in.seekg(static_cast<std::streamoff>(entry.Offset));
 			std::vector<std::uint8_t> stored(static_cast<size_t>(entry.StoredSize));
