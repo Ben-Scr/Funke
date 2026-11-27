@@ -299,6 +299,300 @@ local function GetEngineVersion()
     return k_EngineVersion or nil
 end
 
+-- Manifests are declarative data, not Lua programs. Keep this reader aligned
+-- with PackageManifest.cpp: only strings, numbers, booleans, nil and nested
+-- tables are accepted. In particular, identifiers, calls and concatenation
+-- never reach the Lua interpreter.
+local function ReadManifestLiteral(manifestPath)
+    local file = io.open(manifestPath, "rb")
+    if not file then
+        PackageError("Could not read manifest at '" .. manifestPath .. "'.")
+    end
+    local source = file:read("*all")
+    file:close()
+    if not source then
+        PackageError("Could not read manifest at '" .. manifestPath .. "'.")
+    end
+    if source:sub(1, 3) == "\239\187\191" then
+        source = source:sub(4)
+    end
+
+    local position = 1
+    local parseError = nil
+    local NilValue = {}
+
+    local function Peek(offset)
+        offset = offset or 0
+        return source:sub(position + offset, position + offset)
+    end
+
+    local function Line()
+        local _, count = source:sub(1, math.max(position - 1, 0)):gsub("\n", "")
+        return count + 1
+    end
+
+    local function Fail(message)
+        if not parseError then parseError = message end
+        return nil
+    end
+
+    local function LongBracketLevel()
+        if Peek() ~= "[" then return nil end
+        local cursor = position + 1
+        local level = 0
+        while source:sub(cursor, cursor) == "=" do
+            level = level + 1
+            cursor = cursor + 1
+        end
+        if source:sub(cursor, cursor) == "[" then return level end
+        return nil
+    end
+
+    local function ReadLongBracket(level)
+        position = position + level + 2
+        if Peek() == "\n" then position = position + 1 end
+        local closer = "]" .. string.rep("=", level) .. "]"
+        local ending = source:find(closer, position, true)
+        if not ending then return Fail("unterminated long bracket") end
+        local value = source:sub(position, ending - 1)
+        position = ending + #closer
+        return value
+    end
+
+    local function SkipTrivia()
+        while position <= #source and not parseError do
+            local c = Peek()
+            if c:match("%s") then
+                position = position + 1
+            elseif c == "-" and Peek(1) == "-" then
+                position = position + 2
+                local level = LongBracketLevel()
+                if level ~= nil then
+                    ReadLongBracket(level)
+                else
+                    while position <= #source and Peek() ~= "\n" do
+                        position = position + 1
+                    end
+                end
+            else
+                return
+            end
+        end
+    end
+
+    local function Expect(token)
+        SkipTrivia()
+        if parseError then return false end
+        if source:sub(position, position + #token - 1) ~= token then return false end
+        position = position + #token
+        return true
+    end
+
+    local function IsIdentifierStart(c)
+        return c ~= "" and c:match("[A-Za-z_]") ~= nil
+    end
+
+    local function IsIdentifierPart(c)
+        return c ~= "" and c:match("[A-Za-z0-9_]") ~= nil
+    end
+
+    local function ReadIdentifier()
+        SkipTrivia()
+        if parseError or not IsIdentifierStart(Peek()) then return nil end
+        local start = position
+        position = position + 1
+        while IsIdentifierPart(Peek()) do position = position + 1 end
+        return source:sub(start, position - 1)
+    end
+
+    local function ConsumeKeyword(keyword)
+        SkipTrivia()
+        if parseError or source:sub(position, position + #keyword - 1) ~= keyword
+            or IsIdentifierPart(source:sub(position + #keyword, position + #keyword)) then
+            return false
+        end
+        position = position + #keyword
+        return true
+    end
+
+    local function ReadQuotedString()
+        local quote = Peek()
+        position = position + 1
+        local chunks = {}
+        while position <= #source do
+            local c = Peek()
+            position = position + 1
+            if c == quote then return table.concat(chunks) end
+            if c == "\n" then break end
+            if c ~= "\\" then
+                table.insert(chunks, c)
+            else
+                local escaped = Peek()
+                if escaped == "" then break end
+                position = position + 1
+                local replacements = {
+                    n = "\n", t = "\t", r = "\r", ["\\"] = "\\",
+                    ['"'] = '"', ["'"] = "'", ["\n"] = "\n",
+                }
+                local replacement = replacements[escaped]
+                if not replacement then
+                    return Fail("unsupported escape '\\" .. escaped .. "'")
+                end
+                table.insert(chunks, replacement)
+            end
+        end
+        return Fail("unterminated string")
+    end
+
+    local ReadValue
+    local function ReadTable()
+        position = position + 1 -- '{'
+        local result = {}
+        local seenKeys = {}
+        local arrayIndex = 1
+
+        while not parseError do
+            SkipTrivia()
+            if parseError then return nil end
+            if Peek() == "}" then
+                position = position + 1
+                return result
+            end
+            if position > #source then return Fail("unterminated table") end
+
+            local key = nil
+            if Peek() == "[" and LongBracketLevel() == nil then
+                position = position + 1
+                local keyValue = ReadValue()
+                if parseError then return nil end
+                if type(keyValue) ~= "string" then
+                    return Fail("only string keys are supported in [\"...\"] = form")
+                end
+                if not Expect("]") or not Expect("=") then
+                    return Fail("expected `] =` after table key")
+                end
+                key = keyValue
+            elseif IsIdentifierStart(Peek()) then
+                local saved = position
+                local identifier = ReadIdentifier()
+                SkipTrivia()
+                local isKeyword = identifier == "true" or identifier == "false" or identifier == "nil"
+                if not isKeyword and Peek() == "=" and Peek(1) ~= "=" then
+                    position = position + 1
+                    key = identifier
+                else
+                    position = saved
+                end
+            end
+
+            local value = ReadValue()
+            if parseError then return nil end
+            if key ~= nil then
+                if seenKeys[key] then return Fail("duplicate key '" .. key .. "'") end
+                seenKeys[key] = true
+                if value ~= NilValue then result[key] = value end
+            else
+                if value ~= NilValue then result[arrayIndex] = value end
+                arrayIndex = arrayIndex + 1
+            end
+
+            SkipTrivia()
+            if Peek() == "," or Peek() == ";" then
+                position = position + 1
+            elseif Peek() ~= "}" then
+                return Fail("expected ',' or '}' in table")
+            end
+        end
+        return nil
+    end
+
+    ReadValue = function()
+        SkipTrivia()
+        if parseError then return nil end
+
+        local value = nil
+        local c = Peek()
+        if c == '"' or c == "'" then
+            value = ReadQuotedString()
+        else
+            local level = LongBracketLevel()
+            if level ~= nil then
+                value = ReadLongBracket(level)
+            elseif c == "{" then
+                value = ReadTable()
+            elseif c:match("%d") or (c == "-" and Peek(1):match("%d")) then
+                local rest = source:sub(position)
+                local token = rest:match("^%-?0[xX][0-9A-Fa-f]+")
+                    or rest:match("^%-?%d+%.?%d*[eE][%+%-]?%d+")
+                    or rest:match("^%-?%d+%.%d+")
+                    or rest:match("^%-?%d+")
+                if not token then return Fail("invalid number") end
+                local nextCharacter = rest:sub(#token + 1, #token + 1)
+                if IsIdentifierPart(nextCharacter) then return Fail("invalid number") end
+                value = tonumber(token)
+                if value == nil then return Fail("invalid number") end
+                position = position + #token
+            elseif ConsumeKeyword("true") then
+                value = true
+            elseif ConsumeKeyword("false") then
+                value = false
+            elseif ConsumeKeyword("nil") then
+                value = NilValue
+            else
+                return Fail("only literal values are supported (strings, numbers, booleans, tables)")
+            end
+        end
+
+        if parseError then return nil end
+        SkipTrivia()
+        if Peek() == "." and Peek(1) == "." then
+            return Fail("string concatenation is not supported; write the full literal")
+        end
+        if Peek() == "(" then
+            return Fail("function calls are not supported in manifests")
+        end
+        return value
+    end
+
+    SkipTrivia()
+    local root = nil
+    if ConsumeKeyword("local") then
+        local localName = ReadIdentifier()
+        if not localName or not Expect("=") then
+            parseError = parseError or "expected `local <name> = { ... }`"
+        else
+            root = ReadValue()
+            if not parseError and type(root) ~= "table" then
+                parseError = "expected a table"
+            end
+            local returned = nil
+            if not parseError and ConsumeKeyword("return") then returned = ReadIdentifier() end
+            if not parseError and returned ~= localName then
+                parseError = "expected `return " .. localName .. "` after the table"
+            end
+        end
+    else
+        if not ConsumeKeyword("return") then
+            parseError = parseError or "manifest must start with `return {`"
+        else
+            root = ReadValue()
+            if not parseError and type(root) ~= "table" then
+                parseError = "expected a table after `return`"
+            end
+        end
+    end
+
+    SkipTrivia()
+    if not parseError and position <= #source then
+        parseError = "unexpected text after the manifest table"
+    end
+    if parseError then
+        PackageError("Manifest at '" .. manifestPath .. "' is not declarative data (line " ..
+            tostring(Line()) .. "): " .. parseError .. ".")
+    end
+    return root
+end
+
 -- Canonical layer names. Old names (engine_core, standalone_cpp) are accepted
 -- but normalised to the canonical form before any other code reads them.
 local k_AllowedLayers = { native = true, native_standalone = true, csharp = true }
@@ -550,7 +844,7 @@ local function LoadManifestsFromRoot(searchRoot, manifests, byName, asFallback)
     for _, entry in ipairs(entries) do
         local manifestPath = path.join(entry, "funke-package.lua")
         if os.isfile(manifestPath) then
-            local manifest = dofile(manifestPath)
+            local manifest = ReadManifestLiteral(manifestPath)
             -- Rewrite deprecated layer names to canonical form before any
             -- validator / dispatcher reads them. Warns on rewrite.
             NormaliseLayerNames(manifest)
@@ -571,6 +865,39 @@ local function LoadManifestsFromRoot(searchRoot, manifests, byName, asFallback)
             end
         end
     end
+end
+
+local function LoadProjectManifestByName(projectRootDir, packageName, manifests, byName)
+    if byName[packageName] then return true end
+    if not IsValidPackageName(packageName) then
+        PackageError("Project package allow-list contains invalid name '" .. tostring(packageName) .. "'.")
+    end
+
+    local projectDir = path.join(projectRootDir, "Packages", packageName)
+    local engineDir = path.join(ROOT_DIR, "packages", packageName)
+    local packageDir = nil
+    if os.isfile(path.join(projectDir, "funke-package.lua")) then
+        packageDir = projectDir
+    elseif os.isfile(path.join(engineDir, "funke-package.lua")) then
+        packageDir = engineDir
+    else
+        return false
+    end
+
+    local manifestPath = path.join(packageDir, "funke-package.lua")
+    local manifest = ReadManifestLiteral(manifestPath)
+    NormaliseLayerNames(manifest)
+    ValidateManifest(manifest, manifestPath)
+    if manifest.name ~= packageName then
+        PackageError("Manifest at '" .. manifestPath .. "' declares package '" .. manifest.name ..
+            "', but its folder and allow-list name are '" .. packageName .. "'.")
+    end
+    NormaliseVersioning(manifest)
+    manifest.PackageDir = packageDir
+    manifest.ManifestPath = manifestPath
+    table.insert(manifests, manifest)
+    byName[manifest.name] = manifest
+    return true
 end
 
 local function TopoSort(manifests, byName)
@@ -958,62 +1285,6 @@ local function ReadProjectPackagesAllowList(projectRootDir)
     return packages
 end
 
-local function FilterManifestsByAllowList(manifests, byName, allowList)
-    local allowed = {}
-    for _, name in ipairs(allowList) do
-        allowed[name] = true
-    end
-
-    -- A user listing package "B" that depends on "A" almost always intends to
-    -- pull "A" along too. Auto-include transitive deps before filtering so
-    -- TopoSort doesn't later raise "B depends on missing package A" while
-    -- A is actually sitting on disk, just filtered out.
-    local function MarkTransitive(name, seen)
-        if seen[name] then return end
-        seen[name] = true
-        local manifest = byName[name]
-        if not manifest or not manifest.dependencies then return end
-        for _, depName in ipairs(manifest.dependencies) do
-            allowed[depName] = true
-            MarkTransitive(depName, seen)
-        end
-    end
-    do
-        local seen = {}
-        for _, name in ipairs(allowList) do
-            MarkTransitive(name, seen)
-        end
-    end
-
-    local filtered = {}
-    local filteredByName = {}
-    local skipped = {}
-
-    for _, manifest in ipairs(manifests) do
-        if allowed[manifest.name] then
-            table.insert(filtered, manifest)
-            filteredByName[manifest.name] = manifest
-        else
-            table.insert(skipped, manifest.name)
-        end
-    end
-
-    -- Detect missing dependencies — the user listed a package that isn't on disk anywhere.
-    for _, name in ipairs(allowList) do
-        if not filteredByName[name] then
-            print("[Funke Packages] WARNING: project lists package '" .. name ..
-                "' but no manifest with that name was found under packages/ or <project>/Packages/.")
-        end
-    end
-
-    if #skipped > 0 then
-        print("[Funke Packages] Skipped " .. tostring(#skipped) ..
-            " package(s) not in the project's allow-list: " .. table.concat(skipped, ", "))
-    end
-
-    return filtered, filteredByName
-end
-
 -- Registers engine-shipped packages (under <repo>/packages/) into the current
 -- premake workspace. Used by the engine's top-level premake5.lua.
 --
@@ -1062,13 +1333,34 @@ function PackageSystem.ResolveProjectPackages(projectRootDir)
         PackageError("LoadProjectPackages requires an absolute project root.")
     end
 
+    -- Authorise package names before opening project-controlled manifests.
+    -- Dependencies are then loaded by their validated names, never by scanning
+    -- unrelated project folders.
+    local allowList = ReadProjectPackagesAllowList(projectRootDir)
     local manifests = {}
     local byName = {}
-    LoadManifestsFromRoot(path.join(projectRootDir, "Packages"), manifests, byName)
-    LoadManifestsFromRoot(path.join(ROOT_DIR, "packages"), manifests, byName, true)
+    local loading = {}
 
-    local allowList = ReadProjectPackagesAllowList(projectRootDir)
-    manifests, byName = FilterManifestsByAllowList(manifests, byName, allowList or {})
+    local function LoadClosure(packageName)
+        if byName[packageName] then return true end
+        if loading[packageName] then return true end
+        loading[packageName] = true
+        local found = LoadProjectManifestByName(projectRootDir, packageName, manifests, byName)
+        if found then
+            for _, spec in ipairs(byName[packageName].DependencySpecs or {}) do
+                LoadClosure(spec.name)
+            end
+        end
+        loading[packageName] = nil
+        return found
+    end
+
+    for _, name in ipairs(allowList or {}) do
+        if not LoadClosure(name) then
+            print("[Funke Packages] WARNING: project lists package '" .. name ..
+                "' but no manifest with that name was found under packages/ or <project>/Packages/.")
+        end
+    end
     if #manifests == 0 then
         return {}
     end
