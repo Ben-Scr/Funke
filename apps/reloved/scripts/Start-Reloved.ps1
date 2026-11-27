@@ -17,14 +17,15 @@ if (-not (Test-Path -LiteralPath 'node_modules/vinext/dist/cli.js')) {
     & $npmCommand.Source ci
     if ($LASTEXITCODE -ne 0) { throw 'Die Installation ist fehlgeschlagen.' }
 }
+$portProbe = [System.Net.Sockets.TcpClient]::new()
 try {
-    $response = Invoke-WebRequest -Uri 'http://127.0.0.1:5173' -TimeoutSec 2 -UseBasicParsing
-    if ($response.Content -match 'Reloved') {
-        Start-Process 'http://127.0.0.1:5173'
-        exit 0
-    }
-    throw 'Port 5173 wird von einer anderen App verwendet.'
-} catch [System.Net.WebException] { }
+    $portProbe.Connect('127.0.0.1', 5173)
+    throw 'Port 5173 wird bereits verwendet. Beende den zugehörigen Prozess, bevor du Reloved startest.'
+} catch [System.Net.Sockets.SocketException] {
+    if ($_.Exception.SocketErrorCode -ne [System.Net.Sockets.SocketError]::ConnectionRefused) { throw }
+} finally {
+    $portProbe.Dispose()
+}
 Write-Host 'Reloved startet. Dieses Fenster zum Beenden schliessen.'
 if (-not (Test-Path -LiteralPath 'dist/server/index.js')) {
     & $nodePath 'node_modules/vinext/dist/cli.js' build
