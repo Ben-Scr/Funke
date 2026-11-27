@@ -8,6 +8,7 @@
 #include <cmath>
 #include <limits>
 #include <sstream>
+#include <unordered_map>
 #include "Utils/CharConv.hpp"
 
 namespace Funke::Json {
@@ -15,6 +16,12 @@ namespace Funke::Json {
 	namespace {
 		// Recursion cap rejects pathological deep nesting before it overflows the parser stack.
 		constexpr int kMaxParseDepth = 256;
+		// Global parser budgets bound hostile inputs before schema-specific validation runs.
+		constexpr std::size_t kMaxInputBytes = 256u * 1024u * 1024u;
+		constexpr std::size_t kMaxObjectMembers = 64u * 1024u;
+		constexpr std::size_t kMaxTotalNodes = 4u * 1024u * 1024u;
+		constexpr std::size_t kMaxTotalStringBytes = 256u * 1024u * 1024u;
+		constexpr std::size_t kMaxParseWork = 384u * 1024u * 1024u;
 
 		class Parser {
 		public:
@@ -23,6 +30,16 @@ namespace Funke::Json {
 			}
 
 			bool ParseValue(Value& outValue, std::string* outError) {
+				if (m_Text.size() > kMaxInputBytes) {
+					SetError(outError, "JSON input exceeds maximum byte count");
+					return false;
+				}
+				// Input bytes account for the baseline lexical scan. Additional charges below
+				// cover node dispatch and hashing object keys.
+				if (!ChargeParseWork(m_Text.size(), outError)) {
+					return false;
+				}
+
 				// Skip leading UTF-8 BOM (EF BB BF) — some editors emit it though it's not valid JSON.
 				if (m_Text.size() >= 3
 					&& static_cast<unsigned char>(m_Text[0]) == 0xEF
@@ -47,6 +64,15 @@ namespace Funke::Json {
 
 		private:
 			bool ParseAny(Value& outValue, std::string* outError, int depth) {
+				if (m_TotalNodes >= kMaxTotalNodes) {
+					SetError(outError, "JSON exceeds maximum total node count");
+					return false;
+				}
+				++m_TotalNodes;
+				if (!ChargeParseWork(1, outError)) {
+					return false;
+				}
+
 				if (depth >= kMaxParseDepth) {
 					SetError(outError, "JSON nesting depth exceeded");
 					return false;
@@ -112,12 +138,16 @@ namespace Funke::Json {
 				while (!IsAtEnd()) {
 					char ch = Advance();
 					if (ch == '"') {
+						m_TotalStringBytes += result.size();
 						outValue = std::move(result);
 						return true;
 					}
 
 					if (ch != '\\') {
 						result.push_back(ch);
+						if (!StringFitsBudget(result.size(), outError)) {
+							return false;
+						}
 						continue;
 					}
 
@@ -172,6 +202,10 @@ namespace Funke::Json {
 					}
 					default:
 						SetError(outError, "Unsupported escape sequence");
+						return false;
+					}
+
+					if (!StringFitsBudget(result.size(), outError)) {
 						return false;
 					}
 				}
@@ -342,6 +376,8 @@ namespace Funke::Json {
 				}
 
 				Value objectValue = Value::MakeObject();
+				std::unordered_map<std::string, std::size_t> memberIndices;
+				std::size_t memberCount = 0;
 				SkipWhitespace();
 				if (Consume('}')) {
 					outValue = std::move(objectValue);
@@ -349,6 +385,11 @@ namespace Funke::Json {
 				}
 
 				while (!IsAtEnd()) {
+					if (memberCount >= kMaxObjectMembers) {
+						SetError(outError, "JSON object exceeds maximum member count");
+						return false;
+					}
+
 					std::string key;
 					if (!ParseString(key, outError)) {
 						return false;
@@ -365,11 +406,20 @@ namespace Funke::Json {
 						return false;
 					}
 
-					if (objectValue.FindMember(key) != nullptr) {
+					if (!ChargeParseWork(key.size() + 1, outError)) {
+						return false;
+					}
+					const std::size_t newIndex = objectValue.GetObject().size();
+					auto [memberIt, inserted] = memberIndices.try_emplace(key, newIndex);
+					if (!inserted) {
 						FNK_CORE_WARN_TAG("Serialization",
 							"Duplicate JSON key '{}' encountered while parsing — last occurrence wins", key);
+						objectValue.GetObject()[memberIt->second].second = std::move(childValue);
 					}
-					objectValue.AddMember(std::move(key), std::move(childValue));
+					else {
+						objectValue.AddMemberUnchecked(std::move(key), std::move(childValue));
+					}
+					++memberCount;
 
 					SkipWhitespace();
 					if (Consume('}')) {
@@ -479,9 +529,29 @@ namespace Funke::Json {
 				*outError = stream.str();
 			}
 
+			bool StringFitsBudget(std::size_t currentStringBytes, std::string* outError) const {
+				if (currentStringBytes > kMaxTotalStringBytes - m_TotalStringBytes) {
+					SetError(outError, "JSON exceeds maximum total string byte count");
+					return false;
+				}
+				return true;
+			}
+
+			bool ChargeParseWork(std::size_t amount, std::string* outError) {
+				if (amount > kMaxParseWork - m_ParseWork) {
+					SetError(outError, "JSON exceeds maximum parse work");
+					return false;
+				}
+				m_ParseWork += amount;
+				return true;
+			}
+
 		private:
 			std::string_view m_Text;
 			size_t m_Position = 0;
+			std::size_t m_TotalNodes = 0;
+			std::size_t m_TotalStringBytes = 0;
+			std::size_t m_ParseWork = 0;
 		};
 
 		void WriteIndent(std::string& out, int depth, int indentSize) {

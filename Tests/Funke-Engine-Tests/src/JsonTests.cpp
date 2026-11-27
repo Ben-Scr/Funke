@@ -200,3 +200,49 @@ TEST_CASE("Json::Parse on malformed input returns a non-object value") {
 	CHECK(scalar.IsNumber());
 	CHECK_FALSE(scalar.IsObject());
 }
+
+TEST_CASE("Json parser preserves last duplicate member value without retaining duplicates") {
+	Json::Value parsed;
+	std::string error;
+	REQUIRE(Json::TryParse(R"({"mode":"first","mode":"last","enabled":true})", parsed, &error));
+	REQUIRE(parsed.IsObject());
+	CHECK(parsed.GetObject().size() == 2);
+
+	const Json::Value* mode = parsed.FindMember("mode");
+	REQUIRE(mode != nullptr);
+	CHECK(mode->AsStringOr() == "last");
+	CHECK(parsed.FindMember("enabled")->AsBoolOr(false));
+}
+
+TEST_CASE("Json parser accepts a large object with unique members") {
+	constexpr std::size_t memberCount = 4096;
+	std::string source = "{";
+	for (std::size_t i = 0; i < memberCount; ++i) {
+		if (i != 0) source.push_back(',');
+		source += "\"key" + std::to_string(i) + "\":" + std::to_string(i);
+	}
+	source.push_back('}');
+
+	Json::Value parsed;
+	std::string error;
+	REQUIRE(Json::TryParse(source, parsed, &error));
+	REQUIRE(parsed.IsObject());
+	CHECK(parsed.GetObject().size() == memberCount);
+	CHECK(parsed.FindMember("key0")->AsUInt64Or(memberCount) == 0);
+	CHECK(parsed.FindMember("key4095")->AsUInt64Or(0) == memberCount - 1);
+}
+
+TEST_CASE("Json parser rejects objects beyond the member budget") {
+	constexpr std::size_t memberCount = 64u * 1024u + 1u;
+	std::string source = "{";
+	for (std::size_t i = 0; i < memberCount; ++i) {
+		if (i != 0) source.push_back(',');
+		source += "\"key" + std::to_string(i) + "\":null";
+	}
+	source.push_back('}');
+
+	Json::Value parsed;
+	std::string error;
+	CHECK_FALSE(Json::TryParse(source, parsed, &error));
+	CHECK(error.find("maximum member count") != std::string::npos);
+}
