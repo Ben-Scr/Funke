@@ -22,6 +22,15 @@ namespace Funke {
 		constexpr uint32_t k_GlbMagic = 0x46546C67;
 		constexpr uint32_t k_GlbJsonChunk = 0x4E4F534A;
 		constexpr uint32_t k_GlbBinChunk = 0x004E4942;
+		constexpr size_t k_MaxAccessorElements = size_t(4) * 1024 * 1024;
+		constexpr size_t k_MaxAccessorDecodedBytes = size_t(64) * 1024 * 1024;
+		constexpr size_t k_MaxUnbackedAccessorDecodedBytes = size_t(8) * 1024 * 1024;
+		constexpr size_t k_MaxAssetDecodedAccessorBytes = size_t(256) * 1024 * 1024;
+		constexpr size_t k_MaxAssetVertices = size_t(4) * 1024 * 1024;
+		constexpr size_t k_MaxAssetIndices = size_t(12) * 1024 * 1024;
+		constexpr size_t k_MaxAssetNodes = 65'536;
+		constexpr size_t k_MaxAssetJoints = 65'535;
+		constexpr size_t k_MaxAssetAnimationSamples = size_t(4) * 1024 * 1024;
 
 		const Value* Member(const Value& v, std::string_view key) {
 			return v.IsObject() ? v.FindMember(key) : nullptr;
@@ -108,6 +117,22 @@ namespace Funke {
 				return false;
 			}
 
+			bool AllocateAccessorOutput(int64_t index, size_t valueCount, bool unbacked, std::vector<double>& out) {
+				if (valueCount > out.max_size() || valueCount > k_MaxAccessorDecodedBytes / sizeof(double)) {
+					return Fail("accessor " + std::to_string(index) + " exceeds the decoded byte limit");
+				}
+				const size_t decodedBytes = valueCount * sizeof(double);
+				if (unbacked && decodedBytes > k_MaxUnbackedAccessorDecodedBytes) {
+					return Fail("accessor " + std::to_string(index) + " exceeds the unbacked decoded byte limit");
+				}
+				if (m_DecodedAccessorBytes > k_MaxAssetDecodedAccessorBytes - decodedBytes) {
+					return Fail("glTF accessors exceed the decoded byte budget");
+				}
+				m_DecodedAccessorBytes += decodedBytes;
+				out.assign(valueCount, 0.0);
+				return true;
+			}
+
 			bool SplitGlb(std::span<const uint8_t> bytes, std::string_view& outJson, std::span<const uint8_t>& outBin) {
 				if (ReadU32(bytes.data() + 4) != 2) return Fail("only glTF 2.0 .glb files are supported");
 				const size_t length = std::min<size_t>(ReadU32(bytes.data() + 8), bytes.size());
@@ -179,9 +204,11 @@ namespace Funke {
 				default: return Fail("accessor " + std::to_string(index) + " has unsupported componentType");
 				}
 				const int64_t count = IntMember(accessor, "count", 0);
-				if (count < 0 || count > (int64_t(1) << 28)) return Fail("accessor " + std::to_string(index) + " has an invalid count");
-				if (static_cast<uint64_t>(count) > out.max_size() / static_cast<size_t>(components))
-					return Fail("accessor output is too large");
+				if (count < 0) return Fail("accessor " + std::to_string(index) + " has an invalid count");
+				if (static_cast<uint64_t>(count) > k_MaxAccessorElements) {
+					return Fail("accessor " + std::to_string(index) + " exceeds the element limit");
+				}
+				const size_t valueCount = static_cast<size_t>(count) * static_cast<size_t>(components);
 				const bool normalized = !rawIntegers && Member(accessor, "normalized") && Member(accessor, "normalized")->AsBoolOr(false);
 				outComponents = components;
 
@@ -189,8 +216,7 @@ namespace Funke {
 
 				const Value* viewIndex = Member(accessor, "bufferView");
 				if (!viewIndex) {
-					out.assign(static_cast<size_t>(count) * static_cast<size_t>(components), 0.0);
-					return true;
+					return AllocateAccessorOutput(index, valueCount, true, out);
 				}
 				const Value::Array& views = ArrayMember(m_Root, "bufferViews");
 				const int64_t viewId = viewIndex->AsInt64Or(-1);
@@ -219,7 +245,7 @@ namespace Funke {
 				if (count > 0 && (elementSize > viewLength - offset
 					|| static_cast<uint64_t>(count - 1) > (viewLength - offset - elementSize) / stride))
 					return Fail("accessor exceeds its bufferView");
-				out.assign(static_cast<size_t>(count) * static_cast<size_t>(components), 0.0);
+				if (!AllocateAccessorOutput(index, valueCount, false, out)) return false;
 				if (count == 0) return true;
 
 				const uint8_t* base = buffer.data() + viewOffset + offset;
@@ -245,6 +271,7 @@ namespace Funke {
 
 			bool LoadNodes() {
 				const Value::Array& nodes = ArrayMember(m_Root, "nodes");
+				if (nodes.size() > k_MaxAssetNodes) return Fail("glTF exceeds the node limit");
 				m_Data->Nodes.resize(nodes.size());
 				for (size_t i = 0; i < nodes.size(); ++i) {
 					SkeletonNode& node = m_Data->Nodes[i];
@@ -303,8 +330,9 @@ namespace Funke {
 
 			bool LoadSkins() {
 				for (const Value& skin : ArrayMember(m_Root, "skins")) {
-					m_SkinBase.push_back(static_cast<uint32_t>(m_Data->Joints.size()));
 					const Value::Array& joints = ArrayMember(skin, "joints");
+					if (joints.size() > k_MaxAssetJoints - m_Data->Joints.size()) return Fail("glTF exceeds the joint limit");
+					m_SkinBase.push_back(static_cast<uint32_t>(m_Data->Joints.size()));
 					std::vector<double> inverseBind;
 					int components = 0;
 					if (const Value* accessor = Member(skin, "inverseBindMatrices")) {
@@ -328,10 +356,16 @@ namespace Funke {
 				return true;
 			}
 
-			uint32_t RigidJoint(uint32_t node) {
-				auto [it, inserted] = m_RigidJoints.try_emplace(node, static_cast<uint32_t>(m_Data->Joints.size()));
-				if (inserted) m_Data->Joints.push_back({ node, glm::mat4(1.0f) });
-				return it->second;
+			bool RigidJoint(uint32_t node, uint32_t& out) {
+				if (const auto it = m_RigidJoints.find(node); it != m_RigidJoints.end()) {
+					out = it->second;
+					return true;
+				}
+				if (m_Data->Joints.size() >= k_MaxAssetJoints) return Fail("glTF exceeds the joint limit");
+				out = static_cast<uint32_t>(m_Data->Joints.size());
+				m_RigidJoints.emplace(node, out);
+				m_Data->Joints.push_back({ node, glm::mat4(1.0f) });
+				return true;
 			}
 
 			bool LoadMeshes() {
@@ -363,6 +397,7 @@ namespace Funke {
 				if (!ReadAccessor(positionAccessor->AsInt64Or(-1), false, positions, components)) return false;
 				if (components != 3) return Fail("POSITION must be VEC3");
 				const size_t vertexCount = positions.size() / 3;
+				if (vertexCount > k_MaxAssetVertices - m_Data->BindVertices.size()) return Fail("glTF exceeds the vertex limit");
 				auto readOptional = [&](const char* name, bool raw, std::vector<double>& out, int expected) {
 					const Value* accessor = Member(*attributes, name);
 					if (!accessor) return true;
@@ -391,9 +426,13 @@ namespace Funke {
 				else {
 					for (size_t i = 0; i < vertexCount; ++i) source.push_back(static_cast<uint32_t>(i));
 				}
+				const size_t generatedIndexCount = mode == 4 ? source.size() - source.size() % 3
+					: (source.size() < 3 ? 0 : (source.size() - 2) * 3);
+				if (generatedIndexCount > k_MaxAssetIndices - m_Indices.size()) return Fail("glTF exceeds the index limit");
 
 				PrimitiveMeshData local;
 				local.Vertices.resize(vertexCount);
+				local.Indices.reserve(generatedIndexCount);
 				for (size_t v = 0; v < vertexCount; ++v) {
 					MeshVertex& vertex = local.Vertices[v];
 					for (int k = 0; k < 3; ++k) {
@@ -422,7 +461,8 @@ namespace Funke {
 				const size_t base = m_Data->BindVertices.size();
 				if (base + vertexCount > std::numeric_limits<uint32_t>::max()) return Fail("too many vertices");
 				const bool skinned = skin >= 0 && !joints.empty() && !weights.empty();
-				const uint32_t rigid = skinned ? 0u : RigidJoint(node);
+				uint32_t rigid = 0;
+				if (!skinned && !RigidJoint(node, rigid)) return false;
 				for (size_t v = 0; v < vertexCount; ++v) {
 					std::array<uint16_t, 4> influence{ static_cast<uint16_t>(rigid), 0, 0, 0 };
 					glm::vec4 weight(1.0f, 0.0f, 0.0f, 0.0f);
@@ -445,7 +485,9 @@ namespace Funke {
 							weight /= sum;
 						}
 						else {
-							influence = { static_cast<uint16_t>(RigidJoint(node)), 0, 0, 0 };
+							uint32_t fallback = 0;
+							if (!RigidJoint(node, fallback)) return false;
+							influence = { static_cast<uint16_t>(fallback), 0, 0, 0 };
 							weight = { 1.0f, 0.0f, 0.0f, 0.0f };
 						}
 					}
@@ -496,6 +538,8 @@ namespace Funke {
 							FNK_CORE_WARN_TAG("Mesh", "glTF animation '{}' has a channel whose keys don't match; skipped", clip.Name);
 							continue;
 						}
+						if (times.size() > k_MaxAssetAnimationSamples - m_AnimationSamples) return Fail("glTF exceeds the animation sample limit");
+						m_AnimationSamples += times.size();
 						channel.Times.reserve(times.size());
 						for (double t : times) channel.Times.push_back(static_cast<float>(t));
 						std::sort(channel.Times.begin(), channel.Times.end());
@@ -534,6 +578,8 @@ namespace Funke {
 			std::vector<uint32_t> m_SkinJointCount;
 			std::unordered_map<uint32_t, uint32_t> m_RigidJoints;
 			std::vector<uint32_t> m_Indices;
+			size_t m_DecodedAccessorBytes = 0;
+			size_t m_AnimationSamples = 0;
 		};
 	}
 

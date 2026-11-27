@@ -25,6 +25,7 @@
 #include <filesystem>
 #include <limits>
 #include <string>
+#include <tuple>
 #include <vector>
 
 using namespace Funke;
@@ -398,6 +399,33 @@ TEST_CASE("glTF import bakes unskinned meshes and reports broken files") {
 	REQUIRE(DecodeBase64("aGVsbG8=", decoded));
 	CHECK(std::string(decoded.begin(), decoded.end()) == "hello");
 	CHECK_FALSE(DecodeBase64("a*b", decoded));
+}
+
+TEST_CASE("glTF import bounds decoded accessor allocations") {
+	auto modelWithAccessor = [](int64_t count, const char* type, bool normal = false) {
+		return std::string("{\"asset\":{\"version\":\"2.0\"},\"nodes\":[{\"mesh\":0}],")
+			+ "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0"
+			+ (normal ? ",\"NORMAL\":1" : "") + "}}]}],\"accessors\":["
+			+ "{\"componentType\":5126,\"count\":" + std::to_string(count) + ",\"type\":\"" + type + "\"}"
+			+ (normal ? ",{\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"}" : "") + "]}";
+	};
+
+	for (const auto& [count, type, expected] : std::vector<std::tuple<int64_t, const char*, const char*>>{
+		{ int64_t(1) << 28, "VEC3", "element limit" },
+		{ 1'000'000, "MAT4", "decoded byte limit" },
+		{ 400'000, "VEC3", "unbacked decoded byte limit" },
+	}) {
+		MeshAsset asset;
+		std::string error;
+		CHECK_FALSE(ParseGltf(AsBytes(modelWithAccessor(count, type)), nullptr, asset, &error));
+		CHECK(error.find(expected) != std::string::npos);
+	}
+
+	MeshAsset asset;
+	std::string error;
+	REQUIRE_MESSAGE(ParseGltf(AsBytes(modelWithAccessor(3, "VEC3", true)), nullptr, asset, &error), error);
+	CHECK(asset.Data.Vertices.size() == 3);
+	CHECK(asset.Data.Indices == std::vector<uint32_t>{ 0, 1, 2 });
 }
 
 TEST_CASE("MeshLibrary loads .gltf files with a sibling .bin") {
