@@ -102,17 +102,62 @@ newaction {
         Check(ok and #resolved == 2 and resolved[1].version == "2.0.0",
             "project version overrides bundled version: " .. tostring(result))
 
-        ok, result = Resolve({
+        ok, result, resolved = Resolve({
             ["Game.Shared"] = Manifest("Game.Shared", "2.0.0"),
             ["Game.OtherFolder"] = Manifest("Game.Shared", "3.0.0"),
         }, { "Game.Shared" })
-        Check(not ok and result:find("Duplicate package name", 1, true), "duplicate project names still fail")
+        Check(ok and #resolved == 1 and resolved[1].version == "2.0.0",
+            "unlisted project folders are not inspected: " .. tostring(result))
 
-        ok, result = Resolve({ ["Game.Shared"] = Manifest("Game.Shared", "2.0.0") }, { "Game.Shared" }, {
+        ok, result, resolved = Resolve({ ["Game.Shared"] = Manifest("Game.Shared", "2.0.0") }, { "Game.Shared" }, {
             ["Game.Shared"] = Manifest("Game.Shared", "1.0.0"),
             ["Game.OtherFolder"] = Manifest("Game.Shared", "1.1.0"),
         })
-        Check(not ok and result:find("Duplicate package name", 1, true), "duplicate engine names still fail")
+        Check(ok and #resolved == 1 and resolved[1].version == "2.0.0",
+            "selected project package still overrides engine fallback: " .. tostring(result))
+
+        ok, result = Resolve({
+            ["Game.WrongFolder"] = Manifest("Game.OtherName", "1.0.0"),
+        }, { "Game.WrongFolder" })
+        Check(not ok and result:find("folder and allow%-list name", 1),
+            "selected folder and manifest names must match: " .. tostring(result))
+
+        ok, result = Resolve({
+            ["Game.Safe"] = Manifest("Game.Safe", "1.0.0"),
+            ["Game.Unlisted"] = [[return {
+                name = "Game.Unlisted", version = "1.0.0",
+                probe = error("unlisted manifest executed"),
+                layers = { csharp = { sources = { "Source/**.cs" } } },
+            }]],
+        }, { "Game.Safe" })
+        Check(ok and table.concat(result, ",") == "Game.Safe",
+            "unlisted executable manifest is never read: " .. tostring(result))
+
+        ok, result = Resolve({
+            ["Game.Bad"] = [[return {
+                name = "Game.Bad", version = "1.0.0",
+                probe = error("selected manifest executed"),
+                layers = { csharp = { sources = { "Source/**.cs" } } },
+            }]],
+        }, { "Game.Bad" })
+        Check(not ok and result:find("only literal values are supported", 1, true),
+            "selected executable manifest is rejected as data: " .. tostring(result))
+
+        ok, result = Resolve({
+            ["Game.Literal"] = [=[-- literal grammar accepted by PackageManifest.cpp
+                local manifest = {
+                    name = "Game.Literal",
+                    version = "1.0.0",
+                    description = [==[A declarative package]==],
+                    moduleRequirementsVersion = 2,
+                    modules = { "Funke.2D" },
+                    layers = { csharp = { sources = { "Source/**.cs" }, allow_unsafe = false } },
+                }
+                return manifest
+            ]=],
+        }, { "Game.Literal" })
+        Check(ok and table.concat(result, ",") == "Game.Literal",
+            "literal manifest grammar remains accepted: " .. tostring(result))
 
         if failures > 0 then
             error(failures .. " package-loader check(s) failed", 0)
