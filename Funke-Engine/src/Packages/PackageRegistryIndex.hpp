@@ -1,5 +1,6 @@
 #pragma once
 #include "Core/Export.hpp"
+#include "Packages/PackageLock.hpp"
 #include "Packages/PackageManifest.hpp"
 #include "Packages/SemanticVersion.hpp"
 
@@ -70,5 +71,10 @@ namespace Funke {
 	FUNKE_API PackageInstallPlan PlanRegistryInstall(const std::vector<RegistryPackage>& registry,
 		const std::vector<PackageManifest>& installed, std::string_view name, std::string_view range,
 		const SemanticVersion& engineVersion, bool updateRoot);
+
+	// Resolves project lock entries through the configured registry. The lock pins package identity and
+	// digest, but its persisted URL is never used as network authority.
+	FUNKE_API PackageInstallPlan PlanLockedRegistryRestore(const std::vector<RegistryPackage>& registry,
+		const std::vector<PackageLockEntry>& lockedPackages);
 
 }

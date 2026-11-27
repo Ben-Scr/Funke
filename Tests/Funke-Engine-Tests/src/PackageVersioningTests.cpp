@@ -379,6 +379,43 @@ TEST_CASE("Package lock round-trips and keeps sources while versions match") {
 	std::filesystem::remove_all(root, ec);
 }
 
+TEST_CASE("Locked registry restore uses registry authority and requires the pinned digest") {
+	const std::string trustedSha(64, 'a');
+	RegistryPackage package;
+	package.Name = "Funke.Grid";
+	RegistryPackageVersion release;
+	release.VersionText = "1.5.0";
+	release.Version = SemanticVersion::Parse(release.VersionText);
+	release.DownloadUrl = "https://github.com/Ben-Scr/Funke-PackageRegistry/releases/download/grid/grid.zip";
+	release.Sha256 = trustedSha;
+	package.Versions.push_back(release);
+	const std::vector<RegistryPackage> registry{ package };
+
+	PackageLockEntry locked{ "Funke.Grid", "1.5.0", "registry",
+		"http://127.0.0.1:8080/admin", trustedSha, {} };
+
+	SUBCASE("a project URL cannot select the download destination") {
+		const PackageInstallPlan plan = PlanLockedRegistryRestore(registry, { locked });
+		REQUIRE(plan.IsValid());
+		REQUIRE(plan.Steps.size() == 1);
+		CHECK(plan.Steps[0].DownloadUrl == release.DownloadUrl);
+		CHECK(plan.Steps[0].DownloadUrl != locked.Url);
+		CHECK(plan.Steps[0].Sha256 == release.Sha256);
+	}
+	SUBCASE("a digest mismatch blocks every restore step") {
+		locked.Sha256 = std::string(64, 'b');
+		const PackageInstallPlan plan = PlanLockedRegistryRestore(registry, { locked });
+		CHECK_FALSE(plan.IsValid());
+		CHECK(plan.Steps.empty());
+	}
+	SUBCASE("non-registry sources remain manual") {
+		locked.Source = "git";
+		const PackageInstallPlan plan = PlanLockedRegistryRestore(registry, { locked });
+		CHECK(plan.IsValid());
+		CHECK(plan.Steps.empty());
+	}
+}
+
 TEST_CASE("PackageManifest reads the engine modules a package builds on") {
 	PackageManifest manifest;
 	std::string error;
