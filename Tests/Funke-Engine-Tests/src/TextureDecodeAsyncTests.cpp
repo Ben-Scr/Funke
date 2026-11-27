@@ -104,6 +104,16 @@ TEST_CASE("Thumbnail decoding rejects pixel limits before allocation") {
 	CHECK(MatchesPixels(Texture2D::DecodeFileToCpu(path.c_str(), false, 63).get(), false));
 }
 
+TEST_CASE("Texture decode policy bounds dimensions and decoded bytes") {
+	CHECK(Texture2D::IsDecodeSizeAllowed(4096, 4096));
+	CHECK(Texture2D::IsDecodeSizeAllowed(8192, 2048));
+	CHECK_FALSE(Texture2D::IsDecodeSizeAllowed(8193, 1));
+	CHECK_FALSE(Texture2D::IsDecodeSizeAllowed(8192, 2049));
+	CHECK_FALSE(Texture2D::IsDecodeSizeAllowed(8192, 2049, 0));
+	CHECK_FALSE(Texture2D::IsDecodeSizeAllowed(4096, 4096, 4096u * 4096u - 1u));
+	CHECK_FALSE(Texture2D::IsDecodeSizeAllowed(0, 4096));
+}
+
 TEST_CASE("Library thumbnails deduplicate pending and failed requests until refresh") {
 	std::atomic<int> calls = 0;
 	std::promise<void> release;
